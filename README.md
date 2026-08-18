@@ -4,6 +4,27 @@ An orchestration-first open-source coding agent runtime.
 
 The strongest model plans and delegates work; cheaper or specialized workers execute isolated tasks. Users define routing, concurrency, review, retry, and escalation behavior in natural language. That policy is compiled to a typed Policy IR and enforced by a deterministic scheduler.
 
+## Quickstart
+
+Like other terminal coding agents, `agent` runs inside the repository you want it to work on:
+
+```bash
+npm install && npm run build
+
+cd /path/to/your/repo
+export ANTHROPIC_API_KEY=...          # or OPENAI_API_KEY, or put them in .env
+node /path/to/orchestration-agent/apps/cli/dist/index.js "fix the failing test"
+```
+
+Useful commands and flags:
+
+- `agent init` — copy the default `.agent/` configuration template into the current repo
+- `agent models` — list available model aliases and whether their API key is configured
+- `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
+- `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
+- `--json` — newline-delimited JSON events for scripting/CI
+- `--timeout <seconds>`, `--max-iterations <n>` — run limits
+
 ## Project plan
 
 The current v0.1 development plan is available in:

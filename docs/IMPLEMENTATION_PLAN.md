@@ -12,13 +12,16 @@
 
 ## M1 — Single-agent coding loop
 
-- [ ] OpenAI provider adapter
-- [ ] Anthropic provider adapter
-- [ ] tool-call loop
-- [ ] read / grep / glob / edit / write / bash / git diff tools
-- [ ] permission engine (`allow | ask | deny`)
-- [ ] cancellation and timeout propagation
-- [ ] usage and cost accounting
+- [x] OpenAI provider adapter
+- [x] Anthropic provider adapter
+- [x] tool-call loop
+- [x] read / grep / glob / edit / write / bash / git diff tools
+- [x] permission engine (`allow | ask | deny`)
+- [x] cancellation and timeout propagation
+- [x] usage and cost accounting
+- [x] CLI wiring: `agent [objective]` runs the loop in the current directory
+      (`agent init`, `agent models`, `.env` loading, interactive permission
+      prompts, `--json` JSONL output)
 
 Acceptance: one configured model can inspect and modify a repository safely.
 
