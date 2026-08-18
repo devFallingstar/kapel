@@ -34,8 +34,7 @@ export class CodingAgentRuntime {
     const policy = PolicySchema.parse(compiled.policy);
     const issues = validatePolicy(policy, this.options.knownAgents);
     const errors = issues.filter((issue) => issue.severity === "error");
-    if (errors.length > 0) throw new Error(errors.map((issue) => issue.message).join("
-"));
+    if (errors.length > 0) throw new Error(errors.map((issue) => issue.message).join("\n"));
     return policy;
   }
 
