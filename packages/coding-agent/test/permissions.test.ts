@@ -25,7 +25,11 @@ class RecordingPrompter implements PermissionPrompter {
 
 describe("PermissionEngine.decisionFor", () => {
   it("resolves exact tool-name rules", () => {
-    const engine = new PermissionEngine({ read: "allow", bash: "deny", write: "ask" });
+    const engine = new PermissionEngine({
+      read: "allow",
+      bash: "deny",
+      write: "ask",
+    });
 
     expect(engine.decisionFor("read")).toBe("allow");
     expect(engine.decisionFor("bash")).toBe("deny");
@@ -38,13 +42,19 @@ describe("PermissionEngine.decisionFor", () => {
   });
 
   it("falls back to the configured default decision", () => {
-    const engine = new PermissionEngine({ read: "allow" }, { defaultDecision: "deny" });
+    const engine = new PermissionEngine(
+      { read: "allow" },
+      { defaultDecision: "deny" },
+    );
     expect(engine.decisionFor("unlisted")).toBe("deny");
     expect(engine.decisionFor("read")).toBe("allow");
   });
 
   it("does not match prefixes, suffixes or inherited object keys", () => {
-    const engine = new PermissionEngine({ bash: "allow" }, { defaultDecision: "deny" });
+    const engine = new PermissionEngine(
+      { bash: "allow" },
+      { defaultDecision: "deny" },
+    );
 
     expect(engine.decisionFor("bash.run")).toBe("deny");
     expect(engine.decisionFor("ba")).toBe("deny");
@@ -78,7 +88,11 @@ describe("PermissionEngine.authorize", () => {
 
     const result = await engine.authorize(request("bash"));
 
-    expect(result).toEqual({ allowed: false, decision: "deny", reason: DENIED_BY_POLICY });
+    expect(result).toEqual({
+      allowed: false,
+      decision: "deny",
+      reason: DENIED_BY_POLICY,
+    });
     expect(DENIED_BY_POLICY).toBe("denied by policy");
     expect(prompter.seen).toHaveLength(0);
   });
@@ -93,7 +107,9 @@ describe("PermissionEngine.authorize", () => {
       decision: "ask",
       reason: NO_PROMPTER_AVAILABLE,
     });
-    expect(NO_PROMPTER_AVAILABLE).toBe("no prompter available in non-interactive mode");
+    expect(NO_PROMPTER_AVAILABLE).toBe(
+      "no prompter available in non-interactive mode",
+    );
   });
 
   it("allows an 'ask' tool when the prompter approves, forwarding the full request", async () => {
@@ -103,7 +119,9 @@ describe("PermissionEngine.authorize", () => {
     const result = await engine.authorize(request("write", { path: "a.txt" }));
 
     expect(result).toEqual({ allowed: true, decision: "ask" });
-    expect(prompter.seen).toEqual([{ tool: "write", input: { path: "a.txt" }, agent: "coder" }]);
+    expect(prompter.seen).toEqual([
+      { tool: "write", input: { path: "a.txt" }, agent: "coder" },
+    ]);
   });
 
   it("denies an 'ask' tool when the prompter refuses", async () => {
@@ -112,14 +130,24 @@ describe("PermissionEngine.authorize", () => {
 
     const result = await engine.authorize(request("write"));
 
-    expect(result).toEqual({ allowed: false, decision: "ask", reason: DENIED_BY_PROMPTER });
+    expect(result).toEqual({
+      allowed: false,
+      decision: "ask",
+      reason: DENIED_BY_PROMPTER,
+    });
     expect(prompter.seen).toHaveLength(1);
   });
 
   it("routes unlisted tools through the default decision", async () => {
     const prompter = new RecordingPrompter(true);
-    const allowByDefault = new PermissionEngine({}, { defaultDecision: "allow", prompter });
-    const denyByDefault = new PermissionEngine({}, { defaultDecision: "deny", prompter });
+    const allowByDefault = new PermissionEngine(
+      {},
+      { defaultDecision: "allow", prompter },
+    );
+    const denyByDefault = new PermissionEngine(
+      {},
+      { defaultDecision: "deny", prompter },
+    );
     const askByDefault = new PermissionEngine({}, { prompter });
 
     expect(await allowByDefault.authorize(request("glob"))).toEqual({

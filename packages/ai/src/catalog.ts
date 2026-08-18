@@ -44,7 +44,9 @@ const K128 = 128_000;
  * {@link ModelPricing} (or override the whole entry) before relying on cost
  * accounting for them.
  */
-export function defaultModelCatalog(): Readonly<Record<string, ModelDefinition>> {
+export function defaultModelCatalog(): Readonly<
+  Record<string, ModelDefinition>
+> {
   return {
     // --- Anthropic -------------------------------------------------------
     "claude-fable-5": claude("claude-fable-5", 10, 50, MILLION, K128),

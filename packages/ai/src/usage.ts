@@ -1,4 +1,9 @@
-import type { ModelDefinition, ModelPricing, ModelUsage, UsageRecorder } from "./index.js";
+import type {
+  ModelDefinition,
+  ModelPricing,
+  ModelUsage,
+  UsageRecorder,
+} from "./index.js";
 
 export interface UsageTotals {
   readonly usage: ModelUsage;
@@ -32,7 +37,10 @@ function newBucket(): Bucket {
  * cached input is billed at `cachedInputPerMTok` when the model provides one,
  * otherwise at the regular input rate. Models without pricing cost nothing.
  */
-export function usageCostUsd(pricing: ModelPricing | undefined, usage: ModelUsage): number {
+export function usageCostUsd(
+  pricing: ModelPricing | undefined,
+  usage: ModelUsage,
+): number {
   if (pricing === undefined) return 0;
   const cached = usage.cachedInputTokens ?? 0;
   const cachedRate = pricing.cachedInputPerMTok ?? pricing.inputPerMTok;
@@ -47,7 +55,9 @@ function toUsage(bucket: Bucket): ModelUsage {
   return {
     inputTokens: bucket.inputTokens,
     outputTokens: bucket.outputTokens,
-    ...(bucket.hasCached ? { cachedInputTokens: bucket.cachedInputTokens } : {}),
+    ...(bucket.hasCached
+      ? { cachedInputTokens: bucket.cachedInputTokens }
+      : {}),
   };
 }
 
@@ -71,7 +81,8 @@ export class UsageTracker implements UsageRecorder {
       target.inputTokens += usage.inputTokens;
       target.outputTokens += usage.outputTokens;
       target.cachedInputTokens += cached;
-      target.hasCached = target.hasCached || usage.cachedInputTokens !== undefined;
+      target.hasCached =
+        target.hasCached || usage.cachedInputTokens !== undefined;
       target.costUsd += cost;
     }
   }

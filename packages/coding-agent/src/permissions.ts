@@ -24,7 +24,8 @@ export interface PermissionResult {
 /** Reason returned when a rule explicitly denies the tool. */
 export const DENIED_BY_POLICY = "denied by policy";
 /** Reason returned when a decision needs a prompt but no prompter is wired up. */
-export const NO_PROMPTER_AVAILABLE = "no prompter available in non-interactive mode";
+export const NO_PROMPTER_AVAILABLE =
+  "no prompter available in non-interactive mode";
 /** Reason returned when the prompter was asked and refused. */
 export const DENIED_BY_PROMPTER = "denied by prompter";
 
@@ -57,7 +58,8 @@ export class PermissionEngine {
     const decision = this.decisionFor(request.tool);
 
     if (decision === "allow") return { allowed: true, decision };
-    if (decision === "deny") return { allowed: false, decision, reason: DENIED_BY_POLICY };
+    if (decision === "deny")
+      return { allowed: false, decision, reason: DENIED_BY_POLICY };
 
     const prompter = this.#prompter;
     if (prompter === undefined) {

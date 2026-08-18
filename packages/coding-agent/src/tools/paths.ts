@@ -5,7 +5,10 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
  * guarantees the result stays inside that workspace. Throws if the path would escape the
  * workspace (via "../" segments or by being absolute to another location).
  */
-export function resolveInWorkspace(workspacePath: string, userPath: string): string {
+export function resolveInWorkspace(
+  workspacePath: string,
+  userPath: string,
+): string {
   const resolved = resolve(workspacePath, userPath);
   const rel = relative(workspacePath, resolved);
   const escapes = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
@@ -19,7 +22,10 @@ export function resolveInWorkspace(workspacePath: string, userPath: string): str
  * Converts an absolute path known to live inside the workspace back into a workspace-relative,
  * forward-slash-separated path suitable for returning to callers.
  */
-export function toWorkspaceRelative(workspacePath: string, absolutePath: string): string {
+export function toWorkspaceRelative(
+  workspacePath: string,
+  absolutePath: string,
+): string {
   const rel = relative(workspacePath, absolutePath);
   return rel.split(sep).join("/");
 }

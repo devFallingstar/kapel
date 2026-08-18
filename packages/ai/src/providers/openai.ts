@@ -54,7 +54,8 @@ function toWireMessage(message: ModelMessage): WireMessage {
       };
     case "assistant": {
       const calls = message.toolCalls ?? [];
-      if (calls.length === 0) return { role: "assistant", content: message.content };
+      if (calls.length === 0)
+        return { role: "assistant", content: message.content };
       return {
         role: "assistant",
         content: message.content === "" ? null : message.content,
@@ -104,7 +105,9 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   supports(model: ModelDefinition): boolean {
-    return model.provider === "openai" || model.provider === "openai-compatible";
+    return (
+      model.provider === "openai" || model.provider === "openai-compatible"
+    );
   }
 
   #buildBody(request: ModelRequest): Record<string, unknown> {
@@ -117,14 +120,18 @@ export class OpenAIProvider implements ModelProvider {
     if (request.tools !== undefined && request.tools.length > 0) {
       body.tools = request.tools.map(toWireTool);
     }
-    if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (request.temperature !== undefined)
+      body.temperature = request.temperature;
     if (request.maxOutputTokens !== undefined) {
       body.max_completion_tokens = request.maxOutputTokens;
     }
     return body;
   }
 
-  async *stream(request: ModelRequest, signal?: AbortSignal): AsyncGenerator<ModelEvent> {
+  async *stream(
+    request: ModelRequest,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ModelEvent> {
     const response = await fetch(`${this.#baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -191,7 +198,11 @@ export class OpenAIProvider implements ModelProvider {
       const choice = choices[0];
       if (isRecord(choice)) {
         const delta = isRecord(choice.delta) ? choice.delta : undefined;
-        if (delta !== undefined && typeof delta.content === "string" && delta.content !== "") {
+        if (
+          delta !== undefined &&
+          typeof delta.content === "string" &&
+          delta.content !== ""
+        ) {
           yield { type: "text.delta", text: delta.content };
         }
         if (delta !== undefined && Array.isArray(delta.tool_calls)) {
@@ -222,7 +233,8 @@ export class OpenAIProvider implements ModelProvider {
         const details = isRecord(usage.prompt_tokens_details)
           ? usage.prompt_tokens_details
           : undefined;
-        const cached = details === undefined ? 0 : asNumber(details.cached_tokens);
+        const cached =
+          details === undefined ? 0 : asNumber(details.cached_tokens);
         yield {
           type: "usage",
           inputTokens: asNumber(usage.prompt_tokens),

@@ -1,14 +1,22 @@
 import { readFile, writeFile } from "node:fs/promises";
+import type { Tool, ToolContext } from "@agent/core";
 import { z } from "zod";
-import type { Tool, ToolContext, ToolDefinition } from "@agent/core";
 import { toInputSchema } from "./json-schema.js";
 import { checkAbort, resolveInWorkspace } from "./paths.js";
 
 const InputSchema = z
   .object({
-    path: z.string().min(1).describe("Workspace-relative path of the file to edit."),
-    oldText: z.string().min(1).describe("Exact, non-empty text to find in the file."),
-    newText: z.string().describe("Text to replace `oldText` with. Must differ from oldText."),
+    path: z
+      .string()
+      .min(1)
+      .describe("Workspace-relative path of the file to edit."),
+    oldText: z
+      .string()
+      .min(1)
+      .describe("Exact, non-empty text to find in the file."),
+    newText: z
+      .string()
+      .describe("Text to replace `oldText` with. Must differ from oldText."),
     replaceAll: z
       .boolean()
       .optional()
@@ -34,11 +42,18 @@ export class EditFileTool implements Tool<EditFileInput, EditFileOutput> {
     "throws an error describing how many occurrences were found.";
   readonly inputSchema = toInputSchema(InputSchema);
 
-  definition(): ToolDefinition {
-    return { name: this.name, description: this.description, inputSchema: this.inputSchema };
+  definition() {
+    return {
+      name: this.name,
+      description: this.description,
+      inputSchema: this.inputSchema,
+    };
   }
 
-  async execute(rawInput: unknown, context: ToolContext): Promise<EditFileOutput> {
+  async execute(
+    rawInput: unknown,
+    context: ToolContext,
+  ): Promise<EditFileOutput> {
     const input = InputSchema.parse(rawInput);
     if (input.oldText === input.newText) {
       throw new Error("oldText and newText must differ");
@@ -51,7 +66,9 @@ export class EditFileTool implements Tool<EditFileInput, EditFileOutput> {
     try {
       raw = await readFile(target, "utf8");
     } catch (err) {
-      throw new Error(`failed to read file "${input.path}": ${(err as Error).message}`);
+      throw new Error(
+        `failed to read file "${input.path}": ${(err as Error).message}`,
+      );
     }
 
     const occurrences = raw.split(input.oldText).length - 1;

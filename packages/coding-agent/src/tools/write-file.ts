@@ -1,14 +1,19 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { Tool, ToolContext } from "@agent/core";
 import { z } from "zod";
-import type { Tool, ToolContext, ToolDefinition } from "@agent/core";
 import { toInputSchema } from "./json-schema.js";
 import { checkAbort, resolveInWorkspace } from "./paths.js";
 
 const InputSchema = z
   .object({
-    path: z.string().min(1).describe("Workspace-relative path of the file to write."),
-    content: z.string().describe("The full UTF-8 text content to write to the file."),
+    path: z
+      .string()
+      .min(1)
+      .describe("Workspace-relative path of the file to write."),
+    content: z
+      .string()
+      .describe("The full UTF-8 text content to write to the file."),
   })
   .strict();
 
@@ -27,11 +32,18 @@ export class WriteFileTool implements Tool<WriteFileInput, WriteFileOutput> {
     "The path must be workspace-relative; parent directories are created automatically.";
   readonly inputSchema = toInputSchema(InputSchema);
 
-  definition(): ToolDefinition {
-    return { name: this.name, description: this.description, inputSchema: this.inputSchema };
+  definition() {
+    return {
+      name: this.name,
+      description: this.description,
+      inputSchema: this.inputSchema,
+    };
   }
 
-  async execute(rawInput: unknown, context: ToolContext): Promise<WriteFileOutput> {
+  async execute(
+    rawInput: unknown,
+    context: ToolContext,
+  ): Promise<WriteFileOutput> {
     const input = InputSchema.parse(rawInput);
     const target = resolveInWorkspace(context.workspacePath, input.path);
     checkAbort(context.signal);

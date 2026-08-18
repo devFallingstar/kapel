@@ -25,7 +25,9 @@ export class StaticModelRegistry implements ModelRegistry {
   }
 
   providerFor(model: ModelDefinition): ModelProvider {
-    const provider = this.#providers.find((candidate) => candidate.supports(model));
+    const provider = this.#providers.find((candidate) =>
+      candidate.supports(model),
+    );
     if (provider === undefined) {
       const known = this.#providers.map((candidate) => candidate.id).join(", ");
       throw new Error(

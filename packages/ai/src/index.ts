@@ -91,7 +91,10 @@ export type ModelEvent =
 export interface ModelProvider {
   readonly id: string;
   supports(model: ModelDefinition): boolean;
-  stream(request: ModelRequest, signal?: AbortSignal): AsyncIterable<ModelEvent>;
+  stream(
+    request: ModelRequest,
+    signal?: AbortSignal,
+  ): AsyncIterable<ModelEvent>;
 }
 
 export interface ModelRegistry {
@@ -104,15 +107,15 @@ export interface UsageRecorder {
   record(model: ModelDefinition, usage: ModelUsage): void;
 }
 
-export { ProviderError } from "./providers/errors.js";
+export { defaultModelCatalog } from "./catalog.js";
+export type { AnthropicProviderOptions } from "./providers/anthropic.js";
 export { AnthropicProvider } from "./providers/anthropic.js";
+export type { ProviderErrorInit } from "./providers/errors.js";
+export { ProviderError } from "./providers/errors.js";
+export type { OpenAIProviderOptions } from "./providers/openai.js";
 export { OpenAIProvider } from "./providers/openai.js";
 export { StaticModelRegistry } from "./registry.js";
-export { UsageTracker } from "./usage.js";
-export { defaultModelCatalog } from "./catalog.js";
-export { parseSse } from "./sse.js";
 export type { SseMessage } from "./sse.js";
-export type { ProviderErrorInit } from "./providers/errors.js";
-export type { OpenAIProviderOptions } from "./providers/openai.js";
-export type { AnthropicProviderOptions } from "./providers/anthropic.js";
+export { parseSse } from "./sse.js";
 export type { UsageTotals } from "./usage.js";
+export { UsageTracker } from "./usage.js";

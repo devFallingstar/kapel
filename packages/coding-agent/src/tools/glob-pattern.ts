@@ -1,4 +1,17 @@
-const REGEXP_SPECIAL = new Set([".", "+", "^", "$", "{", "}", "(", ")", "|", "[", "]", "\\"]);
+const REGEXP_SPECIAL = new Set([
+  ".",
+  "+",
+  "^",
+  "$",
+  "{",
+  "}",
+  "(",
+  ")",
+  "|",
+  "[",
+  "]",
+  "\\",
+]);
 
 /**
  * Translates a minimal glob syntax (`*`, `**`, `?`) into a RegExp that matches a forward-slash

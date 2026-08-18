@@ -31,7 +31,10 @@ export async function* parseSse(
       eventName = undefined;
       return undefined;
     }
-    const message: SseMessage = { event: eventName, data: dataLines.join("\n") };
+    const message: SseMessage = {
+      event: eventName,
+      data: dataLines.join("\n"),
+    };
     eventName = undefined;
     dataLines = [];
     return message;

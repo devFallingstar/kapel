@@ -90,7 +90,8 @@ function mapMessages(messages: readonly ModelMessage[]): MappedMessages {
           break;
         }
         const blocks: Record<string, unknown>[] = [];
-        if (message.content !== "") blocks.push({ type: "text", text: message.content });
+        if (message.content !== "")
+          blocks.push({ type: "text", text: message.content });
         for (const call of calls) {
           blocks.push({
             type: "tool_use",
@@ -132,7 +133,9 @@ export class AnthropicProvider implements ModelProvider {
     const body: Record<string, unknown> = {
       model: request.model.id,
       max_tokens:
-        request.maxOutputTokens ?? request.model.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
+        request.maxOutputTokens ??
+        request.model.maxOutputTokens ??
+        DEFAULT_MAX_TOKENS,
       stream: true,
       messages,
     };
@@ -140,11 +143,15 @@ export class AnthropicProvider implements ModelProvider {
     if (request.tools !== undefined && request.tools.length > 0) {
       body.tools = request.tools.map(toWireTool);
     }
-    if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (request.temperature !== undefined)
+      body.temperature = request.temperature;
     return body;
   }
 
-  async *stream(request: ModelRequest, signal?: AbortSignal): AsyncGenerator<ModelEvent> {
+  async *stream(
+    request: ModelRequest,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ModelEvent> {
     const response = await fetch(`${this.#baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
@@ -182,8 +189,10 @@ export class AnthropicProvider implements ModelProvider {
 
     const readUsage = (usage: unknown): void => {
       if (!isRecord(usage)) return;
-      if (typeof usage.input_tokens === "number") inputTokens = usage.input_tokens;
-      if (typeof usage.output_tokens === "number") outputTokens = usage.output_tokens;
+      if (typeof usage.input_tokens === "number")
+        inputTokens = usage.input_tokens;
+      if (typeof usage.output_tokens === "number")
+        outputTokens = usage.output_tokens;
       if (typeof usage.cache_read_input_tokens === "number") {
         cachedInputTokens = usage.cache_read_input_tokens;
       }
@@ -210,7 +219,8 @@ export class AnthropicProvider implements ModelProvider {
       }
       if (!isRecord(payload)) continue;
 
-      const type = typeof payload.type === "string" ? payload.type : (message.event ?? "");
+      const type =
+        typeof payload.type === "string" ? payload.type : (message.event ?? "");
 
       if (type === "error") {
         const error = isRecord(payload.error) ? payload.error : undefined;
@@ -234,7 +244,9 @@ export class AnthropicProvider implements ModelProvider {
 
       if (type === "content_block_start") {
         const index = asNumber(payload.index);
-        const block = isRecord(payload.content_block) ? payload.content_block : undefined;
+        const block = isRecord(payload.content_block)
+          ? payload.content_block
+          : undefined;
         if (block !== undefined && block.type === "tool_use") {
           blocks.set(index, {
             id: typeof block.id === "string" ? block.id : "",
@@ -256,7 +268,8 @@ export class AnthropicProvider implements ModelProvider {
           typeof delta.partial_json === "string"
         ) {
           const pendingBlock = blocks.get(index);
-          if (pendingBlock !== undefined) pendingBlock.json += delta.partial_json;
+          if (pendingBlock !== undefined)
+            pendingBlock.json += delta.partial_json;
         }
         continue;
       }

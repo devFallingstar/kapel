@@ -65,7 +65,10 @@ interface ModelTurn {
  * `Promise.race` attaches handlers to both inputs, so a late rejection of the
  * losing promise is never an unhandled rejection.
  */
-async function raceWithAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+async function raceWithAbort<T>(
+  pending: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
   if (signal.aborted) {
     pending.catch(() => undefined);
     throw new LoopAbortedError();
@@ -115,19 +118,30 @@ export class AgentLoop {
     this.#options = options;
   }
 
-  async run(input: AgentRunInput, context: AgentLoopRunContext): Promise<AgentLoopResult> {
-    const { agent, permissions, tools } = this.#options;
+  async run(
+    input: AgentRunInput,
+    context: AgentLoopRunContext,
+  ): Promise<AgentLoopResult> {
+    const { agent, tools } = this.#options;
     const maxIterations = this.#options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const timeoutMs = this.#options.timeoutMs;
 
     const signals: AbortSignal[] = [];
     if (context.signal !== undefined) signals.push(context.signal);
-    const timeoutSignal = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+    const timeoutSignal =
+      timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
     if (timeoutSignal !== undefined) signals.push(timeoutSignal);
-    const signal = signals.length === 0 ? new AbortController().signal : AbortSignal.any(signals);
+    const signal =
+      signals.length === 0
+        ? new AbortController().signal
+        : AbortSignal.any(signals);
 
-    const toolsByName = new Map<string, Tool>(tools.map((tool) => [tool.name, tool]));
-    const definitions: readonly ToolDefinition[] = tools.map((tool) => tool.definition());
+    const toolsByName = new Map<string, Tool>(
+      tools.map((tool) => [tool.name, tool]),
+    );
+    const definitions: readonly ToolDefinition[] = tools.map((tool) =>
+      tool.definition(),
+    );
     const toolContext: ToolContext = {
       runId: context.runId,
       workspacePath: context.workspacePath,
@@ -178,7 +192,9 @@ export class AgentLoop {
         await this.#emit(context, "model.turn.completed", {
           ...(turn.text === "" ? {} : { text: turn.text }),
           toolCallCount: turn.calls.length,
-          ...(turn.finishReason === undefined ? {} : { finishReason: turn.finishReason }),
+          ...(turn.finishReason === undefined
+            ? {}
+            : { finishReason: turn.finishReason }),
         });
 
         if (turn.calls.length === 0) {
@@ -194,7 +210,15 @@ export class AgentLoop {
 
         for (const call of turn.calls) {
           toolCalls += 1;
-          messages.push(await this.#executeCall(call, toolsByName, toolContext, context, signal));
+          messages.push(
+            await this.#executeCall(
+              call,
+              toolsByName,
+              toolContext,
+              context,
+              signal,
+            ),
+          );
         }
       }
 
@@ -209,7 +233,8 @@ export class AgentLoop {
       if (error instanceof LoopAbortedError || signal.aborted) {
         const timedOut =
           timeoutSignal?.aborted === true ||
-          (signal.reason instanceof Error && signal.reason.name === "TimeoutError");
+          (signal.reason instanceof Error &&
+            signal.reason.name === "TimeoutError");
         const summary = timedOut
           ? `Run timed out after ${String(timeoutMs)}ms.`
           : "Run cancelled before completion.";
@@ -232,7 +257,10 @@ export class AgentLoop {
     }
   }
 
-  async #runTurn(request: ModelRequest, signal: AbortSignal): Promise<ModelTurn> {
+  async #runTurn(
+    request: ModelRequest,
+    signal: AbortSignal,
+  ): Promise<ModelTurn> {
     const stream = this.#options.provider.stream(request, signal);
     const iterator = stream[Symbol.asyncIterator]();
 
@@ -291,11 +319,17 @@ export class AgentLoop {
     context: AgentLoopRunContext,
     signal: AbortSignal,
   ): Promise<ModelMessage> {
-    await this.#emit(context, "tool.execution.started", { tool: call.name, input: call.input });
+    await this.#emit(context, "tool.execution.started", {
+      tool: call.name,
+      input: call.input,
+    });
 
     const tool = toolsByName.get(call.name);
     if (tool === undefined) {
-      await this.#emit(context, "tool.execution.completed", { tool: call.name, ok: false });
+      await this.#emit(context, "tool.execution.completed", {
+        tool: call.name,
+        ok: false,
+      });
       return {
         role: "tool",
         toolCallId: call.id,
@@ -330,11 +364,21 @@ export class AgentLoop {
         Promise.resolve(tool.execute(call.input, toolContext)),
         signal,
       );
-      await this.#emit(context, "tool.execution.completed", { tool: call.name, ok: true });
-      return { role: "tool", toolCallId: call.id, content: serializeToolOutput(output) };
+      await this.#emit(context, "tool.execution.completed", {
+        tool: call.name,
+        ok: true,
+      });
+      return {
+        role: "tool",
+        toolCallId: call.id,
+        content: serializeToolOutput(output),
+      };
     } catch (error) {
       if (error instanceof LoopAbortedError) throw error;
-      await this.#emit(context, "tool.execution.completed", { tool: call.name, ok: false });
+      await this.#emit(context, "tool.execution.completed", {
+        tool: call.name,
+        ok: false,
+      });
       return {
         role: "tool",
         toolCallId: call.id,
@@ -344,7 +388,10 @@ export class AgentLoop {
     }
   }
 
-  async #complete(context: AgentLoopRunContext, result: AgentLoopResult): Promise<AgentLoopResult> {
+  async #complete(
+    context: AgentLoopRunContext,
+    result: AgentLoopResult,
+  ): Promise<AgentLoopResult> {
     await this.#emit(context, "loop.completed", {
       status: result.status,
       iterations: result.iterations,
@@ -353,7 +400,11 @@ export class AgentLoop {
     return result;
   }
 
-  async #emit(context: AgentLoopRunContext, type: string, data: unknown): Promise<void> {
+  async #emit(
+    context: AgentLoopRunContext,
+    type: string,
+    data: unknown,
+  ): Promise<void> {
     const sink = this.#options.events;
     if (sink === undefined) return;
 
