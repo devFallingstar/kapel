@@ -13,7 +13,11 @@ export interface ExecResult {
 
 export interface Workspace {
   readonly root: string;
-  exec(command: string, args?: readonly string[], signal?: AbortSignal): Promise<ExecResult>;
+  exec(
+    command: string,
+    args?: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ExecResult>;
   read(relativePath: string): Promise<string>;
   write(relativePath: string, content: string): Promise<void>;
   dispose(): Promise<void>;
@@ -22,13 +26,28 @@ export interface Workspace {
 export class LocalWorkspace implements Workspace {
   constructor(readonly root: string) {}
 
-  async exec(command: string, args: readonly string[] = [], signal?: AbortSignal): Promise<ExecResult> {
+  async exec(
+    command: string,
+    args: readonly string[] = [],
+    signal?: AbortSignal,
+  ): Promise<ExecResult> {
     try {
-      const result = await execFileAsync(command, [...args], { cwd: this.root, signal });
+      const result = await execFileAsync(command, [...args], {
+        cwd: this.root,
+        signal,
+      });
       return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
     } catch (error) {
-      const value = error as { stdout?: string; stderr?: string; code?: number };
-      return { stdout: value.stdout ?? "", stderr: value.stderr ?? String(error), exitCode: value.code ?? 1 };
+      const value = error as {
+        stdout?: string;
+        stderr?: string;
+        code?: number;
+      };
+      return {
+        stdout: value.stdout ?? "",
+        stderr: value.stderr ?? String(error),
+        exitCode: value.code ?? 1,
+      };
     }
   }
 
@@ -46,18 +65,31 @@ export class LocalWorkspace implements Workspace {
 }
 
 export class GitWorktreeWorkspace extends LocalWorkspace {
-  private constructor(root: string, private readonly repositoryRoot: string) {
+  private constructor(
+    root: string,
+    private readonly repositoryRoot: string,
+  ) {
     super(root);
   }
 
-  static async create(repositoryRoot: string, worktreeRoot: string, branch: string): Promise<GitWorktreeWorkspace> {
+  static async create(
+    repositoryRoot: string,
+    worktreeRoot: string,
+    branch: string,
+  ): Promise<GitWorktreeWorkspace> {
     await mkdir(dirname(worktreeRoot), { recursive: true });
-    await execFileAsync("git", ["worktree", "add", worktreeRoot, "-b", branch], { cwd: repositoryRoot });
+    await execFileAsync(
+      "git",
+      ["worktree", "add", worktreeRoot, "-b", branch],
+      { cwd: repositoryRoot },
+    );
     return new GitWorktreeWorkspace(worktreeRoot, repositoryRoot);
   }
 
   override async dispose(): Promise<void> {
-    await execFileAsync("git", ["worktree", "remove", "--force", this.root], { cwd: this.repositoryRoot });
+    await execFileAsync("git", ["worktree", "remove", "--force", this.root], {
+      cwd: this.repositoryRoot,
+    });
     await rm(this.root, { recursive: true, force: true });
   }
 }

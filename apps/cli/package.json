@@ -11,7 +11,9 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@agent/ai": "0.1.0",
     "@agent/coding-agent": "0.1.0",
+    "@agent/core": "0.1.0",
     "commander": "^14"
   }
 }

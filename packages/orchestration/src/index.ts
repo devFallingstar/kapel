@@ -1,9 +1,22 @@
 import type { OrchestrationPolicy } from "@agent/policy";
 import type { EventSink } from "@agent/protocol";
 
-export type TaskType = "exploration" | "architecture" | "implementation" | "testing" | "review" | "documentation";
+export type TaskType =
+  | "exploration"
+  | "architecture"
+  | "implementation"
+  | "testing"
+  | "review"
+  | "documentation";
 export type TaskComplexity = "trivial" | "normal" | "complex" | "architectural";
-export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
+export type TaskStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export interface PlannedTask {
   readonly id: string;
@@ -55,7 +68,8 @@ export class TaskGraph {
 
   constructor(plan: ExecutionPlan) {
     for (const spec of plan.tasks) {
-      if (this.#tasks.has(spec.id)) throw new Error(`Duplicate task id: ${spec.id}`);
+      if (this.#tasks.has(spec.id))
+        throw new Error(`Duplicate task id: ${spec.id}`);
       this.#tasks.set(spec.id, { spec, status: "pending", attempts: 0 });
     }
     this.#assertDependenciesExist();
@@ -73,21 +87,31 @@ export class TaskGraph {
   }
 
   ready(): readonly RuntimeTask[] {
-    const completed = new Set(this.all().filter((t) => t.status === "completed").map((t) => t.spec.id));
-    return this.all().filter((task) =>
-      (task.status === "pending" || task.status === "ready") &&
-      task.spec.dependencies.every((dependency) => completed.has(dependency)),
+    const completed = new Set(
+      this.all()
+        .filter((t) => t.status === "completed")
+        .map((t) => t.spec.id),
+    );
+    return this.all().filter(
+      (task) =>
+        (task.status === "pending" || task.status === "ready") &&
+        task.spec.dependencies.every((dependency) => completed.has(dependency)),
     );
   }
 
   done(): boolean {
-    return this.all().every((task) => ["completed", "failed", "cancelled"].includes(task.status));
+    return this.all().every((task) =>
+      ["completed", "failed", "cancelled"].includes(task.status),
+    );
   }
 
   #assertDependenciesExist(): void {
     for (const task of this.all()) {
       for (const dependency of task.spec.dependencies) {
-        if (!this.#tasks.has(dependency)) throw new Error(`Task ${task.spec.id} depends on missing task ${dependency}`);
+        if (!this.#tasks.has(dependency))
+          throw new Error(
+            `Task ${task.spec.id} depends on missing task ${dependency}`,
+          );
       }
     }
   }
@@ -96,10 +120,12 @@ export class TaskGraph {
     const visiting = new Set<string>();
     const visited = new Set<string>();
     const visit = (id: string): void => {
-      if (visiting.has(id)) throw new Error(`Task graph contains a cycle at ${id}`);
+      if (visiting.has(id))
+        throw new Error(`Task graph contains a cycle at ${id}`);
       if (visited.has(id)) return;
       visiting.add(id);
-      for (const dependency of this.get(id).spec.dependencies) visit(dependency);
+      for (const dependency of this.get(id).spec.dependencies)
+        visit(dependency);
       visiting.delete(id);
       visited.add(id);
     };
@@ -113,26 +139,41 @@ export interface AgentRouter {
 
 export class PolicyRouter implements AgentRouter {
   route(task: PlannedTask, policy: OrchestrationPolicy): string {
-    const hard = policy.routing.find((rule) =>
-      rule.strength === "hard" && matches(rule.taskTypes, task.type) && matches(rule.riskCategories, task.risk.categories),
+    const hard = policy.routing.find(
+      (rule) =>
+        rule.strength === "hard" &&
+        matches(rule.taskTypes, task.type) &&
+        matches(rule.riskCategories, task.risk.categories),
     );
     if (hard) return hard.agent;
 
     const candidates = policy.routing
-      .filter((rule) => matches(rule.taskTypes, task.type) && matches(rule.riskCategories, task.risk.categories))
+      .filter(
+        (rule) =>
+          matches(rule.taskTypes, task.type) &&
+          matches(rule.riskCategories, task.risk.categories),
+      )
       .sort((a, b) => b.weight - a.weight);
     return candidates[0]?.agent ?? task.suggestedAgent ?? policy.orchestrator;
   }
 }
 
-function matches(expected: readonly string[], actual: string | readonly string[]): boolean {
+function matches(
+  expected: readonly string[],
+  actual: string | readonly string[],
+): boolean {
   if (expected.length === 0) return true;
-  const values: readonly string[] = typeof actual === "string" ? [actual] : actual;
+  const values: readonly string[] =
+    typeof actual === "string" ? [actual] : actual;
   return expected.some((value) => values.includes(value));
 }
 
 export interface WorkerExecutor {
-  execute(task: RuntimeTask, agent: string, signal?: AbortSignal): Promise<TaskResult>;
+  execute(
+    task: RuntimeTask,
+    agent: string,
+    signal?: AbortSignal,
+  ): Promise<TaskResult>;
 }
 
 export class DeterministicScheduler {
@@ -142,30 +183,59 @@ export class DeterministicScheduler {
     private readonly events?: EventSink,
   ) {}
 
-  async run(runId: string, graph: TaskGraph, policy: OrchestrationPolicy, signal?: AbortSignal): Promise<void> {
+  async run(
+    runId: string,
+    graph: TaskGraph,
+    policy: OrchestrationPolicy,
+    signal?: AbortSignal,
+  ): Promise<void> {
     while (!graph.done()) {
       const ready = graph.ready().slice(0, policy.maxConcurrency);
       if (ready.length === 0) {
-        const unfinished = graph.all().filter((task) => !["completed", "failed", "cancelled"].includes(task.status));
-        if (unfinished.length > 0) throw new Error("Scheduler deadlock: unfinished tasks exist but none are runnable.");
+        const unfinished = graph
+          .all()
+          .filter(
+            (task) =>
+              !["completed", "failed", "cancelled"].includes(task.status),
+          );
+        if (unfinished.length > 0)
+          throw new Error(
+            "Scheduler deadlock: unfinished tasks exist but none are runnable.",
+          );
         return;
       }
 
-      await Promise.all(ready.map(async (task) => {
-        const agent = this.router.route(task.spec, policy);
-        task.assignedAgent = agent;
-        task.status = "running";
-        task.attempts += 1;
-        await this.events?.emit(event(runId, "task.started", task.spec.id, { agent, attempt: task.attempts }));
-        const result = await this.worker.execute(task, agent, signal);
-        task.result = result;
-        task.status = result.status === "success" ? "completed" : "failed";
-        await this.events?.emit(event(runId, "task.completed", task.spec.id, { agent, result }));
-      }));
+      await Promise.all(
+        ready.map(async (task) => {
+          const agent = this.router.route(task.spec, policy);
+          task.assignedAgent = agent;
+          task.status = "running";
+          task.attempts += 1;
+          await this.events?.emit(
+            event(runId, "task.started", task.spec.id, {
+              agent,
+              attempt: task.attempts,
+            }),
+          );
+          const result = await this.worker.execute(task, agent, signal);
+          task.result = result;
+          task.status = result.status === "success" ? "completed" : "failed";
+          await this.events?.emit(
+            event(runId, "task.completed", task.spec.id, { agent, result }),
+          );
+        }),
+      );
     }
   }
 }
 
 function event(runId: string, type: string, taskId: string, data: unknown) {
-  return { id: crypto.randomUUID(), runId, timestamp: Date.now(), type, taskId, data };
+  return {
+    id: crypto.randomUUID(),
+    runId,
+    timestamp: Date.now(),
+    type,
+    taskId,
+    data,
+  };
 }

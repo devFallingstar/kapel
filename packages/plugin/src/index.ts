@@ -4,7 +4,9 @@ import type { AgentEvent } from "@agent/protocol";
 
 export interface PluginApi {
   registerTool(tool: Tool): void;
-  registerPolicyTransform(transform: (policy: OrchestrationPolicy) => OrchestrationPolicy): void;
+  registerPolicyTransform(
+    transform: (policy: OrchestrationPolicy) => OrchestrationPolicy,
+  ): void;
   onEvent(listener: (event: AgentEvent) => void | Promise<void>): void;
 }
 

@@ -1,6 +1,6 @@
-import React from "react";
-import { Box, Text } from "ink";
 import type { AgentEvent } from "@agent/protocol";
+import { Box, Text } from "ink";
+import React from "react";
 
 export interface AgentTuiProps {
   readonly events: readonly AgentEvent[];
@@ -12,7 +12,11 @@ export function AgentTui({ events }: AgentTuiProps) {
     <Box flexDirection="column">
       <Text bold>Orchestration Agent</Text>
       <Text>Events: {events.length}</Text>
-      <Text>{last ? `${last.type}${last.taskId ? ` · ${last.taskId}` : ""}` : "Idle"}</Text>
+      <Text>
+        {last
+          ? `${last.type}${last.taskId ? ` · ${last.taskId}` : ""}`
+          : "Idle"}
+      </Text>
     </Box>
   );
 }

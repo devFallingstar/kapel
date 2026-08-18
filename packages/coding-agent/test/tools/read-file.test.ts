@@ -2,7 +2,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ReadFileTool } from "../../src/tools/read-file.js";
-import { cleanupWorkspace, makeContext, makeWorkspace } from "./test-helpers.js";
+import {
+  cleanupWorkspace,
+  makeContext,
+  makeWorkspace,
+} from "./test-helpers.js";
 
 describe("ReadFileTool", () => {
   let workspacePath: string;
@@ -25,7 +29,10 @@ describe("ReadFileTool", () => {
 
   it("reads a whole file", async () => {
     await writeFile(join(workspacePath, "a.txt"), "one\ntwo\nthree\n", "utf8");
-    const result = await tool.execute({ path: "a.txt" }, makeContext(workspacePath));
+    const result = await tool.execute(
+      { path: "a.txt" },
+      makeContext(workspacePath),
+    );
     expect(result.content).toBe("one\ntwo\nthree");
     expect(result.totalLines).toBe(3);
     expect(result.truncated).toBe(false);
@@ -33,7 +40,11 @@ describe("ReadFileTool", () => {
   });
 
   it("applies offset and limit", async () => {
-    await writeFile(join(workspacePath, "b.txt"), "l1\nl2\nl3\nl4\nl5\n", "utf8");
+    await writeFile(
+      join(workspacePath, "b.txt"),
+      "l1\nl2\nl3\nl4\nl5\n",
+      "utf8",
+    );
     const result = await tool.execute(
       { path: "b.txt", offset: 2, limit: 2 },
       makeContext(workspacePath),
@@ -45,14 +56,21 @@ describe("ReadFileTool", () => {
   it("caps content at 200000 chars and sets truncated", async () => {
     const big = "x".repeat(250_000);
     await writeFile(join(workspacePath, "big.txt"), big, "utf8");
-    const result = await tool.execute({ path: "big.txt" }, makeContext(workspacePath));
+    const result = await tool.execute(
+      { path: "big.txt" },
+      makeContext(workspacePath),
+    );
     expect(result.content.length).toBe(200_000);
     expect(result.truncated).toBe(true);
   });
 
   it("reads a nested file", async () => {
     await mkdir(join(workspacePath, "nested", "dir"), { recursive: true });
-    await writeFile(join(workspacePath, "nested", "dir", "f.txt"), "hi", "utf8");
+    await writeFile(
+      join(workspacePath, "nested", "dir", "f.txt"),
+      "hi",
+      "utf8",
+    );
     const result = await tool.execute(
       { path: "nested/dir/f.txt" },
       makeContext(workspacePath),
@@ -79,7 +97,9 @@ describe("ReadFileTool", () => {
   });
 
   it("rejects invalid input via zod", async () => {
-    await expect(tool.execute({}, makeContext(workspacePath))).rejects.toThrow();
+    await expect(
+      tool.execute({}, makeContext(workspacePath)),
+    ).rejects.toThrow();
     await expect(
       tool.execute({ path: "a.txt", offset: -1 }, makeContext(workspacePath)),
     ).rejects.toThrow();

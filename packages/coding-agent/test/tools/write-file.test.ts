@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WriteFileTool } from "../../src/tools/write-file.js";
-import { cleanupWorkspace, makeContext, makeWorkspace } from "./test-helpers.js";
+import {
+  cleanupWorkspace,
+  makeContext,
+  makeWorkspace,
+} from "./test-helpers.js";
 
 describe("WriteFileTool", () => {
   let workspacePath: string;
@@ -33,12 +37,18 @@ describe("WriteFileTool", () => {
       makeContext(workspacePath),
     );
     expect(result.created).toBe(true);
-    const onDisk = await readFile(join(workspacePath, "a/b/c/file.txt"), "utf8");
+    const onDisk = await readFile(
+      join(workspacePath, "a/b/c/file.txt"),
+      "utf8",
+    );
     expect(onDisk).toBe("deep");
   });
 
   it("overwrites an existing file and reports created: false", async () => {
-    await tool.execute({ path: "existing.txt", content: "v1" }, makeContext(workspacePath));
+    await tool.execute(
+      { path: "existing.txt", content: "v1" },
+      makeContext(workspacePath),
+    );
     const result = await tool.execute(
       { path: "existing.txt", content: "v2" },
       makeContext(workspacePath),
@@ -58,18 +68,28 @@ describe("WriteFileTool", () => {
 
   it("rejects a path escaping the workspace via ../", async () => {
     await expect(
-      tool.execute({ path: "../escape.txt", content: "x" }, makeContext(workspacePath)),
+      tool.execute(
+        { path: "../escape.txt", content: "x" },
+        makeContext(workspacePath),
+      ),
     ).rejects.toThrow(/path escapes workspace/);
   });
 
   it("rejects an absolute path outside the workspace", async () => {
     await expect(
-      tool.execute({ path: "/tmp/escape.txt", content: "x" }, makeContext(workspacePath)),
+      tool.execute(
+        { path: "/tmp/escape.txt", content: "x" },
+        makeContext(workspacePath),
+      ),
     ).rejects.toThrow(/path escapes workspace/);
   });
 
   it("rejects invalid input via zod", async () => {
-    await expect(tool.execute({ path: "a.txt" }, makeContext(workspacePath))).rejects.toThrow();
-    await expect(tool.execute({ content: "x" }, makeContext(workspacePath))).rejects.toThrow();
+    await expect(
+      tool.execute({ path: "a.txt" }, makeContext(workspacePath)),
+    ).rejects.toThrow();
+    await expect(
+      tool.execute({ content: "x" }, makeContext(workspacePath)),
+    ).rejects.toThrow();
   });
 });

@@ -1,6 +1,6 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Tool, ToolContext } from "@agent/core";
 import { z } from "zod";
 import { globToRegExp } from "./glob-pattern.js";
@@ -70,7 +70,8 @@ export class GrepTool implements Tool<GrepInput, GrepOutput> {
   readonly description =
     "Recursively searches text files in the workspace for lines matching a JavaScript regular " +
     "expression. `path` scopes the search to a workspace-relative file or directory; `glob` " +
-    "further filters filenames. Skips `node_modules`, `.git`, and binary-looking files. " +
+    "further filters filenames (matched against the full relative path or just the basename, " +
+    "e.g. `*.ts` or `src/**/*.ts`). Skips `node_modules`, `.git`, and binary-looking files. " +
     "Returns up to `maxMatches` (default 200) matches, each line capped at 500 characters.";
   readonly inputSchema = toInputSchema(InputSchema);
 
@@ -109,8 +110,12 @@ export class GrepTool implements Tool<GrepInput, GrepOutput> {
       );
       if (globRegex !== undefined) {
         const relFromRoot = toWorkspaceRelative(root, absoluteFile);
-        if (!globRegex.test(relFromRoot) && !globRegex.test(relFromWorkspace))
-          return;
+        const base = basename(absoluteFile);
+        const isMatch =
+          globRegex.test(relFromRoot) ||
+          globRegex.test(relFromWorkspace) ||
+          globRegex.test(base);
+        if (!isMatch) return;
       }
 
       let buf: Buffer;

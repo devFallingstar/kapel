@@ -2,7 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EditFileTool } from "../../src/tools/edit-file.js";
-import { cleanupWorkspace, makeContext, makeWorkspace } from "./test-helpers.js";
+import {
+  cleanupWorkspace,
+  makeContext,
+  makeWorkspace,
+} from "./test-helpers.js";
 
 describe("EditFileTool", () => {
   let workspacePath: string;
@@ -71,7 +75,10 @@ describe("EditFileTool", () => {
   it("rejects empty oldText via zod", async () => {
     await writeFile(join(workspacePath, "f.txt"), "x", "utf8");
     await expect(
-      tool.execute({ path: "f.txt", oldText: "", newText: "y" }, makeContext(workspacePath)),
+      tool.execute(
+        { path: "f.txt", oldText: "", newText: "y" },
+        makeContext(workspacePath),
+      ),
     ).rejects.toThrow();
   });
 
