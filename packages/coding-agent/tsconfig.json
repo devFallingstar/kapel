@@ -1,0 +1,35 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
+  "references": [
+    {
+      "path": "../ai"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../policy"
+    },
+    {
+      "path": "../protocol"
+    },
+    {
+      "path": "../workspace"
+    },
+    {
+      "path": "../orchestration"
+    },
+    {
+      "path": "../session"
+    }
+  ]
+}

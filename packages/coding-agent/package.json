@@ -1,0 +1,27 @@
+{
+  "name": "@agent/coding-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@agent/ai": "0.1.0",
+    "@agent/core": "0.1.0",
+    "@agent/policy": "0.1.0",
+    "@agent/protocol": "0.1.0",
+    "@agent/workspace": "0.1.0",
+    "@agent/orchestration": "0.1.0",
+    "@agent/session": "0.1.0"
+  }
+}

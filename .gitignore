@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.agent/worktrees/
+.agent/runtime/
+*.db
+*.db-shm
+*.db-wal

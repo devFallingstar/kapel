@@ -1,0 +1,16 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/ai" },
+    { "path": "./packages/core" },
+    { "path": "./packages/policy" },
+    { "path": "./packages/protocol" },
+    { "path": "./packages/workspace" },
+    { "path": "./packages/orchestration" },
+    { "path": "./packages/session" },
+    { "path": "./packages/plugin" },
+    { "path": "./packages/tui" },
+    { "path": "./packages/coding-agent" },
+    { "path": "./apps/cli" }
+  ]
+}

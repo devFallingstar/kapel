@@ -1,0 +1,17 @@
+{
+  "name": "@agent/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@agent/coding-agent": "0.1.0",
+    "commander": "^14"
+  }
+}
