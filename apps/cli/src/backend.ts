@@ -11,6 +11,9 @@ export type BackendName = (typeof BACKEND_NAMES)[number];
 
 export const DEFAULT_BACKEND: BackendName = "native";
 
+/** The backends that hand the work to an external coding CLI. */
+export type DelegatedBackendName = Exclude<BackendName, "native">;
+
 function isBackendName(value: string): value is BackendName {
   return (BACKEND_NAMES as readonly string[]).includes(value);
 }
@@ -19,12 +22,17 @@ function isBackendName(value: string): value is BackendName {
  * Whether a backend hands the work to an external coding CLI rather than
  * running kapel's own provider loop.
  *
+ * Narrows to {@link DelegatedBackendName} so callers that then have to pick
+ * between the two CLIs do not have to re-test for `"native"`.
+ *
  * The distinction decides more than which class gets constructed: a delegated
  * backend authenticates itself, enforces its own approvals, and needs no API
  * credential from us — so the model registry, the `PermissionEngine` and the
  * permission prompter are all skipped on those paths.
  */
-export function isDelegatedBackend(backend: BackendName): boolean {
+export function isDelegatedBackend(
+  backend: BackendName,
+): backend is DelegatedBackendName {
   return backend === "codex" || backend === "claude-code";
 }
 

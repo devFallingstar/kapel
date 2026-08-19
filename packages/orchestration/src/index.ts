@@ -12,6 +12,7 @@ export type {
   PlanIssue,
 } from "./planner.js";
 export {
+  buildPlannerSystemPrompt,
   EMIT_PLAN_TOOL_NAME,
   ExecutionPlanSchema,
   emitPlanTool,

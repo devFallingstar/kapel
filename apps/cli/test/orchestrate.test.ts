@@ -30,6 +30,7 @@ import {
   capture,
   cleanupWorkspace,
   copyTemplateAgentDir,
+  fixedDelegatedPlannerFactory,
   fixedPlannerFactory,
   initRepo,
   makeWorkspace,
@@ -667,8 +668,10 @@ describe("kapel orchestrate", () => {
           output,
           renderer: new TextRenderer(new CapturingStream().asStream()),
           plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
-          // A custom executorFactory bypasses the real codex-availability
-          // probe entirely — this test is only about the header note.
+          // Both injections bypass the real codex-availability probes — the
+          // planner's and the executor's — entirely; this test is only about
+          // the header note.
+          delegatedPlannerFactory: fixedDelegatedPlannerFactory(SAMPLE_PLAN),
           executorFactory: () => new ScriptedExecutor(),
         },
       );

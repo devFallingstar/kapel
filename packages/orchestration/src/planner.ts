@@ -139,7 +139,17 @@ function riskVocabulary(policy: OrchestrationPolicy): readonly string[] {
   return [...categories].sort();
 }
 
-function systemPrompt(
+/**
+ * The planning brief: everything the model needs to turn an objective into a
+ * plan this runtime can execute.
+ *
+ * Exported because it is not specific to *how* the plan comes back. The
+ * native {@link LlmPlanner} forces an `emit_plan` tool call; the delegated
+ * planner in `@agent/coding-agent` asks a coding CLI for the same object as
+ * raw JSON. Both must brief the model identically or the two paths would
+ * quietly produce different plans, so there is one function and both call it.
+ */
+export function buildPlannerSystemPrompt(
   policy: OrchestrationPolicy,
   knownAgents: readonly string[],
 ): string {
@@ -325,7 +335,7 @@ export class LlmPlanner {
     const messages: ModelMessage[] = [
       {
         role: "system",
-        content: systemPrompt(policy, this.#options.knownAgents),
+        content: buildPlannerSystemPrompt(policy, this.#options.knownAgents),
       },
       { role: "user", content: `Plan this objective:\n\n${objective}` },
     ];

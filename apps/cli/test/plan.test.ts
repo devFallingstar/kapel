@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ExecutionPlan } from "@agent/coding-agent";
 import { PlanError } from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DelegatedPlannerFactory } from "../src/plan.js";
 import { formatTable, runPlan } from "../src/plan.js";
 import {
   capture,
@@ -60,7 +61,7 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
     );
 
@@ -87,7 +88,7 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: true },
+      { cwd: workspace, json: true, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
     );
 
@@ -119,7 +120,7 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "rotate the signing key",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(plan) },
     );
 
@@ -134,7 +135,7 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
     );
 
@@ -158,7 +159,7 @@ describe("agent plan", () => {
     const { output, errLines } = capture();
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
     );
 
@@ -194,7 +195,7 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(broken) },
     );
 
@@ -210,7 +211,7 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       {
         output,
         plannerFactory: throwingPlannerFactory(
@@ -235,12 +236,139 @@ describe("agent plan", () => {
 
     const code = await runPlan(
       "add a health endpoint",
-      { cwd: workspace, json: false },
+      { cwd: workspace, json: false, backend: "native" },
       { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
     );
 
     expect(code).toBe(0);
     expect(errLines.join("\n")).toContain('orchestrator agent "ghost"');
     expect(lines.join("\n")).toContain("Planner: claude-sonnet-5 (anthropic)");
+  });
+});
+
+/**
+ * The point of these: under a delegating backend nothing may reach for an API
+ * key. Every test here runs with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+ * deleted, so a run that succeeds is a run that never went near
+ * `buildProviders`.
+ */
+describe("agent plan --backend claude-code / codex", () => {
+  let workspace: string;
+  const originalKeys = {
+    anthropic: process.env.ANTHROPIC_API_KEY,
+    openai: process.env.OPENAI_API_KEY,
+  };
+
+  beforeEach(async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    workspace = await makeWorkspace("cli-plan-delegated-");
+    await copyTemplateAgentDir(workspace);
+    await writeLock(workspace, ROUTING_POLICY);
+  });
+
+  afterEach(async () => {
+    if (originalKeys.anthropic === undefined)
+      delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKeys.anthropic;
+    if (originalKeys.openai === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKeys.openai;
+    await cleanupWorkspace(workspace);
+  });
+
+  /** Records what the CLI asked the delegated planner for. */
+  function recordingDelegatedFactory(): {
+    factory: DelegatedPlannerFactory;
+    calls: Parameters<DelegatedPlannerFactory>[0][];
+  } {
+    const calls: Parameters<DelegatedPlannerFactory>[0][] = [];
+    return {
+      calls,
+      factory: (args) => {
+        calls.push(args);
+        return { plan: async () => SAMPLE_PLAN };
+      },
+    };
+  }
+
+  it("plans with no credentials at all, through the orchestrator's model", async () => {
+    const { output, lines } = capture();
+    const { factory, calls } = recordingDelegatedFactory();
+
+    const code = await runPlan(
+      "add a health endpoint",
+      { cwd: workspace, json: false, backend: "claude-code" },
+      {
+        output,
+        delegatedPlannerFactory: factory,
+        plannerFactory: () => {
+          throw new Error("the native planner must not be built here");
+        },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.backend).toBe("claude-code");
+    expect(calls[0]?.workspacePath).toBe(path.resolve(workspace));
+    // The policy's orchestrator ("lead") names claude-opus-5 in config.yaml.
+    expect(calls[0]?.model).toBe("claude-opus-5");
+    expect(calls[0]?.knownAgents).toContain("coder");
+    expect(lines.join("\n")).toContain("Planner: claude-opus-5 (anthropic)");
+  });
+
+  it("passes -m through verbatim and reports the codex provider", async () => {
+    const { output, lines } = capture();
+    const { factory, calls } = recordingDelegatedFactory();
+
+    const code = await runPlan(
+      "add a health endpoint",
+      {
+        cwd: workspace,
+        json: false,
+        backend: "codex",
+        model: "gpt-5-codex",
+      },
+      { output, delegatedPlannerFactory: factory },
+    );
+
+    expect(code).toBe(0);
+    expect(calls[0]?.model).toBe("gpt-5-codex");
+    expect(lines.join("\n")).toContain("Planner: gpt-5-codex (openai)");
+  });
+
+  it("shows a placeholder when neither the flag nor the project names a model", async () => {
+    await writeLock(workspace, { ...ROUTING_POLICY, orchestrator: "ghost" });
+    const { output, lines } = capture();
+    const { factory, calls } = recordingDelegatedFactory();
+
+    const code = await runPlan(
+      "add a health endpoint",
+      { cwd: workspace, json: false, backend: "codex" },
+      { output, delegatedPlannerFactory: factory },
+    );
+
+    expect(code).toBe(0);
+    expect(calls[0]?.model).toBeUndefined();
+    expect(lines.join("\n")).toContain("Planner: <codex default> (openai)");
+  });
+
+  it("still uses the native planner under --backend native", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+    const { output } = capture();
+    const { factory, calls } = recordingDelegatedFactory();
+
+    const code = await runPlan(
+      "add a health endpoint",
+      { cwd: workspace, json: false, backend: "native" },
+      {
+        output,
+        delegatedPlannerFactory: factory,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(0);
   });
 });

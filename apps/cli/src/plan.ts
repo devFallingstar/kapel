@@ -10,13 +10,25 @@ import type {
 } from "@agent/coding-agent";
 import {
   applyPolicyToPlan,
+  ClaudeCodeBackend,
+  CodexBackend,
   checkLock,
+  createDelegatedModelResolver,
+  DelegatedPlanner,
   LlmPlanner,
   loadAgentProject,
   PlanError,
   PolicyRouter,
   ProjectConfigError,
 } from "@agent/coding-agent";
+import type { BackendName, DelegatedBackendName } from "./backend.js";
+import {
+  claudeCodeInstallGuidance,
+  claudeCodeLoginGuidance,
+  codexInstallGuidance,
+  codexLoginGuidance,
+  isDelegatedBackend,
+} from "./backend.js";
 import type { KapelConfig } from "./config.js";
 import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
@@ -39,6 +51,12 @@ export interface PlanCommandOptions {
   readonly cwd: string;
   readonly model?: string;
   readonly json: boolean;
+  /**
+   * The resolved backend for this command. A delegated backend plans through
+   * that CLI instead of a native provider, which is what lets `kapel plan`
+   * and `kapel orchestrate` run with no API key at all.
+   */
+  readonly backend: BackendName;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
 }
@@ -52,9 +70,28 @@ export type PlannerFactory = (args: {
 
 const defaultPlannerFactory: PlannerFactory = (args) => new LlmPlanner(args);
 
+/** Builds the planner used under a delegating backend. Overridable in tests. */
+export type DelegatedPlannerFactory = (args: {
+  readonly backend: DelegatedBackendName;
+  readonly workspacePath: string;
+  /** `undefined` means "let the CLI pick its own model". */
+  readonly model?: string;
+  readonly knownAgents: readonly string[];
+}) => Planner;
+
+const defaultDelegatedPlannerFactory: DelegatedPlannerFactory = (args) =>
+  new DelegatedPlanner(args);
+
 export interface PreparePlanDeps {
   readonly output?: OrchestrationOutput;
   readonly plannerFactory?: PlannerFactory;
+  /**
+   * Test-only injection point, mirroring {@link plannerFactory}. Supplying it
+   * also skips the CLI availability probe, the same way
+   * `ExecutorFactoryArgs.baseExecutorFactory` bypasses it on the worker side:
+   * an injected planner is not going to spawn that CLI.
+   */
+  readonly delegatedPlannerFactory?: DelegatedPlannerFactory;
 }
 
 /** Everything both commands need once a plan exists and the policy has rewritten it. */
@@ -180,6 +217,75 @@ async function resolvePlannerModel(
 }
 
 /**
+ * A `ModelDefinition` that stands for "whatever the delegating CLI runs".
+ *
+ * Display only: `PreparedPlan.plannerModel` exists so `renderPlan` can say
+ * who planned, and on this path nobody resolves a real model definition — the CLI owns its own catalog and account. So the
+ * two fields that are actually knowable are filled in honestly (the CLI's
+ * provider, and the model id we asked for, or a visible placeholder when we
+ * asked for nothing), capabilities are left flat, and no pricing is claimed:
+ * we are not billed per token here and inventing rates would put fictional
+ * costs in the usage line.
+ */
+function delegatedPlannerModel(
+  backend: DelegatedBackendName,
+  model: string | undefined,
+): ModelDefinition {
+  return {
+    provider: backend === "codex" ? "openai" : "anthropic",
+    id: model ?? `<${backend} default>`,
+    capabilities: {
+      tools: false,
+      reasoning: false,
+      vision: false,
+      structuredOutput: false,
+    },
+  };
+}
+
+/**
+ * Checks that the delegating CLI is actually usable before a plan is asked of
+ * it. The same probe (and the same guidance text) the worker side runs in
+ * `workspaceExecutorFactory`: a sentence naming the install or login command
+ * beats a spawn failure surfacing three attempts later as "no plan".
+ */
+async function delegatedBackendError(
+  backend: DelegatedBackendName,
+): Promise<string | undefined> {
+  if (backend === "claude-code") {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    if (!availability.installed) return claudeCodeInstallGuidance(availability);
+    if (!availability.loggedIn) return claudeCodeLoginGuidance(availability);
+    return undefined;
+  }
+  const availability = await CodexBackend.checkAvailability();
+  if (!availability.installed) return codexInstallGuidance(availability);
+  if (!availability.loggedIn) return codexLoginGuidance(availability);
+  return undefined;
+}
+
+/**
+ * The model id handed to a delegating CLI for planning.
+ *
+ * `-m/--model` wins verbatim — the flag names a model in *that CLI's*
+ * catalog, so it is passed through untranslated (see `codexModelOverride` for
+ * the same rule on the run path). Otherwise the policy's orchestrator agent
+ * decides, through the project's own alias table, exactly as on the native
+ * path; `createDelegatedModelResolver` already reads "default" in
+ * `config.yaml` as "no opinion". `undefined` means the CLI picks, which is
+ * the right answer whenever this project has not named a model the CLI would
+ * recognize anyway.
+ */
+function delegatedPlannerModelId(
+  project: AgentProject,
+  policy: OrchestrationPolicy,
+  options: PlanCommandOptions,
+): string | undefined {
+  if (options.model !== undefined && options.model !== "") return options.model;
+  return createDelegatedModelResolver(project)(policy.orchestrator);
+}
+
+/**
  * Runs everything `kapel plan` and `kapel orchestrate` share: load the project,
  * insist on a fresh policy lock, plan the objective, and reconcile the plan with
  * the policy.
@@ -255,13 +361,44 @@ export async function preparePlan(
   }
   const policy = status.lock.policy;
 
-  const resolved = await resolvePlannerModel(project, policy, options, output);
-  if ("error" in resolved) return fail(output, json, resolved.error);
-  const { model, provider } = resolved;
-
   const knownAgents = [...project.knownAgentNames()];
-  const plannerFactory = deps.plannerFactory ?? defaultPlannerFactory;
-  const planner = plannerFactory({ provider, model, knownAgents });
+
+  let planner: Planner;
+  let plannerModel: ModelDefinition;
+  if (isDelegatedBackend(options.backend)) {
+    // The whole point of a delegating backend is that the user has a CLI
+    // subscription and no API key, so nothing on this path may touch the
+    // provider registry — not even to name the planner's model.
+    const backend = options.backend;
+    const modelId = delegatedPlannerModelId(project, policy, options);
+    const factory = deps.delegatedPlannerFactory;
+    if (factory === undefined) {
+      const unavailable = await delegatedBackendError(backend);
+      if (unavailable !== undefined) return fail(output, json, unavailable);
+    }
+    planner = (factory ?? defaultDelegatedPlannerFactory)({
+      backend,
+      workspacePath,
+      knownAgents,
+      ...(modelId === undefined ? {} : { model: modelId }),
+    });
+    plannerModel = delegatedPlannerModel(backend, modelId);
+  } else {
+    const resolved = await resolvePlannerModel(
+      project,
+      policy,
+      options,
+      output,
+    );
+    if ("error" in resolved) return fail(output, json, resolved.error);
+    const plannerFactory = deps.plannerFactory ?? defaultPlannerFactory;
+    planner = plannerFactory({
+      provider: resolved.provider,
+      model: resolved.model,
+      knownAgents,
+    });
+    plannerModel = resolved.model;
+  }
 
   let planned: ExecutionPlan;
   try {
@@ -318,7 +455,7 @@ export async function preparePlan(
     injectedReviews: rewrite.injectedReviews,
     notes: rewrite.notes,
     routes,
-    plannerModel: model,
+    plannerModel,
   };
 }
 

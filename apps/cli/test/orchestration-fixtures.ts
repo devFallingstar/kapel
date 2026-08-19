@@ -12,7 +12,11 @@ import type {
   WorkerExecutor,
 } from "@agent/coding-agent";
 import { createLockfile, serializeLockfile } from "@agent/coding-agent";
-import type { OrchestrationOutput, PlannerFactory } from "../src/plan.js";
+import type {
+  DelegatedPlannerFactory,
+  OrchestrationOutput,
+  PlannerFactory,
+} from "../src/plan.js";
 
 export // Session-provided scratch dir when set (keeps CI and local machines on
 // the OS temp dir).
@@ -184,6 +188,17 @@ export const SAMPLE_PLAN: ExecutionPlan = {
 };
 
 export function fixedPlannerFactory(plan: ExecutionPlan): PlannerFactory {
+  return () => ({ plan: async () => plan });
+}
+
+/**
+ * The delegated-backend counterpart of {@link fixedPlannerFactory}. Injecting
+ * it also short-circuits the CLI availability probe `preparePlan` would
+ * otherwise run under `--backend codex`/`--backend claude-code`.
+ */
+export function fixedDelegatedPlannerFactory(
+  plan: ExecutionPlan,
+): DelegatedPlannerFactory {
   return () => ({ plan: async () => plan });
 }
 

@@ -419,6 +419,10 @@ function planOptions(
   return {
     cwd: raw.cwd,
     json: raw.json,
+    // Planning goes through the same backend the run would: under `--backend
+    // codex`/`claude-code` that is what keeps `kapel plan` working with no
+    // API key at all.
+    backend: resolveBackendSetting(raw.backend, process.env, config).value,
     ...(raw.model === undefined ? {} : { model: raw.model }),
     ...(config === undefined ? {} : { config }),
   };

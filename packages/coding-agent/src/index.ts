@@ -102,6 +102,7 @@ export * from "./backends/index.js";
 export * from "./chat.js";
 export * from "./loop.js";
 export * from "./permissions.js";
+export * from "./planning/index.js";
 export * from "./platform/index.js";
 export * from "./project/index.js";
 export * from "./tools/index.js";
