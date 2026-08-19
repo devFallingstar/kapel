@@ -117,13 +117,33 @@ export const FIRST_RUN_INTRO: readonly string[] = [
   "",
 ];
 
-/** A {@link WizardPrompt} backed by the real terminal picker. */
-export function ttyWizardPrompt(io?: SelectPromptIo): WizardPrompt {
+/**
+ * Runs an async unit of work in isolation from whatever else owns the
+ * terminal right now — e.g. a persistent `InputManager`'s `withSuspended`,
+ * pausing its readline so `runSelectPrompt`'s own raw-mode keypress handling
+ * doesn't fight it. Defaults to running the work as-is.
+ */
+export type Suspend = <T>(fn: () => Promise<T>) => Promise<T>;
+
+const noSuspend: Suspend = (fn) => fn();
+
+/**
+ * A {@link WizardPrompt} backed by the real terminal picker.
+ *
+ * `suspend` lets a caller that owns a longer-lived readline (the interactive
+ * REPL's `/config`) hand the terminal to the picker for the question and get
+ * it back afterward; callers with nothing else on stdin can omit it.
+ */
+export function ttyWizardPrompt(
+  io?: SelectPromptIo,
+  suspend?: Suspend,
+): WizardPrompt {
   const target: SelectPromptIo = io ?? {
     input: process.stdin,
     output: process.stdout,
   };
-  return { select: (options) => runSelectPrompt(target, options) };
+  const run = suspend ?? noSuspend;
+  return { select: (options) => run(() => runSelectPrompt(target, options)) };
 }
 
 /**
@@ -183,6 +203,8 @@ export interface FirstRunOptions {
   /** Overridable in tests; defaults to the real wizard. */
   readonly ensure?: EnsureConfig;
   readonly io?: SelectPromptIo;
+  /** See {@link Suspend}. Only meaningful when something else already owns stdin. */
+  readonly suspend?: Suspend;
 }
 
 /**
@@ -207,7 +229,7 @@ export async function ensureFirstRunConfig(
   // The intro is printed from inside the prompt rather than up front, because
   // only the prompt knows the wizard is really about to run — an already
   // configured machine must print nothing at all.
-  const prompt = ttyWizardPrompt(options.io);
+  const prompt = ttyWizardPrompt(options.io, options.suspend);
   let announced = false;
   const announcingPrompt: WizardPrompt = {
     select: async (selectOptions) => {

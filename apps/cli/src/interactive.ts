@@ -51,6 +51,12 @@ import {
   DelegatedUsage,
 } from "./delegated-chat.js";
 import { loadDotEnvFile } from "./env.js";
+import { createHistoryAppender, loadHistory } from "./history.js";
+import {
+  createInputManager,
+  INPUT_SIGINT,
+  type InputManager,
+} from "./input.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import {
   DEFAULT_ISOLATION,
@@ -470,6 +476,18 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     help: "run the multi-agent pipeline on an objective",
   },
 ];
+
+/**
+ * Tab completion for the input editor: `/` plus a prefix of a known command
+ * name completes against {@link SLASH_COMMANDS}; anything else offers no
+ * completions. Matches `readline`'s synchronous `Completer` shape.
+ */
+export function slashCompleter(line: string): [string[], string] {
+  if (!line.startsWith("/")) return [[], line];
+  const names = SLASH_COMMANDS.map((command) => `/${command.name}`);
+  const hits = names.filter((name) => name.startsWith(line));
+  return [hits.length > 0 ? hits : names, line];
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -901,6 +919,7 @@ export async function createInteractiveController(
       cwd,
       ...(isDelegatedBackend(backend) ? [approvalsLine(backend)] : []),
       "type /help for commands, /exit to quit",
+      "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands",
       "",
     ],
     handleLine: async (line, signal) => {
@@ -953,50 +972,40 @@ export async function openChatStore(
   }
 }
 
-/** What a Ctrl-C at the prompt reads as, as opposed to a line or end-of-input. */
-const SIGINT_LINE = Symbol("sigint");
+/**
+ * What a Ctrl-C at the prompt reads as, as opposed to a line or end-of-input.
+ * Exported so tests can drive and assert on `LineSource` behavior without a
+ * real TTY.
+ */
+export const SIGINT_LINE = Symbol("sigint");
 
-type ReadLineResult = string | undefined | typeof SIGINT_LINE;
+export type ReadLineResult = string | undefined | typeof SIGINT_LINE;
 
 /** Where the REPL's lines come from: a terminal, or whatever was piped in. */
-interface LineSource {
+export interface LineSource {
   next(promptText: string): Promise<ReadLineResult>;
   close(): void;
 }
 
 /**
- * A terminal line source: one readline interface per prompt, closed again
- * before the line is dispatched.
+ * A terminal line source backed by one long-lived {@link InputManager}.
  *
- * Per-prompt interfaces rather than one long-lived one because the permission
- * prompter opens its own interface on the same stdin mid-turn, and two live
- * interfaces would both consume the answer. Closing this one also restores
- * the terminal out of raw mode for the duration of a turn, which is what lets
- * a Ctrl-C during a send arrive as a real `SIGINT` — exactly the arrangement
- * a one-shot `kapel "<objective>"` run already relies on.
+ * The manager owns stdin for the whole REPL — that persistence is what makes
+ * ↑-history, multiline continuation and paste coalescing possible (see
+ * `input.ts`). The permission prompter shares it too (`InputManager.question`,
+ * wired in via `createPrompter`'s `ask`), so there is never a second readline
+ * opening on top of this one, and mid-turn Ctrl-C is driven through the
+ * manager's `onIdleSigint` instead of a real `SIGINT` — raw mode never lets
+ * go of stdin long enough for the terminal to deliver one directly. See
+ * `runInteractive` for how the two are threaded together.
  */
-function ttyLineSource(): LineSource {
+export function inputManagerLineSource(manager: InputManager): LineSource {
   return {
-    next: (promptText) =>
-      new Promise<ReadLineResult>((resolve) => {
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-          terminal: true,
-        });
-        let settled = false;
-        const finish = (value: ReadLineResult): void => {
-          if (settled) return;
-          settled = true;
-          rl.close();
-          resolve(value);
-        };
-        rl.on("SIGINT", () => finish(SIGINT_LINE));
-        // Ctrl-D at an empty prompt closes the interface with no `line` event.
-        rl.on("close", () => finish(undefined));
-        rl.question(promptText, (answer) => finish(answer));
-      }),
-    close: () => undefined,
+    next: async (promptText) => {
+      const result = await manager.readMessage(promptText);
+      return result === INPUT_SIGINT ? SIGINT_LINE : result;
+    },
+    close: () => manager.close(),
   };
 }
 
@@ -1153,10 +1162,33 @@ export async function runInteractive(
     const interactiveTty = process.stdin.isTTY === true;
     const renderer = new TextRenderer();
     const promptState = createPromptState();
+
+    // The turn currently in flight, if any — a persistent `InputManager`
+    // never lets go of raw mode long enough for a mid-turn Ctrl-C to reach
+    // the process as a real `SIGINT` (see `inputManagerLineSource`), so its
+    // `onIdleSigint` reaches the abort controller through this instead.
+    const activeTurn: { current: AbortController | undefined } = {
+      current: undefined,
+    };
+
+    const inputManager = interactiveTty
+      ? createInputManager({
+          input: process.stdin,
+          output: process.stdout,
+          history: await loadHistory(),
+          onHistoryAppend: createHistoryAppender(),
+          completer: slashCompleter,
+          onIdleSigint: () => activeTurn.current?.abort(),
+        })
+      : undefined;
+
     const prompter = createPrompter({
       yes: options.yes,
       interactive: interactiveTty,
       state: promptState,
+      ...(inputManager === undefined
+        ? {}
+        : { ask: (query: string) => inputManager.question(query) }),
     });
     const nativeUsage = new UsageTracker();
     const delegatedUsage = new DelegatedUsage();
@@ -1271,7 +1303,15 @@ export async function runInteractive(
         ? {
             configure: () =>
               runConfigWizard({
-                prompt: ttyWizardPrompt(),
+                // `/config` runs while the REPL's own InputManager still owns
+                // stdin — suspend it around the picker so the two don't fight
+                // over raw-mode keypresses.
+                prompt: ttyWizardPrompt(
+                  undefined,
+                  inputManager === undefined
+                    ? undefined
+                    : (fn) => inputManager.withSuspended(fn),
+                ),
                 write: (line) => {
                   console.log(line);
                 },
@@ -1299,7 +1339,10 @@ export async function runInteractive(
       );
     }
 
-    const lineSource = interactiveTty ? ttyLineSource() : pipedLineSource();
+    const lineSource =
+      inputManager === undefined
+        ? pipedLineSource()
+        : inputManagerLineSource(inputManager);
     try {
       return await replLoop({
         controller,
@@ -1307,6 +1350,7 @@ export async function runInteractive(
         promptState,
         promptText: dim("kapel> ", color),
         color,
+        activeTurn,
       });
     } finally {
       lineSource.close();
@@ -1328,6 +1372,13 @@ interface ReplLoopArgs {
   readonly promptState: PromptState;
   readonly promptText: string;
   readonly color: boolean;
+  /**
+   * The in-flight turn's `AbortController`, kept current for the duration of
+   * `handleLine` so an `InputManager`'s `onIdleSigint` (see
+   * `inputManagerLineSource`) can reach it. Absent on the piped-input path,
+   * which has no `InputManager` and relies on the real `SIGINT` below.
+   */
+  readonly activeTurn?: { current: AbortController | undefined };
 }
 
 /**
@@ -1337,9 +1388,17 @@ interface ReplLoopArgs {
  * see: a `SIGINT` arriving mid-turn cancels that turn (unless a permission
  * question is showing, which owns its own Ctrl-C and answers "no"), and one
  * arriving at an idle prompt needs saying twice before it ends the session.
+ *
+ * Two parallel paths feed that abort, because only one of them fires
+ * depending on how lines are being read: piped input leaves the real
+ * terminal in charge, so a genuine `SIGINT` reaches `process` and `onSigint`
+ * below handles it directly; a TTY `InputManager` never releases raw mode
+ * mid-turn, so no real signal arrives and `activeTurn` is how its
+ * `onIdleSigint` reaches this same abort instead.
  */
 async function replLoop(args: ReplLoopArgs): Promise<number> {
-  const { controller, lines, promptState, promptText, color } = args;
+  const { controller, lines, promptState, promptText, color, activeTurn } =
+    args;
   let armed = false;
 
   for (;;) {
@@ -1361,6 +1420,7 @@ async function replLoop(args: ReplLoopArgs): Promise<number> {
     armed = false;
 
     const turn = new AbortController();
+    if (activeTurn !== undefined) activeTurn.current = turn;
     const onSigint = (): void => {
       if (promptState.active) return;
       turn.abort();
@@ -1371,6 +1431,7 @@ async function replLoop(args: ReplLoopArgs): Promise<number> {
       result = await controller.handleLine(line, turn.signal);
     } finally {
       process.off("SIGINT", onSigint);
+      if (activeTurn !== undefined) activeTurn.current = undefined;
     }
 
     if (result.effect === "exit") return 0;

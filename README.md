@@ -42,6 +42,7 @@ $ kapel
 kapel v0.3.0  claude-sonnet-5  session 0f3c9a2b
 /path/to/your/repo
 type /help for commands, /exit to quit
+\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands
 
 kapel> calc.test.js is failing — find out why and fix it
 → read_file {"path":"calc.test.js"}
@@ -59,6 +60,8 @@ kapel> /exit
 ```
 
 Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
+
+The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Typing `/` and pressing Tab completes the slash command.
 
 Commands available at the prompt:
 

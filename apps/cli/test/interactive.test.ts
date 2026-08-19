@@ -13,20 +13,26 @@ import type {
 import type { ChatTurnResult } from "@agent/coding-agent";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { InputManager } from "../src/input.js";
+import { INPUT_SIGINT } from "../src/input.js";
 import type {
   InteractiveController,
   InteractiveControllerDeps,
   InteractiveSession,
   InteractiveStart,
+  LineSource,
   SessionFactoryArgs,
 } from "../src/interactive.js";
 import {
   createInteractiveController,
+  inputManagerLineSource,
   matchChatSession,
   openChatStore,
   resolveStartSession,
   runInteractive,
+  SIGINT_LINE,
   shortId,
+  slashCompleter,
   usageDeltaLine,
   usageTotalsLine,
 } from "../src/interactive.js";
@@ -612,6 +618,90 @@ describe("resolveStartSession", () => {
       continue: true,
     });
     expect("error" in resolved && resolved.error).toContain("--no-save");
+  });
+});
+
+// --- the input-editor wiring (step 2) ----------------------------------------
+
+/** A stand-in `InputManager` that hands back whatever the test primes it with. */
+class FakeInputManager implements InputManager {
+  readonly promptsSeen: string[] = [];
+  nextRead: string | undefined | typeof INPUT_SIGINT = undefined;
+  closed = false;
+
+  async readMessage(
+    promptText: string,
+  ): Promise<string | undefined | typeof INPUT_SIGINT> {
+    this.promptsSeen.push(promptText);
+    return this.nextRead;
+  }
+
+  async question(): Promise<string | undefined | typeof INPUT_SIGINT> {
+    return undefined;
+  }
+
+  async withSuspended<T>(fn: () => Promise<T>): Promise<T> {
+    return await fn();
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+describe("inputManagerLineSource", () => {
+  it("maps INPUT_SIGINT to SIGINT_LINE", async () => {
+    const manager = new FakeInputManager();
+    manager.nextRead = INPUT_SIGINT;
+    const source: LineSource = inputManagerLineSource(manager);
+
+    await expect(source.next("kapel> ")).resolves.toBe(SIGINT_LINE);
+    expect(manager.promptsSeen).toEqual(["kapel> "]);
+  });
+
+  it("passes a typed message through unchanged", async () => {
+    const manager = new FakeInputManager();
+    manager.nextRead = "hello";
+    const source = inputManagerLineSource(manager);
+
+    await expect(source.next("kapel> ")).resolves.toBe("hello");
+  });
+
+  it("passes undefined through unchanged (close/EOF)", async () => {
+    const manager = new FakeInputManager();
+    manager.nextRead = undefined;
+    const source = inputManagerLineSource(manager);
+
+    await expect(source.next("kapel> ")).resolves.toBeUndefined();
+  });
+
+  it("close() delegates to the manager", () => {
+    const manager = new FakeInputManager();
+    inputManagerLineSource(manager).close();
+    expect(manager.closed).toBe(true);
+  });
+});
+
+describe("slashCompleter", () => {
+  it("offers no completions for a line that isn't a slash command", () => {
+    expect(slashCompleter("hello")).toEqual([[], "hello"]);
+    expect(slashCompleter("")).toEqual([[], ""]);
+  });
+
+  it("narrows to commands matching the typed prefix", () => {
+    const [hits, matched] = slashCompleter("/mo");
+    expect(matched).toBe("/mo");
+    expect(hits).toEqual(["/model"]);
+  });
+
+  it("offers the full command list for a bare slash or an unknown prefix", () => {
+    const [bare] = slashCompleter("/");
+    expect(bare).toContain("/help");
+    expect(bare).toContain("/config");
+    expect(bare).toContain("/orchestrate");
+
+    const [unknown] = slashCompleter("/zzz");
+    expect(unknown).toEqual(bare);
   });
 });
 

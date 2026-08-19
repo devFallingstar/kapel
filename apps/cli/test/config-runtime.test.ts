@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { KapelConfig } from "../src/config.js";
 import { KAPEL_CONFIG_VERSION } from "../src/config.js";
+import type { Suspend } from "../src/config-runtime.js";
 import {
   checkBackendAvailability,
   delegatedModelOverride,
@@ -9,6 +10,7 @@ import {
   resolveBackendSetting,
   resolveOrchestratorModel,
   resolveRoleModel,
+  ttyWizardPrompt,
 } from "../src/config-runtime.js";
 import type { ConfigWizardDeps } from "../src/config-wizard.js";
 import { DEFAULT_MODEL_ALIAS } from "../src/models.js";
@@ -205,6 +207,71 @@ describe("ensureFirstRunConfig", () => {
       },
     });
     expect(lines).toEqual([...FIRST_RUN_INTRO]);
+  });
+
+  it("routes the wizard's prompts through a given suspend hook", async () => {
+    const calls: string[] = [];
+    const suspend: Suspend = async (fn) => {
+      calls.push("start");
+      try {
+        return await fn();
+      } finally {
+        calls.push("end");
+      }
+    };
+
+    await ensureFirstRunConfig({
+      interactive: true,
+      write: () => undefined,
+      suspend,
+      ensure: async (deps) => {
+        await deps.prompt.select({ title: "one", choices: [] });
+        return undefined;
+      },
+      io: {
+        input: { isTTY: false } as never,
+        output: { isTTY: false } as never,
+      },
+    });
+
+    expect(calls).toEqual(["start", "end"]);
+  });
+});
+
+// --- select-prompt coexistence (the interactive REPL's persistent readline) -
+
+describe("ttyWizardPrompt", () => {
+  const nonTtyIo = {
+    input: { isTTY: false } as never,
+    output: { isTTY: false } as never,
+  };
+
+  it("runs the picker directly with no suspend hook given", async () => {
+    const prompt = ttyWizardPrompt(nonTtyIo);
+    const result = await prompt.select({
+      title: "t",
+      choices: [{ value: "a", label: "A" }],
+    });
+    expect(result).toEqual(["a"]);
+  });
+
+  it("routes the picker through a given suspend hook, in order", async () => {
+    const calls: string[] = [];
+    const suspend: Suspend = async (fn) => {
+      calls.push("suspend-start");
+      const result = await fn();
+      calls.push("suspend-end");
+      return result;
+    };
+
+    const prompt = ttyWizardPrompt(nonTtyIo, suspend);
+    const result = await prompt.select({
+      title: "t",
+      choices: [{ value: "a", label: "A" }],
+    });
+
+    expect(result).toEqual(["a"]);
+    expect(calls).toEqual(["suspend-start", "suspend-end"]);
   });
 });
 
