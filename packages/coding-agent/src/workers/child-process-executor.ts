@@ -6,6 +6,7 @@ import type {
   WorkerExecutor,
 } from "@agent/orchestration";
 import type { AgentEvent, EventSink } from "@agent/protocol";
+import { detachedSpawnOptions, killProcessTree } from "../platform/shell.js";
 import { failedTaskResult } from "./normalize.js";
 import { parseWorkerStdoutLine, toTaskResult } from "./protocol.js";
 
@@ -128,10 +129,12 @@ export class ChildProcessWorkerExecutor implements WorkerExecutor {
     let stderrTruncated = false;
 
     const outcome = await new Promise<ChildOutcome>((resolve) => {
+      // command[0] is process.execPath (the node binary, extension-complete),
+      // so no Windows .cmd-shim fallback is needed here.
       const child = spawn(executable, [...command.slice(1)], {
         cwd: workspacePath,
         stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
+        ...detachedSpawnOptions(),
         env: { ...process.env, ...this.#options.env },
       });
 
@@ -140,17 +143,7 @@ export class ChildProcessWorkerExecutor implements WorkerExecutor {
       let killTimer: NodeJS.Timeout | undefined;
 
       const killGroup = (sig: NodeJS.Signals): void => {
-        const pid = child.pid;
-        if (pid === undefined) return;
-        try {
-          process.kill(-pid, sig);
-        } catch {
-          try {
-            child.kill(sig);
-          } catch {
-            // Already gone.
-          }
-        }
+        killProcessTree(child, sig);
       };
 
       const onAbort = (): void => {

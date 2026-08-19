@@ -100,6 +100,7 @@ export * from "@agent/policy";
 export * from "./backends/index.js";
 export * from "./loop.js";
 export * from "./permissions.js";
+export * from "./platform/index.js";
 export * from "./project/index.js";
 export * from "./tools/index.js";
 export * from "./validation/index.js";

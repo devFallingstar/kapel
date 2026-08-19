@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
 import type { EventSink } from "@agent/protocol";
+import {
+  detachedSpawnOptions,
+  killProcessTree,
+  shellInvocationFor,
+} from "../platform/shell.js";
 import type { ProjectValidator } from "../project/index.js";
 import { DEFAULT_VALIDATOR_TIMEOUT_SECONDS } from "../project/index.js";
 
@@ -124,10 +129,11 @@ function runOne(
 
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn("bash", ["-lc", validator.command], {
+      const shell = shellInvocationFor(validator.command);
+      child = spawn(shell.command, [...shell.args], {
         cwd: workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
+        ...detachedSpawnOptions(),
       });
     } catch (error) {
       resolvePromise({
@@ -143,17 +149,7 @@ function runOne(
     }
 
     const killGroup = (killSignal: NodeJS.Signals): void => {
-      const pid = child.pid;
-      if (pid === undefined) return;
-      try {
-        process.kill(-pid, killSignal);
-      } catch {
-        try {
-          child.kill(killSignal);
-        } catch {
-          // Already gone.
-        }
-      }
+      killProcessTree(child, killSignal);
     };
 
     const killHard = (): void => {

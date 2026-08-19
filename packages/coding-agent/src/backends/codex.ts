@@ -1,6 +1,11 @@
 import { execFile, spawn } from "node:child_process";
 import type { AgentRunInput, AgentRunResult } from "@agent/core";
 import type { AgentEvent, EventSink } from "@agent/protocol";
+import {
+  detachedSpawnOptions,
+  executableCandidates,
+  killProcessTree,
+} from "../platform/shell.js";
 
 /**
  * Execution backend that delegates a coding objective to OpenAI's official
@@ -142,7 +147,7 @@ interface ProbeResult {
   readonly detail: string;
 }
 
-function probe(
+function probeOnce(
   binaryPath: string,
   args: readonly string[],
 ): Promise<ProbeResult> {
@@ -166,6 +171,20 @@ function probe(
       },
     );
   });
+}
+
+/** Probes the binary, retrying Windows `.cmd`/`.exe` shim names on ENOENT. */
+async function probe(
+  binaryPath: string,
+  args: readonly string[],
+): Promise<ProbeResult> {
+  const candidates = executableCandidates(binaryPath);
+  let result = await probeOnce(candidates[0] ?? binaryPath, args);
+  for (const candidate of candidates.slice(1)) {
+    if (!result.spawnFailed) break;
+    result = await probeOnce(candidate, args);
+  }
+  return result;
 }
 
 /**
@@ -277,8 +296,13 @@ export class CodexBackend {
       );
     }
 
-    const spawnOutcome = await this.#spawnCodex(
-      binary,
+    // On Windows the npm-installed codex CLI is a `codex.cmd` shim, which a
+    // bare-name spawn cannot execute — retry the platform's candidate names
+    // on ENOENT. A spawn error fires before any output is consumed, so the
+    // retry never double-counts events.
+    const candidates = executableCandidates(binary);
+    let spawnOutcome = await this.#spawnCodex(
+      candidates[0] ?? binary,
       args,
       context.workspacePath,
       signal,
@@ -286,6 +310,23 @@ export class CodexBackend {
       state,
       emit,
     );
+    for (const candidate of candidates.slice(1)) {
+      if (
+        spawnOutcome.kind !== "spawn-error" ||
+        (spawnOutcome.error as NodeJS.ErrnoException).code !== "ENOENT"
+      ) {
+        break;
+      }
+      spawnOutcome = await this.#spawnCodex(
+        candidate,
+        args,
+        context.workspacePath,
+        signal,
+        timeoutSignal,
+        state,
+        emit,
+      );
+    }
 
     if (spawnOutcome.kind === "spawn-error") {
       const error = spawnOutcome.error;
@@ -371,7 +412,7 @@ export class CodexBackend {
       const child = spawn(binary, [...args], {
         cwd: workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
+        ...detachedSpawnOptions(),
       });
 
       let settled = false;
@@ -379,17 +420,7 @@ export class CodexBackend {
       let killTimer: NodeJS.Timeout | undefined;
 
       const killGroup = (sig: NodeJS.Signals): void => {
-        const pid = child.pid;
-        if (pid === undefined) return;
-        try {
-          process.kill(-pid, sig);
-        } catch {
-          try {
-            child.kill(sig);
-          } catch {
-            // The process is already gone.
-          }
-        }
+        killProcessTree(child, sig);
       };
 
       const onAbort = (): void => {

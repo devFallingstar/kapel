@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import type { Tool, ToolContext } from "@agent/core";
 import { z } from "zod";
+import {
+  detachedSpawnOptions,
+  killProcessTree,
+  shellInvocationFor,
+} from "../platform/shell.js";
 import { toInputSchema } from "./json-schema.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -13,7 +18,9 @@ const InputSchema = z
     command: z
       .string()
       .min(1)
-      .describe("Shell command to run via `bash -lc` in the workspace."),
+      .describe(
+        "Shell command to run in the workspace (bash -lc on POSIX, cmd.exe /c on Windows).",
+      ),
     timeoutMs: z
       .number()
       .int()
@@ -43,9 +50,11 @@ function capText(text: string): string {
 export class BashTool implements Tool<BashInput, BashOutput> {
   readonly name = "bash";
   readonly description =
-    "Runs a shell command (via `bash -lc`) in the workspace directory and returns its stdout, " +
-    "stderr, and exit code. Has a timeout (default 120s, max 600s) and is cancellable via the " +
-    "run's abort signal; stdout/stderr are each capped at 100,000 characters.";
+    "Runs a shell command in the workspace directory through the platform shell (bash -lc on " +
+    "POSIX, cmd.exe on Windows) and returns its stdout, stderr, and exit code. On Windows, " +
+    "cmd syntax applies: && and || work, but export, backticks, and $(...) do not. Has a " +
+    "timeout (default 120s, max 600s) and is cancellable via the run's abort signal; " +
+    "stdout/stderr are each capped at 100,000 characters.";
   readonly inputSchema = toInputSchema(InputSchema);
 
   definition() {
@@ -65,10 +74,11 @@ export class BashTool implements Tool<BashInput, BashOutput> {
     }
 
     return new Promise<BashOutput>((resolvePromise, reject) => {
-      const child = spawn("bash", ["-lc", input.command], {
+      const shell = shellInvocationFor(input.command);
+      const child = spawn(shell.command, [...shell.args], {
         cwd: context.workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
+        ...detachedSpawnOptions(),
       });
 
       let stdout = "";
@@ -78,17 +88,7 @@ export class BashTool implements Tool<BashInput, BashOutput> {
       let settled = false;
 
       const killGroup = (signal: NodeJS.Signals): void => {
-        const pid = child.pid;
-        if (pid === undefined) return;
-        try {
-          process.kill(-pid, signal);
-        } catch {
-          try {
-            child.kill(signal);
-          } catch {
-            // process already gone
-          }
-        }
+        killProcessTree(child, signal);
       };
 
       const timeoutTimer = setTimeout(() => {
