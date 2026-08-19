@@ -11,6 +11,9 @@
       "path": "../core"
     },
     {
+      "path": "../orchestration"
+    },
+    {
       "path": "../policy"
     },
     {

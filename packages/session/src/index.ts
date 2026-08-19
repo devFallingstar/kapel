@@ -14,6 +14,27 @@ export interface SessionStore {
   listEvents(runId: string): Promise<readonly AgentEvent[]>;
 }
 
+export {
+  BOOTSTRAP_DDL,
+  events,
+  type RunStatus,
+  runs,
+  type TaskResultStatus,
+  taskResults,
+} from "./schema.js";
+export {
+  defaultSessionDbPath,
+  type ListRunsOptions,
+  type PersistedRun,
+  type PersistedRunSummary,
+  type PersistedTaskResult,
+  type RunReconstruction,
+  type RunTaskCounts,
+  reconstructRun,
+  SqliteSessionStore,
+  type SqliteSessionStoreOptions,
+} from "./sqlite.js";
+
 export class InMemorySessionStore implements SessionStore {
   readonly #runs = new Map<string, RunRecord>();
   readonly #events = new Map<string, AgentEvent[]>();

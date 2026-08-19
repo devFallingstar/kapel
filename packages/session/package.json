@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@agent/core": "0.1.0",
+    "@agent/orchestration": "0.1.0",
     "@agent/policy": "0.1.0",
     "@agent/protocol": "0.1.0",
     "better-sqlite3": "^13.0.3",
