@@ -3,6 +3,7 @@ import type { AgentDefinition, PermissionDecision, Tool } from "@agent/core";
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerAgentDescription,
   WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/orchestration";
@@ -161,6 +162,24 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
 
   constructor(options: AgentLoopWorkerExecutorOptions) {
     this.#options = options;
+  }
+
+  /**
+   * The model `agent`'s `.agent/agents/<name>.md` front matter points at,
+   * resolved the same way {@link execute} resolves it. `undefined` for an
+   * unknown agent or an unresolvable model alias — both are reported as task
+   * failures once the task actually runs, so this is silent about them rather
+   * than throwing ahead of that.
+   */
+  describeAgent(agent: string): WorkerAgentDescription | undefined {
+    const projectAgent = this.#options.project.agent(agent);
+    if (projectAgent === undefined) return undefined;
+    try {
+      const resolved = this.#options.resolveModel(projectAgent.modelAlias);
+      return { model: resolved.model.id };
+    } catch {
+      return undefined;
+    }
   }
 
   async execute(

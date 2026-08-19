@@ -10,6 +10,7 @@ import type {
   PlannedTask,
   RuntimeTask,
   TaskResult,
+  WorkerAgentDescription,
   WorkerExecutionContext,
   WorkerExecutor,
 } from "../src/index.js";
@@ -191,9 +192,25 @@ export class ScriptedWorker implements WorkerExecutor {
   #running = 0;
   readonly #handler: WorkerHandler;
   readonly #start = Date.now();
+  readonly #models?: Readonly<Record<string, string>>;
 
-  constructor(handler: WorkerHandler) {
+  /**
+   * `models` maps an agent name to the model {@link describeAgent} reports
+   * for it — mirroring what `AgentLoopWorkerExecutor` derives from a real
+   * project. Omitted entirely, `describeAgent` reports nothing for any
+   * agent, matching an executor that cannot say ahead of time.
+   */
+  constructor(
+    handler: WorkerHandler,
+    models?: Readonly<Record<string, string>>,
+  ) {
     this.#handler = handler;
+    this.#models = models;
+  }
+
+  describeAgent(agent: string): WorkerAgentDescription | undefined {
+    const model = this.#models?.[agent];
+    return model === undefined ? undefined : { model };
   }
 
   /** Calls for a task id, in dispatch order. */

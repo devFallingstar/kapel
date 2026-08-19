@@ -82,6 +82,109 @@ describe("DeterministicScheduler", () => {
     expect(events.ofType("task.started")[0]?.data).toEqual({
       agent: "architect",
       attempt: 1,
+      routing: { reason: "orchestrator" },
+    });
+  });
+
+  describe("task.started routing and model", () => {
+    it("reports the winning rule and the agent's model when a routing rule matches", async () => {
+      const worker = new ScriptedWorker((call) => makeResult(call.taskId), {
+        implementer: "claude-haiku-4-5",
+      });
+      const events = new RecordingSink();
+      const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+      const policy = makePolicy({
+        routing: [
+          {
+            id: "implementation",
+            taskTypes: ["implementation"],
+            agent: "implementer",
+            strength: "hard",
+          },
+        ],
+      });
+
+      await scheduler(worker, events).run("run-1", graph, policy);
+
+      expect(events.ofType("task.started")[0]?.data).toEqual({
+        agent: "implementer",
+        attempt: 1,
+        model: "claude-haiku-4-5",
+        routing: { rule: "implementation", reason: "rule" },
+      });
+    });
+
+    it("reports the orchestrator fallback with no rule id when nothing matched", async () => {
+      const worker = new ScriptedWorker((call) => makeResult(call.taskId), {
+        architect: "claude-opus-4-5",
+      });
+      const events = new RecordingSink();
+      const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+
+      await scheduler(worker, events).run("run-1", graph, makePolicy());
+
+      expect(events.ofType("task.started")[0]?.data).toEqual({
+        agent: "architect",
+        attempt: 1,
+        model: "claude-opus-4-5",
+        routing: { reason: "orchestrator" },
+      });
+    });
+
+    it("reports the task's suggestedAgent fallback when no rule matches but a suggestion exists", async () => {
+      const worker = new ScriptedWorker((call) => makeResult(call.taskId));
+      const events = new RecordingSink();
+      const graph = new TaskGraph(
+        makePlan([makeTask({ id: "T01", suggestedAgent: "implementer" })]),
+      );
+
+      await scheduler(worker, events).run("run-1", graph, makePolicy());
+
+      expect(events.ofType("task.started")[0]?.data).toEqual({
+        agent: "implementer",
+        attempt: 1,
+        routing: { reason: "suggestedAgent" },
+      });
+    });
+
+    it("reports reason 'escalation' and the escalation rule id, plus the new model, on the escalated attempt", async () => {
+      const worker = new ScriptedWorker(
+        (call) =>
+          call.agent === "architect"
+            ? makeResult(call.taskId)
+            : makeResult(call.taskId, "failed"),
+        { implementer: "claude-haiku-4-5", architect: "claude-opus-4-5" },
+      );
+      const events = new RecordingSink();
+      const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+      const policy = makePolicy({
+        defaultMaxAttempts: 2,
+        routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+        escalation: [
+          {
+            id: "stuck",
+            fromAgent: "implementer",
+            toAgent: "architect",
+            afterFailures: 1,
+          },
+        ],
+      });
+
+      await scheduler(worker, events).run("run-1", graph, policy);
+
+      const started = events.ofType("task.started");
+      expect(started[0]?.data).toEqual({
+        agent: "implementer",
+        attempt: 1,
+        model: "claude-haiku-4-5",
+        routing: { rule: "all-impl", reason: "rule" },
+      });
+      expect(started[1]?.data).toEqual({
+        agent: "architect",
+        attempt: 2,
+        model: "claude-opus-4-5",
+        routing: { rule: "stuck", reason: "escalation" },
+      });
     });
   });
 

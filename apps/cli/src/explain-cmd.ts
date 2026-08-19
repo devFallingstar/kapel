@@ -1,8 +1,4 @@
-import type {
-  OrchestrationPolicy,
-  PlannedTask,
-  RoutingRule,
-} from "@agent/coding-agent";
+import type { OrchestrationPolicy, PlannedTask } from "@agent/coding-agent";
 import { PolicyRouter } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
 import type {
@@ -71,62 +67,24 @@ function firstLine(text: unknown): string {
 }
 
 /**
- * Whether a routing rule applies to a task.
- *
- * Mirrors the matching `PolicyRouter` does internally (an empty facet means
- * "any"); the router does not report *which* rule won, and re-deriving that is
- * the whole point of explaining a routing decision. The agent itself always
- * comes from the router, so a divergence here can only ever cost the rule id,
- * never mislead about who ran the task.
+ * Re-derives why a task would route where it did, straight from
+ * {@link PolicyRouter.decide} — the same decision the scheduler itself makes
+ * (and, for a run recorded after `task.started` started carrying it, the same
+ * one already sitting in that event's `routing` field). Re-derived rather
+ * than read off the event because a task can be explained before it ever ran.
  */
-function ruleMatches(rule: RoutingRule, task: PlannedTask): boolean {
-  const matches = (
-    expected: readonly string[],
-    actual: string | readonly string[],
-  ): boolean => {
-    if (expected.length === 0) return true;
-    const values = typeof actual === "string" ? [actual] : actual;
-    return expected.some((value) => values.includes(value));
-  };
-  return (
-    matches(rule.taskTypes, task.type) &&
-    matches(rule.riskCategories, task.risk.categories) &&
-    matches(rule.complexity, task.complexity)
-  );
-}
-
-/** Hard rules first, then highest weight, then lowest id — the router's order. */
-function winningRule(
-  task: PlannedTask,
-  policy: OrchestrationPolicy,
-): RoutingRule | undefined {
-  const candidates = (policy.routing ?? []).filter((rule) =>
-    ruleMatches(rule, task),
-  );
-  const hard = candidates.filter((rule) => rule.strength === "hard");
-  const pool = hard.length > 0 ? hard : candidates;
-  return [...pool].sort((a, b) =>
-    a.weight !== b.weight
-      ? b.weight - a.weight
-      : a.id < b.id
-        ? -1
-        : a.id > b.id
-          ? 1
-          : 0,
-  )[0];
-}
-
 export function explainRoute(
   task: PlannedTask,
   policy: OrchestrationPolicy,
 ): RouteExplanation {
-  const agent = new PolicyRouter().route(task, policy);
-  const rule = winningRule(task, policy);
-  if (rule !== undefined) return { agent, rule: rule.id };
+  const decision = new PolicyRouter().decide(task, policy);
+  if (decision.rule !== undefined) {
+    return { agent: decision.agent, rule: decision.rule };
+  }
   return {
-    agent,
+    agent: decision.agent,
     fallback:
-      task.suggestedAgent === undefined ? "orchestrator" : "suggestedAgent",
+      decision.reason === "suggestedAgent" ? "suggestedAgent" : "orchestrator",
   };
 }
 

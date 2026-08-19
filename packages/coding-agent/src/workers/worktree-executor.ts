@@ -2,6 +2,7 @@ import {
   MUTATING_TASK_TYPES,
   type RuntimeTask,
   type TaskResult,
+  type WorkerAgentDescription,
   type WorkerExecutionContext,
   type WorkerExecutor,
 } from "@agent/orchestration";
@@ -109,6 +110,17 @@ export class WorktreeIsolatedExecutor implements WorkerExecutor {
     this.#manager =
       options.manager ??
       new TaskWorktreeManager({ repoRoot: options.repoRoot });
+  }
+
+  /**
+   * Delegates to a throwaway inner executor rooted at `repoRoot` — cheap,
+   * since building one is just constructing an object, and what an agent's
+   * model is does not depend on which worktree it eventually runs in.
+   */
+  describeAgent(agent: string): WorkerAgentDescription | undefined {
+    return this.#options
+      .createExecutor(this.#options.repoRoot)
+      .describeAgent?.(agent);
   }
 
   async execute(

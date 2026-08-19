@@ -20,9 +20,14 @@ export {
   PlannedTaskSchema,
   validatePlanDraft,
 } from "./planner.js";
-export type { AgentRouter } from "./router.js";
+export type { AgentRouter, RoutingDecision, RoutingReason } from "./router.js";
 export { PolicyRouter } from "./router.js";
-export type { SchedulerOptions, TaskCancelReason } from "./scheduler.js";
+export type {
+  SchedulerOptions,
+  TaskCancelReason,
+  TaskStartedReason,
+  TaskStartedRouting,
+} from "./scheduler.js";
 export { DeterministicScheduler } from "./scheduler.js";
 export type {
   ExecutionPlan,
@@ -32,6 +37,7 @@ export type {
   TaskResult,
   TaskStatus,
   TaskType,
+  WorkerAgentDescription,
   WorkerExecutionContext,
   WorkerExecutor,
 } from "./types.js";

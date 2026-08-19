@@ -90,6 +90,8 @@ interface InnerSpec {
   readonly status?: TaskResult["status"];
   readonly barrier?: Barrier;
   readonly throws?: boolean;
+  /** What `describeAgent` reports for every agent name, when set. */
+  readonly model?: string;
 }
 
 interface Inner {
@@ -109,6 +111,9 @@ function makeInner(spec: InnerSpec = {}): Inner {
 
   const factory: WorkspaceExecutorFactory = (workspacePath) => {
     const executor: WorkerExecutor = {
+      describeAgent(_agent) {
+        return spec.model === undefined ? undefined : { model: spec.model };
+      },
       async execute(task, _agent, signal, context) {
         const taskId = task.spec.id;
         calls.push({ workspacePath, taskId, context, signal });
@@ -403,5 +408,25 @@ describe("WorktreeIsolatedExecutor / read-only tasks", () => {
       expect(call.signal).toBe(controller.signal);
       expect(call.context).toBe(context);
     }
+  });
+});
+
+describe("WorktreeIsolatedExecutor / describeAgent", () => {
+  it("forwards to a throwaway inner executor rooted at repoRoot", async () => {
+    const repo = await makeRepo();
+    const inner = makeInner({ model: "claude-haiku-4-5" });
+    const executor = makeExecutor(repo, inner);
+
+    expect(executor.describeAgent("coder")).toEqual({
+      model: "claude-haiku-4-5",
+    });
+    // Asking does not run anything.
+    expect(inner.calls).toEqual([]);
+  });
+
+  it("reports nothing when the inner executor has nothing to say", async () => {
+    const repo = await makeRepo();
+    const executor = makeExecutor(repo, makeInner());
+    expect(executor.describeAgent("coder")).toBeUndefined();
   });
 });

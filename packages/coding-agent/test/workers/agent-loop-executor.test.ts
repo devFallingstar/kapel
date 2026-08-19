@@ -244,6 +244,35 @@ describe("AgentLoopWorkerExecutor", () => {
     expect(result.summary).toContain("Unknown model alias");
   });
 
+  describe("describeAgent", () => {
+    it("resolves a known agent's model without running anything", () => {
+      const provider = new ScriptedProvider([textTurn("done")]);
+      const executor = new AgentLoopWorkerExecutor(
+        options({ resolveModel: () => ({ provider, model: MODEL }) }),
+      );
+
+      expect(executor.describeAgent("coder")).toEqual({ model: MODEL.id });
+      expect(provider.requests).toEqual([]);
+    });
+
+    it("returns undefined for an unknown agent", () => {
+      const executor = new AgentLoopWorkerExecutor(options());
+      expect(executor.describeAgent("ghost")).toBeUndefined();
+    });
+
+    it("returns undefined when the model alias cannot be resolved", () => {
+      const executor = new AgentLoopWorkerExecutor(
+        options({
+          resolveModel: (alias) => {
+            throw new Error(`Unknown model alias "${alias}"`);
+          },
+        }),
+      );
+
+      expect(executor.describeAgent("coder")).toBeUndefined();
+    });
+  });
+
   it("allows the default builtin tool set without a prompter", async () => {
     const provider = new ScriptedProvider([
       toolCallTurn("call-1", "write_file", {

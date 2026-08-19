@@ -118,6 +118,29 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/**
+ * The `task.started` line's routing clause — `rule: <id>`, `escalation:
+ * <id>`, `suggested`, or `default` — from the scheduler's `routing` payload.
+ * `undefined` when the payload carries no recognizable routing info at all,
+ * which happens for events recorded before this field existed.
+ */
+function routingLabel(routing: unknown): string | undefined {
+  if (!isRecord(routing)) return undefined;
+  const rule = stringOrUndefined(routing.rule);
+  switch (routing.reason) {
+    case "rule":
+      return rule === undefined ? "rule" : `rule: ${rule}`;
+    case "escalation":
+      return rule === undefined ? "escalation" : `escalation: ${rule}`;
+    case "suggestedAgent":
+      return "suggested";
+    case "orchestrator":
+      return "default";
+    default:
+      return undefined;
+  }
+}
+
 /** The first non-empty line of a task summary, for one-line task reporting. */
 function firstLine(text: unknown): string {
   if (typeof text !== "string") return "(no summary)";
@@ -231,7 +254,14 @@ export class TextRenderer implements Renderer {
       case "task.started": {
         const agent = stringOrUndefined(data.agent) ?? "?";
         const attempt = typeof data.attempt === "number" ? data.attempt : 1;
-        this.#write(`▶ ${taskId} → ${agent} (attempt ${attempt})`);
+        const model = stringOrUndefined(data.model);
+        const modelSuffix = model === undefined ? "" : ` [${model}]`;
+        const routing = routingLabel(data.routing);
+        const parens =
+          routing === undefined
+            ? `attempt ${attempt}`
+            : `${routing}, attempt ${attempt}`;
+        this.#write(`▶ ${taskId} → ${agent}${modelSuffix} (${parens})`);
         break;
       }
       case "task.completed": {

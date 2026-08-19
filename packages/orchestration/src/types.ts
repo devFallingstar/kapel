@@ -77,6 +77,12 @@ export interface WorkerExecutionContext {
   readonly dependencyResults: readonly TaskResult[];
 }
 
+/** What an executor can say about an agent ahead of actually running it. */
+export interface WorkerAgentDescription {
+  /** The model id the agent would run with, when the executor can tell without executing. */
+  readonly model?: string;
+}
+
 export interface WorkerExecutor {
   execute(
     task: RuntimeTask,
@@ -84,6 +90,14 @@ export interface WorkerExecutor {
     signal?: AbortSignal,
     context?: WorkerExecutionContext,
   ): Promise<TaskResult>;
+  /**
+   * Best-effort, synchronous lookup of what `agent` would run with — used to
+   * surface the model in `task.started` before the task actually executes.
+   * Optional: an executor that cannot answer without running the task (or
+   * that has nothing to say) simply omits it, and callers treat a missing
+   * answer, or `undefined` back, as "unknown".
+   */
+  describeAgent?(agent: string): WorkerAgentDescription | undefined;
 }
 
 /** Statuses a task can no longer leave. */

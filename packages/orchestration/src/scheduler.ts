@@ -2,9 +2,23 @@ import type { EscalationRule, OrchestrationPolicy } from "@agent/policy";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { tasksConflict } from "./conflicts.js";
 import type { TaskGraph } from "./graph.js";
-import type { AgentRouter } from "./router.js";
-import type { WorkerExecutionContext, WorkerExecutor } from "./types.js";
+import type { AgentRouter, RoutingDecision, RoutingReason } from "./router.js";
+import type {
+  PlannedTask,
+  WorkerExecutionContext,
+  WorkerExecutor,
+} from "./types.js";
 import { isTerminal, type RuntimeTask, type TaskResult } from "./types.js";
+
+/** Why an attempt was dispatched to the agent it was — carried on `task.started`. */
+export type TaskStartedReason = RoutingReason | "escalation";
+
+/** The routing rationale attached to a `task.started` event's payload. */
+export interface TaskStartedRouting {
+  /** The routing (or escalation) rule that decided it, when one applied. */
+  readonly rule?: string;
+  readonly reason: TaskStartedReason;
+}
 
 /** Optional knobs; every field has a policy-derived default. */
 export interface SchedulerOptions {
@@ -143,10 +157,19 @@ export class DeterministicScheduler {
   ): Promise<void> {
     const previousAgent = task.assignedAgent;
     const escalation = this.#escalationFor(task, policy);
-    const agent =
-      escalation === undefined
-        ? this.router.route(task.spec, policy)
-        : escalation.toAgent;
+    let agent: string;
+    let routing: TaskStartedRouting;
+    if (escalation === undefined) {
+      const decision = this.#route(task.spec, policy);
+      agent = decision.agent;
+      routing =
+        decision.rule === undefined
+          ? { reason: decision.reason }
+          : { rule: decision.rule, reason: decision.reason };
+    } else {
+      agent = escalation.toAgent;
+      routing = { rule: escalation.id, reason: "escalation" };
+    }
 
     task.assignedAgent = agent;
     task.status = "running";
@@ -164,9 +187,12 @@ export class DeterministicScheduler {
         rule: escalation.id,
       });
     }
+    const model = this.worker.describeAgent?.(agent)?.model;
     await this.#emit(runId, "task.started", task.spec.id, {
       agent,
       attempt: task.attempts,
+      ...(model === undefined ? {} : { model }),
+      routing,
     });
 
     const context = this.#dependencyContext(graph, task);
@@ -238,6 +264,20 @@ export class DeterministicScheduler {
       return;
     }
     await this.#cancelDependents(runId, graph, task.spec.id);
+  }
+
+  /**
+   * The router's decision for a non-escalated attempt, rationale included.
+   * Falls back to a bare `route()` call, with `reason` reported as
+   * `"orchestrator"`, for a router that only implements the required half of
+   * {@link AgentRouter} — the rationale is then genuinely unknown, but that
+   * fallback value keeps it in the same closed set `TaskStartedReason` allows
+   * rather than inventing a new one.
+   */
+  #route(task: PlannedTask, policy: OrchestrationPolicy): RoutingDecision {
+    if (this.router.decide !== undefined)
+      return this.router.decide(task, policy);
+    return { agent: this.router.route(task, policy), reason: "orchestrator" };
   }
 
   /**

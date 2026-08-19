@@ -182,4 +182,64 @@ describe("PolicyRouter", () => {
     });
     expect(router.route(task, policy)).toBe("reviewer");
   });
+
+  describe("decide", () => {
+    it("reports the winning rule's id when a rule matches", () => {
+      const policy = makePolicy({
+        routing: [
+          {
+            id: "implementation",
+            taskTypes: ["implementation"],
+            agent: "implementer",
+            strength: "hard",
+          },
+        ],
+      });
+      expect(
+        router.decide(makeTask({ id: "T01", type: "implementation" }), policy),
+      ).toEqual({
+        agent: "implementer",
+        rule: "implementation",
+        reason: "rule",
+      });
+    });
+
+    it("reports 'suggestedAgent' with no rule id when the task's suggestion is used", () => {
+      const policy = makePolicy();
+      expect(
+        router.decide(
+          makeTask({ id: "T01", suggestedAgent: "implementer" }),
+          policy,
+        ),
+      ).toEqual({ agent: "implementer", reason: "suggestedAgent" });
+    });
+
+    it("reports 'orchestrator' with no rule id when nothing else matched", () => {
+      const policy = makePolicy();
+      expect(router.decide(makeTask({ id: "T01" }), policy)).toEqual({
+        agent: "architect",
+        reason: "orchestrator",
+      });
+    });
+
+    it("agrees with route() on the agent it picks", () => {
+      const policy = makePolicy({
+        routing: [
+          {
+            id: "auth-impl",
+            riskCategories: ["auth"],
+            agent: "reviewer",
+            strength: "hard",
+          },
+        ],
+      });
+      const task = makeTask({
+        id: "T01",
+        risk: { level: "high", categories: ["auth"] },
+      });
+      expect(router.decide(task, policy).agent).toBe(
+        router.route(task, policy),
+      );
+    });
+  });
 });

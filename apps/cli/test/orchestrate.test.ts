@@ -392,8 +392,10 @@ describe("kapel orchestrate", () => {
     expect(order.indexOf("T03")).toBe(2);
 
     const rendered = stream.lines.join("\n");
-    expect(rendered).toContain("▶ T01 → explorer (attempt 1)");
-    expect(rendered).toContain("▶ T02 → coder (attempt 1)");
+    expect(rendered).toContain(
+      "▶ T01 → explorer (rule: route-explore, attempt 1)",
+    );
+    expect(rendered).toContain("▶ T02 → coder (rule: route-impl, attempt 1)");
     expect(rendered).toContain("✔ T03 — T03 done by reviewer");
 
     const summary = lines.join("\n");

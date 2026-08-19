@@ -2,7 +2,7 @@ import { UsageTracker } from "@agent/ai";
 import type { AgentLoopResult, CodexRunResult } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
-import { TextRenderer } from "../src/render.js";
+import { JsonRenderer, TextRenderer } from "../src/render.js";
 
 /** Minimal fake `NodeJS.WritableStream` that just captures every write. */
 class CapturingStream {
@@ -246,6 +246,65 @@ describe("TextRenderer / task.* lifecycle events", () => {
     const { renderer: r, stream } = renderer();
     r.emit(taskEvent("task.started", { agent: "coder", attempt: 1 }));
     expect(stream.lines).toEqual(["▶ T01 → coder (attempt 1)"]);
+  });
+
+  it("shows the resolved model and the matched rule for a rule-routed task", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.started", {
+        agent: "coder",
+        attempt: 1,
+        model: "claude-haiku-4-5",
+        routing: { rule: "implementation", reason: "rule" },
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "▶ T01 → coder [claude-haiku-4-5] (rule: implementation, attempt 1)",
+    ]);
+  });
+
+  it("shows 'default' when no routing rule matched (orchestrator fallback)", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.started", {
+        agent: "architect",
+        attempt: 1,
+        model: "claude-opus-4-5",
+        routing: { reason: "orchestrator" },
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "▶ T01 → architect [claude-opus-4-5] (default, attempt 1)",
+    ]);
+  });
+
+  it("shows 'suggested' when the task's own suggestedAgent was used", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.started", {
+        agent: "implementer",
+        attempt: 1,
+        routing: { reason: "suggestedAgent" },
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "▶ T01 → implementer (suggested, attempt 1)",
+    ]);
+  });
+
+  it("shows the escalation rule and new model on an escalated retry", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.started", {
+        agent: "architect",
+        attempt: 2,
+        model: "claude-opus-4-5",
+        routing: { rule: "stuck", reason: "escalation" },
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "▶ T01 → architect [claude-opus-4-5] (escalation: stuck, attempt 2)",
+    ]);
   });
 
   it("marks a successful task with ✔ and its summary's first line", () => {
@@ -555,5 +614,35 @@ describe("TextRenderer#result / CodexRunResult", () => {
     const text = stream.chunks.join("");
     expect(text).toContain("iterations: 3  tool calls: 5");
     expect(text).not.toContain("exit code:");
+  });
+});
+
+describe("JsonRenderer / task.started model and routing", () => {
+  it("passes the model and routing fields through to the JSONL line untouched", () => {
+    const chunks: string[] = [];
+    const stream = {
+      write: (chunk: string) => {
+        chunks.push(chunk);
+        return true;
+      },
+    } as unknown as NodeJS.WritableStream;
+    const r = new JsonRenderer(stream);
+
+    const event: AgentEvent = {
+      id: "evt-1",
+      runId: "run-1",
+      timestamp: 0,
+      type: "task.started",
+      taskId: "T01",
+      data: {
+        agent: "coder",
+        attempt: 1,
+        model: "claude-haiku-4-5",
+        routing: { rule: "implementation", reason: "rule" },
+      },
+    };
+    r.emit(event);
+
+    expect(JSON.parse(chunks.join(""))).toEqual(event);
   });
 });

@@ -1,6 +1,7 @@
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerAgentDescription,
   WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/orchestration";
@@ -27,7 +28,14 @@ vi.mock("../../src/validation/runner.js", async (importOriginal) => {
 class StubExecutor implements WorkerExecutor {
   readonly calls: { task: RuntimeTask; agent: string }[] = [];
 
-  constructor(private readonly result: TaskResult) {}
+  constructor(
+    private readonly result: TaskResult,
+    private readonly model?: string,
+  ) {}
+
+  describeAgent(_agent: string): WorkerAgentDescription | undefined {
+    return this.model === undefined ? undefined : { model: this.model };
+  }
 
   async execute(
     task: RuntimeTask,
@@ -183,5 +191,17 @@ describe("ValidatingExecutor", () => {
     ]).execute(makeRuntimeTask(), "coder");
 
     expect(result.status).toBe("success");
+  });
+
+  it("forwards describeAgent to the inner executor", () => {
+    const inner = new StubExecutor(makeTaskResult(), "claude-haiku-4-5");
+    expect(executor(inner, []).describeAgent("coder")).toEqual({
+      model: "claude-haiku-4-5",
+    });
+  });
+
+  it("reports nothing when the inner executor has nothing to say", () => {
+    const inner = new StubExecutor(makeTaskResult());
+    expect(executor(inner, []).describeAgent("coder")).toBeUndefined();
   });
 });

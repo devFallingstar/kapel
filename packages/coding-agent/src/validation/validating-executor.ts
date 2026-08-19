@@ -2,6 +2,7 @@ import {
   MUTATING_TASK_TYPES,
   type RuntimeTask,
   type TaskResult,
+  type WorkerAgentDescription,
   type WorkerExecutionContext,
   type WorkerExecutor,
 } from "@agent/orchestration";
@@ -139,6 +140,11 @@ export class ValidatingExecutor implements WorkerExecutor {
 
   constructor(options: ValidatingExecutorOptions) {
     this.#options = options;
+  }
+
+  /** A pass-through decorator: whatever the inner executor knows, it knows too. */
+  describeAgent(agent: string): WorkerAgentDescription | undefined {
+    return this.#options.inner.describeAgent?.(agent);
   }
 
   async execute(
