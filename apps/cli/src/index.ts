@@ -127,12 +127,12 @@ program
 
 program
   .command("models")
-  .description("List available model aliases and provider API key status")
+  .description("List available model aliases and provider credential status")
   .action(async (_opts: unknown, command: Command) => {
     const cwd = (command.optsWithGlobals() as RawRunOpts).cwd;
     await loadDotEnvFile(path.resolve(cwd));
 
-    const entries = listModels(process.env);
+    const entries = await listModels(process.env);
     if (entries.length === 0) {
       console.log("(no models registered)");
       return;
@@ -140,9 +140,8 @@ program
 
     const aliasWidth = Math.max(...entries.map((entry) => entry.alias.length));
     for (const entry of entries) {
-      const mark = entry.hasKey ? "✓" : "✗";
       console.log(
-        `${entry.alias.padEnd(aliasWidth)}  ${entry.provider.padEnd(10)}  ${mark}`,
+        `${entry.alias.padEnd(aliasWidth)}  ${entry.provider.padEnd(10)}  ${entry.credentialStatus}`,
       );
     }
   });

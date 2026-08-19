@@ -10,10 +10,26 @@ import { parseSse } from "../sse.js";
 import { ProviderError } from "./errors.js";
 
 export interface AnthropicProviderOptions {
-  readonly apiKey: string;
+  /** A standard API key, sent as `x-api-key`. Mutually exclusive with `authToken`. */
+  readonly apiKey?: string;
+  /**
+   * A bearer token — typically a short-lived OAuth access token minted by
+   * `ant auth print-credentials --access-token`, or a manually-issued
+   * `ANTHROPIC_AUTH_TOKEN`. Sent as `Authorization: Bearer <token>` with no
+   * `x-api-key` (the API rejects requests carrying both). Mutually exclusive
+   * with `apiKey`.
+   */
+  readonly authToken?: string;
   /** Override for gateways/proxies. Defaults to the Anthropic API. */
   readonly baseUrl?: string;
 }
+
+/** Required on `/v1/messages` requests authenticated via `authToken`. */
+const OAUTH_BETA = "oauth-2025-04-20";
+
+type AnthropicCredential =
+  | { readonly kind: "api-key"; readonly value: string }
+  | { readonly kind: "auth-token"; readonly value: string };
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -116,12 +132,53 @@ function mapMessages(messages: readonly ModelMessage[]): MappedMessages {
 export class AnthropicProvider implements ModelProvider {
   readonly id = "anthropic";
 
-  readonly #apiKey: string;
+  readonly #credential: AnthropicCredential;
   readonly #baseUrl: string;
 
   constructor(options: AnthropicProviderOptions) {
-    this.#apiKey = options.apiKey;
+    const { apiKey, authToken } = options;
+    if (apiKey !== undefined && authToken !== undefined) {
+      throw new Error(
+        "AnthropicProvider: pass either `apiKey` or `authToken`, not both.",
+      );
+    }
+    if (apiKey === undefined && authToken === undefined) {
+      throw new Error(
+        "AnthropicProvider: pass either `apiKey` or `authToken`.",
+      );
+    }
+    this.#credential =
+      apiKey !== undefined
+        ? { kind: "api-key", value: apiKey }
+        : { kind: "auth-token", value: authToken as string };
     this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  }
+
+  /**
+   * Base request headers plus credential headers: `x-api-key` for an API
+   * key, or `authorization: Bearer <token>` plus the OAuth beta flag for an
+   * auth token (never both `x-api-key` and `authorization` — the API
+   * rejects requests carrying both). The OAuth beta flag is comma-joined
+   * onto `anthropic-beta` rather than overwriting it, in case a future
+   * feature already populated that header for this request.
+   */
+  #headers(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "anthropic-version": ANTHROPIC_VERSION,
+      accept: "text/event-stream",
+    };
+    if (this.#credential.kind === "api-key") {
+      headers["x-api-key"] = this.#credential.value;
+      return headers;
+    }
+    headers.authorization = `Bearer ${this.#credential.value}`;
+    const existingBeta = headers["anthropic-beta"];
+    headers["anthropic-beta"] =
+      existingBeta === undefined || existingBeta === ""
+        ? OAUTH_BETA
+        : `${existingBeta},${OAUTH_BETA}`;
+    return headers;
   }
 
   supports(model: ModelDefinition): boolean {
@@ -154,12 +211,7 @@ export class AnthropicProvider implements ModelProvider {
   ): AsyncGenerator<ModelEvent> {
     const response = await fetch(`${this.#baseUrl}/v1/messages`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": this.#apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        accept: "text/event-stream",
-      },
+      headers: this.#headers(),
       body: JSON.stringify(this.#buildBody(request)),
       signal: signal ?? null,
     });

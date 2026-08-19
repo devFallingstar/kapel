@@ -60,6 +60,14 @@ function provider(baseUrl?: string): AnthropicProvider {
   );
 }
 
+function oauthProvider(baseUrl?: string): AnthropicProvider {
+  return new AnthropicProvider(
+    baseUrl === undefined
+      ? { authToken: "t-test" }
+      : { authToken: "t-test", baseUrl },
+  );
+}
+
 async function drain(
   iterable: AsyncIterable<ModelEvent>,
 ): Promise<ModelEvent[]> {
@@ -83,6 +91,40 @@ describe("AnthropicProvider", () => {
     expect(p.id).toBe("anthropic");
     expect(p.supports(anthropicModel)).toBe(true);
     expect(p.supports({ ...anthropicModel, provider: "openai" })).toBe(false);
+  });
+
+  it("throws when constructed with neither apiKey nor authToken", () => {
+    expect(() => new AnthropicProvider({})).toThrow(
+      /pass either `apiKey` or `authToken`/,
+    );
+  });
+
+  it("throws when constructed with both apiKey and authToken", () => {
+    expect(
+      () => new AnthropicProvider({ apiKey: "k", authToken: "t" }),
+    ).toThrow(/pass either `apiKey` or `authToken`, not both/);
+  });
+
+  it("sends x-api-key and no Authorization header in apiKey mode", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    await drain(provider().stream(simpleRequest));
+    const headers = requestHeaders(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(headers["x-api-key"]).toBe("k-test");
+    expect(headers.authorization).toBeUndefined();
+    expect(headers["anthropic-beta"]).toBeUndefined();
+  });
+
+  it("sends a Bearer Authorization header and the OAuth beta flag, and no x-api-key, in authToken mode", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    await drain(oauthProvider().stream(simpleRequest));
+    const headers = requestHeaders(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(headers.authorization).toBe("Bearer t-test");
+    expect(headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+    expect(headers["x-api-key"]).toBeUndefined();
   });
 
   it("emits text deltas, one consolidated usage event and done", async () => {

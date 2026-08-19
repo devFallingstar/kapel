@@ -6,7 +6,7 @@ import type { AgentDefinition } from "@agent/core";
 import { loadDotEnvFile } from "./env.js";
 import {
   buildRegistry,
-  envVarForProvider,
+  credentialHintForProvider,
   resolveModelAlias,
 } from "./models.js";
 import { DEFAULT_PERMISSIONS } from "./permissions.js";
@@ -52,11 +52,16 @@ type ResolvedModel =
   | { readonly model: ModelDefinition; readonly provider: ModelProvider }
   | { readonly error: string };
 
-function resolveModelAndProvider(
+async function resolveModelAndProvider(
   env: Readonly<Record<string, string | undefined>>,
   alias: string,
-): ResolvedModel {
-  const registry = buildRegistry(env);
+): Promise<ResolvedModel> {
+  // Resolving the registry may shell out once to `ant auth
+  // print-credentials` to pick up an OAuth profile (see
+  // `resolveAnthropicCredential`); the resulting token is short-lived and
+  // fetched only this once for the whole run — see the comment on
+  // `buildProviders` for why that's an accepted tradeoff.
+  const registry = await buildRegistry(env);
 
   let model: ModelDefinition;
   try {
@@ -70,11 +75,7 @@ function resolveModelAndProvider(
     const provider = registry.providerFor(model);
     return { model, provider };
   } catch {
-    const envVar = envVarForProvider(model.provider);
-    const hint =
-      envVar === undefined
-        ? `no provider is configured for "${model.provider}"`
-        : `set ${envVar} in your shell environment or in a .env file in the workspace`;
+    const hint = credentialHintForProvider(model.provider);
     return {
       error: `Model "${alias}" requires the "${model.provider}" provider, which is not configured: ${hint}.`,
     };
@@ -90,7 +91,7 @@ export async function runObjective(
   await loadDotEnvFile(workspacePath);
 
   const alias = resolveModelAlias(process.env, options.model);
-  const resolved = resolveModelAndProvider(process.env, alias);
+  const resolved = await resolveModelAndProvider(process.env, alias);
   if ("error" in resolved) {
     console.error(resolved.error);
     return 1;

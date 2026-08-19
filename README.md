@@ -12,18 +12,32 @@ Like other terminal coding agents, `agent` runs inside the repository you want i
 npm install && npm run build
 
 cd /path/to/your/repo
-export ANTHROPIC_API_KEY=...          # or OPENAI_API_KEY, or put them in .env
+export ANTHROPIC_API_KEY=...          # see Authentication below for other options
 node /path/to/orchestration-agent/apps/cli/dist/index.js "fix the failing test"
 ```
 
 Useful commands and flags:
 
 - `agent init` — copy the default `.agent/` configuration template into the current repo
-- `agent models` — list available model aliases and whether their API key is configured
+- `agent models` — list available model aliases and their credential status
 - `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
+
+### Authentication
+
+Any of these can also go in a `.env` file in the workspace instead of the shell environment.
+
+**Anthropic** — checked in this order, first match wins:
+
+1. `ANTHROPIC_API_KEY` — a standard API key.
+2. `ANTHROPIC_AUTH_TOKEN` — a pre-issued bearer token, e.g. from an org that fronts Anthropic with its own auth.
+3. An OAuth profile from the Anthropic CLI — run `ant auth login` once, and `agent` picks up a short-lived access token from it automatically. No env var needed.
+
+`ANTHROPIC_BASE_URL` overrides the API endpoint (for gateways/proxies) under any of the three.
+
+**OpenAI** — `OPENAI_API_KEY` only. OpenAI does not offer third-party OAuth for direct API access; if your organization fronts OpenAI with its own OAuth-authenticated gateway, point `OPENAI_BASE_URL` at it and keep using `OPENAI_API_KEY` for whatever credential that gateway expects.
 
 ## Project plan
 

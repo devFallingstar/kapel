@@ -5,6 +5,8 @@ import {
   OpenAIProvider,
   StaticModelRegistry,
 } from "@agent/ai";
+import type { AnthropicCredential } from "./auth.js";
+import { resolveAnthropicCredential } from "./auth.js";
 
 export const DEFAULT_MODEL_ALIAS = "claude-sonnet-5";
 
@@ -38,16 +40,53 @@ export function baseUrlEnvVarForProvider(provider: string): string | undefined {
   return undefined;
 }
 
-/** Builds one `ModelProvider` per API key present in `env`. */
-export function buildProviders(env: EnvLike): readonly ModelProvider[] {
+export interface BuildProvidersOptions {
+  /** Forwarded to {@link resolveAnthropicCredential} — set `false` to skip
+   *  the `ant auth print-credentials` fallback entirely. */
+  readonly allowProfile?: boolean;
+  /**
+   * A pre-resolved Anthropic credential, so callers that already resolved
+   * one (e.g. {@link listModels}, which also needs it for display) don't
+   * pay for a second `ant` subprocess call.
+   */
+  readonly anthropicCredential?: AnthropicCredential;
+}
+
+/**
+ * Builds one `ModelProvider` per credential present in `env`. Anthropic
+ * credential resolution follows {@link resolveAnthropicCredential}'s
+ * precedence (env vars, then an `ant auth login` OAuth profile).
+ *
+ * Note: an OAuth access token from `ant` is short-lived and is resolved
+ * once, up front, for the lifetime of the constructed `AnthropicProvider`.
+ * A very long-running invocation could in principle outlive that token and
+ * start getting 401s partway through; we accept that rather than
+ * re-resolving mid-run, since re-authenticating mid-stream would be far
+ * more invasive to plumb through.
+ */
+export async function buildProviders(
+  env: EnvLike,
+  opts?: BuildProvidersOptions,
+): Promise<readonly ModelProvider[]> {
   const providers: ModelProvider[] = [];
 
-  const anthropicKey = env.ANTHROPIC_API_KEY;
-  if (anthropicKey !== undefined && anthropicKey !== "") {
+  const anthropicCredential =
+    opts?.anthropicCredential ??
+    (await resolveAnthropicCredential(env, {
+      ...(opts?.allowProfile === undefined
+        ? {}
+        : { allowProfile: opts.allowProfile }),
+    }));
+
+  if (anthropicCredential !== undefined) {
     const baseUrl = env.ANTHROPIC_BASE_URL;
+    const credentialOptions =
+      anthropicCredential.kind === "api-key"
+        ? { apiKey: anthropicCredential.apiKey }
+        : { authToken: anthropicCredential.authToken };
     providers.push(
       new AnthropicProvider({
-        apiKey: anthropicKey,
+        ...credentialOptions,
         ...(baseUrl !== undefined && baseUrl !== "" ? { baseUrl } : {}),
       }),
     );
@@ -68,8 +107,14 @@ export function buildProviders(env: EnvLike): readonly ModelProvider[] {
 }
 
 /** Registry over the built-in model catalog, backed by whichever providers `env` authenticates. */
-export function buildRegistry(env: EnvLike): StaticModelRegistry {
-  return new StaticModelRegistry(defaultModelCatalog(), buildProviders(env));
+export async function buildRegistry(
+  env: EnvLike,
+  opts?: BuildProvidersOptions,
+): Promise<StaticModelRegistry> {
+  return new StaticModelRegistry(
+    defaultModelCatalog(),
+    await buildProviders(env, opts),
+  );
 }
 
 /** Whether `env` has an API key for the given provider id. */
@@ -80,25 +125,85 @@ export function hasApiKey(env: EnvLike, provider: string): boolean {
   return value !== undefined && value !== "";
 }
 
+/**
+ * A human-readable hint for how to configure credentials for `provider`,
+ * used both in the `agent models` listing's help text and in the
+ * missing-credential error `run` raises. Anthropic gets a richer message
+ * than the generic "set THIS_ENV_VAR" hint, since it has three valid
+ * credential sources.
+ */
+export function credentialHintForProvider(provider: string): string {
+  if (provider === "anthropic") {
+    return (
+      "set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in your shell " +
+      "environment or in a .env file in the workspace, or log in with " +
+      "the Anthropic CLI: `ant auth login`"
+    );
+  }
+  const envVar = envVarForProvider(provider);
+  return envVar === undefined
+    ? `no provider is configured for "${provider}"`
+    : `set ${envVar} in your shell environment or in a .env file in the workspace`;
+}
+
+/**
+ * Formats how `agent models` should display the Anthropic credential (or
+ * lack of one) for an anthropic-provider row: the credential's source when
+ * present, `"✗"` when absent. Factored out as a pure function so the
+ * formatting logic is testable without shelling out to `ant`.
+ */
+export function formatAnthropicCredentialStatus(
+  credential: AnthropicCredential | undefined,
+): string {
+  if (credential === undefined) return "✗";
+  if (credential.kind === "api-key") return "api key";
+  return credential.source === "env" ? "auth token" : "oauth (ant)";
+}
+
 export interface ModelListEntry {
   readonly alias: string;
   readonly provider: string;
+  /** True when a credential is available for this model's provider. */
   readonly hasKey: boolean;
+  /**
+   * The text `agent models` prints for this row's credential status: for
+   * anthropic, the credential source ("api key" / "auth token" /
+   * "oauth (ant)") or "✗"; for every other provider, plain "✓" / "✗".
+   */
+  readonly credentialStatus: string;
 }
 
-/** Every catalog alias, its provider, and whether that provider's API key is present. */
-export function listModels(env: EnvLike): readonly ModelListEntry[] {
-  const registry = buildRegistry(env);
+/** Every catalog alias, its provider, and its credential status. */
+export async function listModels(
+  env: EnvLike,
+  opts?: { readonly allowProfile?: boolean },
+): Promise<readonly ModelListEntry[]> {
+  const anthropicCredential = await resolveAnthropicCredential(env, opts);
+  const registry = await buildRegistry(env, {
+    ...(anthropicCredential === undefined ? {} : { anthropicCredential }),
+  });
+
   return registry
     .aliases()
     .slice()
     .sort()
     .map((alias) => {
       const model = registry.get(alias);
+      if (model.provider === "anthropic") {
+        return {
+          alias,
+          provider: model.provider,
+          hasKey: anthropicCredential !== undefined,
+          credentialStatus:
+            formatAnthropicCredentialStatus(anthropicCredential),
+        };
+      }
+      const hasKey = hasApiKey(env, model.provider);
       return {
         alias,
         provider: model.provider,
-        hasKey: hasApiKey(env, model.provider),
+        hasKey,
+        credentialStatus: hasKey ? "✓" : "✗",
       };
     });
 }
