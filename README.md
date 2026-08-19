@@ -9,7 +9,7 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.7.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.8.0.tgz
 
 cd /path/to/your/repo
 kapel                                 # first run asks which backend and models to use
@@ -32,7 +32,7 @@ Once published to the npm registry this becomes simply `npm install -g @devfalli
 If the tarball URL is unreachable from your network, the equivalent two-step
 form is `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.7.0.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.8.0.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
@@ -45,7 +45,7 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-kapel v0.7.0  claude-sonnet-5  session 0f3c9a2b
+kapel v0.8.0  claude-sonnet-5  session 0f3c9a2b
 /path/to/your/repo
 type /help for commands, /exit to quit
 \ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files

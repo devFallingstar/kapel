@@ -337,9 +337,9 @@ function codexFileText(item) {
     if (typeof change === "string")
       paths.push(change);
     else if (isRecord10(change)) {
-      const path19 = str2(change.path) ?? str2(change.file);
-      if (path19 !== void 0)
-        paths.push(path19);
+      const path15 = str2(change.path) ?? str2(change.file);
+      if (path15 !== void 0)
+        paths.push(path15);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -546,8 +546,8 @@ var init_dist = __esm({
   }
 });
 
-// apps/cli/dist/index.js
-import path18 from "node:path";
+// apps/cli/dist/program.js
+import path14 from "node:path";
 import { Command } from "commander";
 
 // packages/orchestration/dist/conflicts.js
@@ -1835,8 +1835,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path19 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path19}: ${issue.message}`;
+    const path15 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path15}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -4225,8 +4225,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path19 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path19}: ${issue.message}`;
+    const path15 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path15}: ${issue.message}`;
   });
 }
 
@@ -5552,9 +5552,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path19 = record.slice(3);
-    if (path19 !== "")
-      paths.add(path19);
+    const path15 = record.slice(3);
+    if (path15 !== "")
+      paths.add(path15);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -5731,9 +5731,6 @@ var AgentLoopWorkerExecutor = class {
   }
 };
 
-// packages/coding-agent/dist/workers/child-process-executor.js
-import { spawn as spawn5 } from "node:child_process";
-
 // packages/coding-agent/dist/workers/protocol.js
 import { z as z18 } from "zod";
 var PlannedTaskSchema2 = z18.object({
@@ -5798,268 +5795,6 @@ var WorkerStdoutLineSchema = z18.discriminatedUnion("type", [
   WorkerEventLineSchema,
   WorkerResultLineSchema
 ]);
-function toPlannedTask3(parsed) {
-  const { suggestedAgent, ...rest } = parsed;
-  return {
-    ...rest,
-    ...suggestedAgent === void 0 ? {} : { suggestedAgent }
-  };
-}
-function toWorkerExecutionContext(request) {
-  const results = request.dependencyResults;
-  if (results === void 0 || results.length === 0)
-    return void 0;
-  return { dependencyResults: results.map(toTaskResult) };
-}
-function toTaskResult(parsed) {
-  const { commit, ...rest } = parsed;
-  return { ...rest, ...commit === void 0 ? {} : { commit } };
-}
-function encodeWorkerLine(line) {
-  return JSON.stringify(line);
-}
-function parseWorkerStdoutLine(line) {
-  const trimmed = line.trim();
-  if (trimmed === "")
-    return void 0;
-  let json;
-  try {
-    json = JSON.parse(trimmed);
-  } catch {
-    return void 0;
-  }
-  const parsed = WorkerStdoutLineSchema.safeParse(json);
-  return parsed.success ? parsed.data : void 0;
-}
-function readFirstLine(stream) {
-  return new Promise((resolve5) => {
-    let buffer = "";
-    let settled = false;
-    const finish = (value) => {
-      if (settled)
-        return;
-      settled = true;
-      stream.removeListener("data", onData);
-      stream.removeListener("end", onEnd);
-      stream.removeListener("error", onEnd);
-      resolve5(value);
-    };
-    const onData = (chunk) => {
-      buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      const index2 = buffer.indexOf("\n");
-      if (index2 !== -1)
-        finish(buffer.slice(0, index2));
-    };
-    const onEnd = () => finish(buffer);
-    stream.on("data", onData);
-    stream.once("end", onEnd);
-    stream.once("error", onEnd);
-  });
-}
-function write(stdout, line) {
-  stdout.write(`${encodeWorkerLine(line)}
-`);
-}
-async function serveWorkerRequest(io, handler, options = {}) {
-  const emitEvents = options.events !== false;
-  const raw = await readFirstLine(io.stdin);
-  let request;
-  try {
-    request = WorkerRequestSchema.parse(JSON.parse(raw));
-  } catch {
-    return 1;
-  }
-  const sink = {
-    emit(event2) {
-      if (!emitEvents)
-        return;
-      if (event2.type === MODEL_TEXT_DELTA_EVENT)
-        return;
-      write(io.stdout, { type: "event", event: event2 });
-    }
-  };
-  try {
-    const result = await handler(request, sink);
-    write(io.stdout, { type: "result", result });
-    return 0;
-  } catch (error) {
-    write(io.stdout, {
-      type: "result",
-      result: {
-        taskId: request.task.id,
-        status: "failed",
-        summary: `Worker handler failed: ${error instanceof Error ? error.message : String(error)}`,
-        decisions: [],
-        changedFiles: [],
-        tests: { passed: 0, failed: 0, commands: [] },
-        unresolvedIssues: [],
-        confidence: 0.1
-      }
-    });
-    return 1;
-  }
-}
-
-// packages/coding-agent/dist/workers/child-process-executor.js
-var KILL_GRACE_MS5 = 2e3;
-var MAX_STDERR_CHARS3 = 5e4;
-var STDERR_TAIL_CHARS2 = 2e3;
-function tail3(text2, limit) {
-  const trimmed = text2.trim();
-  if (trimmed.length <= limit)
-    return trimmed;
-  return `...${trimmed.slice(trimmed.length - limit)}`;
-}
-function describe(command) {
-  return command.join(" ");
-}
-var ChildProcessWorkerExecutor = class {
-  #options;
-  constructor(options) {
-    this.#options = options;
-  }
-  async execute(task, agent, signal, context) {
-    const taskId = task.spec.id;
-    const { command, runId, workspacePath, taskTimeoutMs } = this.#options;
-    const executable = command[0];
-    if (executable === void 0) {
-      return failedTaskResult(taskId, "No worker command was configured (empty command argv).");
-    }
-    const signals = [];
-    if (signal !== void 0)
-      signals.push(signal);
-    const timeoutSignal = taskTimeoutMs === void 0 ? void 0 : AbortSignal.timeout(taskTimeoutMs);
-    if (timeoutSignal !== void 0)
-      signals.push(timeoutSignal);
-    const combined = signals.length === 0 ? void 0 : AbortSignal.any(signals);
-    if (combined?.aborted === true) {
-      return failedTaskResult(taskId, "Worker cancelled before the process was started.");
-    }
-    const dependencyResults = context?.dependencyResults ?? [];
-    const request = JSON.stringify({
-      type: "task",
-      task: task.spec,
-      agent,
-      runId,
-      workspacePath,
-      ...taskTimeoutMs === void 0 ? {} : { timeoutMs: taskTimeoutMs },
-      ...dependencyResults.length === 0 ? {} : { dependencyResults }
-    });
-    let queue = Promise.resolve();
-    const forward = (event2) => {
-      const sink = this.#options.events;
-      if (sink === void 0)
-        return;
-      queue = queue.then(async () => {
-        try {
-          await sink.emit(event2);
-        } catch {
-        }
-      });
-    };
-    let result;
-    let stderr = "";
-    let stderrTruncated = false;
-    const outcome = await new Promise((resolve5) => {
-      const child = spawn5(executable, [...command.slice(1)], {
-        cwd: workspacePath,
-        stdio: ["pipe", "pipe", "pipe"],
-        ...detachedSpawnOptions(),
-        env: { ...process.env, ...this.#options.env }
-      });
-      let settled = false;
-      let aborted = false;
-      let killTimer;
-      const killGroup = (sig) => {
-        killProcessTree(child, sig);
-      };
-      const onAbort = () => {
-        aborted = true;
-        killGroup("SIGTERM");
-        killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS5);
-        killTimer.unref();
-      };
-      combined?.addEventListener("abort", onAbort, { once: true });
-      const cleanup = () => {
-        if (killTimer !== void 0)
-          clearTimeout(killTimer);
-        combined?.removeEventListener("abort", onAbort);
-      };
-      let pending = "";
-      const consumeLine = (line) => {
-        const parsed = parseWorkerStdoutLine(line.replace(/\r$/, ""));
-        if (parsed === void 0)
-          return;
-        if (parsed.type === "event") {
-          forward(parsed.event);
-          return;
-        }
-        if (result === void 0)
-          result = toTaskResult(parsed.result);
-      };
-      child.stdout?.on("data", (chunk) => {
-        pending += chunk.toString("utf8");
-        let index2 = pending.indexOf("\n");
-        while (index2 !== -1) {
-          consumeLine(pending.slice(0, index2));
-          pending = pending.slice(index2 + 1);
-          index2 = pending.indexOf("\n");
-        }
-      });
-      child.stderr?.on("data", (chunk) => {
-        if (stderrTruncated)
-          return;
-        stderr += chunk.toString("utf8");
-        if (stderr.length > MAX_STDERR_CHARS3) {
-          stderr = stderr.slice(0, MAX_STDERR_CHARS3);
-          stderrTruncated = true;
-        }
-      });
-      child.stdin?.on("error", () => void 0);
-      child.stdin?.end(`${request}
-`);
-      child.on("error", (error) => {
-        if (settled)
-          return;
-        settled = true;
-        cleanup();
-        resolve5({ kind: "spawn-error", error });
-      });
-      child.on("close", (code) => {
-        if (settled)
-          return;
-        settled = true;
-        cleanup();
-        if (pending !== "")
-          consumeLine(pending);
-        resolve5({
-          kind: "exit",
-          exitCode: code,
-          aborted,
-          timedOut: aborted && timeoutSignal?.aborted === true
-        });
-      });
-    });
-    await queue;
-    if (outcome.kind === "spawn-error") {
-      const error = outcome.error;
-      const code = error?.code;
-      const detail = error?.message ?? "unknown error";
-      return failedTaskResult(taskId, code === "ENOENT" ? `Worker command not found: "${describe(command)}".` : `Failed to start the worker process "${describe(command)}": ${detail}`);
-    }
-    if (result !== void 0) {
-      return result.taskId === taskId ? result : { ...result, taskId };
-    }
-    const stderrTail = stderr.trim() === "" ? "" : ` stderr: ${tail3(stderr, STDERR_TAIL_CHARS2)}`;
-    if (outcome.timedOut === true) {
-      return failedTaskResult(taskId, `Worker process timed out after ${String(taskTimeoutMs)}ms and was terminated.${stderrTail}`);
-    }
-    if (outcome.aborted === true) {
-      return failedTaskResult(taskId, `Worker process was cancelled and terminated.${stderrTail}`);
-    }
-    return failedTaskResult(taskId, `Worker process exited with code ${String(outcome.exitCode)} without returning a result.${stderrTail}`);
-  }
-};
 
 // packages/coding-agent/dist/workers/claude-code-executor.js
 var TEMPLATE_TOOL_TO_CLAUDE_CODE = {
@@ -6320,20 +6055,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path19;
+  let path15;
   let branch;
   const flush = () => {
-    if (path19 !== void 0) {
-      entries.push({ path: path19, branch });
+    if (path15 !== void 0) {
+      entries.push({ path: path15, branch });
     }
-    path19 = void 0;
+    path15 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path19 = value.slice("worktree ".length);
+      path15 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -6341,11 +6076,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path19) {
+async function realPathOrSelf(path15) {
   try {
-    return await realpath(path19);
+    return await realpath(path15);
   } catch {
-    return resolve2(path19);
+    return resolve2(path15);
   }
 }
 function isUnder(parent, child) {
@@ -6384,16 +6119,16 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path19 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path15 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path19, branch, signal);
-    await mkdir2(dirname2(path19), { recursive: true });
-    await runGit2(["worktree", "add", path19, "-b", branch, baseCommit], {
+    await this.#removeLeftovers(path15, branch, signal);
+    await mkdir2(dirname2(path15), { recursive: true });
+    await runGit2(["worktree", "add", path15, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
       signal
     });
-    return { path: path19, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    return { path: path15, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -6641,13 +6376,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path19, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path19], {
+  async #removeLeftovers(path15, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path15], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path19, { recursive: true, force: true });
+    await rm(path15, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -6668,11 +6403,11 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path19 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path19.startsWith(ignored)) {
+      const path15 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path15.startsWith(ignored)) {
         continue;
       }
-      paths.push(path19);
+      paths.push(path15);
     }
     return paths;
   }
@@ -6901,20 +6636,7 @@ function validateBackendName(raw) {
     return raw;
   throw new Error(`Invalid --backend value "${raw}": expected one of ${BACKEND_NAMES.join(", ")}.`);
 }
-var SANDBOX_MODES = [
-  "read-only",
-  "workspace-write",
-  "danger-full-access"
-];
 var DEFAULT_SANDBOX_MODE = "workspace-write";
-function isSandboxMode(value) {
-  return SANDBOX_MODES.includes(value);
-}
-function validateSandboxMode(raw) {
-  if (isSandboxMode(raw))
-    return raw;
-  throw new Error(`Invalid --sandbox value "${raw}": expected one of ${SANDBOX_MODES.join(", ")}.`);
-}
 function fullAutoForSandbox(sandbox) {
   return sandbox !== "read-only";
 }
@@ -7042,51 +6764,6 @@ function defaultModelCatalog() {
       capabilities: FULL_CAPABILITIES
     }
   };
-}
-
-// packages/ai/dist/image.js
-function matchesMagic(bytes, offset, magic) {
-  if (bytes.length < offset + magic.length)
-    return false;
-  for (let i = 0; i < magic.length; i++) {
-    if (bytes[offset + i] !== magic[i])
-      return false;
-  }
-  return true;
-}
-var PNG_MAGIC = [137, 80, 78, 71, 13, 10, 26, 10];
-var JPEG_MAGIC = [255, 216, 255];
-var GIF87_MAGIC = [71, 73, 70, 56, 55, 97];
-var GIF89_MAGIC = [71, 73, 70, 56, 57, 97];
-var RIFF_MAGIC = [82, 73, 70, 70];
-var WEBP_MAGIC = [87, 69, 66, 80];
-function sniffImageMediaType(bytes) {
-  if (matchesMagic(bytes, 0, PNG_MAGIC))
-    return "image/png";
-  if (matchesMagic(bytes, 0, JPEG_MAGIC))
-    return "image/jpeg";
-  if (matchesMagic(bytes, 0, GIF87_MAGIC) || matchesMagic(bytes, 0, GIF89_MAGIC)) {
-    return "image/gif";
-  }
-  if (matchesMagic(bytes, 0, RIFF_MAGIC) && matchesMagic(bytes, 8, WEBP_MAGIC)) {
-    return "image/webp";
-  }
-  return void 0;
-}
-var EXTENSION_MEDIA_TYPES = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp"
-};
-function mediaTypeFromExtension(filePath) {
-  const match = /\.[^./\\]+$/.exec(filePath);
-  const ext = match?.[0]?.toLowerCase();
-  return ext === void 0 ? void 0 : EXTENSION_MEDIA_TYPES[ext];
-}
-function resolveImageMediaType(bytes, filePath) {
-  return sniffImageMediaType(bytes) ?? mediaTypeFromExtension(filePath);
 }
 
 // packages/ai/dist/sse.js
@@ -8617,6 +8294,45 @@ function resolveBackendSetting(flag, env, config) {
   }
   return { value: DEFAULT_BACKEND, source: "default" };
 }
+var defaultBackendDetectionProbe = {
+  claudeCode: async () => {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    return availability.installed && availability.loggedIn;
+  },
+  codex: async () => {
+    const availability = await CodexBackend.checkAvailability();
+    return availability.installed && availability.loggedIn;
+  },
+  nativeCredential: (env) => present(env.ANTHROPIC_API_KEY) || present(env.ANTHROPIC_AUTH_TOKEN) || present(env.OPENAI_API_KEY)
+};
+var detectionCache;
+var detectionAnnounced = false;
+async function probeBackend(probe3, env) {
+  if (await probe3.claudeCode())
+    return "claude-code";
+  if (await probe3.codex())
+    return "codex";
+  if (probe3.nativeCredential(env))
+    return "native";
+  return void 0;
+}
+async function detectBackendSetting(flag, env, config, deps = {}) {
+  const chosen = resolveBackendSetting(flag, env, config);
+  if (chosen.source !== "default")
+    return chosen;
+  detectionCache ??= probeBackend(deps.probe ?? defaultBackendDetectionProbe, env);
+  const detected = await detectionCache;
+  if (detected === void 0)
+    return chosen;
+  if (!detectionAnnounced) {
+    detectionAnnounced = true;
+    const announce = deps.announce ?? ((line) => {
+      console.error(line);
+    });
+    announce(`backend: ${detected} (auto-detected \u2014 set one with \`kapel config\`)`);
+  }
+  return { value: detected, source: "detected" };
+}
 function resolveRoleModel(role, flag, env, config) {
   if (present(flag))
     return { value: flag, source: "flag" };
@@ -8672,7 +8388,7 @@ async function checkBackendAvailability(backend, env = process.env) {
 async function ensureFirstRunConfig(options) {
   const interactive = options.interactive && options.noSetup !== true;
   const ensure = options.ensure ?? ensureKapelConfig;
-  const write2 = options.write ?? ((line) => {
+  const write = options.write ?? ((line) => {
     console.log(line);
   });
   const prompt = ttyWizardPrompt(options.io, options.suspend);
@@ -8682,7 +8398,7 @@ async function ensureFirstRunConfig(options) {
       if (!announced) {
         announced = true;
         for (const line of FIRST_RUN_INTRO)
-          write2(line);
+          write(line);
       }
       return await prompt.select(selectOptions);
     }
@@ -8690,7 +8406,7 @@ async function ensureFirstRunConfig(options) {
   return await ensure({
     interactive,
     prompt: announcingPrompt,
-    write: write2,
+    write,
     checkBackend: (backend) => checkBackendAvailability(backend, options.env ?? process.env),
     ...options.env === void 0 ? {} : { env: options.env }
   });
@@ -8784,7 +8500,7 @@ async function loadDotEnvFile(workspaceRoot, target = process.env) {
 
 // apps/cli/dist/plan.js
 import { readFile as readFile9 } from "node:fs/promises";
-import path5 from "node:path";
+import path3 from "node:path";
 
 // apps/cli/dist/project-models.js
 var ASSUMED_CAPABILITIES = {
@@ -8826,1125 +8542,7 @@ async function createProjectModelResolver(project, env) {
 }
 
 // apps/cli/dist/run.js
-import path4 from "node:path";
-
-// apps/cli/dist/instructions.js
-import { readFileSync } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import path3 from "node:path";
-var MAX_INSTRUCTIONS_BYTES = 32 * 1024;
-var TRUNCATION_MARKER2 = "[instructions truncated]";
-var PREAMBLE = "Project instructions (from AGENTS.md files):";
-function abbreviateHome(absPath, home) {
-  if (absPath === home)
-    return "~";
-  const prefix = home.endsWith(path3.sep) ? home : `${home}${path3.sep}`;
-  if (!absPath.startsWith(prefix))
-    return absPath;
-  return `~${path3.sep}${absPath.slice(prefix.length)}`;
-}
-function sourcesFor(workspacePath, env) {
-  const configPath = path3.join(kapelConfigDir(env), "AGENTS.md");
-  const projectPath = path3.join(workspacePath, "AGENTS.md");
-  const agentPath = path3.join(workspacePath, ".agent", "AGENTS.md");
-  return [
-    { absPath: configPath, display: abbreviateHome(configPath, homedir2()) },
-    {
-      absPath: projectPath,
-      display: path3.relative(workspacePath, projectPath)
-    },
-    { absPath: agentPath, display: path3.relative(workspacePath, agentPath) }
-  ];
-}
-function capSize(text2) {
-  if (Buffer.byteLength(text2, "utf8") <= MAX_INSTRUCTIONS_BYTES)
-    return text2;
-  const markerLine = `
-${TRUNCATION_MARKER2}`;
-  const budget = Math.max(0, MAX_INSTRUCTIONS_BYTES - Buffer.byteLength(markerLine, "utf8"));
-  const truncated = Buffer.from(text2, "utf8").subarray(0, budget).toString("utf8");
-  return `${truncated}${markerLine}`;
-}
-function loadInstructions(workspacePath, env) {
-  const blocks = [];
-  const sources = [];
-  for (const source of sourcesFor(workspacePath, env)) {
-    let raw;
-    try {
-      raw = readFileSync(source.absPath, "utf8");
-    } catch {
-      continue;
-    }
-    const trimmed = raw.trim();
-    if (trimmed === "")
-      continue;
-    sources.push(source.display);
-    blocks.push(`# From ${source.display}
-
-${trimmed}`);
-  }
-  return { text: capSize(blocks.join("\n\n")), sources };
-}
-function composeSystemPrompt(base, instructions) {
-  if (instructions.text === "")
-    return base;
-  return `${base}
-
-${PREAMBLE}
-
-${instructions.text}`;
-}
-
-// apps/cli/dist/permissions.js
-var DEFAULT_PERMISSIONS = {
-  read_file: "allow",
-  glob: "allow",
-  grep: "allow",
-  git_diff: "allow",
-  write_file: "ask",
-  edit_file: "ask",
-  bash: "ask"
-};
-function isPatternMap(rule) {
-  return typeof rule === "object" && rule !== null;
-}
-function mergePermissionLayer(base, layer) {
-  const merged = { ...base };
-  for (const [tool, rule] of Object.entries(layer)) {
-    const existing = merged[tool];
-    merged[tool] = isPatternMap(existing) && isPatternMap(rule) ? { ...existing, ...rule } : rule;
-  }
-  return merged;
-}
-function resolvePermissionRules(defaults, ...layers) {
-  let merged = defaults;
-  for (const layer of layers) {
-    if (layer === void 0)
-      continue;
-    merged = mergePermissionLayer(merged, layer);
-  }
-  return merged;
-}
-function errorMessage7(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function loadRepoPermissionRules(workspacePath) {
-  let agentDir;
-  try {
-    agentDir = await findAgentDir(workspacePath);
-  } catch {
-    return void 0;
-  }
-  if (agentDir === void 0)
-    return void 0;
-  try {
-    const config = await loadProjectConfig(agentDir);
-    return Object.keys(config.permission).length > 0 ? config.permission : void 0;
-  } catch (error) {
-    console.error(`warning: ignoring .agent/config.yaml permission rules: ${errorMessage7(error)}`);
-    return void 0;
-  }
-}
-
-// apps/cli/dist/prompter.js
-import * as readline2 from "node:readline";
-
-// apps/cli/dist/preview.js
-var PREVIEW_MAX = 120;
-var PREVIEW_MAX_LINES = 40;
-var DIFF_CONTEXT = 3;
-var LCS_MAX_LINES = 300;
-var WRITE_PREVIEW_LINES = 20;
-var RED = "31";
-var GREEN = "32";
-var DIM = "2";
-function ansi2(code, text2, enabled) {
-  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
-}
-function isRecord7(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function stringField(input, key) {
-  if (!isRecord7(input))
-    return void 0;
-  const value = input[key];
-  return typeof value === "string" ? value : void 0;
-}
-function previewInput(input) {
-  let text2;
-  try {
-    text2 = JSON.stringify(input) ?? String(input);
-  } catch {
-    text2 = String(input);
-  }
-  if (text2.length <= PREVIEW_MAX)
-    return text2;
-  return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
-}
-function lcsDiff(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const width = m + 1;
-  const dp = new Array((n + 1) * width).fill(0);
-  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
-    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
-      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
-    }
-  }
-  const out = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      out.push({ marker: " ", text: a[i] ?? "" });
-      i += 1;
-      j += 1;
-    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
-      out.push({ marker: "-", text: a[i] ?? "" });
-      i += 1;
-    } else {
-      out.push({ marker: "+", text: b[j] ?? "" });
-      j += 1;
-    }
-  }
-  for (; i < n; i += 1)
-    out.push({ marker: "-", text: a[i] ?? "" });
-  for (; j < m; j += 1)
-    out.push({ marker: "+", text: b[j] ?? "" });
-  return out;
-}
-function diffLines(oldText, newText) {
-  const a = oldText.split("\n");
-  const b = newText.split("\n");
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head])
-    head += 1;
-  let tail4 = 0;
-  while (tail4 < a.length - head && tail4 < b.length - head && a[a.length - 1 - tail4] === b[b.length - 1 - tail4]) {
-    tail4 += 1;
-  }
-  const midA = a.slice(head, a.length - tail4);
-  const midB = b.slice(head, b.length - tail4);
-  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
-    ...midA.map((text2) => ({ marker: "-", text: text2 })),
-    ...midB.map((text2) => ({ marker: "+", text: text2 }))
-  ] : lcsDiff(midA, midB);
-  return [
-    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
-    ...middle,
-    ...a.slice(a.length - tail4).map((text2) => ({ marker: " ", text: text2 }))
-  ];
-}
-function paint(line, color) {
-  const text2 = `  ${line.marker} ${line.text}`;
-  if (line.marker === "-")
-    return ansi2(RED, text2, color);
-  if (line.marker === "+")
-    return ansi2(GREEN, text2, color);
-  return text2;
-}
-function moreTail(count, color) {
-  return ansi2(DIM, `  \u2026 (+${count} more)`, color);
-}
-function capLines(lines, color) {
-  if (lines.length <= PREVIEW_MAX_LINES)
-    return [...lines];
-  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
-  return [...kept, moreTail(lines.length - kept.length, color)];
-}
-function renderDiff(lines, options = {}) {
-  const color = options.color === true;
-  const keep = lines.map((line) => line.marker !== " ");
-  lines.forEach((line, index2) => {
-    if (line.marker === " ")
-      return;
-    const from = Math.max(0, index2 - DIFF_CONTEXT);
-    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
-    for (let near = from; near <= to; near += 1)
-      keep[near] = true;
-  });
-  const out = [];
-  let elided = false;
-  lines.forEach((line, index2) => {
-    if (keep[index2] === true) {
-      out.push(paint(line, color));
-      elided = false;
-      return;
-    }
-    if (!elided) {
-      out.push(ansi2(DIM, "  \u22EE", color));
-      elided = true;
-    }
-  });
-  return capLines(out, color);
-}
-function previewBash(input, options = {}) {
-  const command = stringField(input, "command");
-  if (command === void 0)
-    return void 0;
-  const lines = command.split("\n").map((line) => `  ${line}`);
-  return capLines(lines, options.color === true).join("\n");
-}
-function previewEdit(input, options = {}) {
-  const path19 = stringField(input, "path");
-  const oldText = stringField(input, "oldText");
-  const newText = stringField(input, "newText");
-  if (path19 === void 0 || oldText === void 0 || newText === void 0) {
-    return void 0;
-  }
-  const replaceAll = isRecord7(input) && input.replaceAll === true ? " (all occurrences)" : "";
-  const header = ansi2(DIM, `  ${path19}${replaceAll}`, options.color === true);
-  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
-}
-function previewWrite(input, options = {}) {
-  const path19 = stringField(input, "path");
-  const content = stringField(input, "content");
-  if (path19 === void 0 || content === void 0)
-    return void 0;
-  const color = options.color === true;
-  const lines = content.split("\n");
-  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
-  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
-  if (lines.length > shown.length) {
-    body.push(moreTail(lines.length - shown.length, color));
-  }
-  const header = ansi2(DIM, `  ${path19} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
-  return [header, ...body].join("\n");
-}
-function formatToolPreview(tool, input, options = {}) {
-  switch (tool) {
-    case "bash":
-      return previewBash(input, options);
-    case "edit_file":
-      return previewEdit(input, options);
-    case "write_file":
-      return previewWrite(input, options);
-    default:
-      return void 0;
-  }
-}
-
-// apps/cli/dist/prompter.js
-var ERASE_LINE = "\x1B[2K\r";
-function createPromptState() {
-  return { active: false };
-}
-function parsePermissionAnswer(answer) {
-  if (typeof answer !== "string")
-    return "deny";
-  const normalized = answer.trim().toLowerCase();
-  if (normalized === "y" || normalized === "yes")
-    return "once";
-  if (normalized === "a" || normalized === "always")
-    return "always";
-  return "deny";
-}
-function createPrompter(options) {
-  if (options.yes) {
-    return { ask: async () => true };
-  }
-  if (!options.interactive) {
-    return void 0;
-  }
-  const input = options.input ?? process.stdin;
-  const output = options.output ?? process.stdout;
-  const state = options.state;
-  const ask2 = options.ask;
-  const allowlist = options.allowlist;
-  const color = options.color ?? output.isTTY === true;
-  return {
-    ask: async (request) => {
-      state.active = true;
-      try {
-        const prompt = formatPermissionPrompt(request, { color });
-        const lines = previewBlockLines(request, prompt, {
-          color,
-          offerAlways: allowlist !== void 0
-        });
-        if (color)
-          output.write(ERASE_LINE);
-        if (lines.length > 0)
-          output.write(`${lines.join("\n")}
-`);
-        const raw = ask2 === void 0 ? await askOnce(prompt.query, input, output) : await ask2(prompt.query);
-        const answer = parsePermissionAnswer(raw);
-        if (answer === "deny")
-          return false;
-        if (answer === "always" && allowlist !== void 0) {
-          const rule = allowlist.remember(request);
-          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
-`);
-        }
-        return true;
-      } finally {
-        state.active = false;
-      }
-    }
-  };
-}
-function dim(text2, enabled) {
-  return enabled ? `\x1B[2m${text2}\x1B[0m` : text2;
-}
-function previewBlockLines(request, prompt, options) {
-  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
-  if (!options.offerAlways)
-    return lines;
-  const rule = sessionRuleFor(request);
-  if (rule === void 0)
-    return lines;
-  return [
-    ...lines,
-    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
-  ];
-}
-function formatPermissionPrompt(request, options = {}) {
-  const block = formatToolPreview(request.tool, request.input, {
-    ...options.color === void 0 ? {} : { color: options.color }
-  });
-  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] ` : `allow ${request.tool}? [y/n/a] `;
-  return { block, query };
-}
-function askOnce(query, input, output) {
-  const rl = readline2.createInterface({ input, output, terminal: true });
-  return new Promise((resolve5) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled)
-        return;
-      settled = true;
-      rl.close();
-      resolve5(value);
-    };
-    rl.on("SIGINT", () => finish(void 0));
-    rl.question(query, (answer) => finish(answer));
-  });
-}
-
-// apps/cli/dist/status-line.js
-var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
-var TICK_MS = 120;
-var ERASE = "\r\x1B[2K";
-var DEFAULT_COLUMNS = 80;
-function defaultTicker(tick) {
-  const timer = setInterval(tick, TICK_MS);
-  timer.unref?.();
-  return () => clearInterval(timer);
-}
-function formatTokenCount(tokens) {
-  if (tokens < 1e3)
-    return String(Math.round(tokens));
-  return `${(tokens / 1e3).toFixed(1)}k`;
-}
-function formatStatus(label, elapsedMs2, tokens) {
-  const seconds = Math.max(0, Math.floor(elapsedMs2 / 1e3));
-  const parts = [`${label} ${seconds}s`];
-  if (tokens !== void 0 && tokens > 0) {
-    parts.push(`${formatTokenCount(tokens)} tokens`);
-  }
-  return parts.join(" \xB7 ");
-}
-var StatusLine = class {
-  #output;
-  #enabled;
-  #now;
-  #tokens;
-  #suspended;
-  #ticker;
-  #cancel;
-  #label = "";
-  #startedAt = 0;
-  #frame = 0;
-  #painted = false;
-  constructor(options = {}) {
-    this.#output = options.output ?? process.stdout;
-    this.#enabled = options.tty ?? this.#output.isTTY === true;
-    this.#now = options.now ?? (() => Date.now());
-    this.#tokens = options.tokens;
-    this.#suspended = options.suspended ?? (() => false);
-    this.#ticker = options.ticker ?? defaultTicker;
-  }
-  /** Whether this line will ever paint anything — false off a TTY. */
-  get enabled() {
-    return this.#enabled;
-  }
-  /** Whether a status is currently being kept up to date. */
-  get running() {
-    return this.#cancel !== void 0;
-  }
-  /**
-   * Starts the status, or relabels a running one.
-   *
-   * The elapsed clock runs from the *start*, not from each relabel: it is the
-   * age of the current wait, and a wait that changes phase (model → tool) is a
-   * new wait, so {@link stop} then `start` is how the caller resets it.
-   */
-  start(label) {
-    if (!this.#enabled)
-      return;
-    this.#label = label;
-    if (this.#cancel === void 0) {
-      this.#startedAt = this.#now();
-      this.#frame = 0;
-      this.#cancel = this.#ticker(() => {
-        this.#frame += 1;
-        this.#paint();
-      });
-    }
-    this.#paint();
-  }
-  /**
-   * Erases the painted line but keeps the status running: the next tick (or
-   * {@link refresh}) puts it back. This is what the renderer calls before
-   * writing real output.
-   */
-  erase() {
-    if (!this.#painted)
-      return;
-    this.#painted = false;
-    this.#output.write(ERASE);
-  }
-  /** Repaints immediately, if a status is running. */
-  refresh() {
-    this.#paint();
-  }
-  /** Ends the status: no more repainting, and nothing left on screen. */
-  stop() {
-    const cancel = this.#cancel;
-    this.#cancel = void 0;
-    cancel?.();
-    this.erase();
-  }
-  #paint() {
-    if (!this.#enabled || this.#cancel === void 0)
-      return;
-    if (this.#suspended()) {
-      this.erase();
-      return;
-    }
-    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
-    const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
-    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
-    const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
-    this.#output.write(`${ERASE}\x1B[2m${text2}\x1B[0m`);
-    this.#painted = true;
-  }
-};
-
-// apps/cli/dist/render.js
-function formatTokenCount2(tokens) {
-  if (tokens < 1e3)
-    return String(tokens);
-  if (tokens < 1e6)
-    return `${(tokens / 1e3).toFixed(1)}k`;
-  return `${(tokens / 1e6).toFixed(1)}M`;
-}
-function formatCostUsd(costUsd, pricing) {
-  if (pricing === "unknown")
-    return "n/a";
-  const amount = costUsd >= 0.01 ? costUsd.toFixed(2) : costUsd.toFixed(4);
-  return pricing === "partial" ? `$${amount}+` : `$${amount}`;
-}
-function formatTokenFlow(usage) {
-  const cached = usage.cachedInputTokens;
-  const input = cached === void 0 || cached === 0 ? `${formatTokenCount2(usage.inputTokens)} in` : `${formatTokenCount2(usage.inputTokens)} in (${formatTokenCount2(cached)} cached)`;
-  return `${input} / ${formatTokenCount2(usage.outputTokens)} out`;
-}
-function usageBreakdownLine(entry, options = {}) {
-  const parts = [];
-  if (options.countTasks === true) {
-    const tasks = entry.tasks.filter((id) => id !== UNATTRIBUTED).length;
-    parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`);
-  }
-  parts.push(formatTokenFlow(entry.usage));
-  parts.push(formatCostUsd(entry.costUsd, entry.pricing));
-  return `${entry.key}: ${parts.join(" \xB7 ")}`;
-}
-function usageRollupLines(breakdown, options = {}) {
-  return [...breakdown.values()].sort((a, b) => b.costUsd - a.costUsd || b.usage.inputTokens + b.usage.outputTokens - (a.usage.inputTokens + a.usage.outputTokens) || a.key.localeCompare(b.key)).map((entry) => usageBreakdownLine(entry, options));
-}
-function isRecord8(value) {
-  return typeof value === "object" && value !== null;
-}
-function isDelegatedResult(result) {
-  return "events" in result;
-}
-var CODEX_PREFIX = "codex.";
-var CLAUDE_CODE_PREFIX = "claude-code.";
-function firstNonEmptyString(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim() !== "")
-      return value;
-  }
-  return void 0;
-}
-function codexItemFrom(data) {
-  if (isRecord8(data.item))
-    return data.item;
-  if (isRecord8(data.msg) && isRecord8(data.msg.item))
-    return data.msg.item;
-  return void 0;
-}
-function codexMessageText(item) {
-  const direct = firstNonEmptyString(item.text, item.message);
-  if (direct !== void 0)
-    return direct;
-  const content = item.content;
-  if (typeof content === "string" && content.trim() !== "")
-    return content;
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const part of content) {
-      if (typeof part === "string")
-        parts.push(part);
-      else if (isRecord8(part) && typeof part.text === "string") {
-        parts.push(part.text);
-      }
-    }
-    const joined = parts.join("");
-    if (joined !== "")
-      return joined;
-  }
-  return void 0;
-}
-function codexCommandText(item) {
-  const direct = firstNonEmptyString(item.command, item.cmd);
-  if (direct !== void 0)
-    return direct;
-  const argv = item.argv ?? item.command;
-  if (Array.isArray(argv)) {
-    const parts = argv.filter((part) => typeof part === "string");
-    if (parts.length > 0)
-      return parts.join(" ");
-  }
-  return void 0;
-}
-function codexFileChangeText(item) {
-  const direct = firstNonEmptyString(item.path, item.file, item.summary);
-  if (direct !== void 0)
-    return direct;
-  const changes = item.changes;
-  if (Array.isArray(changes)) {
-    const paths = [];
-    for (const change of changes) {
-      if (typeof change === "string")
-        paths.push(change);
-      else if (isRecord8(change)) {
-        const p = firstNonEmptyString(change.path, change.file);
-        if (p !== void 0)
-          paths.push(p);
-      }
-    }
-    if (paths.length > 0)
-      return paths.join(", ");
-  }
-  return void 0;
-}
-function truncate3(text2, limit) {
-  return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
-}
-function taskIdOf(event2, data) {
-  return event2.taskId ?? stringOrUndefined(data.taskId) ?? "?";
-}
-function stringOrUndefined(value) {
-  return typeof value === "string" && value !== "" ? value : void 0;
-}
-function routingLabel(routing) {
-  if (!isRecord8(routing))
-    return void 0;
-  const rule = stringOrUndefined(routing.rule);
-  switch (routing.reason) {
-    case "rule":
-      return rule === void 0 ? "rule" : `rule: ${rule}`;
-    case "escalation":
-      return rule === void 0 ? "escalation" : `escalation: ${rule}`;
-    case "suggestedAgent":
-      return "suggested";
-    case "orchestrator":
-      return "default";
-    default:
-      return void 0;
-  }
-}
-function firstLine(text2) {
-  if (typeof text2 !== "string")
-    return "(no summary)";
-  const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
-  return line === void 0 ? "(no summary)" : truncate3(line, 120);
-}
-function ansi3(code, text2, enabled) {
-  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
-}
-var EXIT_LABEL = {
-  success: "success",
-  partial: "partial",
-  failed: "failed"
-};
-var THINKING_LABEL = "thinking";
-var TextRenderer = class {
-  #output;
-  #color;
-  #status;
-  /** A streamed line is open — text was written with no newline after it. */
-  #streaming = false;
-  /** Deltas were streamed for the model turn now in flight. */
-  #streamed = false;
-  /** A turn this renderer is showing progress for is in flight. */
-  #inTurn = false;
-  /**
-   * Text of the Claude Code block currently streaming, for the one case that
-   * cannot be streamed to the screen: a delegated *task* inside an
-   * orchestration run, whose output shares the terminal with other tasks.
-   */
-  #claudeText = "";
-  constructor(output = process.stdout, options = {}) {
-    this.#output = output;
-    this.#color = "isTTY" in output && output.isTTY === true;
-    this.#status = options.status ?? new StatusLine({
-      output,
-      ...options.tokens === void 0 ? {} : { tokens: options.tokens },
-      ...options.suspended === void 0 ? {} : { suspended: options.suspended }
-    });
-  }
-  /**
-   * Writes one line of output, taking the screen back from the status line and
-   * from any partially streamed text first.
-   */
-  #write(line) {
-    this.#endStream();
-    this.#status.erase();
-    this.#output.write(`${line}
-`);
-    this.#status.refresh();
-  }
-  /**
-   * Writes one line of caller-owned output (the REPL's own notices) through
-   * the same discipline, and ends any status the turn left running.
-   *
-   * The interactive shell prints its per-turn lines itself rather than through
-   * an event; routing them here is what keeps them from landing on top of a
-   * spinner.
-   */
-  line(text2) {
-    this.#endTurn();
-    this.#write(text2);
-  }
-  /** Appends streamed assistant text, with no line terminator of its own. */
-  #stream(text2) {
-    if (text2 === "")
-      return;
-    this.#status.stop();
-    this.#output.write(text2);
-    this.#streaming = true;
-    this.#streamed = true;
-  }
-  /** Terminates an open streamed line, if there is one. */
-  #endStream() {
-    if (!this.#streaming)
-      return;
-    this.#streaming = false;
-    this.#output.write("\n");
-  }
-  /** A turn started: from here on there is something to show progress for. */
-  #beginTurn() {
-    this.#inTurn = true;
-    this.#streamed = false;
-    this.#status.start(THINKING_LABEL);
-  }
-  /**
-   * Relabels the status, but only while a turn is actually in flight — which
-   * is never the case for an orchestration run, whose turns all carry a task
-   * id and so never call {@link #beginTurn}.
-   */
-  #waiting(label) {
-    if (!this.#inTurn)
-      return;
-    this.#status.start(label);
-  }
-  /** A turn ended (or output took over): nothing is pending on screen. */
-  #endTurn() {
-    this.#inTurn = false;
-    this.#endStream();
-    this.#status.stop();
-  }
-  #dim(text2) {
-    return ansi3("2", text2, this.#color);
-  }
-  #bold(text2) {
-    return ansi3("1", text2, this.#color);
-  }
-  emit(event2) {
-    const data = isRecord8(event2.data) ? event2.data : {};
-    const single = event2.taskId === void 0;
-    if (event2.type.startsWith(CODEX_PREFIX)) {
-      this.#emitCodex(data);
-      return;
-    }
-    if (event2.type.startsWith(CLAUDE_CODE_PREFIX)) {
-      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data, single);
-      return;
-    }
-    switch (event2.type) {
-      case "chat.turn.started":
-      case "loop.started": {
-        if (single)
-          this.#beginTurn();
-        break;
-      }
-      case "chat.turn.completed":
-      case "loop.completed": {
-        if (single)
-          this.#endTurn();
-        break;
-      }
-      case MODEL_TEXT_DELTA_EVENT: {
-        if (!single)
-          break;
-        if (typeof data.text === "string")
-          this.#stream(data.text);
-        break;
-      }
-      case "model.turn.completed": {
-        const text2 = typeof data.text === "string" ? data.text : "";
-        if (this.#streamed) {
-          this.#endStream();
-          this.#streamed = false;
-        } else if (text2 !== "") {
-          this.#write(text2);
-        }
-        this.#waiting(THINKING_LABEL);
-        break;
-      }
-      case "tool.execution.started": {
-        const tool = typeof data.tool === "string" ? data.tool : "?";
-        this.#write(`${this.#dim("\u2192")} ${tool} ${this.#dim(previewInput(data.input))}`);
-        this.#waiting(tool);
-        break;
-      }
-      case "tool.execution.completed": {
-        const ok = data.ok === true;
-        const denied = data.denied === true;
-        this.#write(ok ? "  \u2713" : `  \u2717 (${denied ? "denied" : "error"})`);
-        this.#waiting(THINKING_LABEL);
-        break;
-      }
-      case "context.compacted": {
-        const elided = typeof data.elided === "number" ? data.elided : 0;
-        const savedChars = typeof data.savedChars === "number" ? data.savedChars : 0;
-        this.#write(this.#dim(`\u2248 context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`));
-        break;
-      }
-      case "task.started":
-      case "task.completed":
-      case "task.escalated":
-      case "task.cancelled":
-      case "task.low_confidence":
-        this.#emitTaskLifecycle(event2.type, taskIdOf(event2, data), data);
-        break;
-      case "worktree.created":
-      case "worktree.integrated":
-      case "worktree.removed":
-        this.#emitWorktree(event2.type, taskIdOf(event2, data), data);
-        break;
-      case "validation.started":
-      case "validation.completed":
-        this.#emitValidation(event2.type, taskIdOf(event2, data), data);
-        break;
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders the scheduler's `task.*` events — the orchestration run's spine.
-   *
-   * These share the sink with the worker loop's own events, so a task line has
-   * to be identifiable on its own: every one of them leads with the task id.
-   */
-  #emitTaskLifecycle(type, taskId, data) {
-    switch (type) {
-      case "task.started": {
-        const agent = stringOrUndefined(data.agent) ?? "?";
-        const attempt = typeof data.attempt === "number" ? data.attempt : 1;
-        const model = stringOrUndefined(data.model);
-        const modelSuffix = model === void 0 ? "" : ` [${model}]`;
-        const routing = routingLabel(data.routing);
-        const parens = routing === void 0 ? `attempt ${attempt}` : `${routing}, attempt ${attempt}`;
-        this.#write(`\u25B6 ${taskId} \u2192 ${agent}${modelSuffix} (${parens})`);
-        break;
-      }
-      case "task.completed": {
-        const result = isRecord8(data.result) ? data.result : {};
-        const ok = result.status === "success";
-        const retrying = data.final === false;
-        const suffix = retrying ? this.#dim(" (retrying)") : "";
-        this.#write(`${ok ? "\u2714" : "\u2716"} ${taskId} \u2014 ${firstLine(result.summary)}${suffix}`);
-        break;
-      }
-      case "task.escalated": {
-        const from = stringOrUndefined(data.from) ?? "(unassigned)";
-        const to = stringOrUndefined(data.to) ?? "?";
-        this.#write(`\u2191 ${taskId} rerouted ${from} \u2192 ${to}`);
-        break;
-      }
-      case "task.cancelled": {
-        const reason = stringOrUndefined(data.reason) ?? "cancelled";
-        this.#write(`\u2298 ${taskId} (${reason})`);
-        break;
-      }
-      case "task.low_confidence": {
-        const confidence = typeof data.confidence === "number" ? data.confidence : 0;
-        const threshold = typeof data.threshold === "number" ? data.threshold : 0;
-        const verdict = data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
-        this.#write(`\u21BB ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} \u2014 ${verdict}`);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders the worktree isolation layer's `worktree.*` events.
-   *
-   * Only the moments that change what is in the repository get a line: a task
-   * got its own checkout, its work landed (or did not), and a branch outlived
-   * the run and is waiting for a human. A clean removal is the expected case
-   * and stays silent.
-   */
-  #emitWorktree(type, taskId, data) {
-    switch (type) {
-      case "worktree.created": {
-        const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(`\u2387 ${taskId} worktree created (${branch})`);
-        break;
-      }
-      case "worktree.integrated": {
-        if (data.merged === true) {
-          const commit = stringOrUndefined(data.commit);
-          const suffix = commit === void 0 ? "" : ` \u2192 ${commit.slice(0, 8)}`;
-          this.#write(`\u21E1 ${taskId} merged${suffix}`);
-          break;
-        }
-        const files = Array.isArray(data.conflictFiles) ? data.conflictFiles.filter((file) => typeof file === "string") : [];
-        this.#write(files.length === 0 ? `\u26A0 ${taskId} not merged (${stringOrUndefined(data.reason) ?? "unknown reason"})` : `\u26A0 ${taskId} merge conflict: ${files.join(", ")}`);
-        break;
-      }
-      case "worktree.removed": {
-        if (data.keptBranch !== true)
-          break;
-        const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(this.#dim(`\u2387 ${taskId} branch kept: ${branch}`));
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders the `validation.*` events {@link ValidatingExecutor} emits around
-   * each configured validator command.
-   *
-   * Kept quiet and dim on the way in — a validator starting is background
-   * noise most of the time — but its result always lands, pass or fail, since
-   * that is what decides whether the task's work is going to be kept.
-   */
-  #emitValidation(type, taskId, data) {
-    switch (type) {
-      case "validation.started": {
-        const name = stringOrUndefined(data.name) ?? "?";
-        this.#write(this.#dim(`\u2699 ${taskId} validator ${name}\u2026`));
-        break;
-      }
-      case "validation.completed": {
-        const name = stringOrUndefined(data.name) ?? "?";
-        const passed = data.passed === true;
-        const seconds = typeof data.durationMs === "number" ? data.durationMs / 1e3 : 0;
-        const duration = `${seconds.toFixed(1)}s`;
-        if (passed) {
-          this.#write(`  \u2713 ${name} (${duration})`);
-          break;
-        }
-        const exitCode = typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
-        this.#write(`  \u2717 ${name} (exit ${exitCode}, ${duration})`);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders a normalized `codex.*` event. Only `item.*` events whose nested
-   * item is `agent_message` / `command_execution` / `file_change` produce
-   * output — everything else (`turn.completed` usage rollups, the synthetic
-   * `codex.completed` marker, and any event type this wrapper doesn't
-   * recognize yet) stays quiet, matching the native renderer's silence on
-   * unknown event types.
-   */
-  #emitCodex(data) {
-    const item = codexItemFrom(data);
-    if (item === void 0)
-      return;
-    const itemType = typeof item.type === "string" ? item.type : void 0;
-    switch (itemType) {
-      case "agent_message": {
-        const text2 = codexMessageText(item);
-        if (text2 !== void 0 && text2.trim() !== "")
-          this.#write(text2);
-        break;
-      }
-      case "command_execution": {
-        const command = codexCommandText(item);
-        if (command !== void 0) {
-          this.#write(`\u2192 codex: ${truncate3(command, 120)}`);
-        }
-        break;
-      }
-      case "file_change": {
-        const summary = codexFileChangeText(item);
-        if (summary !== void 0)
-          this.#write(`\u270E ${summary}`);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders a normalized `claude-code.*` event.
-   *
-   * The payload is a raw Claude API streaming line, so the two things worth
-   * showing are pulled out of it by hand: the assistant's own text, streamed a
-   * delta at a time exactly like the native loop's (buffered to the end of the
-   * block only when the events belong to one task among several, where partial
-   * lines from different tasks would interleave), and the name of each tool
-   * as it starts, which is what makes a long turn legible. Everything else —
-   * `message_start`, usage rollups, the synthetic `completed` marker, and any
-   * event type this wrapper does not model yet — stays quiet, exactly as the
-   * native renderer does for unknown types.
-   */
-  #emitClaudeCode(kind, data, single) {
-    const event2 = isRecord8(data.event) ? data.event : data;
-    switch (kind) {
-      case "tool_use": {
-        const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
-        this.#write(`${this.#dim("\u2192")} claude: ${name}`);
-        this.#waiting(name);
-        break;
-      }
-      case "content_block_delta": {
-        const delta = isRecord8(event2.delta) ? event2.delta : void 0;
-        if (delta?.type !== "text_delta")
-          break;
-        if (typeof delta.text !== "string")
-          break;
-        if (single)
-          this.#stream(delta.text);
-        else
-          this.#claudeText += delta.text;
-        break;
-      }
-      case "content_block_stop":
-      case "message_stop": {
-        this.#endStream();
-        const buffered = this.#claudeText.trim();
-        this.#claudeText = "";
-        if (buffered !== "")
-          this.#write(buffered);
-        this.#waiting(THINKING_LABEL);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  result(result, usage) {
-    this.#endTurn();
-    this.#write("");
-    this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
-    this.#write(result.summary);
-    if (isDelegatedResult(result)) {
-      if (result.exitCode !== null && result.exitCode !== 0) {
-        this.#write(this.#dim(`exit code: ${result.exitCode}`));
-      }
-      if (result.usage !== void 0) {
-        this.#write(this.#dim(`tokens \u2014 input: ${result.usage.inputTokens}, output: ${result.usage.outputTokens}`));
-      }
-      return;
-    }
-    this.#write(this.#dim(`iterations: ${result.iterations}  tool calls: ${result.toolCalls}`));
-    const { usage: totals, costUsd } = usage;
-    const tokenParts = [
-      `input: ${totals.inputTokens}`,
-      `output: ${totals.outputTokens}`
-    ];
-    if (totals.cachedInputTokens !== void 0) {
-      tokenParts.push(`cached: ${totals.cachedInputTokens}`);
-    }
-    let usageLine2 = `tokens \u2014 ${tokenParts.join(", ")}`;
-    if (costUsd > 0)
-      usageLine2 += `  (~$${costUsd.toFixed(4)})`;
-    this.#write(this.#dim(usageLine2));
-  }
-};
-var JsonRenderer = class {
-  #output;
-  constructor(output = process.stdout) {
-    this.#output = output;
-  }
-  emit(event2) {
-    this.#output.write(`${JSON.stringify(event2)}
-`);
-  }
-  result(result, usage) {
-    const trackerIsEmpty = usage.usage.inputTokens === 0 && usage.usage.outputTokens === 0;
-    const reported = trackerIsEmpty && "usage" in result && result.usage !== void 0 ? result.usage : usage.usage;
-    const line = {
-      type: "result",
-      ...result,
-      usage: reported,
-      costUsd: usage.costUsd
-    };
-    this.#output.write(`${JSON.stringify(line)}
-`);
-  }
-};
-
-// apps/cli/dist/run.js
-var MAX_PIPED_STDIN_BYTES = 1024 * 1024;
-var PIPED_STDIN_TRUNCATION_MARKER = "\n[stdin truncated]";
-var PIPED_STDIN_DELIMITER = "\n\n--- piped input ---\n";
-async function readPipedStdin(input, maxBytes = MAX_PIPED_STDIN_BYTES) {
-  const chunks = [];
-  let total = 0;
-  let truncated = false;
-  for await (const chunk of input) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    if (total >= maxBytes) {
-      truncated = true;
-      continue;
-    }
-    const remaining = maxBytes - total;
-    if (buf.length > remaining) {
-      chunks.push(buf.subarray(0, remaining));
-      total = maxBytes;
-      truncated = true;
-      continue;
-    }
-    chunks.push(buf);
-    total += buf.length;
-  }
-  const text2 = Buffer.concat(chunks).toString("utf8");
-  return truncated ? `${text2}${PIPED_STDIN_TRUNCATION_MARKER}` : text2;
-}
-function composeObjectiveWithStdin(objective, pipedStdin) {
-  if (pipedStdin === "")
-    return objective;
-  return `${objective}${PIPED_STDIN_DELIMITER}${pipedStdin}`;
-}
-async function objectiveWithPipedStdin(objective, input) {
-  if (input.isTTY === true)
-    return objective;
-  const piped = await readPipedStdin(input);
-  return composeObjectiveWithStdin(objective, piped);
-}
+var DEFAULT_MAX_ITERATIONS2 = 32;
 var DEFAULT_COMPACTION = {};
 function agentLoopOptions(args) {
   return {
@@ -9974,7 +8572,7 @@ function defaultSystemPrompt(workspaceRoot) {
     "- Finish by giving a short summary of what changed and why."
   ].join("\n");
 }
-function errorMessage8(error) {
+function errorMessage7(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function resolveModelAndProvider(env, alias) {
@@ -9983,7 +8581,7 @@ async function resolveModelAndProvider(env, alias) {
   try {
     model = registry.get(alias);
   } catch (error) {
-    return { error: errorMessage8(error) };
+    return { error: errorMessage7(error) };
   }
   try {
     const provider = registry.providerFor(model);
@@ -9993,85 +8591,6 @@ async function resolveModelAndProvider(env, alias) {
     return {
       error: `Model "${alias}" requires the "${model.provider}" provider, which is not configured: ${hint}.`
     };
-  }
-}
-async function runObjective(objective, options) {
-  const workspacePath = path4.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved) {
-    console.error(resolved.error);
-    return 1;
-  }
-  const { model, provider } = resolved;
-  const promptState = createPromptState();
-  const sessionAllowlist = new SessionAllowlist();
-  const usage = new UsageTracker();
-  const renderer = options.json ? new JsonRenderer() : new TextRenderer(process.stdout, {
-    tokens: () => {
-      const totals = usage.totals().usage;
-      return totals.inputTokens + totals.outputTokens;
-    },
-    // A permission question owns the screen while it waits for an answer.
-    suspended: () => promptState.active
-  });
-  const prompter = createPrompter({
-    yes: options.yes,
-    interactive: process.stdin.isTTY === true && !options.json,
-    state: promptState,
-    allowlist: sessionAllowlist
-  });
-  const repoPermission = await loadRepoPermissionRules(workspacePath);
-  const permissionRules = resolvePermissionRules(DEFAULT_PERMISSIONS, options.config?.permission, repoPermission);
-  const permissions = new PermissionEngine(permissionRules, {
-    defaultDecision: "ask",
-    overlay: sessionAllowlist,
-    ...prompter === void 0 ? {} : { prompter }
-  });
-  const instructions = loadInstructions(workspacePath, process.env);
-  const agent = {
-    name: "agent",
-    role: "worker",
-    model,
-    systemPrompt: options.system ?? composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
-    tools: builtinTools().map((tool) => tool.name),
-    permissions: DEFAULT_PERMISSIONS
-  };
-  const controller = new AbortController();
-  const onSigint = () => {
-    if (promptState.active)
-      return;
-    controller.abort();
-  };
-  process.on("SIGINT", onSigint);
-  try {
-    const loop = new AgentLoop(agentLoopOptions({
-      agent,
-      provider,
-      permissions,
-      usage,
-      events: renderer,
-      maxIterations: options.maxIterations,
-      ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
-    }));
-    const result = await loop.run({
-      instruction: objective,
-      ...options.images !== void 0 && options.images.length > 0 ? { images: options.images } : {}
-    }, {
-      runId: crypto.randomUUID(),
-      workspacePath,
-      signal: controller.signal
-    });
-    const totals = usage.totals();
-    renderer.result(result, totals);
-    if (result.status === "success")
-      return 0;
-    if (result.status === "partial")
-      return 2;
-    return 1;
-  } finally {
-    process.off("SIGINT", onSigint);
   }
 }
 
@@ -10093,7 +8612,7 @@ function fail(output, json, message, extra = {}) {
     output.error(message);
   return { exitCode: 1 };
 }
-function errorMessage9(error) {
+function errorMessage8(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function readOptionalFile(filePath) {
@@ -10126,7 +8645,7 @@ async function resolvePlannerModel(project, policy, options, output) {
       const resolved = resolve5(orchestrator.modelAlias);
       return { model: resolved.model, provider: resolved.provider };
     } catch (error) {
-      output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage9(error)}`);
+      output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage8(error)}`);
     }
   }
   const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
@@ -10140,7 +8659,7 @@ function delegatedPlannerModelId(project, policy, options) {
 async function preparePlan(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const { json } = options;
-  const workspacePath = path5.resolve(options.cwd);
+  const workspacePath = path3.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   let project;
   try {
@@ -10161,7 +8680,7 @@ async function preparePlan(objective, options, deps = {}) {
   if (markdown === void 0 || markdown.trim() === "") {
     return fail(output, json, "No orchestration policy found \u2014 .agent/orchestration.md is missing or empty");
   }
-  const lockPath = path5.join(project.root, LOCK_FILE_NAME);
+  const lockPath = path3.join(project.root, LOCK_FILE_NAME);
   const status = checkLock(markdown, await readOptionalFile(lockPath));
   if (!status.fresh) {
     if (status.reason === "missing") {
@@ -10370,7 +8889,7 @@ async function runPlan(objective, options, deps = {}) {
 
 // apps/cli/dist/sessions.js
 import { existsSync } from "node:fs";
-import path6 from "node:path";
+import path4 from "node:path";
 
 // packages/session/dist/resolve.js
 var SHORT_ID_LENGTH = 8;
@@ -11013,10 +9532,10 @@ function storeSink(store) {
   };
 }
 function sessionDbPathFor(workspacePath) {
-  return defaultSessionDbPath(path6.join(path6.resolve(workspacePath), ".agent"));
+  return defaultSessionDbPath(path4.join(path4.resolve(workspacePath), ".agent"));
 }
 async function openRunStore(workspacePath) {
-  const agentDir = await findAgentDir(path6.resolve(workspacePath));
+  const agentDir = await findAgentDir(path4.resolve(workspacePath));
   if (agentDir === void 0)
     return void 0;
   try {
@@ -11086,7 +9605,7 @@ async function runSessionsListCommand(options, deps = {}) {
     return 0;
   }
   try {
-    const records = await store.listChatSessions(path6.resolve(options.cwd), {
+    const records = await store.listChatSessions(path4.resolve(options.cwd), {
       limit: options.limit ?? DEFAULT_SESSIONS_LIST_LIMIT
     });
     if (options.json) {
@@ -11123,7 +9642,7 @@ async function runSessionsForkCommand(options, deps = {}) {
     return 1;
   }
   try {
-    const records = await store.listChatSessions(path6.resolve(options.cwd));
+    const records = await store.listChatSessions(path4.resolve(options.cwd));
     const resolved = resolveChatSessionReference(records, options.session, {
       onNote: (note) => output.error(note)
     });
@@ -11149,7 +9668,7 @@ async function runSessionsForkCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/explain-cmd.js
-function isRecord9(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null;
 }
 function str(value) {
@@ -11158,7 +9677,7 @@ function str(value) {
 function num(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
-function firstLine2(text2) {
+function firstLine(text2) {
   if (typeof text2 !== "string")
     return "(no summary)";
   const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
@@ -11181,7 +9700,7 @@ function routeSentence(route) {
   return route.fallback === "suggestedAgent" ? `routed to ${route.agent} \u2014 no routing rule matched, so the plan's suggestedAgent was used` : `routed to ${route.agent} \u2014 no routing rule matched and the task suggested no agent, so it fell back to the policy's orchestrator`;
 }
 function digestEvent(event2) {
-  const data = isRecord9(event2.data) ? event2.data : {};
+  const data = isRecord7(event2.data) ? event2.data : {};
   switch (event2.type) {
     case "task.held": {
       const blocker = str(data.conflictsWith);
@@ -11212,10 +9731,10 @@ function digestEvent(event2) {
       return files.length === 0 ? `not merged \u2014 ${str(data.reason) ?? "unknown reason"}` : `not merged \u2014 conflicts in ${files.join(", ")}`;
     }
     case "task.completed": {
-      const result = isRecord9(data.result) ? data.result : {};
+      const result = isRecord7(data.result) ? data.result : {};
       const status = str(result.status) ?? "?";
       const retrying = data.final === false ? " (retrying)" : "";
-      return `completed \u2014 ${status}: ${firstLine2(result.summary)}${retrying}`;
+      return `completed \u2014 ${status}: ${firstLine(result.summary)}${retrying}`;
     }
     case "task.cancelled":
       return `cancelled \u2014 ${str(data.reason) ?? "cancelled"}`;
@@ -11305,78 +9824,9 @@ async function runExplainCommand(taskId, options, deps = {}) {
   }
 }
 
-// apps/cli/dist/images.js
-import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
-import path7 from "node:path";
-var MAX_IMAGE_COUNT = 4;
-var MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-var MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
-function formatBytes(n) {
-  if (n < 1024 * 1024)
-    return `${(n / 1024).toFixed(1)} KiB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
-}
-async function resolveImageAttachments(paths, cwd) {
-  if (paths.length === 0)
-    return { ok: true, images: [] };
-  if (paths.length > MAX_IMAGE_COUNT) {
-    return {
-      ok: false,
-      error: `Too many images: got ${paths.length}, but at most ${MAX_IMAGE_COUNT} are allowed per run.`
-    };
-  }
-  const images = [];
-  let totalBytes = 0;
-  for (const raw of paths) {
-    const resolved = path7.resolve(cwd, raw);
-    let info;
-    try {
-      info = await stat4(resolved);
-    } catch {
-      return { ok: false, error: `Image not found: "${raw}"` };
-    }
-    if (!info.isFile()) {
-      return { ok: false, error: `Not a file: "${raw}"` };
-    }
-    if (info.size > MAX_IMAGE_BYTES) {
-      return {
-        ok: false,
-        error: `Image "${raw}" is ${formatBytes(info.size)}, over the ${formatBytes(MAX_IMAGE_BYTES)} per-image limit.`
-      };
-    }
-    totalBytes += info.size;
-    if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
-      return {
-        ok: false,
-        error: `Attached images total ${formatBytes(totalBytes)}, over the ${formatBytes(MAX_TOTAL_IMAGE_BYTES)} combined limit.`
-      };
-    }
-    let bytes;
-    try {
-      bytes = await readFile10(resolved);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: `Could not read image "${raw}": ${detail}` };
-    }
-    const mediaType = resolveImageMediaType(bytes, resolved);
-    if (mediaType === void 0) {
-      return {
-        ok: false,
-        error: `Unrecognized image format for "${raw}": expected PNG, JPEG, GIF or WEBP.`
-      };
-    }
-    images.push({
-      mediaType,
-      base64: bytes.toString("base64"),
-      path: resolved
-    });
-  }
-  return { ok: true, images };
-}
-
 // apps/cli/dist/init.js
-import { cp, readFile as readFile11, rm as rm2, stat as stat5, writeFile as writeFile4 } from "node:fs/promises";
-import path8 from "node:path";
+import { cp, readFile as readFile10, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+import path5 from "node:path";
 import { fileURLToPath } from "node:url";
 var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
 var MAX_WALK_LEVELS = 6;
@@ -11428,7 +9878,7 @@ function seedModelsInto(templateYaml, config) {
 }
 async function pathExists(candidate) {
   try {
-    await stat5(candidate);
+    await stat4(candidate);
     return true;
   } catch {
     return false;
@@ -11437,10 +9887,10 @@ async function pathExists(candidate) {
 async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   let dir = startDir;
   for (let level = 0; level <= maxLevels; level += 1) {
-    const candidate = path8.join(dir, ...TEMPLATE_RELATIVE);
+    const candidate = path5.join(dir, ...TEMPLATE_RELATIVE);
     if (await pathExists(candidate))
       return candidate;
-    const parent = path8.dirname(dir);
+    const parent = path5.dirname(dir);
     if (parent === dir)
       break;
     dir = parent;
@@ -11448,7 +9898,7 @@ async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   throw new Error(`Could not find ${TEMPLATE_RELATIVE.join("/")} by walking up from ${startDir} (searched ${maxLevels} levels up). Is this CLI running from within the multi-model-orchestration-agent repo?`);
 }
 async function runInit(options) {
-  const entryDir = path8.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
+  const entryDir = path5.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
   let templateDir;
   try {
     templateDir = await locateTemplate(entryDir);
@@ -11456,7 +9906,7 @@ async function runInit(options) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const target = path8.join(options.cwd, ".agent");
+  const target = path5.join(options.cwd, ".agent");
   const exists = await pathExists(target);
   if (exists && options.force !== true) {
     console.error(`${target} already exists. Re-run with --force to overwrite it.`);
@@ -11469,9 +9919,9 @@ async function runInit(options) {
   console.log(`  (from ${templateDir})`);
   const config = options.config;
   if (config !== void 0) {
-    const configPath = path8.join(target, "config.yaml");
+    const configPath = path5.join(target, "config.yaml");
     try {
-      const template = await readFile11(configPath, "utf8");
+      const template = await readFile10(configPath, "utf8");
       await writeFile4(configPath, seedModelsInto(template, config), "utf8");
       console.log("  (models seeded from your kapel configuration)");
     } catch {
@@ -11482,14 +9932,14 @@ async function runInit(options) {
 
 // apps/cli/dist/interactive.js
 import { mkdir as mkdir6 } from "node:fs/promises";
-import path13 from "node:path";
+import path12 from "node:path";
 import * as readline4 from "node:readline";
 
 // apps/cli/dist/checkpoint.js
 import { execFile as execFile8 } from "node:child_process";
-import { copyFile, mkdir as mkdir4, mkdtemp, rm as rm3, rmdir as rmdir2, stat as stat6, utimes } from "node:fs/promises";
+import { copyFile, mkdir as mkdir4, mkdtemp, rm as rm3, rmdir as rmdir2, stat as stat5, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import path9 from "node:path";
+import path6 from "node:path";
 import { promisify as promisify5 } from "node:util";
 var execFileAsync5 = promisify5(execFile8);
 var MAX_BUFFER_BYTES4 = 64 * 1024 * 1024;
@@ -11583,13 +10033,13 @@ async function tempRoot() {
   return root;
 }
 async function withTempIndex(repo, seed, fn) {
-  const dir = await mkdtemp(path9.join(await tempRoot(), "kapel-checkpoint-"));
+  const dir = await mkdtemp(path6.join(await tempRoot(), "kapel-checkpoint-"));
   try {
-    const indexPath = path9.join(dir, "index");
+    const indexPath = path6.join(dir, "index");
     if (seed) {
-      const source = path9.join(repo.gitDir, "index");
+      const source = path6.join(repo.gitDir, "index");
       try {
-        const original = await stat6(source);
+        const original = await stat5(source);
         await copyFile(source, indexPath);
         const asOf = new Date(original.mtimeMs - RACY_MARGIN_MS);
         await utimes(indexPath, asOf, asOf);
@@ -11658,14 +10108,14 @@ async function diffTrees(repo, from, to) {
   return changes;
 }
 async function pruneEmptyParents(root, filePath) {
-  let dir = path9.dirname(path9.join(root, filePath));
-  while (dir !== root && dir.startsWith(`${root}${path9.sep}`)) {
+  let dir = path6.dirname(path6.join(root, filePath));
+  while (dir !== root && dir.startsWith(`${root}${path6.sep}`)) {
     try {
       await rmdir2(dir);
     } catch {
       return;
     }
-    dir = path9.dirname(dir);
+    dir = path6.dirname(dir);
   }
 }
 async function checkoutPaths(repo, tree, paths) {
@@ -11686,7 +10136,7 @@ async function checkoutPaths(repo, tree, paths) {
 async function inProgressOperation(gitDir) {
   for (const [entry, description] of IN_PROGRESS) {
     try {
-      await stat6(path9.join(gitDir, entry));
+      await stat5(path6.join(gitDir, entry));
       return description;
     } catch {
     }
@@ -11754,7 +10204,7 @@ function createCheckpointStore(options) {
       const writes = changes.filter((change) => change.status !== "D");
       await checkoutPaths(info, entry.tree, writes.map((change) => change.path));
       for (const change of removals) {
-        await rm3(path9.join(info.root, change.path), { force: true });
+        await rm3(path6.join(info.root, change.path), { force: true });
         await pruneEmptyParents(info.root, change.path);
       }
       stack.pop();
@@ -11780,8 +10230,8 @@ function createCheckpointStore(options) {
 }
 
 // apps/cli/dist/commands.js
-import { readdir as readdir4, readFile as readFile12 } from "node:fs/promises";
-import path10 from "node:path";
+import { readdir as readdir4, readFile as readFile11 } from "node:fs/promises";
+import path7 from "node:path";
 import { parse as parseYaml3 } from "yaml";
 var CUSTOM_COMMAND_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 var ARGUMENTS_PLACEHOLDER = "$ARGUMENTS";
@@ -11809,7 +10259,7 @@ function asRecord2(value) {
 function asOptionalString(value) {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : void 0;
 }
-function errorMessage10(error) {
+function errorMessage9(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function parseCustomCommandFile(filePath, name, raw) {
@@ -11822,7 +10272,7 @@ function parseCustomCommandFile(filePath, name, raw) {
     value = parseYaml3(split.frontMatter);
   } catch (error) {
     return {
-      warning: `skipping ${filePath}: front matter YAML parse error: ${errorMessage10(error)}`
+      warning: `skipping ${filePath}: front matter YAML parse error: ${errorMessage9(error)}`
     };
   }
   const record = asRecord2(value);
@@ -11842,7 +10292,7 @@ async function loadCustomCommands(workspacePath, builtinNames) {
   const agentDir = await findAgentDir(workspacePath);
   if (agentDir === void 0)
     return { commands: [], warnings: [] };
-  const commandsDir = path10.join(agentDir, "commands");
+  const commandsDir = path7.join(agentDir, "commands");
   let entryNames;
   try {
     const entries = await readdir4(commandsDir, { withFileTypes: true });
@@ -11854,7 +10304,7 @@ async function loadCustomCommands(workspacePath, builtinNames) {
   const warnings = [];
   for (const fileName of entryNames) {
     const displayPath = `.agent/commands/${fileName}`;
-    const stem = path10.basename(fileName, ".md");
+    const stem = path7.basename(fileName, ".md");
     if (!CUSTOM_COMMAND_NAME_PATTERN.test(stem)) {
       warnings.push(`skipping ${displayPath}: "${stem}" is not a valid command name (expected ${CUSTOM_COMMAND_NAME_PATTERN.source})`);
       continue;
@@ -11863,12 +10313,12 @@ async function loadCustomCommands(workspacePath, builtinNames) {
       warnings.push(`skipping ${displayPath}: "/${stem}" is a built-in command and cannot be overridden`);
       continue;
     }
-    const filePath = path10.join(commandsDir, fileName);
+    const filePath = path7.join(commandsDir, fileName);
     let raw;
     try {
-      raw = await readFile12(filePath, "utf8");
+      raw = await readFile11(filePath, "utf8");
     } catch (error) {
-      warnings.push(`skipping ${displayPath}: ${errorMessage10(error)}`);
+      warnings.push(`skipping ${displayPath}: ${errorMessage9(error)}`);
       continue;
     }
     const parsed = parseCustomCommandFile(displayPath, stem, raw);
@@ -11950,17 +10400,17 @@ function createDelegatedChatSession(options) {
 }
 
 // apps/cli/dist/history.js
-import { mkdir as mkdir5, readFile as readFile13, writeFile as writeFile5 } from "node:fs/promises";
-import path11 from "node:path";
+import { mkdir as mkdir5, readFile as readFile12, writeFile as writeFile5 } from "node:fs/promises";
+import path8 from "node:path";
 var HISTORY_LIMIT = 1e3;
 var TRIM_THRESHOLD = HISTORY_LIMIT * 2;
 function historyFilePath(env) {
-  return path11.join(kapelConfigDir(env), "history");
+  return path8.join(kapelConfigDir(env), "history");
 }
 async function loadHistory(env) {
   let raw;
   try {
-    raw = await readFile13(historyFilePath(env), "utf8");
+    raw = await readFile12(historyFilePath(env), "utf8");
   } catch {
     return [];
   }
@@ -11977,12 +10427,12 @@ function createHistoryAppender(env) {
   async function ensureDir() {
     if (dirEnsured)
       return;
-    await mkdir5(path11.dirname(filePath), { recursive: true });
+    await mkdir5(path8.dirname(filePath), { recursive: true });
     dirEnsured = true;
   }
   async function currentLineCount() {
     try {
-      const raw = await readFile13(filePath, "utf8");
+      const raw = await readFile12(filePath, "utf8");
       return raw.split("\n").filter((line) => line.trim() !== "").length;
     } catch {
       return 0;
@@ -12003,7 +10453,7 @@ function createHistoryAppender(env) {
   async function trim() {
     let raw;
     try {
-      raw = await readFile13(filePath, "utf8");
+      raw = await readFile12(filePath, "utf8");
     } catch {
       return;
     }
@@ -12022,7 +10472,7 @@ function createHistoryAppender(env) {
 }
 
 // apps/cli/dist/input.js
-import * as readline3 from "node:readline";
+import * as readline2 from "node:readline";
 function initialAssembly() {
   return { pending: [] };
 }
@@ -12073,7 +10523,7 @@ function rlHistory(rl) {
 }
 function createInputManager(options) {
   const pasteWindowMs = options.pasteWindowMs ?? DEFAULT_PASTE_WINDOW_MS;
-  const rl = readline3.createInterface({
+  const rl = readline2.createInterface({
     input: options.input,
     output: options.output,
     terminal: true,
@@ -12230,10 +10680,77 @@ ${action.text}`;
   };
 }
 
+// apps/cli/dist/instructions.js
+import { readFileSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import path9 from "node:path";
+var MAX_INSTRUCTIONS_BYTES = 32 * 1024;
+var TRUNCATION_MARKER2 = "[instructions truncated]";
+var PREAMBLE = "Project instructions (from AGENTS.md files):";
+function abbreviateHome(absPath, home) {
+  if (absPath === home)
+    return "~";
+  const prefix = home.endsWith(path9.sep) ? home : `${home}${path9.sep}`;
+  if (!absPath.startsWith(prefix))
+    return absPath;
+  return `~${path9.sep}${absPath.slice(prefix.length)}`;
+}
+function sourcesFor(workspacePath, env) {
+  const configPath = path9.join(kapelConfigDir(env), "AGENTS.md");
+  const projectPath = path9.join(workspacePath, "AGENTS.md");
+  const agentPath = path9.join(workspacePath, ".agent", "AGENTS.md");
+  return [
+    { absPath: configPath, display: abbreviateHome(configPath, homedir2()) },
+    {
+      absPath: projectPath,
+      display: path9.relative(workspacePath, projectPath)
+    },
+    { absPath: agentPath, display: path9.relative(workspacePath, agentPath) }
+  ];
+}
+function capSize(text2) {
+  if (Buffer.byteLength(text2, "utf8") <= MAX_INSTRUCTIONS_BYTES)
+    return text2;
+  const markerLine = `
+${TRUNCATION_MARKER2}`;
+  const budget = Math.max(0, MAX_INSTRUCTIONS_BYTES - Buffer.byteLength(markerLine, "utf8"));
+  const truncated = Buffer.from(text2, "utf8").subarray(0, budget).toString("utf8");
+  return `${truncated}${markerLine}`;
+}
+function loadInstructions(workspacePath, env) {
+  const blocks = [];
+  const sources = [];
+  for (const source of sourcesFor(workspacePath, env)) {
+    let raw;
+    try {
+      raw = readFileSync(source.absPath, "utf8");
+    } catch {
+      continue;
+    }
+    const trimmed = raw.trim();
+    if (trimmed === "")
+      continue;
+    sources.push(source.display);
+    blocks.push(`# From ${source.display}
+
+${trimmed}`);
+  }
+  return { text: capSize(blocks.join("\n\n")), sources };
+}
+function composeSystemPrompt(base, instructions) {
+  if (instructions.text === "")
+    return base;
+  return `${base}
+
+${PREAMBLE}
+
+${instructions.text}`;
+}
+
 // apps/cli/dist/mention.js
 import { execFile as execFile9 } from "node:child_process";
-import { readdir as readdir5, stat as stat7 } from "node:fs/promises";
-import path12 from "node:path";
+import { readdir as readdir5, stat as stat6 } from "node:fs/promises";
+import path10 from "node:path";
 import { promisify as promisify6 } from "node:util";
 var execFileAsync6 = promisify6(execFile9);
 var MATCH_BONUS = 4;
@@ -12317,7 +10834,7 @@ async function gitListFiles(workspacePath) {
   }
 }
 function toPosix(relativePath) {
-  return relativePath.split(path12.sep).join("/");
+  return relativePath.split(path10.sep).join("/");
 }
 async function walkFiles(workspacePath, maxEntries) {
   const found = [];
@@ -12329,7 +10846,7 @@ async function walkFiles(workspacePath, maxEntries) {
         return found;
       let entries;
       try {
-        entries = await readdir5(path12.join(workspacePath, relativeDir), {
+        entries = await readdir5(path10.join(workspacePath, relativeDir), {
           withFileTypes: true
         });
       } catch {
@@ -12407,12 +10924,12 @@ var TRAILING_PUNCTUATION = /* @__PURE__ */ new Set([
 ]);
 var MENTION_PATTERN = /(?:^|[^\w@])@([^\s]+)/g;
 function workspaceFileExists(workspacePath, relativePath) {
-  const root = path12.resolve(workspacePath);
-  const resolved = path12.resolve(root, relativePath);
-  const inside = resolved === root || resolved.startsWith(root + path12.sep);
+  const root = path10.resolve(workspacePath);
+  const resolved = path10.resolve(root, relativePath);
+  const inside = resolved === root || resolved.startsWith(root + path10.sep);
   if (!inside)
     return Promise.resolve(false);
-  return stat7(resolved).then((stats) => stats.isFile(), () => false);
+  return stat6(resolved).then((stats) => stats.isFile(), () => false);
 }
 function mentionCandidates(text2) {
   const out = [];
@@ -12459,22 +10976,971 @@ ${mentionAnnotation(paths)}`;
 // apps/cli/dist/orchestrate.js
 import { execFile as execFile10 } from "node:child_process";
 import { resolve as resolve4 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { promisify as promisify7 } from "node:util";
-var WORKER_MODES = ["in-process", "child"];
-var DEFAULT_WORKER_MODE = "in-process";
-function validateWorkerMode(raw) {
-  if (WORKER_MODES.includes(raw))
-    return raw;
-  throw new Error(`Invalid --worker-mode value "${raw}": expected one of ${WORKER_MODES.join(", ")}.`);
+
+// apps/cli/dist/prompter.js
+import * as readline3 from "node:readline";
+
+// apps/cli/dist/preview.js
+var PREVIEW_MAX = 120;
+var PREVIEW_MAX_LINES = 40;
+var DIFF_CONTEXT = 3;
+var LCS_MAX_LINES = 300;
+var WRITE_PREVIEW_LINES = 20;
+var RED = "31";
+var GREEN = "32";
+var DIM = "2";
+function ansi2(code, text2, enabled) {
+  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
 }
-var ISOLATION_MODES = ["worktree", "none"];
+function isRecord8(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringField(input, key) {
+  if (!isRecord8(input))
+    return void 0;
+  const value = input[key];
+  return typeof value === "string" ? value : void 0;
+}
+function previewInput(input) {
+  let text2;
+  try {
+    text2 = JSON.stringify(input) ?? String(input);
+  } catch {
+    text2 = String(input);
+  }
+  if (text2.length <= PREVIEW_MAX)
+    return text2;
+  return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
+}
+function lcsDiff(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const width = m + 1;
+  const dp = new Array((n + 1) * width).fill(0);
+  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ marker: " ", text: a[i] ?? "" });
+      i += 1;
+      j += 1;
+    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
+      out.push({ marker: "-", text: a[i] ?? "" });
+      i += 1;
+    } else {
+      out.push({ marker: "+", text: b[j] ?? "" });
+      j += 1;
+    }
+  }
+  for (; i < n; i += 1)
+    out.push({ marker: "-", text: a[i] ?? "" });
+  for (; j < m; j += 1)
+    out.push({ marker: "+", text: b[j] ?? "" });
+  return out;
+}
+function diffLines(oldText, newText) {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head])
+    head += 1;
+  let tail3 = 0;
+  while (tail3 < a.length - head && tail3 < b.length - head && a[a.length - 1 - tail3] === b[b.length - 1 - tail3]) {
+    tail3 += 1;
+  }
+  const midA = a.slice(head, a.length - tail3);
+  const midB = b.slice(head, b.length - tail3);
+  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
+    ...midA.map((text2) => ({ marker: "-", text: text2 })),
+    ...midB.map((text2) => ({ marker: "+", text: text2 }))
+  ] : lcsDiff(midA, midB);
+  return [
+    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
+    ...middle,
+    ...a.slice(a.length - tail3).map((text2) => ({ marker: " ", text: text2 }))
+  ];
+}
+function paint(line, color) {
+  const text2 = `  ${line.marker} ${line.text}`;
+  if (line.marker === "-")
+    return ansi2(RED, text2, color);
+  if (line.marker === "+")
+    return ansi2(GREEN, text2, color);
+  return text2;
+}
+function moreTail(count, color) {
+  return ansi2(DIM, `  \u2026 (+${count} more)`, color);
+}
+function capLines(lines, color) {
+  if (lines.length <= PREVIEW_MAX_LINES)
+    return [...lines];
+  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
+  return [...kept, moreTail(lines.length - kept.length, color)];
+}
+function renderDiff(lines, options = {}) {
+  const color = options.color === true;
+  const keep = lines.map((line) => line.marker !== " ");
+  lines.forEach((line, index2) => {
+    if (line.marker === " ")
+      return;
+    const from = Math.max(0, index2 - DIFF_CONTEXT);
+    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
+    for (let near = from; near <= to; near += 1)
+      keep[near] = true;
+  });
+  const out = [];
+  let elided = false;
+  lines.forEach((line, index2) => {
+    if (keep[index2] === true) {
+      out.push(paint(line, color));
+      elided = false;
+      return;
+    }
+    if (!elided) {
+      out.push(ansi2(DIM, "  \u22EE", color));
+      elided = true;
+    }
+  });
+  return capLines(out, color);
+}
+function previewBash(input, options = {}) {
+  const command = stringField(input, "command");
+  if (command === void 0)
+    return void 0;
+  const lines = command.split("\n").map((line) => `  ${line}`);
+  return capLines(lines, options.color === true).join("\n");
+}
+function previewEdit(input, options = {}) {
+  const path15 = stringField(input, "path");
+  const oldText = stringField(input, "oldText");
+  const newText = stringField(input, "newText");
+  if (path15 === void 0 || oldText === void 0 || newText === void 0) {
+    return void 0;
+  }
+  const replaceAll = isRecord8(input) && input.replaceAll === true ? " (all occurrences)" : "";
+  const header = ansi2(DIM, `  ${path15}${replaceAll}`, options.color === true);
+  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
+}
+function previewWrite(input, options = {}) {
+  const path15 = stringField(input, "path");
+  const content = stringField(input, "content");
+  if (path15 === void 0 || content === void 0)
+    return void 0;
+  const color = options.color === true;
+  const lines = content.split("\n");
+  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
+  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
+  if (lines.length > shown.length) {
+    body.push(moreTail(lines.length - shown.length, color));
+  }
+  const header = ansi2(DIM, `  ${path15} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
+  return [header, ...body].join("\n");
+}
+function formatToolPreview(tool, input, options = {}) {
+  switch (tool) {
+    case "bash":
+      return previewBash(input, options);
+    case "edit_file":
+      return previewEdit(input, options);
+    case "write_file":
+      return previewWrite(input, options);
+    default:
+      return void 0;
+  }
+}
+
+// apps/cli/dist/prompter.js
+var ERASE_LINE = "\x1B[2K\r";
+function createPromptState() {
+  return { active: false };
+}
+function parsePermissionAnswer(answer) {
+  if (typeof answer !== "string")
+    return "deny";
+  const normalized = answer.trim().toLowerCase();
+  if (normalized === "y" || normalized === "yes")
+    return "once";
+  if (normalized === "a" || normalized === "always")
+    return "always";
+  return "deny";
+}
+function createPrompter(options) {
+  if (options.yes) {
+    return { ask: async () => true };
+  }
+  if (!options.interactive) {
+    return void 0;
+  }
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const state = options.state;
+  const ask2 = options.ask;
+  const allowlist = options.allowlist;
+  const color = options.color ?? output.isTTY === true;
+  return {
+    ask: async (request) => {
+      state.active = true;
+      try {
+        const prompt = formatPermissionPrompt(request, { color });
+        const lines = previewBlockLines(request, prompt, {
+          color,
+          offerAlways: allowlist !== void 0
+        });
+        if (color)
+          output.write(ERASE_LINE);
+        if (lines.length > 0)
+          output.write(`${lines.join("\n")}
+`);
+        const raw = ask2 === void 0 ? await askOnce(prompt.query, input, output) : await ask2(prompt.query);
+        const answer = parsePermissionAnswer(raw);
+        if (answer === "deny")
+          return false;
+        if (answer === "always" && allowlist !== void 0) {
+          const rule = allowlist.remember(request);
+          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
+`);
+        }
+        return true;
+      } finally {
+        state.active = false;
+      }
+    }
+  };
+}
+function dim(text2, enabled) {
+  return enabled ? `\x1B[2m${text2}\x1B[0m` : text2;
+}
+function previewBlockLines(request, prompt, options) {
+  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
+  if (!options.offerAlways)
+    return lines;
+  const rule = sessionRuleFor(request);
+  if (rule === void 0)
+    return lines;
+  return [
+    ...lines,
+    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
+  ];
+}
+function formatPermissionPrompt(request, options = {}) {
+  const block = formatToolPreview(request.tool, request.input, {
+    ...options.color === void 0 ? {} : { color: options.color }
+  });
+  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] ` : `allow ${request.tool}? [y/n/a] `;
+  return { block, query };
+}
+function askOnce(query, input, output) {
+  const rl = readline3.createInterface({ input, output, terminal: true });
+  return new Promise((resolve5) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled)
+        return;
+      settled = true;
+      rl.close();
+      resolve5(value);
+    };
+    rl.on("SIGINT", () => finish(void 0));
+    rl.question(query, (answer) => finish(answer));
+  });
+}
+
+// apps/cli/dist/status-line.js
+var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+var TICK_MS = 120;
+var ERASE = "\r\x1B[2K";
+var DEFAULT_COLUMNS = 80;
+function defaultTicker(tick) {
+  const timer = setInterval(tick, TICK_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+function formatTokenCount(tokens) {
+  if (tokens < 1e3)
+    return String(Math.round(tokens));
+  return `${(tokens / 1e3).toFixed(1)}k`;
+}
+function formatStatus(label, elapsedMs2, tokens) {
+  const seconds = Math.max(0, Math.floor(elapsedMs2 / 1e3));
+  const parts = [`${label} ${seconds}s`];
+  if (tokens !== void 0 && tokens > 0) {
+    parts.push(`${formatTokenCount(tokens)} tokens`);
+  }
+  return parts.join(" \xB7 ");
+}
+var StatusLine = class {
+  #output;
+  #enabled;
+  #now;
+  #tokens;
+  #suspended;
+  #ticker;
+  #cancel;
+  #label = "";
+  #startedAt = 0;
+  #frame = 0;
+  #painted = false;
+  constructor(options = {}) {
+    this.#output = options.output ?? process.stdout;
+    this.#enabled = options.tty ?? this.#output.isTTY === true;
+    this.#now = options.now ?? (() => Date.now());
+    this.#tokens = options.tokens;
+    this.#suspended = options.suspended ?? (() => false);
+    this.#ticker = options.ticker ?? defaultTicker;
+  }
+  /** Whether this line will ever paint anything — false off a TTY. */
+  get enabled() {
+    return this.#enabled;
+  }
+  /** Whether a status is currently being kept up to date. */
+  get running() {
+    return this.#cancel !== void 0;
+  }
+  /**
+   * Starts the status, or relabels a running one.
+   *
+   * The elapsed clock runs from the *start*, not from each relabel: it is the
+   * age of the current wait, and a wait that changes phase (model → tool) is a
+   * new wait, so {@link stop} then `start` is how the caller resets it.
+   */
+  start(label) {
+    if (!this.#enabled)
+      return;
+    this.#label = label;
+    if (this.#cancel === void 0) {
+      this.#startedAt = this.#now();
+      this.#frame = 0;
+      this.#cancel = this.#ticker(() => {
+        this.#frame += 1;
+        this.#paint();
+      });
+    }
+    this.#paint();
+  }
+  /**
+   * Erases the painted line but keeps the status running: the next tick (or
+   * {@link refresh}) puts it back. This is what the renderer calls before
+   * writing real output.
+   */
+  erase() {
+    if (!this.#painted)
+      return;
+    this.#painted = false;
+    this.#output.write(ERASE);
+  }
+  /** Repaints immediately, if a status is running. */
+  refresh() {
+    this.#paint();
+  }
+  /** Ends the status: no more repainting, and nothing left on screen. */
+  stop() {
+    const cancel = this.#cancel;
+    this.#cancel = void 0;
+    cancel?.();
+    this.erase();
+  }
+  #paint() {
+    if (!this.#enabled || this.#cancel === void 0)
+      return;
+    if (this.#suspended()) {
+      this.erase();
+      return;
+    }
+    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
+    const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
+    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
+    const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
+    this.#output.write(`${ERASE}\x1B[2m${text2}\x1B[0m`);
+    this.#painted = true;
+  }
+};
+
+// apps/cli/dist/render.js
+function formatTokenCount2(tokens) {
+  if (tokens < 1e3)
+    return String(tokens);
+  if (tokens < 1e6)
+    return `${(tokens / 1e3).toFixed(1)}k`;
+  return `${(tokens / 1e6).toFixed(1)}M`;
+}
+function formatCostUsd(costUsd, pricing) {
+  if (pricing === "unknown")
+    return "n/a";
+  const amount = costUsd >= 0.01 ? costUsd.toFixed(2) : costUsd.toFixed(4);
+  return pricing === "partial" ? `$${amount}+` : `$${amount}`;
+}
+function formatTokenFlow(usage) {
+  const cached = usage.cachedInputTokens;
+  const input = cached === void 0 || cached === 0 ? `${formatTokenCount2(usage.inputTokens)} in` : `${formatTokenCount2(usage.inputTokens)} in (${formatTokenCount2(cached)} cached)`;
+  return `${input} / ${formatTokenCount2(usage.outputTokens)} out`;
+}
+function usageBreakdownLine(entry, options = {}) {
+  const parts = [];
+  if (options.countTasks === true) {
+    const tasks = entry.tasks.filter((id) => id !== UNATTRIBUTED).length;
+    parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`);
+  }
+  parts.push(formatTokenFlow(entry.usage));
+  parts.push(formatCostUsd(entry.costUsd, entry.pricing));
+  return `${entry.key}: ${parts.join(" \xB7 ")}`;
+}
+function usageRollupLines(breakdown, options = {}) {
+  return [...breakdown.values()].sort((a, b) => b.costUsd - a.costUsd || b.usage.inputTokens + b.usage.outputTokens - (a.usage.inputTokens + a.usage.outputTokens) || a.key.localeCompare(b.key)).map((entry) => usageBreakdownLine(entry, options));
+}
+function isRecord9(value) {
+  return typeof value === "object" && value !== null;
+}
+function isDelegatedResult(result) {
+  return "events" in result;
+}
+var CODEX_PREFIX = "codex.";
+var CLAUDE_CODE_PREFIX = "claude-code.";
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "")
+      return value;
+  }
+  return void 0;
+}
+function codexItemFrom(data) {
+  if (isRecord9(data.item))
+    return data.item;
+  if (isRecord9(data.msg) && isRecord9(data.msg.item))
+    return data.msg.item;
+  return void 0;
+}
+function codexMessageText(item) {
+  const direct = firstNonEmptyString(item.text, item.message);
+  if (direct !== void 0)
+    return direct;
+  const content = item.content;
+  if (typeof content === "string" && content.trim() !== "")
+    return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const part of content) {
+      if (typeof part === "string")
+        parts.push(part);
+      else if (isRecord9(part) && typeof part.text === "string") {
+        parts.push(part.text);
+      }
+    }
+    const joined = parts.join("");
+    if (joined !== "")
+      return joined;
+  }
+  return void 0;
+}
+function codexCommandText(item) {
+  const direct = firstNonEmptyString(item.command, item.cmd);
+  if (direct !== void 0)
+    return direct;
+  const argv = item.argv ?? item.command;
+  if (Array.isArray(argv)) {
+    const parts = argv.filter((part) => typeof part === "string");
+    if (parts.length > 0)
+      return parts.join(" ");
+  }
+  return void 0;
+}
+function codexFileChangeText(item) {
+  const direct = firstNonEmptyString(item.path, item.file, item.summary);
+  if (direct !== void 0)
+    return direct;
+  const changes = item.changes;
+  if (Array.isArray(changes)) {
+    const paths = [];
+    for (const change of changes) {
+      if (typeof change === "string")
+        paths.push(change);
+      else if (isRecord9(change)) {
+        const p = firstNonEmptyString(change.path, change.file);
+        if (p !== void 0)
+          paths.push(p);
+      }
+    }
+    if (paths.length > 0)
+      return paths.join(", ");
+  }
+  return void 0;
+}
+function truncate3(text2, limit) {
+  return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
+}
+function taskIdOf(event2, data) {
+  return event2.taskId ?? stringOrUndefined(data.taskId) ?? "?";
+}
+function stringOrUndefined(value) {
+  return typeof value === "string" && value !== "" ? value : void 0;
+}
+function routingLabel(routing) {
+  if (!isRecord9(routing))
+    return void 0;
+  const rule = stringOrUndefined(routing.rule);
+  switch (routing.reason) {
+    case "rule":
+      return rule === void 0 ? "rule" : `rule: ${rule}`;
+    case "escalation":
+      return rule === void 0 ? "escalation" : `escalation: ${rule}`;
+    case "suggestedAgent":
+      return "suggested";
+    case "orchestrator":
+      return "default";
+    default:
+      return void 0;
+  }
+}
+function firstLine2(text2) {
+  if (typeof text2 !== "string")
+    return "(no summary)";
+  const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
+  return line === void 0 ? "(no summary)" : truncate3(line, 120);
+}
+function ansi3(code, text2, enabled) {
+  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
+}
+var EXIT_LABEL = {
+  success: "success",
+  partial: "partial",
+  failed: "failed"
+};
+var THINKING_LABEL = "thinking";
+var TextRenderer = class {
+  #output;
+  #color;
+  #status;
+  /** A streamed line is open — text was written with no newline after it. */
+  #streaming = false;
+  /** Deltas were streamed for the model turn now in flight. */
+  #streamed = false;
+  /** A turn this renderer is showing progress for is in flight. */
+  #inTurn = false;
+  /**
+   * Text of the Claude Code block currently streaming, for the one case that
+   * cannot be streamed to the screen: a delegated *task* inside an
+   * orchestration run, whose output shares the terminal with other tasks.
+   */
+  #claudeText = "";
+  constructor(output = process.stdout, options = {}) {
+    this.#output = output;
+    this.#color = "isTTY" in output && output.isTTY === true;
+    this.#status = options.status ?? new StatusLine({
+      output,
+      ...options.tokens === void 0 ? {} : { tokens: options.tokens },
+      ...options.suspended === void 0 ? {} : { suspended: options.suspended }
+    });
+  }
+  /**
+   * Writes one line of output, taking the screen back from the status line and
+   * from any partially streamed text first.
+   */
+  #write(line) {
+    this.#endStream();
+    this.#status.erase();
+    this.#output.write(`${line}
+`);
+    this.#status.refresh();
+  }
+  /**
+   * Writes one line of caller-owned output (the REPL's own notices) through
+   * the same discipline, and ends any status the turn left running.
+   *
+   * The interactive shell prints its per-turn lines itself rather than through
+   * an event; routing them here is what keeps them from landing on top of a
+   * spinner.
+   */
+  line(text2) {
+    this.#endTurn();
+    this.#write(text2);
+  }
+  /** Appends streamed assistant text, with no line terminator of its own. */
+  #stream(text2) {
+    if (text2 === "")
+      return;
+    this.#status.stop();
+    this.#output.write(text2);
+    this.#streaming = true;
+    this.#streamed = true;
+  }
+  /** Terminates an open streamed line, if there is one. */
+  #endStream() {
+    if (!this.#streaming)
+      return;
+    this.#streaming = false;
+    this.#output.write("\n");
+  }
+  /** A turn started: from here on there is something to show progress for. */
+  #beginTurn() {
+    this.#inTurn = true;
+    this.#streamed = false;
+    this.#status.start(THINKING_LABEL);
+  }
+  /**
+   * Relabels the status, but only while a turn is actually in flight — which
+   * is never the case for an orchestration run, whose turns all carry a task
+   * id and so never call {@link #beginTurn}.
+   */
+  #waiting(label) {
+    if (!this.#inTurn)
+      return;
+    this.#status.start(label);
+  }
+  /** A turn ended (or output took over): nothing is pending on screen. */
+  #endTurn() {
+    this.#inTurn = false;
+    this.#endStream();
+    this.#status.stop();
+  }
+  #dim(text2) {
+    return ansi3("2", text2, this.#color);
+  }
+  #bold(text2) {
+    return ansi3("1", text2, this.#color);
+  }
+  emit(event2) {
+    const data = isRecord9(event2.data) ? event2.data : {};
+    const single = event2.taskId === void 0;
+    if (event2.type.startsWith(CODEX_PREFIX)) {
+      this.#emitCodex(data);
+      return;
+    }
+    if (event2.type.startsWith(CLAUDE_CODE_PREFIX)) {
+      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data, single);
+      return;
+    }
+    switch (event2.type) {
+      case "chat.turn.started":
+      case "loop.started": {
+        if (single)
+          this.#beginTurn();
+        break;
+      }
+      case "chat.turn.completed":
+      case "loop.completed": {
+        if (single)
+          this.#endTurn();
+        break;
+      }
+      case MODEL_TEXT_DELTA_EVENT: {
+        if (!single)
+          break;
+        if (typeof data.text === "string")
+          this.#stream(data.text);
+        break;
+      }
+      case "model.turn.completed": {
+        const text2 = typeof data.text === "string" ? data.text : "";
+        if (this.#streamed) {
+          this.#endStream();
+          this.#streamed = false;
+        } else if (text2 !== "") {
+          this.#write(text2);
+        }
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      case "tool.execution.started": {
+        const tool = typeof data.tool === "string" ? data.tool : "?";
+        this.#write(`${this.#dim("\u2192")} ${tool} ${this.#dim(previewInput(data.input))}`);
+        this.#waiting(tool);
+        break;
+      }
+      case "tool.execution.completed": {
+        const ok = data.ok === true;
+        const denied = data.denied === true;
+        this.#write(ok ? "  \u2713" : `  \u2717 (${denied ? "denied" : "error"})`);
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      case "context.compacted": {
+        const elided = typeof data.elided === "number" ? data.elided : 0;
+        const savedChars = typeof data.savedChars === "number" ? data.savedChars : 0;
+        this.#write(this.#dim(`\u2248 context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`));
+        break;
+      }
+      case "task.started":
+      case "task.completed":
+      case "task.escalated":
+      case "task.cancelled":
+      case "task.low_confidence":
+        this.#emitTaskLifecycle(event2.type, taskIdOf(event2, data), data);
+        break;
+      case "worktree.created":
+      case "worktree.integrated":
+      case "worktree.removed":
+        this.#emitWorktree(event2.type, taskIdOf(event2, data), data);
+        break;
+      case "validation.started":
+      case "validation.completed":
+        this.#emitValidation(event2.type, taskIdOf(event2, data), data);
+        break;
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders the scheduler's `task.*` events — the orchestration run's spine.
+   *
+   * These share the sink with the worker loop's own events, so a task line has
+   * to be identifiable on its own: every one of them leads with the task id.
+   */
+  #emitTaskLifecycle(type, taskId, data) {
+    switch (type) {
+      case "task.started": {
+        const agent = stringOrUndefined(data.agent) ?? "?";
+        const attempt = typeof data.attempt === "number" ? data.attempt : 1;
+        const model = stringOrUndefined(data.model);
+        const modelSuffix = model === void 0 ? "" : ` [${model}]`;
+        const routing = routingLabel(data.routing);
+        const parens = routing === void 0 ? `attempt ${attempt}` : `${routing}, attempt ${attempt}`;
+        this.#write(`\u25B6 ${taskId} \u2192 ${agent}${modelSuffix} (${parens})`);
+        break;
+      }
+      case "task.completed": {
+        const result = isRecord9(data.result) ? data.result : {};
+        const ok = result.status === "success";
+        const retrying = data.final === false;
+        const suffix = retrying ? this.#dim(" (retrying)") : "";
+        this.#write(`${ok ? "\u2714" : "\u2716"} ${taskId} \u2014 ${firstLine2(result.summary)}${suffix}`);
+        break;
+      }
+      case "task.escalated": {
+        const from = stringOrUndefined(data.from) ?? "(unassigned)";
+        const to = stringOrUndefined(data.to) ?? "?";
+        this.#write(`\u2191 ${taskId} rerouted ${from} \u2192 ${to}`);
+        break;
+      }
+      case "task.cancelled": {
+        const reason = stringOrUndefined(data.reason) ?? "cancelled";
+        this.#write(`\u2298 ${taskId} (${reason})`);
+        break;
+      }
+      case "task.low_confidence": {
+        const confidence = typeof data.confidence === "number" ? data.confidence : 0;
+        const threshold = typeof data.threshold === "number" ? data.threshold : 0;
+        const verdict = data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
+        this.#write(`\u21BB ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} \u2014 ${verdict}`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders the worktree isolation layer's `worktree.*` events.
+   *
+   * Only the moments that change what is in the repository get a line: a task
+   * got its own checkout, its work landed (or did not), and a branch outlived
+   * the run and is waiting for a human. A clean removal is the expected case
+   * and stays silent.
+   */
+  #emitWorktree(type, taskId, data) {
+    switch (type) {
+      case "worktree.created": {
+        const branch = stringOrUndefined(data.branch) ?? "?";
+        this.#write(`\u2387 ${taskId} worktree created (${branch})`);
+        break;
+      }
+      case "worktree.integrated": {
+        if (data.merged === true) {
+          const commit = stringOrUndefined(data.commit);
+          const suffix = commit === void 0 ? "" : ` \u2192 ${commit.slice(0, 8)}`;
+          this.#write(`\u21E1 ${taskId} merged${suffix}`);
+          break;
+        }
+        const files = Array.isArray(data.conflictFiles) ? data.conflictFiles.filter((file) => typeof file === "string") : [];
+        this.#write(files.length === 0 ? `\u26A0 ${taskId} not merged (${stringOrUndefined(data.reason) ?? "unknown reason"})` : `\u26A0 ${taskId} merge conflict: ${files.join(", ")}`);
+        break;
+      }
+      case "worktree.removed": {
+        if (data.keptBranch !== true)
+          break;
+        const branch = stringOrUndefined(data.branch) ?? "?";
+        this.#write(this.#dim(`\u2387 ${taskId} branch kept: ${branch}`));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders the `validation.*` events {@link ValidatingExecutor} emits around
+   * each configured validator command.
+   *
+   * Kept quiet and dim on the way in — a validator starting is background
+   * noise most of the time — but its result always lands, pass or fail, since
+   * that is what decides whether the task's work is going to be kept.
+   */
+  #emitValidation(type, taskId, data) {
+    switch (type) {
+      case "validation.started": {
+        const name = stringOrUndefined(data.name) ?? "?";
+        this.#write(this.#dim(`\u2699 ${taskId} validator ${name}\u2026`));
+        break;
+      }
+      case "validation.completed": {
+        const name = stringOrUndefined(data.name) ?? "?";
+        const passed = data.passed === true;
+        const seconds = typeof data.durationMs === "number" ? data.durationMs / 1e3 : 0;
+        const duration = `${seconds.toFixed(1)}s`;
+        if (passed) {
+          this.#write(`  \u2713 ${name} (${duration})`);
+          break;
+        }
+        const exitCode = typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
+        this.#write(`  \u2717 ${name} (exit ${exitCode}, ${duration})`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders a normalized `codex.*` event. Only `item.*` events whose nested
+   * item is `agent_message` / `command_execution` / `file_change` produce
+   * output — everything else (`turn.completed` usage rollups, the synthetic
+   * `codex.completed` marker, and any event type this wrapper doesn't
+   * recognize yet) stays quiet, matching the native renderer's silence on
+   * unknown event types.
+   */
+  #emitCodex(data) {
+    const item = codexItemFrom(data);
+    if (item === void 0)
+      return;
+    const itemType = typeof item.type === "string" ? item.type : void 0;
+    switch (itemType) {
+      case "agent_message": {
+        const text2 = codexMessageText(item);
+        if (text2 !== void 0 && text2.trim() !== "")
+          this.#write(text2);
+        break;
+      }
+      case "command_execution": {
+        const command = codexCommandText(item);
+        if (command !== void 0) {
+          this.#write(`\u2192 codex: ${truncate3(command, 120)}`);
+        }
+        break;
+      }
+      case "file_change": {
+        const summary = codexFileChangeText(item);
+        if (summary !== void 0)
+          this.#write(`\u270E ${summary}`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders a normalized `claude-code.*` event.
+   *
+   * The payload is a raw Claude API streaming line, so the two things worth
+   * showing are pulled out of it by hand: the assistant's own text, streamed a
+   * delta at a time exactly like the native loop's (buffered to the end of the
+   * block only when the events belong to one task among several, where partial
+   * lines from different tasks would interleave), and the name of each tool
+   * as it starts, which is what makes a long turn legible. Everything else —
+   * `message_start`, usage rollups, the synthetic `completed` marker, and any
+   * event type this wrapper does not model yet — stays quiet, exactly as the
+   * native renderer does for unknown types.
+   */
+  #emitClaudeCode(kind, data, single) {
+    const event2 = isRecord9(data.event) ? data.event : data;
+    switch (kind) {
+      case "tool_use": {
+        const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
+        this.#write(`${this.#dim("\u2192")} claude: ${name}`);
+        this.#waiting(name);
+        break;
+      }
+      case "content_block_delta": {
+        const delta = isRecord9(event2.delta) ? event2.delta : void 0;
+        if (delta?.type !== "text_delta")
+          break;
+        if (typeof delta.text !== "string")
+          break;
+        if (single)
+          this.#stream(delta.text);
+        else
+          this.#claudeText += delta.text;
+        break;
+      }
+      case "content_block_stop":
+      case "message_stop": {
+        this.#endStream();
+        const buffered = this.#claudeText.trim();
+        this.#claudeText = "";
+        if (buffered !== "")
+          this.#write(buffered);
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  result(result, usage) {
+    this.#endTurn();
+    this.#write("");
+    this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
+    this.#write(result.summary);
+    if (isDelegatedResult(result)) {
+      if (result.exitCode !== null && result.exitCode !== 0) {
+        this.#write(this.#dim(`exit code: ${result.exitCode}`));
+      }
+      if (result.usage !== void 0) {
+        this.#write(this.#dim(`tokens \u2014 input: ${result.usage.inputTokens}, output: ${result.usage.outputTokens}`));
+      }
+      return;
+    }
+    this.#write(this.#dim(`iterations: ${result.iterations}  tool calls: ${result.toolCalls}`));
+    const { usage: totals, costUsd } = usage;
+    const tokenParts = [
+      `input: ${totals.inputTokens}`,
+      `output: ${totals.outputTokens}`
+    ];
+    if (totals.cachedInputTokens !== void 0) {
+      tokenParts.push(`cached: ${totals.cachedInputTokens}`);
+    }
+    let usageLine2 = `tokens \u2014 ${tokenParts.join(", ")}`;
+    if (costUsd > 0)
+      usageLine2 += `  (~$${costUsd.toFixed(4)})`;
+    this.#write(this.#dim(usageLine2));
+  }
+};
+var JsonRenderer = class {
+  #output;
+  constructor(output = process.stdout) {
+    this.#output = output;
+  }
+  emit(event2) {
+    this.#output.write(`${JSON.stringify(event2)}
+`);
+  }
+  result(result, usage) {
+    const trackerIsEmpty = usage.usage.inputTokens === 0 && usage.usage.outputTokens === 0;
+    const reported = trackerIsEmpty && "usage" in result && result.usage !== void 0 ? result.usage : usage.usage;
+    const line = {
+      type: "result",
+      ...result,
+      usage: reported,
+      costUsd: usage.costUsd
+    };
+    this.#output.write(`${JSON.stringify(line)}
+`);
+  }
+};
+
+// apps/cli/dist/orchestrate.js
 var DEFAULT_ISOLATION = "worktree";
-function validateIsolation(raw) {
-  if (ISOLATION_MODES.includes(raw))
-    return raw;
-  throw new Error(`Invalid --isolation value "${raw}": expected one of ${ISOLATION_MODES.join(", ")}.`);
-}
 var execFileAsync7 = promisify7(execFile10);
 async function worktreeIsolationError(workspacePath) {
   try {
@@ -12483,9 +11949,6 @@ async function worktreeIsolationError(workspacePath) {
   } catch {
     return `--isolation worktree needs ${workspacePath} to be a git repository with at least one commit, and \`git rev-parse HEAD\` failed there. Commit something first, or re-run with --isolation none.`;
   }
-}
-function cliEntryPath() {
-  return fileURLToPath2(new URL("./index.js", import.meta.url));
 }
 async function workspaceExecutorFactory(args) {
   const { runId, events: events2, taskTimeoutMs } = args;
@@ -12522,15 +11985,6 @@ async function workspaceExecutorFactory(args) {
       runId,
       events: events2,
       resolveAgentModel,
-      ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
-    });
-  }
-  if (args.workerMode === "child") {
-    return (workspacePath) => new ChildProcessWorkerExecutor({
-      command: [process.execPath, cliEntryPath(), "worker"],
-      runId,
-      workspacePath,
-      events: events2,
       ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
     });
   }
@@ -12730,7 +12184,6 @@ async function executePreparedPlan(request, deps = {}) {
       runId,
       events: events2,
       usage,
-      workerMode: options.workerMode,
       backend: options.backend,
       isolation: options.isolation,
       validate: options.validate,
@@ -12836,7 +12289,6 @@ async function runOrchestrate(objective, options, deps = {}) {
       usage,
       options: {
         json: options.json,
-        workerMode: options.workerMode,
         backend: options.backend,
         isolation,
         validate: options.validate ?? true,
@@ -12851,8 +12303,265 @@ async function runOrchestrate(objective, options, deps = {}) {
   }
 }
 
+// apps/cli/dist/permissions.js
+var DEFAULT_PERMISSIONS = {
+  read_file: "allow",
+  glob: "allow",
+  grep: "allow",
+  git_diff: "allow",
+  write_file: "ask",
+  edit_file: "ask",
+  bash: "ask"
+};
+function isPatternMap(rule) {
+  return typeof rule === "object" && rule !== null;
+}
+function mergePermissionLayer(base, layer) {
+  const merged = { ...base };
+  for (const [tool, rule] of Object.entries(layer)) {
+    const existing = merged[tool];
+    merged[tool] = isPatternMap(existing) && isPatternMap(rule) ? { ...existing, ...rule } : rule;
+  }
+  return merged;
+}
+function resolvePermissionRules(defaults, ...layers) {
+  let merged = defaults;
+  for (const layer of layers) {
+    if (layer === void 0)
+      continue;
+    merged = mergePermissionLayer(merged, layer);
+  }
+  return merged;
+}
+function errorMessage10(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function loadRepoPermissionRules(workspacePath) {
+  let agentDir;
+  try {
+    agentDir = await findAgentDir(workspacePath);
+  } catch {
+    return void 0;
+  }
+  if (agentDir === void 0)
+    return void 0;
+  try {
+    const config = await loadProjectConfig(agentDir);
+    return Object.keys(config.permission).length > 0 ? config.permission : void 0;
+  } catch (error) {
+    console.error(`warning: ignoring .agent/config.yaml permission rules: ${errorMessage10(error)}`);
+    return void 0;
+  }
+}
+
+// apps/cli/dist/resume-cmd.js
+import { readFile as readFile13 } from "node:fs/promises";
+import path11 from "node:path";
+var LOCK_FILE_NAME2 = "orchestration.lock.json";
+async function readOptionalFile2(filePath) {
+  try {
+    return await readFile13(filePath, "utf8");
+  } catch {
+    return void 0;
+  }
+}
+function stableJson(value) {
+  const sort = (input) => {
+    if (Array.isArray(input))
+      return input.map(sort);
+    if (typeof input !== "object" || input === null)
+      return input;
+    const entries = Object.entries(input).filter(([, item]) => item !== void 0).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    const out = {};
+    for (const [key, item] of entries)
+      out[key] = sort(item);
+    return out;
+  };
+  return JSON.stringify(sort(value));
+}
+async function policyDriftWarning(project, snapshot) {
+  const markdown = project.orchestrationMarkdown ?? "";
+  const raw = await readOptionalFile2(path11.join(project.root, LOCK_FILE_NAME2));
+  const status = checkLock(markdown, raw);
+  const tail3 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `/orchestrate` to plan under the current one.";
+  if (!status.fresh) {
+    return `Warning: this project's policy lock is ${status.reason} (\`kapel policy compile\` would refresh it). ${tail3}`;
+  }
+  if (stableJson(status.lock.policy) !== stableJson(snapshot)) {
+    return `Warning: this project's policy has changed since run started. ${tail3}`;
+  }
+  return void 0;
+}
+async function rebuildGraph(store, runId, plan, completed) {
+  const graph = new TaskGraph(plan);
+  const persisted = await store.taskResults(runId);
+  for (const task of graph.all()) {
+    const result = completed.get(task.spec.id);
+    if (result === void 0)
+      continue;
+    task.status = "completed";
+    task.result = result;
+    const entry = persisted.get(task.spec.id);
+    if (entry !== void 0) {
+      task.attempts = entry.attempts;
+      if (entry.agent !== void 0)
+        task.assignedAgent = entry.agent;
+    }
+  }
+  return graph;
+}
+async function runResume(runId, options, deps = {}) {
+  const output = deps.output ?? consoleOutput;
+  const workspacePath = path11.resolve(options.cwd);
+  const isolation = options.isolation ?? DEFAULT_ISOLATION;
+  const fail2 = (message) => {
+    if (options.json)
+      output.log(JSON.stringify({ ok: false, error: message }));
+    else
+      output.error(message);
+    return 1;
+  };
+  const conflict = tuiJsonConflict(options);
+  if (conflict !== void 0) {
+    output.error(conflict);
+    return 1;
+  }
+  const store = openExistingRunStore(workspacePath);
+  if (store === void 0) {
+    return fail2(`No runs recorded yet \u2014 nothing at ${sessionDbPathFor(workspacePath)}.`);
+  }
+  try {
+    const reconstruction = await reconstructRun(store, runId);
+    if (reconstruction === void 0) {
+      return fail2(`Unknown run ${runId}. Run \`/runs\` to see the recorded ones.`);
+    }
+    const { run, completed, incompleteTaskIds } = reconstruction;
+    const plan = run.plan;
+    if (plan === void 0) {
+      return fail2(`Run ${run.id} has no saved plan \u2014 it never got past planning, so there is nothing to resume.`);
+    }
+    if (incompleteTaskIds.length === 0) {
+      const message = `Nothing to resume: all ${plan.tasks.length} tasks of run ${run.id} already completed.`;
+      if (options.json)
+        output.log(JSON.stringify({ ok: true, message }));
+      else
+        output.log(message);
+      return 0;
+    }
+    await loadDotEnvFile(workspacePath);
+    let project;
+    try {
+      project = await loadAgentProject(workspacePath);
+    } catch (error) {
+      if (error instanceof ProjectConfigError)
+        return fail2(error.message);
+      throw error;
+    }
+    if (project === void 0) {
+      return fail2("No .agent directory found \u2014 run `kapel init` first");
+    }
+    if (isolation === "worktree") {
+      const problem = await worktreeIsolationError(workspacePath);
+      if (problem !== void 0)
+        return fail2(problem);
+    }
+    const drift = await policyDriftWarning(project, run.policy);
+    if (drift !== void 0)
+      output.error(drift);
+    const graph = await rebuildGraph(store, run.id, plan, completed);
+    return await executePreparedPlan({
+      runId: run.id,
+      objective: run.objective,
+      project,
+      workspacePath,
+      // The run's own snapshot, not the current lock: see policyDriftWarning.
+      policy: run.policy,
+      plan,
+      graph,
+      store,
+      leadLine: `Resuming run ${run.id} \u2014 ${incompleteTaskIds.length} of ${plan.tasks.length} tasks left, up to ${run.policy.maxConcurrency} at a time`,
+      options: {
+        json: options.json,
+        backend: options.backend,
+        isolation,
+        validate: options.validate ?? true,
+        tui: options.tui === true,
+        ...options.timeoutSeconds === void 0 ? {} : { timeoutSeconds: options.timeoutSeconds },
+        ...options.maxIterations === void 0 ? {} : { maxIterations: options.maxIterations }
+      }
+    }, deps);
+  } finally {
+    closeRunStore(store);
+  }
+}
+
+// apps/cli/dist/runs-cmd.js
+var DEFAULT_RUNS_LIMIT = 20;
+var OBJECTIVE_WIDTH = 60;
+function truncate5(text2, limit) {
+  return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
+}
+function taskCountsCell(counts) {
+  const seen = counts.completed + counts.failed + counts.cancelled;
+  const total = counts.total ?? seen;
+  const problems = [];
+  if (counts.failed > 0)
+    problems.push(`${counts.failed} failed`);
+  if (counts.cancelled > 0)
+    problems.push(`${counts.cancelled} cancelled`);
+  const cell = `${counts.completed}/${total}`;
+  return problems.length === 0 ? cell : `${cell} (${problems.join(", ")})`;
+}
+function summaryRow2(run) {
+  return [
+    run.id,
+    run.status,
+    isoTime(run.createdAt),
+    taskCountsCell(run.taskCounts),
+    truncate5(run.objective, OBJECTIVE_WIDTH)
+  ];
+}
+async function runRunsCommand(options, deps = {}) {
+  const output = deps.output ?? consoleOutput;
+  const store = openExistingRunStore(options.cwd);
+  if (store === void 0) {
+    if (options.json)
+      output.log(JSON.stringify([]));
+    else {
+      output.log(`No runs recorded yet \u2014 nothing at ${sessionDbPathFor(options.cwd)}.`);
+    }
+    return 0;
+  }
+  try {
+    const runs2 = await store.listRuns({
+      limit: options.limit ?? DEFAULT_RUNS_LIMIT
+    });
+    if (options.json) {
+      output.log(JSON.stringify(runs2.map((run) => ({
+        id: run.id,
+        status: run.status,
+        objective: run.objective,
+        createdAt: run.createdAt,
+        startedAt: isoTime(run.createdAt),
+        taskCounts: run.taskCounts
+      }))));
+      return 0;
+    }
+    if (runs2.length === 0) {
+      output.log("No runs recorded yet.");
+      return 0;
+    }
+    for (const line of formatTable(["ID", "STATUS", "STARTED", "TASKS", "OBJECTIVE"], runs2.map(summaryRow2))) {
+      output.log(line);
+    }
+    return 0;
+  } finally {
+    closeRunStore(store);
+  }
+}
+
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.7.0";
+var CLI_VERSION = "0.8.0";
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
 function shortId2(id) {
@@ -13038,9 +12747,20 @@ var SLASH_COMMANDS = [
     help: "restore the files to before the last prompt"
   },
   {
+    name: "plan",
+    usage: "/plan <objective>",
+    help: "plan an objective and show the routing \u2014 nothing is executed"
+  },
+  {
     name: "orchestrate",
     usage: "/orchestrate <objective>",
     help: "run the multi-agent pipeline on an objective"
+  },
+  { name: "runs", usage: "/runs", help: "list this workspace's recorded runs" },
+  {
+    name: "resume-run",
+    usage: "/resume-run <runId>",
+    help: "re-execute the unfinished tasks of a recorded run (see /runs)"
   }
 ];
 function slashCompleter(line, customNames = []) {
@@ -13461,6 +13181,51 @@ async function createInteractiveController(deps) {
       emit2(line);
     return drain();
   };
+  const replOutput = { log: emit2, error: emit2 };
+  const slashPlan = async (objective) => {
+    if (deps.plan === void 0) {
+      emit2("/plan is not available here.");
+      return drain();
+    }
+    if (objective === "") {
+      emit2('usage: /plan "<objective>"');
+      return drain();
+    }
+    try {
+      await deps.plan(objective, replOutput);
+    } catch (error) {
+      emit2(errorText2(error));
+    }
+    return drain();
+  };
+  const slashRuns = async () => {
+    if (deps.runs === void 0) {
+      emit2("/runs is not available here.");
+      return drain();
+    }
+    try {
+      await deps.runs(replOutput);
+    } catch (error) {
+      emit2(errorText2(error));
+    }
+    return drain();
+  };
+  const slashResumeRun = async (runId) => {
+    if (deps.resumeRun === void 0) {
+      emit2("/resume-run is not available here.");
+      return drain();
+    }
+    if (runId === "") {
+      emit2("usage: /resume-run <runId>  \u2014 see /runs");
+      return drain();
+    }
+    try {
+      await deps.resumeRun(runId, replOutput);
+    } catch (error) {
+      emit2(errorText2(error));
+    }
+    return drain();
+  };
   const slashOrchestrate = async (objective) => {
     if (deps.orchestrate === void 0) {
       emit2("/orchestrate is not available here.");
@@ -13544,8 +13309,14 @@ async function createInteractiveController(deps) {
         return await slashCompact();
       case "undo":
         return await slashUndo();
+      case "plan":
+        return await slashPlan(argument);
       case "orchestrate":
         return await slashOrchestrate(argument);
+      case "runs":
+        return await slashRuns();
+      case "resume-run":
+        return await slashResumeRun(argument);
       default: {
         const custom = customCommands.find((c) => c.name === name);
         if (custom !== void 0) {
@@ -13583,7 +13354,7 @@ async function createInteractiveController(deps) {
   };
 }
 async function openChatStore(workspacePath) {
-  const agentDir = path13.join(workspacePath, ".agent");
+  const agentDir = path12.join(workspacePath, ".agent");
   try {
     await mkdir6(agentDir, { recursive: true });
     return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
@@ -13667,20 +13438,16 @@ async function startDelegatedOrNative(backend, alias) {
   return await resolveModelAndProvider(process.env, alias);
 }
 async function runInteractive(options) {
-  if (options.json) {
-    console.error('--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".');
-    return 1;
-  }
-  const workspacePath = path13.resolve(options.cwd);
+  const workspacePath = path12.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
   const repoPermission = await loadRepoPermissionRules(workspacePath);
   const permissionRules = resolvePermissionRules(DEFAULT_PERMISSIONS, options.config?.permission, repoPermission);
-  const backend = resolveBackendSetting(options.backend, process.env, options.config).value;
+  const backend = (await detectBackendSetting(options.backend, process.env, options.config)).value;
   const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config);
   const alias = modelSetting.value;
-  const delegatedModel2 = delegatedModelOverride(modelSetting);
-  const chatAlias = isDelegatedBackend(backend) ? delegatedModel2 ?? "default" : alias;
+  const delegatedModel = delegatedModelOverride(modelSetting);
+  const chatAlias = isDelegatedBackend(backend) ? delegatedModel ?? "default" : alias;
   const startup = await startDelegatedOrNative(backend, alias);
   if ("error" in startup) {
     console.error(startup.error);
@@ -13738,13 +13505,15 @@ async function runInteractive(options) {
       onIdleSigint: () => activeTurn.current?.abort()
     }) : void 0;
     const prompter = createPrompter({
-      yes: options.yes,
+      // There is no `-y` here any more: the REPL is the one place a human is
+      // definitely present, so every write still gets asked about.
+      yes: false,
       interactive: interactiveTty,
       state: promptState,
       allowlist: sessionAllowlist,
       ...inputManager === void 0 ? {} : { ask: (query) => inputManager.question(query) }
     });
-    const delegatedModelFor = (aliasForBuild) => aliasForBuild === chatAlias ? delegatedModel2 : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
+    const delegatedModelFor = (aliasForBuild) => aliasForBuild === chatAlias ? delegatedModel : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
     const delegatedSession = (target, args) => {
       const forwardedModel = delegatedModelFor(args.modelAlias);
       const chat = createDelegatedChatSession({
@@ -13777,7 +13546,7 @@ async function runInteractive(options) {
         name: "agent",
         role: "worker",
         model: args.model,
-        systemPrompt: options.system ?? composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
+        systemPrompt: composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
         tools: builtinTools().map((tool) => tool.name),
         permissions: DEFAULT_PERMISSIONS
       };
@@ -13791,12 +13560,12 @@ async function runInteractive(options) {
         }),
         usage: nativeUsage,
         events: renderer,
-        maxIterations: options.maxIterations,
+        maxIterations: DEFAULT_MAX_ITERATIONS2,
         ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
       }), args.messages);
     };
     const createSession = (args) => args.backend === "native" ? nativeSession(args) : delegatedSession(args.backend, args);
-    const wizardTty = interactiveTty && process.stdout.isTTY === true && !options.json;
+    const wizardTty = interactiveTty && process.stdout.isTTY === true;
     const controller = await createInteractiveController({
       workspacePath,
       ...store === void 0 ? {} : { store },
@@ -13819,7 +13588,10 @@ async function runInteractive(options) {
       onCustomCommandsChanged: (names) => {
         customCommandNames.current = names;
       },
-      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
+      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias, backend)),
+      plan: (objective, output) => runPlan(objective, planOptionsFor(options, alias, backend), { output }),
+      runs: (output) => runRunsCommand({ cwd: options.cwd, json: false }, { output }),
+      resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), { output }),
       ...wizardTty ? {
         configure: () => runConfigWizard({
           // `/config` runs while the REPL's own InputManager still owns
@@ -13909,37 +13681,59 @@ async function replLoop(args) {
       return 0;
   }
 }
-function orchestrateOptionsFor(options, alias) {
+function planOptionsFor(options, alias, backend) {
+  return {
+    cwd: options.cwd,
+    json: false,
+    model: alias,
+    backend,
+    why: true,
+    ...options.config === void 0 ? {} : { config: options.config }
+  };
+}
+function orchestrateOptionsFor(options, alias, backend) {
   return {
     cwd: options.cwd,
     json: false,
     model: alias,
     dryRun: false,
-    workerMode: DEFAULT_WORKER_MODE,
-    backend: "native",
+    backend,
     isolation: DEFAULT_ISOLATION,
     validate: true,
     save: options.save !== false,
     tui: false,
-    maxIterations: options.maxIterations,
+    maxIterations: DEFAULT_MAX_ITERATIONS2,
+    ...options.config === void 0 ? {} : { config: options.config },
+    ...options.timeoutSeconds === void 0 ? {} : { timeoutSeconds: options.timeoutSeconds }
+  };
+}
+function resumeOptionsFor(options, backend) {
+  return {
+    cwd: options.cwd,
+    json: false,
+    backend,
+    isolation: DEFAULT_ISOLATION,
+    validate: true,
+    tui: false,
+    maxIterations: DEFAULT_MAX_ITERATIONS2,
     ...options.timeoutSeconds === void 0 ? {} : { timeoutSeconds: options.timeoutSeconds }
   };
 }
 
 // apps/cli/dist/policy.js
 import { readFile as readFile14, writeFile as writeFile6 } from "node:fs/promises";
-import path14 from "node:path";
+import path13 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
 };
-var LOCK_FILE_NAME2 = "orchestration.lock.json";
+var LOCK_FILE_NAME3 = "orchestration.lock.json";
 var defaultCompilerFactory = (args) => new LlmPolicyCompiler(args);
 var defaultDelegatedCompilerFactory = (args) => new DelegatedPolicyCompiler(args);
 function jsonLine3(output, value) {
   output.log(JSON.stringify(value));
 }
-async function readOptionalFile2(filePath) {
+async function readOptionalFile3(filePath) {
   try {
     return await readFile14(filePath, "utf8");
   } catch {
@@ -14044,7 +13838,7 @@ async function buildPolicyCompiler(options, deps, context) {
 }
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path14.resolve(options.cwd);
+  const workspacePath = path13.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
@@ -14095,7 +13889,7 @@ async function runPolicyCompile(options, deps = {}) {
   }
   const lock = createLockfile({ markdown, result, model: model.id });
   const serialized = serializeLockfile(lock);
-  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
   await writeFile6(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
@@ -14135,14 +13929,14 @@ function policyUsageLine(totals, delegatedTo) {
 }
 async function runPolicyCheck(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path14.resolve(options.cwd);
+  const workspacePath = path13.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
-  const lockContent = await readOptionalFile2(lockPath);
+  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
+  const lockContent = await readOptionalFile3(lockPath);
   const status = checkLock(markdown, lockContent);
   if (!status.fresh) {
     if (options.json) {
@@ -14185,14 +13979,14 @@ async function runPolicyCheck(options, deps = {}) {
 }
 async function runPolicyExplain(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path14.resolve(options.cwd);
+  const workspacePath = path13.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
-  const lockContent = await readOptionalFile2(lockPath);
+  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
+  const lockContent = await readOptionalFile3(lockPath);
   const status = checkLock(markdown, lockContent);
   let lock;
   if (status.fresh) {
@@ -14240,14 +14034,14 @@ async function runPolicyExplain(options, deps = {}) {
 }
 async function runPolicyDiff(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path14.resolve(options.cwd);
+  const workspacePath = path13.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
-  const lockContent = await readOptionalFile2(lockPath);
+  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
+  const lockContent = await readOptionalFile3(lockPath);
   if (lockContent === void 0 || lockContent.trim() === "") {
     const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` first \u2014 there is nothing to diff against.`;
     if (options.json)
@@ -14322,352 +14116,10 @@ async function runPolicyDiff(options, deps = {}) {
   return 0;
 }
 
-// apps/cli/dist/resume-cmd.js
-import { readFile as readFile15 } from "node:fs/promises";
-import path15 from "node:path";
-var LOCK_FILE_NAME3 = "orchestration.lock.json";
-async function readOptionalFile3(filePath) {
-  try {
-    return await readFile15(filePath, "utf8");
-  } catch {
-    return void 0;
-  }
-}
-function stableJson(value) {
-  const sort = (input) => {
-    if (Array.isArray(input))
-      return input.map(sort);
-    if (typeof input !== "object" || input === null)
-      return input;
-    const entries = Object.entries(input).filter(([, item]) => item !== void 0).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-    const out = {};
-    for (const [key, item] of entries)
-      out[key] = sort(item);
-    return out;
-  };
-  return JSON.stringify(sort(value));
-}
-async function policyDriftWarning(project, snapshot) {
-  const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile3(path15.join(project.root, LOCK_FILE_NAME3));
-  const status = checkLock(markdown, raw);
-  const tail4 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
-  if (!status.fresh) {
-    return `Warning: this project's policy lock is ${status.reason} (\`kapel policy compile\` would refresh it). ${tail4}`;
-  }
-  if (stableJson(status.lock.policy) !== stableJson(snapshot)) {
-    return `Warning: this project's policy has changed since run started. ${tail4}`;
-  }
-  return void 0;
-}
-async function rebuildGraph(store, runId, plan, completed) {
-  const graph = new TaskGraph(plan);
-  const persisted = await store.taskResults(runId);
-  for (const task of graph.all()) {
-    const result = completed.get(task.spec.id);
-    if (result === void 0)
-      continue;
-    task.status = "completed";
-    task.result = result;
-    const entry = persisted.get(task.spec.id);
-    if (entry !== void 0) {
-      task.attempts = entry.attempts;
-      if (entry.agent !== void 0)
-        task.assignedAgent = entry.agent;
-    }
-  }
-  return graph;
-}
-async function runResume(runId, options, deps = {}) {
-  const output = deps.output ?? consoleOutput;
-  const workspacePath = path15.resolve(options.cwd);
-  const isolation = options.isolation ?? DEFAULT_ISOLATION;
-  const fail2 = (message) => {
-    if (options.json)
-      output.log(JSON.stringify({ ok: false, error: message }));
-    else
-      output.error(message);
-    return 1;
-  };
-  const conflict = tuiJsonConflict(options);
-  if (conflict !== void 0) {
-    output.error(conflict);
-    return 1;
-  }
-  const store = openExistingRunStore(workspacePath);
-  if (store === void 0) {
-    return fail2(`No runs recorded yet \u2014 nothing at ${sessionDbPathFor(workspacePath)}.`);
-  }
-  try {
-    const reconstruction = await reconstructRun(store, runId);
-    if (reconstruction === void 0) {
-      return fail2(`Unknown run ${runId}. Run \`kapel runs\` to see the recorded ones.`);
-    }
-    const { run, completed, incompleteTaskIds } = reconstruction;
-    const plan = run.plan;
-    if (plan === void 0) {
-      return fail2(`Run ${run.id} has no saved plan \u2014 it never got past planning, so there is nothing to resume.`);
-    }
-    if (incompleteTaskIds.length === 0) {
-      const message = `Nothing to resume: all ${plan.tasks.length} tasks of run ${run.id} already completed.`;
-      if (options.json)
-        output.log(JSON.stringify({ ok: true, message }));
-      else
-        output.log(message);
-      return 0;
-    }
-    await loadDotEnvFile(workspacePath);
-    let project;
-    try {
-      project = await loadAgentProject(workspacePath);
-    } catch (error) {
-      if (error instanceof ProjectConfigError)
-        return fail2(error.message);
-      throw error;
-    }
-    if (project === void 0) {
-      return fail2("No .agent directory found \u2014 run `kapel init` first");
-    }
-    if (isolation === "worktree") {
-      const problem = await worktreeIsolationError(workspacePath);
-      if (problem !== void 0)
-        return fail2(problem);
-    }
-    const drift = await policyDriftWarning(project, run.policy);
-    if (drift !== void 0)
-      output.error(drift);
-    const graph = await rebuildGraph(store, run.id, plan, completed);
-    return await executePreparedPlan({
-      runId: run.id,
-      objective: run.objective,
-      project,
-      workspacePath,
-      // The run's own snapshot, not the current lock: see policyDriftWarning.
-      policy: run.policy,
-      plan,
-      graph,
-      store,
-      leadLine: `Resuming run ${run.id} \u2014 ${incompleteTaskIds.length} of ${plan.tasks.length} tasks left, up to ${run.policy.maxConcurrency} at a time`,
-      options: {
-        json: options.json,
-        workerMode: options.workerMode,
-        backend: options.backend,
-        isolation,
-        validate: options.validate ?? true,
-        tui: options.tui === true,
-        ...options.timeoutSeconds === void 0 ? {} : { timeoutSeconds: options.timeoutSeconds },
-        ...options.maxIterations === void 0 ? {} : { maxIterations: options.maxIterations }
-      }
-    }, deps);
-  } finally {
-    closeRunStore(store);
-  }
-}
-
-// apps/cli/dist/run-claude-code.js
-import path16 from "node:path";
-async function runClaudeCodeObjective(objective, options) {
-  const workspacePath = path16.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const availability = await ClaudeCodeBackend.checkAvailability();
-  if (!availability.installed) {
-    console.error(claudeCodeInstallGuidance(availability));
-    return 1;
-  }
-  if (!availability.loggedIn) {
-    console.error(claudeCodeLoginGuidance(availability));
-    return 1;
-  }
-  const renderer = options.json ? new JsonRenderer() : new TextRenderer();
-  const backend = new ClaudeCodeBackend({
-    ...options.model === void 0 ? {} : { model: options.model },
-    events: renderer,
-    ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
-  });
-  const controller = new AbortController();
-  const onSigint = () => controller.abort();
-  process.on("SIGINT", onSigint);
-  try {
-    const result = await backend.run({
-      instruction: objective,
-      ...options.images !== void 0 && options.images.length > 0 ? { images: options.images } : {}
-    }, {
-      runId: crypto.randomUUID(),
-      workspacePath,
-      signal: controller.signal
-    });
-    renderer.result(result, new UsageTracker().totals());
-    if (result.status === "success")
-      return 0;
-    if (result.status === "partial")
-      return 2;
-    return 1;
-  } finally {
-    process.off("SIGINT", onSigint);
-  }
-}
-
-// apps/cli/dist/run-codex.js
-import path17 from "node:path";
-async function runCodexObjective(objective, options) {
-  const workspacePath = path17.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const availability = await CodexBackend.checkAvailability();
-  if (!availability.installed) {
-    console.error(codexInstallGuidance(availability));
-    return 1;
-  }
-  if (!availability.loggedIn) {
-    console.error(codexLoginGuidance(availability));
-    return 1;
-  }
-  const renderer = options.json ? new JsonRenderer() : new TextRenderer();
-  const backend = new CodexBackend({
-    ...options.model === void 0 ? {} : { model: options.model },
-    sandbox: options.sandbox,
-    fullAuto: options.fullAuto,
-    events: renderer,
-    ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
-  });
-  const controller = new AbortController();
-  const onSigint = () => controller.abort();
-  process.on("SIGINT", onSigint);
-  try {
-    const result = await backend.run({
-      instruction: objective,
-      ...options.images !== void 0 && options.images.length > 0 ? { images: options.images } : {}
-    }, {
-      runId: crypto.randomUUID(),
-      workspacePath,
-      signal: controller.signal
-    });
-    renderer.result(result, new UsageTracker().totals());
-    if (result.status === "success")
-      return 0;
-    if (result.status === "partial")
-      return 2;
-    return 1;
-  } finally {
-    process.off("SIGINT", onSigint);
-  }
-}
-
-// apps/cli/dist/runs-cmd.js
-var DEFAULT_RUNS_LIMIT = 20;
-var OBJECTIVE_WIDTH = 60;
-function truncate5(text2, limit) {
-  return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
-}
-function taskCountsCell(counts) {
-  const seen = counts.completed + counts.failed + counts.cancelled;
-  const total = counts.total ?? seen;
-  const problems = [];
-  if (counts.failed > 0)
-    problems.push(`${counts.failed} failed`);
-  if (counts.cancelled > 0)
-    problems.push(`${counts.cancelled} cancelled`);
-  const cell = `${counts.completed}/${total}`;
-  return problems.length === 0 ? cell : `${cell} (${problems.join(", ")})`;
-}
-function summaryRow2(run) {
-  return [
-    run.id,
-    run.status,
-    isoTime(run.createdAt),
-    taskCountsCell(run.taskCounts),
-    truncate5(run.objective, OBJECTIVE_WIDTH)
-  ];
-}
-async function runRunsCommand(options, deps = {}) {
-  const output = deps.output ?? consoleOutput;
-  const store = openExistingRunStore(options.cwd);
-  if (store === void 0) {
-    if (options.json)
-      output.log(JSON.stringify([]));
-    else {
-      output.log(`No runs recorded yet \u2014 nothing at ${sessionDbPathFor(options.cwd)}.`);
-    }
-    return 0;
-  }
-  try {
-    const runs2 = await store.listRuns({
-      limit: options.limit ?? DEFAULT_RUNS_LIMIT
-    });
-    if (options.json) {
-      output.log(JSON.stringify(runs2.map((run) => ({
-        id: run.id,
-        status: run.status,
-        objective: run.objective,
-        createdAt: run.createdAt,
-        startedAt: isoTime(run.createdAt),
-        taskCounts: run.taskCounts
-      }))));
-      return 0;
-    }
-    if (runs2.length === 0) {
-      output.log("No runs recorded yet.");
-      return 0;
-    }
-    for (const line of formatTable(["ID", "STATUS", "STARTED", "TASKS", "OBJECTIVE"], runs2.map(summaryRow2))) {
-      output.log(line);
-    }
-    return 0;
-  } finally {
-    closeRunStore(store);
-  }
-}
-
-// apps/cli/dist/worker-cmd.js
-var defaultWorkerExecutorFactory = async (args) => {
-  const resolveModel = await createProjectModelResolver(args.project, process.env);
-  return new AgentLoopWorkerExecutor({
-    project: args.project,
-    resolveModel,
-    workspacePath: args.workspacePath,
-    runId: args.runId,
-    events: args.events,
-    ...args.taskTimeoutMs === void 0 ? {} : { taskTimeoutMs: args.taskTimeoutMs }
-  });
-};
-async function runWorkerCommand(deps = {}) {
-  const io = deps.io ?? {
-    stdin: process.stdin,
-    stdout: process.stdout
-  };
-  const error = deps.error ?? ((line) => console.error(line));
-  const executorFactory = deps.executorFactory ?? defaultWorkerExecutorFactory;
-  return serveWorkerRequest(io, async (request, events2) => {
-    try {
-      await loadDotEnvFile(request.workspacePath);
-      const project = await loadAgentProject(request.workspacePath);
-      if (project === void 0) {
-        throw new Error(`No .agent directory found in ${request.workspacePath} \u2014 run \`kapel init\` there first`);
-      }
-      const executor = await executorFactory({
-        project,
-        workspacePath: request.workspacePath,
-        runId: request.runId,
-        events: events2,
-        ...request.timeoutMs === void 0 ? {} : { taskTimeoutMs: request.timeoutMs }
-      });
-      const task = {
-        spec: toPlannedTask3(request.task),
-        status: "running",
-        attempts: 1
-      };
-      error(`worker: ${task.spec.id} as ${request.agent}`);
-      return await executor.execute(task, request.agent, void 0, toWorkerExecutionContext(request));
-    } catch (failure2) {
-      error(`worker: ${failure2 instanceof Error ? failure2.message : String(failure2)}`);
-      throw failure2;
-    }
-  });
-}
-
-// apps/cli/dist/index.js
-async function runtimeConfig(raw) {
+// apps/cli/dist/program.js
+async function runtimeConfig(raw, json = false) {
   return await ensureFirstRunConfig({
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true && !raw.json,
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true && !json,
     noSetup: raw.setup === false
   });
 }
@@ -14678,65 +14130,13 @@ function parsePositive(raw, flag, integer2) {
   }
   return value;
 }
-function collectImage(value, previous) {
-  previous.push(value);
-  return previous;
-}
-function toRunOptions(raw, config, images) {
-  const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
-  const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
-  return {
-    cwd: raw.cwd,
-    maxIterations,
-    yes: raw.yes,
-    json: raw.json,
-    ...raw.model === void 0 ? {} : { model: raw.model },
-    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
-    ...raw.system === void 0 ? {} : { system: raw.system },
-    ...config === void 0 ? {} : { config },
-    ...images.length === 0 ? {} : { images }
-  };
-}
-function delegatedModel(raw, config) {
-  return delegatedModelOverride(resolveOrchestratorModel(raw.model, process.env, config));
-}
-function toCodexRunOptions(raw, config, images) {
-  const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
-  const sandbox = validateSandboxMode(raw.sandbox);
-  const model = delegatedModel(raw, config);
-  return {
-    cwd: raw.cwd,
-    json: raw.json,
-    sandbox,
-    fullAuto: fullAutoForSandbox(sandbox),
-    ...model === void 0 ? {} : { model },
-    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
-    ...images.length === 0 ? {} : { images }
-  };
-}
-function toClaudeCodeRunOptions(raw, config, images) {
-  const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
-  const model = delegatedModel(raw, config);
-  return {
-    cwd: raw.cwd,
-    json: raw.json,
-    ...model === void 0 ? {} : { model },
-    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
-    ...images.length === 0 ? {} : { images }
-  };
-}
 function toInteractiveOptions(raw, chat = {}, config) {
-  const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   return {
     cwd: raw.cwd,
-    maxIterations,
-    yes: raw.yes,
-    json: raw.json,
     save: chat.save !== false,
     ...raw.model === void 0 ? {} : { model: raw.model },
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
-    ...raw.system === void 0 ? {} : { system: raw.system },
     ...chat.continue === void 0 ? {} : { continue: chat.continue },
     ...chat.session === void 0 ? {} : { session: chat.session },
     ...raw.backend === void 0 ? {} : { backend: raw.backend },
@@ -14752,268 +14152,155 @@ async function chatAndExit(raw, chat = {}) {
     process.exitCode = 1;
   }
 }
-async function runAndExit(objectiveParts, raw) {
-  const objective = objectiveParts.join(" ").trim();
-  if (objective === "") {
-    console.error('Usage: kapel [options] "<objective>"');
-    process.exitCode = 1;
-    return;
-  }
-  try {
-    const objectiveWithStdin = await objectiveWithPipedStdin(objective, process.stdin);
-    const resolvedImages = await resolveImageAttachments(raw.image, raw.cwd);
-    if (!resolvedImages.ok) {
-      console.error(resolvedImages.error);
-      process.exitCode = 1;
-      return;
+function createProgram() {
+  const program = new Command();
+  program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent. Run `kapel` with no command to open the REPL, where the agent plans, routes and edits; the commands below set it up and inspect what it did.").version(CLI_VERSION).usage("[options] [command]").helpCommand(true).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "override the planner/orchestrator model (see `kapel models`)").option("--timeout <seconds>", "model call timeout, in seconds").option("--backend <name>", `override the execution backend: ${BACKEND_NAMES.join(" | ")} (default: AGENT_BACKEND, your \`kapel config\`, or auto-detected)`).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults");
+  program.argument("[args...]").action(async (args, opts) => {
+    if (args.length > 0) {
+      program.error(`error: unknown command '${args[0]}'`, {
+        code: "commander.unknownCommand"
+      });
     }
-    const images = resolvedImages.images;
-    const config = await runtimeConfig(raw);
-    const backend = resolveBackendSetting(raw.backend, process.env, config).value;
-    if (backend === "codex") {
-      process.exitCode = await runCodexObjective(objectiveWithStdin, toCodexRunOptions(raw, config, images));
-      return;
-    }
-    if (backend === "claude-code") {
-      process.exitCode = await runClaudeCodeObjective(objectiveWithStdin, toClaudeCodeRunOptions(raw, config, images));
-      return;
-    }
-    process.exitCode = await runObjective(objectiveWithStdin, toRunOptions(raw, config, images));
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-var program = new Command();
-program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version(CLI_VERSION).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", `execution backend to use: ${BACKEND_NAMES.join(" | ")} (default: native, or AGENT_BACKEND, or your \`kapel config\`)`).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE).option("-i, --image <path>", "attach an image (PNG/JPEG/GIF/WEBP; repeatable, up to 4, 5 MiB each) \u2014 supported by the native and codex backends, not claude-code", collectImage, []).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults");
-program.argument("[objective...]", 'the coding objective to work on, e.g. "fix the failing test"').action(async (objective, opts) => {
-  if (objective.length === 0) {
     if (process.stdin.isTTY === true) {
       await chatAndExit(opts);
       return;
     }
     program.help();
-    return;
-  }
-  await runAndExit(objective, opts);
-});
-program.command("chat").description("Open an interactive conversation with the coding agent in this directory").option("-c, --continue", "resume this directory's most recent conversation").option("--session <id>", "resume a specific conversation (id, id prefix, or /name)").option("--no-save", "do not record this conversation in .agent/sessions.db").action(async (opts, command) => {
-  await chatAndExit(command.optsWithGlobals(), opts);
-});
-program.command("exec").description("Run the coding agent loop (same as the default command)").argument("<objective...>", "the coding objective to work on").action(async (objective, _opts, command) => {
-  await runAndExit(objective, command.optsWithGlobals());
-});
-program.command("init").description("Create a .agent configuration in the current repository").option("--force", "overwrite an existing .agent directory", false).action(async (opts, command) => {
-  const cwd = command.optsWithGlobals().cwd;
-  const config = await loadKapelConfig();
-  process.exitCode = await runInit({
-    cwd: path18.resolve(cwd),
-    force: opts.force,
-    ...config === void 0 ? {} : { config }
   });
-});
-program.command("config").description("Configure which backend and models kapel uses (stored in ~/.kapel/config.json)").option("--show", "print the current configuration and where it lives", false).option("--path", "print the configuration file path", false).action(async (opts) => {
-  process.exitCode = await runConfigCommand(opts, {
-    log: (line) => {
-      console.log(line);
-    },
-    error: (line) => {
-      console.error(line);
-    },
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true
+  program.command("chat").description("Open the interactive REPL \u2014 where all agent work happens (same as bare `kapel`)").option("-c, --continue", "resume this directory's most recent conversation").option("--session <id>", "resume a specific conversation (id, id prefix, or /name)").option("--no-save", "do not record this conversation in .agent/sessions.db").action(async (opts, command) => {
+    await chatAndExit(command.optsWithGlobals(), opts);
   });
-});
-program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
-  const cwd = command.optsWithGlobals().cwd;
-  await loadDotEnvFile(path18.resolve(cwd));
-  const entries = await listModels(process.env);
-  if (entries.length === 0) {
-    console.log("(no models registered)");
-    return;
-  }
-  const aliasWidth = Math.max(...entries.map((entry) => entry.alias.length));
-  for (const entry of entries) {
-    console.log(`${entry.alias.padEnd(aliasWidth)}  ${entry.provider.padEnd(10)}  ${entry.credentialStatus}`);
-  }
-  console.log();
-  console.log('backend codex \u2014 uses the OpenAI Codex CLI with its own ChatGPT OAuth (run: kapel --backend codex "...")');
-  console.log('backend claude-code \u2014 uses the Claude Code CLI with your Claude subscription login (run: kapel --backend claude-code "...")');
-});
-function planOptions(command, config) {
-  const raw = command.optsWithGlobals();
-  return {
-    cwd: raw.cwd,
-    json: raw.json,
-    // Planning goes through the same backend the run would: under `--backend
-    // codex`/`claude-code` that is what keeps `kapel plan` working with no
-    // API key at all.
-    backend: resolveBackendSetting(raw.backend, process.env, config).value,
-    ...raw.model === void 0 ? {} : { model: raw.model },
-    ...config === void 0 ? {} : { config }
-  };
-}
-function executionOptions(command, opts, backend) {
-  const raw = command.optsWithGlobals();
-  const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
-  const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
-  return {
-    workerMode: validateWorkerMode(opts.workerMode),
-    isolation: validateIsolation(opts.isolation),
-    backend,
-    maxIterations,
-    validate: opts.validate,
-    tui: opts.tui,
-    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
-  };
-}
-function orchestrateOptions(command, opts, config) {
-  const raw = command.optsWithGlobals();
-  return {
-    ...planOptions(command, config),
-    ...executionOptions(command, opts, resolveBackendSetting(raw.backend, process.env, config).value),
-    dryRun: opts.dryRun,
-    save: opts.save
-  };
-}
-function resumeOptions(command, opts, config) {
-  const raw = command.optsWithGlobals();
-  return {
-    cwd: raw.cwd,
-    json: raw.json,
-    ...executionOptions(command, opts, resolveBackendSetting(raw.backend, process.env, config).value)
-  };
-}
-function withExecutionOptions(command) {
-  return command.option("--worker-mode <mode>", `where workers run: ${WORKER_MODES.join(" | ")}`, DEFAULT_WORKER_MODE).option("--isolation <mode>", `how mutating tasks are kept apart: ${ISOLATION_MODES.join(" | ")}`, DEFAULT_ISOLATION).option("--no-validate", "skip the project's configured validators for this run").option("--tui", "show the live orchestration dashboard instead of event lines (not with --json)", false);
-}
-async function objectiveCommand(parts, usage, run) {
-  const objective = parts.join(" ").trim();
-  if (objective === "") {
-    console.error(usage);
-    process.exitCode = 1;
-    return;
-  }
-  try {
-    process.exitCode = await run(objective);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-program.command("plan").description("Plan an objective into a task graph and print it, without executing anything").argument("<objective...>", "the objective to plan").option("--why [taskId]", "print routing rationale for one task, or every task if no id is given").action(async (objective, opts, command) => {
-  const config = await runtimeConfig(command.optsWithGlobals());
-  await objectiveCommand(objective, 'Usage: kapel plan "<objective>"', (text2) => runPlan(text2, {
-    ...planOptions(command, config),
-    ...typeof opts.why === "string" ? { why: opts.why } : opts.why === true ? { why: true } : {}
-  }));
-});
-withExecutionOptions(program.command("orchestrate").description("Plan an objective and execute the resulting task graph across routed workers").argument("<objective...>", "the objective to orchestrate")).option("--dry-run", "plan only \u2014 same output as `kapel plan`", false).option("--no-save", "do not record this run in .agent/sessions.db").action(async (objective, opts, command) => {
-  const config = await runtimeConfig(command.optsWithGlobals());
-  await objectiveCommand(objective, 'Usage: kapel orchestrate "<objective>"', (text2) => runOrchestrate(text2, orchestrateOptions(command, opts, config)));
-});
-withExecutionOptions(program.command("resume").description("Re-execute the unfinished tasks of a recorded run").argument("<runId>", "the run to resume (see `kapel runs`)")).action(async (runId, opts, command) => {
-  try {
-    const config = await runtimeConfig(command.optsWithGlobals());
-    process.exitCode = await runResume(runId, resumeOptions(command, opts, config));
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-});
-program.command("runs").description("List orchestration runs recorded in this workspace").option("--limit <n>", "how many runs to list", String(DEFAULT_RUNS_LIMIT)).action(async (opts, command) => {
-  const raw = command.optsWithGlobals();
-  try {
-    process.exitCode = await runRunsCommand({
-      cwd: raw.cwd,
-      json: raw.json,
-      limit: parsePositive(opts.limit, "--limit", true)
+  program.command("init").description("Create a .agent configuration in the current repository").option("--force", "overwrite an existing .agent directory", false).action(async (opts, command) => {
+    const cwd = command.optsWithGlobals().cwd;
+    const config = await loadKapelConfig();
+    process.exitCode = await runInit({
+      cwd: path14.resolve(cwd),
+      force: opts.force,
+      ...config === void 0 ? {} : { config }
     });
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-});
-var sessionsCommand = program.command("sessions").description("List interactive chat sessions recorded in this workspace").option("--limit <n>", "how many sessions to list", String(DEFAULT_SESSIONS_LIST_LIMIT)).action(async (opts, command) => {
-  const raw = command.optsWithGlobals();
-  try {
-    process.exitCode = await runSessionsListCommand({
-      cwd: raw.cwd,
-      json: raw.json,
-      limit: parsePositive(opts.limit, "--limit", true)
+  });
+  program.command("config").description("Manage which backend and models kapel uses (stored in ~/.kapel/config.json)").option("--show", "print the current configuration and where it lives", false).option("--path", "print the configuration file path", false).action(async (opts) => {
+    process.exitCode = await runConfigCommand(opts, {
+      log: (line) => {
+        console.log(line);
+      },
+      error: (line) => {
+        console.error(line);
+      },
+      interactive: process.stdin.isTTY === true && process.stdout.isTTY === true
     });
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-});
-sessionsCommand.command("fork").description("Copy a chat session's transcript into a new, independent session").argument("<session>", "the session to fork (id, id prefix, or name)").option("--name <name>", "name for the new session").action(async (session, opts, command) => {
-  const raw = command.optsWithGlobals();
-  try {
-    process.exitCode = await runSessionsForkCommand({
+  });
+  program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
+    const cwd = command.optsWithGlobals().cwd;
+    await loadDotEnvFile(path14.resolve(cwd));
+    const entries = await listModels(process.env);
+    if (entries.length === 0) {
+      console.log("(no models registered)");
+      return;
+    }
+    const aliasWidth = Math.max(...entries.map((entry) => entry.alias.length));
+    for (const entry of entries) {
+      console.log(`${entry.alias.padEnd(aliasWidth)}  ${entry.provider.padEnd(10)}  ${entry.credentialStatus}`);
+    }
+    console.log();
+    console.log("backend codex \u2014 uses the OpenAI Codex CLI with its own ChatGPT OAuth (select it with `kapel config`, or `kapel --backend codex`)");
+    console.log("backend claude-code \u2014 uses the Claude Code CLI with your Claude subscription login (same two ways)");
+  });
+  program.command("runs").description("List orchestration runs recorded in this workspace").option("--limit <n>", "how many runs to list", String(DEFAULT_RUNS_LIMIT)).option("--json", "emit the listing as JSON", false).action(async (opts, command) => {
+    const raw = command.optsWithGlobals();
+    try {
+      process.exitCode = await runRunsCommand({
+        cwd: raw.cwd,
+        json: opts.json,
+        limit: parsePositive(opts.limit, "--limit", true)
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+  const sessionsCommand = program.command("sessions").description("List interactive chat sessions recorded in this workspace").option("--limit <n>", "how many sessions to list", String(DEFAULT_SESSIONS_LIST_LIMIT)).option("--json", "emit the listing as JSON", false).action(async (opts, command) => {
+    const raw = command.optsWithGlobals();
+    try {
+      process.exitCode = await runSessionsListCommand({
+        cwd: raw.cwd,
+        json: opts.json,
+        limit: parsePositive(opts.limit, "--limit", true)
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+  sessionsCommand.command("fork").description("Copy a chat session's transcript into a new, independent session").argument("<session>", "the session to fork (id, id prefix, or name)").option("--name <name>", "name for the new session").option("--json", "emit the result as JSON", false).action(async (session, opts, command) => {
+    const raw = command.optsWithGlobals();
+    try {
+      process.exitCode = await runSessionsForkCommand({
+        cwd: raw.cwd,
+        json: opts.json,
+        session,
+        ...opts.name === void 0 ? {} : { name: opts.name }
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+  program.command("explain").description("Explain how one task of a recorded run was routed, scheduled and finished").argument("<taskId>", "the task to explain, e.g. T03").option("--run <runId>", "which run to read (default: the most recent)").option("--json", "emit the explanation as JSON", false).action(async (taskId, opts, command) => {
+    const raw = command.optsWithGlobals();
+    try {
+      process.exitCode = await runExplainCommand(taskId, {
+        cwd: raw.cwd,
+        json: opts.json,
+        ...opts.run === void 0 ? {} : { run: opts.run }
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+  function policyOptions(command, json, config) {
+    const raw = command.optsWithGlobals();
+    return {
       cwd: raw.cwd,
-      json: raw.json,
-      session,
-      ...opts.name === void 0 ? {} : { name: opts.name }
-    });
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+      json,
+      ...raw.model === void 0 ? {} : { model: raw.model },
+      ...config === void 0 ? {} : { config }
+    };
   }
-});
-program.command("explain").description("Explain how one task of a recorded run was routed, scheduled and finished").argument("<taskId>", "the task to explain, e.g. T03").option("--run <runId>", "which run to read (default: the most recent)").action(async (taskId, opts, command) => {
-  const raw = command.optsWithGlobals();
-  try {
-    process.exitCode = await runExplainCommand(taskId, {
-      cwd: raw.cwd,
-      json: raw.json,
-      ...opts.run === void 0 ? {} : { run: opts.run }
-    });
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+  async function policyCompileOptions(command, json, config) {
+    const raw = command.optsWithGlobals();
+    return {
+      ...policyOptions(command, json, config),
+      backend: (await detectBackendSetting(raw.backend, process.env, config)).value
+    };
   }
-});
-program.command("worker").description("Run one orchestration task from a protocol request on stdin (used by --worker-mode child)").action(async () => {
-  process.exitCode = await runWorkerCommand();
-});
-function policyOptions(command, config) {
-  const raw = command.optsWithGlobals();
-  return {
-    cwd: raw.cwd,
-    json: raw.json,
-    ...raw.model === void 0 ? {} : { model: raw.model },
-    ...config === void 0 ? {} : { config }
-  };
+  const POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"];
+  const policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain, diff)").argument("[unknownCommand]", "compile | check | explain | diff");
+  policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock using an LLM").option("--json", "emit the compile result as JSON", false).action(async (opts, command) => {
+    const config = await runtimeConfig(command.optsWithGlobals(), opts.json);
+    process.exitCode = await runPolicyCompile(await policyCompileOptions(command, opts.json, config));
+  });
+  policyCommand.command("diff").description("Show what would change if the policy lock were recompiled, without writing it").option("--json", "emit the diff as JSON", false).action(async (opts, command) => {
+    const config = await runtimeConfig(command.optsWithGlobals(), opts.json);
+    process.exitCode = await runPolicyDiff(await policyCompileOptions(command, opts.json, config));
+  });
+  policyCommand.command("check").description("Check that the policy lock is fresh and valid (no LLM calls)").option("--json", "emit the result as JSON", false).action(async (opts, command) => {
+    process.exitCode = await runPolicyCheck(policyOptions(command, opts.json, void 0));
+  });
+  policyCommand.command("explain").description("Print a human-readable summary of the compiled policy").option("--json", "emit the summary as JSON", false).action(async (opts, command) => {
+    process.exitCode = await runPolicyExplain(policyOptions(command, opts.json, void 0));
+  });
+  policyCommand.action((unknownCommand) => {
+    if (unknownCommand === void 0) {
+      policyCommand.help();
+      return;
+    }
+    console.error(`Unknown policy command "${unknownCommand}". Expected one of: ${POLICY_SUBCOMMANDS.join(", ")}.`);
+    process.exitCode = 1;
+  });
+  return program;
 }
-function policyCompileOptions(command, config) {
-  const raw = command.optsWithGlobals();
-  return {
-    ...policyOptions(command, config),
-    backend: resolveBackendSetting(raw.backend, process.env, config).value
-  };
-}
-var POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"];
-var policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain, diff)").argument("[unknownCommand]", "compile | check | explain | diff");
-policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock using an LLM").action(async (_opts, command) => {
-  const config = await runtimeConfig(command.optsWithGlobals());
-  process.exitCode = await runPolicyCompile(policyCompileOptions(command, config));
-});
-policyCommand.command("diff").description("Show what would change if the policy lock were recompiled, without writing it").action(async (_opts, command) => {
-  const config = await runtimeConfig(command.optsWithGlobals());
-  process.exitCode = await runPolicyDiff(policyCompileOptions(command, config));
-});
-policyCommand.command("check").description("Check that the policy lock is fresh and valid (no LLM calls)").action(async (_opts, command) => {
-  process.exitCode = await runPolicyCheck(policyOptions(command, void 0));
-});
-policyCommand.command("explain").description("Print a human-readable summary of the compiled policy").action(async (_opts, command) => {
-  process.exitCode = await runPolicyExplain(policyOptions(command, void 0));
-});
-policyCommand.action((unknownCommand) => {
-  if (unknownCommand === void 0) {
-    policyCommand.help();
-    return;
-  }
-  console.error(`Unknown policy command "${unknownCommand}". Expected one of: ${POLICY_SUBCOMMANDS.join(", ")}.`);
-  process.exitCode = 1;
-});
-await program.parseAsync();
+
+// apps/cli/dist/index.js
+await createProgram().parseAsync();
