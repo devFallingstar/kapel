@@ -60,14 +60,15 @@ kapel config --show                           # "not configured yet — run `kap
 kapel                                         # 목적 없이 실행 → 마법사가 먼저 뜸
 ```
 
-**기대 동작**: `kapel is not configured yet …` 안내 후 네 개의 화살표 목록이
+**기대 동작**: `kapel is not configured yet …` 안내 후 다섯 개의 화살표 목록이
 차례로 나옵니다.
 
 ```text
-Which coding backend should kapel use?   ← Claude Code / Codex / API key
-Main orchestrator model                  ← 예: opus
-Worker model — normal complexity         ← 예: sonnet
-Worker model — low complexity / exploration  ← 예: haiku
+Which coding backend should kapel use?       ← Claude Code / Codex / API key
+Main orchestrator model                      ← 예: opus
+Worker model — most complex coding tasks     ← 예: opus
+Worker model — everyday tasks                ← 예: sonnet
+Worker model — small, single-function tasks  ← 예: haiku
 ```
 
 선택한 백엔드가 설치/로그인되어 있지 않으면 `warning: … does not look ready`와
@@ -79,7 +80,7 @@ Worker model — low complexity / exploration  ← 예: haiku
 확인 항목:
 
 ```bash
-kapel config --show     # 저장된 백엔드·모델 3종 + 파일 경로
+kapel config --show     # 저장된 백엔드·모델 4종 + 파일 경로
 kapel config --path     # 경로만
 kapel config            # 언제든 다시 설정 (현재 값이 기본 선택으로 뜸)
 kapel --no-setup "..."  # 마법사를 건너뛰고 환경변수/기본값으로 실행
@@ -93,7 +94,8 @@ echo "" | kapel         # 파이프(비-TTY) — 마법사 없이 도움말만 �
 
 설정을 마친 뒤 `kapel init`을 실행하면 `.agent/config.yaml`의 `models:`가
 전역 설정에서 채워집니다(`lead`/`reviewer` ← 오케스트레이터 모델,
-`worker`·`cheap` ← 워커 모델 2종). 설정이 없으면 템플릿 그대로 복사됩니다.
+`complex`·`worker`·`cheap` ← 워커 모델 3종). 설정이 없으면 템플릿 그대로
+복사됩니다.
 
 ## 2. 시나리오 A — 대화형 에이전트 (M1)
 

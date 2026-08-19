@@ -17,13 +17,20 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
       if (!project) throw new Error("unreachable");
 
       expect(project.root).toBe(agentDir);
-      expect(project.agents).toHaveLength(4);
+      expect(project.agents).toHaveLength(6);
 
       const names = project.agents.map((agent) => agent.name).sort();
-      expect(names).toEqual(["coder", "explorer", "lead", "reviewer"]);
+      expect(names).toEqual([
+        "coder",
+        "explorer",
+        "junior",
+        "lead",
+        "reviewer",
+        "senior",
+      ]);
 
       expect(project.knownAgentNames()).toEqual(
-        new Set(["coder", "explorer", "lead", "reviewer"]),
+        new Set(["coder", "explorer", "junior", "lead", "reviewer", "senior"]),
       );
 
       const lead = project.agent("lead");
@@ -38,6 +45,30 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
       expect(explorer?.modelAlias).toBe("cheap");
       expect(explorer?.tools).toEqual(["read", "grep", "glob", "git.diff"]);
 
+      // The three implementation tiers: senior/coder/junior differ only in
+      // which model alias they draw on.
+      const implementationTools = [
+        "read",
+        "grep",
+        "glob",
+        "edit",
+        "write",
+        "bash",
+        "git.*",
+      ];
+      const senior = project.agent("senior");
+      expect(senior?.role).toBe("worker");
+      expect(senior?.modelAlias).toBe("complex");
+      expect(senior?.tools).toEqual(implementationTools);
+
+      expect(project.agent("coder")?.modelAlias).toBe("worker");
+      expect(project.agent("coder")?.tools).toEqual(implementationTools);
+
+      const junior = project.agent("junior");
+      expect(junior?.role).toBe("worker");
+      expect(junior?.modelAlias).toBe("cheap");
+      expect(junior?.tools).toEqual(implementationTools);
+
       // Slots in config.yaml resolve to existing agents.
       expect(project.config.agentSlots).toEqual({
         orchestrator: "lead",
@@ -48,6 +79,10 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
 
       // Models declared in config.yaml.
       expect(project.config.models.lead).toEqual({
+        provider: "anthropic",
+        model: "claude-opus-5",
+      });
+      expect(project.config.models.complex).toEqual({
         provider: "anthropic",
         model: "claude-opus-5",
       });
@@ -64,6 +99,12 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
       expect(project.orchestrationMarkdown).toContain("Orchestration Policy");
       expect(project.orchestrationMarkdown).toContain(
         "Use `explorer` for inexpensive read-only repository exploration.",
+      );
+      expect(project.orchestrationMarkdown).toContain(
+        "Use `senior` for complex or architectural implementation work.",
+      );
+      expect(project.orchestrationMarkdown).toContain(
+        "Use `junior` for trivial single-function changes.",
       );
 
       expect(project.agent("nonexistent")).toBeUndefined();

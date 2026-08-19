@@ -9,11 +9,12 @@ const MAX_WALK_LEVELS = 6;
 /** The project roles `.agent/config.yaml` names, and where each one's model comes from. */
 const PROJECT_ROLE_SOURCES: readonly (readonly [string, KapelRole])[] = [
   ["lead", "orchestrator"],
-  ["worker", "worker"],
-  ["cheap", "cheap"],
+  ["complex", "complex"],
+  ["worker", "middle"],
+  ["cheap", "low"],
   // The reviewer reads someone else's work and judges it, which is the
   // orchestrator's kind of job rather than a worker's — so it gets the
-  // orchestrator's model rather than a fourth answer nobody was asked for.
+  // orchestrator's model rather than another answer nobody was asked for.
   ["reviewer", "orchestrator"],
 ];
 

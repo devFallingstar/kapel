@@ -14,18 +14,22 @@ import type { SelectChoice } from "./select-prompt.js";
  * it.
  */
 
-export const KAPEL_CONFIG_VERSION = 1;
+export const KAPEL_CONFIG_VERSION = 2;
 
 export type KapelBackend = "claude-code" | "codex" | "native";
 
 const BACKENDS: readonly KapelBackend[] = ["claude-code", "codex", "native"];
 
-export type KapelRole = "orchestrator" | "worker" | "cheap";
+export type KapelRole = "orchestrator" | "complex" | "middle" | "low";
 
 export interface KapelModels {
   readonly orchestrator: string;
-  readonly worker: string;
-  readonly cheap: string;
+  /** The most complex coding work: cross-cutting changes, gnarly debugging. */
+  readonly complex: string;
+  /** Everyday, moderate implementation work. */
+  readonly middle: string;
+  /** Small, single-function-sized changes and read-only exploration. */
+  readonly low: string;
 }
 
 export interface KapelConfig {
@@ -67,15 +71,32 @@ function modelString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-function parseConfig(raw: unknown): KapelConfig | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const record = raw as Record<string, unknown>;
-  if (record.version !== KAPEL_CONFIG_VERSION) return undefined;
-  if (!isBackend(record.backend)) return undefined;
-
-  const models = record.models;
-  if (typeof models !== "object" || models === null) return undefined;
-  const modelRecord = models as Record<string, unknown>;
+/**
+ * Migrates a version-1 `models` block onto the version-2 slots.
+ *
+ * Version 1 had three slots — `orchestrator`, `worker` ("normal complexity")
+ * and `cheap` ("low complexity / exploration"). Version 2 splits the worker
+ * tier in two, so the mapping is:
+ *
+ *     orchestrator := orchestrator
+ *     complex      := worker      (an approximation — see below)
+ *     middle       := worker
+ *     low          := cheap
+ *
+ * `complex := worker` is the honest approximation: version 1 never asked
+ * which model should take the hardest implementation work, so the best guess
+ * available is the one worker model the user did pick. It is deliberately not
+ * promoted to the orchestrator's model — silently spending a bigger model
+ * than anyone asked for is worse than under-reaching, and `kapel config`
+ * re-runs the wizard with these values pre-selected.
+ *
+ * Migration happens in memory only. Nothing is rewritten on disk until the
+ * user saves a config, which {@link saveKapelConfig} always writes as
+ * version 2.
+ */
+function migrateV1Models(
+  modelRecord: Record<string, unknown>,
+): KapelModels | undefined {
   const orchestrator = modelString(modelRecord.orchestrator);
   const worker = modelString(modelRecord.worker);
   const cheap = modelString(modelRecord.cheap);
@@ -86,12 +107,46 @@ function parseConfig(raw: unknown): KapelConfig | undefined {
   ) {
     return undefined;
   }
+  return { orchestrator, complex: worker, middle: worker, low: cheap };
+}
+
+function parseV2Models(
+  modelRecord: Record<string, unknown>,
+): KapelModels | undefined {
+  const orchestrator = modelString(modelRecord.orchestrator);
+  const complex = modelString(modelRecord.complex);
+  const middle = modelString(modelRecord.middle);
+  const low = modelString(modelRecord.low);
+  if (
+    orchestrator === undefined ||
+    complex === undefined ||
+    middle === undefined ||
+    low === undefined
+  ) {
+    return undefined;
+  }
+  return { orchestrator, complex, middle, low };
+}
+
+function parseConfig(raw: unknown): KapelConfig | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const record = raw as Record<string, unknown>;
+  const version = record.version;
+  if (version !== KAPEL_CONFIG_VERSION && version !== 1) return undefined;
+  if (!isBackend(record.backend)) return undefined;
+
+  const models = record.models;
+  if (typeof models !== "object" || models === null) return undefined;
+  const modelRecord = models as Record<string, unknown>;
+  const parsed =
+    version === 1 ? migrateV1Models(modelRecord) : parseV2Models(modelRecord);
+  if (parsed === undefined) return undefined;
 
   const updatedAt = record.updatedAt;
   return {
     version: KAPEL_CONFIG_VERSION,
     backend: record.backend,
-    models: { orchestrator, worker, cheap },
+    models: parsed,
     updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
   };
 }
@@ -103,6 +158,10 @@ function parseConfig(raw: unknown): KapelConfig | undefined {
  * written by a future version — reads as `undefined` rather than throwing:
  * the only consequence of an unusable config is that the wizard offers to
  * write a new one, which is strictly better than refusing to start.
+ *
+ * A version-1 file is *not* unreadable: it is migrated in memory by
+ * {@link migrateV1Models}, because throwing away a working setup over a slot
+ * rename would be hostile.
  */
 export async function loadKapelConfig(
   env?: NodeJS.ProcessEnv,
@@ -140,8 +199,9 @@ export async function saveKapelConfig(
     backend: config.backend,
     models: {
       orchestrator: config.models.orchestrator,
-      worker: config.models.worker,
-      cheap: config.models.cheap,
+      complex: config.models.complex,
+      middle: config.models.middle,
+      low: config.models.low,
     },
     updatedAt: config.updatedAt ?? Date.now(),
   };
@@ -314,15 +374,26 @@ function pickNative(preferred: string): string {
 /** The per-role defaults the wizard pre-selects for a backend. */
 export function defaultModelsFor(backend: KapelBackend): KapelModels {
   if (backend === "claude-code") {
-    return { orchestrator: "opus", worker: "sonnet", cheap: "haiku" };
+    return {
+      orchestrator: "opus",
+      complex: "opus",
+      middle: "sonnet",
+      low: "haiku",
+    };
   }
   if (backend === "codex") {
-    return { orchestrator: "default", worker: "default", cheap: "default" };
+    return {
+      orchestrator: "default",
+      complex: "default",
+      middle: "default",
+      low: "default",
+    };
   }
   return {
     orchestrator: pickNative("claude-opus-5"),
-    worker: pickNative("claude-sonnet-5"),
-    cheap: pickNative("claude-haiku-4-5"),
+    complex: pickNative("claude-opus-5"),
+    middle: pickNative("claude-sonnet-5"),
+    low: pickNative("claude-haiku-4-5"),
   };
 }
 
@@ -340,8 +411,9 @@ export function describeConfig(config: KapelConfig): readonly string[] {
   return [
     `backend: ${backendLabel(config.backend)} (${config.backend})`,
     `orchestrator model: ${config.models.orchestrator}`,
-    `worker model (normal complexity): ${config.models.worker}`,
-    `worker model (low complexity): ${config.models.cheap}`,
+    `worker model (complex tasks): ${config.models.complex}`,
+    `worker model (everyday tasks): ${config.models.middle}`,
+    `worker model (small tasks): ${config.models.low}`,
     `updated: ${new Date(config.updatedAt).toISOString()}`,
   ];
 }

@@ -15,9 +15,10 @@ cd /path/to/your/repo
 kapel                                 # first run asks which backend and models to use
 ```
 
-The first time you run `kapel` on a terminal it asks four questions — which
+The first time you run `kapel` on a terminal it asks five questions — which
 coding backend (Claude Code, Codex, or a plain API key) and which model to use
-for the orchestrator and for each class of worker — and stores the answers in
+for the orchestrator and for each of the three worker tiers — and stores the
+answers in
 `~/.kapel/config.json`. See [First-run setup](#first-run-setup). Piped,
 redirected or `--no-setup` runs skip it and fall back to environment variables
 and defaults, so nothing in CI ever blocks on a prompt.
@@ -140,9 +141,11 @@ Which coding backend should kapel use?
     ◯ API key (Anthropic/OpenAI) (call model APIs directly with a key or token)
 ```
 
-…followed by the orchestrator model and the two worker models (normal and low
-complexity). The chosen backend is probed as you pick it, so a missing or
-logged-out CLI is reported there and then rather than on your first objective.
+…followed by the orchestrator model and the three worker models — the complex
+tier (the hardest coding work), the everyday tier, and the small-task tier
+(single-function changes and exploration). The chosen backend is probed as you
+pick it, so a missing or logged-out CLI is reported there and then rather than
+on your first objective.
 
 ```bash
 kapel config            # re-run the wizard at any time
@@ -167,8 +170,8 @@ explicit CLI flag  >  environment variable  >  ~/.kapel/config.json  >  built-in
 `.agent/config.yaml` is a separate, per-project thing: it says which model each
 *agent* of an orchestration run uses. `kapel init` seeds it from your global
 config when you have one (`lead` and `reviewer` from the orchestrator model,
-`worker` and `cheap` from the two worker models), and copies the template
-unchanged when you don't.
+`complex`, `worker` and `cheap` from the three worker models), and copies the
+template unchanged when you don't.
 
 ### Project instructions (AGENTS.md)
 

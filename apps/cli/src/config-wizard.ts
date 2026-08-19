@@ -16,7 +16,7 @@ import {
 import type { SelectChoice } from "./select-prompt.js";
 
 /**
- * The first-run setup wizard: four questions, in order, each one an arrow-key
+ * The first-run setup wizard: five questions, in order, each one an arrow-key
  * list. It is written against a {@link WizardPrompt} rather than against a
  * terminal so the flow can be tested by scripting answers — the real terminal
  * implementation is `runSelectPrompt` in `select-prompt.ts`.
@@ -55,11 +55,17 @@ const BACKEND_TITLE = "Which coding backend should kapel use?";
 
 const ROLE_TITLES: Readonly<Record<KapelRole, string>> = {
   orchestrator: "Main orchestrator model",
-  worker: "Worker model — normal complexity",
-  cheap: "Worker model — low complexity / exploration",
+  complex: "Worker model — most complex coding tasks",
+  middle: "Worker model — everyday tasks",
+  low: "Worker model — small, single-function tasks",
 };
 
-const ROLES: readonly KapelRole[] = ["orchestrator", "worker", "cheap"];
+const ROLES: readonly KapelRole[] = [
+  "orchestrator",
+  "complex",
+  "middle",
+  "low",
+];
 
 /** How to get each backend working, printed when its check comes back bad. */
 const BACKEND_FIX: Readonly<Record<KapelBackend, string>> = {
@@ -76,7 +82,7 @@ function isBackend(value: string): value is KapelBackend {
 
 /**
  * Runs one single-select step. `undefined` means the user cancelled — an
- * empty answer counts as one too, since none of these four questions has a
+ * empty answer counts as one too, since none of these five questions has a
  * meaningful "nothing" answer.
  */
 async function ask(
@@ -141,7 +147,7 @@ async function warnIfUnavailable(
 }
 
 /**
- * Asks the four questions and (unless `save: false`) persists the answers.
+ * Asks the five questions and (unless `save: false`) persists the answers.
  *
  * Resolves `undefined` the moment the user cancels, without writing anything:
  * a half-answered wizard must never leave a half-valid config behind.
@@ -183,8 +189,9 @@ export async function runConfigWizard(
   const defaults = defaultModelsFor(backend);
   const models: KapelModels = {
     orchestrator: picked.orchestrator ?? defaults.orchestrator,
-    worker: picked.worker ?? defaults.worker,
-    cheap: picked.cheap ?? defaults.cheap,
+    complex: picked.complex ?? defaults.complex,
+    middle: picked.middle ?? defaults.middle,
+    low: picked.low ?? defaults.low,
   };
 
   const config: KapelConfig = {

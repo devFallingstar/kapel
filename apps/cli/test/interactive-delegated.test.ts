@@ -375,8 +375,9 @@ function savedConfig(overrides: Partial<KapelConfig> = {}): KapelConfig {
     backend: "native",
     models: {
       orchestrator: "claude-sonnet-5",
-      worker: "claude-sonnet-5",
-      cheap: "claude-sonnet-5",
+      complex: "claude-sonnet-5",
+      middle: "claude-sonnet-5",
+      low: "claude-sonnet-5",
     },
     updatedAt: 3,
     ...overrides,
@@ -412,8 +413,9 @@ describe("interactive controller — /config", () => {
           backend: "claude-code",
           models: {
             orchestrator: "opus",
-            worker: "sonnet",
-            cheap: "haiku",
+            complex: "opus",
+            middle: "sonnet",
+            low: "haiku",
           },
         }),
     });
@@ -430,8 +432,9 @@ describe("interactive controller — /config", () => {
         savedConfig({
           models: {
             orchestrator: "nonsense",
-            worker: "nonsense",
-            cheap: "nonsense",
+            complex: "nonsense",
+            middle: "nonsense",
+            low: "nonsense",
           },
         }),
     });

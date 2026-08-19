@@ -60,8 +60,9 @@ describe("kapelConfigDir", () => {
 
 const MODELS = {
   orchestrator: "opus",
-  worker: "sonnet",
-  cheap: "haiku",
+  complex: "opus",
+  middle: "sonnet",
+  low: "haiku",
 } as const;
 
 describe("saveKapelConfig / loadKapelConfig", () => {
@@ -114,7 +115,7 @@ describe("saveKapelConfig / loadKapelConfig", () => {
     expect(await loadKapelConfig(env)).toBeUndefined();
   });
 
-  it("returns undefined for a config from another version", async () => {
+  it("returns undefined for a config from an unknown version", async () => {
     await writeFile(
       kapelConfigPath(env),
       JSON.stringify({
@@ -148,12 +149,94 @@ describe("saveKapelConfig / loadKapelConfig", () => {
       JSON.stringify({
         version: KAPEL_CONFIG_VERSION,
         backend: "codex",
+        models: { orchestrator: "opus", complex: "opus", middle: "sonnet" },
+        updatedAt: 1,
+      }),
+      "utf8",
+    );
+    expect(await loadKapelConfig(env)).toBeUndefined();
+  });
+
+  it("migrates a version-1 file onto the three worker tiers", async () => {
+    await writeFile(
+      kapelConfigPath(env),
+      JSON.stringify({
+        version: 1,
+        backend: "claude-code",
+        models: { orchestrator: "opus", worker: "sonnet", cheap: "haiku" },
+        updatedAt: 7,
+      }),
+      "utf8",
+    );
+    expect(await loadKapelConfig(env)).toEqual({
+      version: KAPEL_CONFIG_VERSION,
+      backend: "claude-code",
+      models: {
+        orchestrator: "opus",
+        // `complex` approximates from the one worker model v1 asked about.
+        complex: "sonnet",
+        middle: "sonnet",
+        low: "haiku",
+      },
+      updatedAt: 7,
+    });
+  });
+
+  it("leaves a migrated version-1 file on disk until something saves", async () => {
+    const v1 = JSON.stringify({
+      version: 1,
+      backend: "codex",
+      models: {
+        orchestrator: "gpt-5.1",
+        worker: "gpt-5.1",
+        cheap: "gpt-5-mini",
+      },
+      updatedAt: 3,
+    });
+    await writeFile(kapelConfigPath(env), v1, "utf8");
+    await loadKapelConfig(env);
+    expect(await readFile(kapelConfigPath(env), "utf8")).toBe(v1);
+  });
+
+  it("returns undefined for a version-1 file missing a v1 role", async () => {
+    await writeFile(
+      kapelConfigPath(env),
+      JSON.stringify({
+        version: 1,
+        backend: "codex",
         models: { orchestrator: "opus", worker: "sonnet" },
         updatedAt: 1,
       }),
       "utf8",
     );
     expect(await loadKapelConfig(env)).toBeUndefined();
+  });
+
+  it("re-saves a migrated config as version 2", async () => {
+    await writeFile(
+      kapelConfigPath(env),
+      JSON.stringify({
+        version: 1,
+        backend: "claude-code",
+        models: { orchestrator: "opus", worker: "sonnet", cheap: "haiku" },
+        updatedAt: 7,
+      }),
+      "utf8",
+    );
+    const migrated = await loadKapelConfig(env);
+    if (migrated === undefined) throw new Error("migration failed");
+    await saveKapelConfig(
+      { backend: migrated.backend, models: migrated.models, updatedAt: 9 },
+      env,
+    );
+    const written = JSON.parse(await readFile(kapelConfigPath(env), "utf8"));
+    expect(written.version).toBe(2);
+    expect(written.models).toEqual({
+      orchestrator: "opus",
+      complex: "sonnet",
+      middle: "sonnet",
+      low: "haiku",
+    });
   });
 
   it("returns undefined for a JSON document that is not an object", async () => {
@@ -196,14 +279,14 @@ describe("modelChoicesFor", () => {
   });
 
   it("does not gate the Claude Code catalog ids behind an account guess", () => {
-    for (const choice of modelChoicesFor("claude-code", "worker")) {
+    for (const choice of modelChoicesFor("claude-code", "middle")) {
       expect(choice.hint).not.toContain("only if your account has it");
     }
   });
 
   it("marks the role's suggestion in the Claude Code list", () => {
     const hintOf = (
-      role: "orchestrator" | "worker" | "cheap",
+      role: "orchestrator" | "complex" | "middle" | "low",
       value: string,
     ): string | undefined =>
       modelChoicesFor("claude-code", role).find(
@@ -212,15 +295,16 @@ describe("modelChoicesFor", () => {
 
     expect(hintOf("orchestrator", "opus")).toContain("suggested for this role");
     expect(hintOf("orchestrator", "sonnet")).not.toContain("suggested");
-    expect(hintOf("worker", "sonnet")).toContain("suggested for this role");
-    expect(hintOf("cheap", "haiku")).toContain("suggested for this role");
+    expect(hintOf("complex", "opus")).toContain("suggested for this role");
+    expect(hintOf("middle", "sonnet")).toContain("suggested for this role");
+    expect(hintOf("low", "haiku")).toContain("suggested for this role");
   });
 
   it("leads the Codex list with `default` and offers every catalog id", () => {
     const expectedNamed = Array.from(
       new Set(["gpt-5.1-codex", ...openaiCatalogIds]),
     ).sort();
-    for (const role of ["orchestrator", "worker", "cheap"] as const) {
+    for (const role of ["orchestrator", "complex", "middle", "low"] as const) {
       const choices = modelChoicesFor("codex", role);
       expect(choices[0]?.value).toBe("default");
       expect(choices[0]?.hint).toContain("suggested for this role");
@@ -232,7 +316,7 @@ describe("modelChoicesFor", () => {
   });
 
   it("does not gate the named Codex ids behind an account guess", () => {
-    const named = modelChoicesFor("codex", "worker").filter(
+    const named = modelChoicesFor("codex", "middle").filter(
       (choice) => choice.value !== "default",
     );
     expect(named.length).toBeGreaterThan(0);
@@ -251,7 +335,7 @@ describe("modelChoicesFor", () => {
 
   it("hints the provider, and pricing where the catalog has it", () => {
     const catalog = defaultModelCatalog();
-    const choices = modelChoicesFor("native", "worker");
+    const choices = modelChoicesFor("native", "middle");
     const sonnet = choices.find((choice) => choice.value === "claude-sonnet-5");
     expect(sonnet?.hint).toContain("anthropic");
     expect(sonnet?.hint).toContain("pricing available");
@@ -263,19 +347,21 @@ describe("modelChoicesFor", () => {
 });
 
 describe("defaultModelsFor", () => {
-  it("spreads Claude Code across opus / sonnet / haiku", () => {
+  it("spreads Claude Code across opus / opus / sonnet / haiku", () => {
     expect(defaultModelsFor("claude-code")).toEqual({
       orchestrator: "opus",
-      worker: "sonnet",
-      cheap: "haiku",
+      complex: "opus",
+      middle: "sonnet",
+      low: "haiku",
     });
   });
 
   it("lets Codex pick for every role", () => {
     expect(defaultModelsFor("codex")).toEqual({
       orchestrator: "default",
-      worker: "default",
-      cheap: "default",
+      complex: "default",
+      middle: "default",
+      low: "default",
     });
   });
 
@@ -284,8 +370,9 @@ describe("defaultModelsFor", () => {
     const models = defaultModelsFor("native");
     expect(models).toEqual({
       orchestrator: "claude-opus-5",
-      worker: "claude-sonnet-5",
-      cheap: "claude-haiku-4-5",
+      complex: "claude-opus-5",
+      middle: "claude-sonnet-5",
+      low: "claude-haiku-4-5",
     });
     for (const alias of Object.values(models)) {
       expect(catalog[alias]).toBeDefined();
@@ -306,8 +393,9 @@ describe("describeConfig", () => {
     expect(describeConfig(config)).toEqual([
       "backend: Claude Code (claude-code)",
       "orchestrator model: opus",
-      "worker model (normal complexity): sonnet",
-      "worker model (low complexity): haiku",
+      "worker model (complex tasks): opus",
+      "worker model (everyday tasks): sonnet",
+      "worker model (small tasks): haiku",
       "updated: 2026-01-02T03:04:05.000Z",
     ]);
   });

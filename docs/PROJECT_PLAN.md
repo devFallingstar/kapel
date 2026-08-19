@@ -281,7 +281,7 @@ Router는 다음 순서로 후보를 결정한다.
 | 코드 검색/탐색/문서 조사 | Luna/저비용 모델 |
 | 보안·고위험 최종 리뷰 | Opus/Sol급 |
 
-모델명 자체는 설정 alias로 감추고 runtime은 `lead`, `worker`, `cheap`, `reviewer`와 capability만 참조하도록 한다.
+모델명 자체는 설정 alias로 감추고 runtime은 `lead`, `complex`, `worker`, `cheap`, `reviewer`와 capability만 참조하도록 한다.
 
 ---
 

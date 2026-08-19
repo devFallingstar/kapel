@@ -84,7 +84,9 @@ describe("createProjectModelResolver", () => {
   it("throws naming the alias and the known aliases when it isn't configured", async () => {
     const resolve = await createProjectModelResolver(project, process.env);
     expect(() => resolve("nope")).toThrow(/"nope"/);
-    expect(() => resolve("nope")).toThrow(/cheap, lead, reviewer, worker/);
+    expect(() => resolve("nope")).toThrow(
+      /cheap, complex, lead, reviewer, worker/,
+    );
   });
 
   it("throws with the credential hint when the alias's provider isn't configured", async () => {

@@ -42,7 +42,12 @@ function deps(overrides: Partial<ConfigCommandDeps> = {}): ConfigCommandDeps {
 
 const STORED = {
   backend: "claude-code",
-  models: { orchestrator: "opus", worker: "sonnet", cheap: "haiku" },
+  models: {
+    orchestrator: "opus",
+    complex: "opus",
+    middle: "sonnet",
+    low: "haiku",
+  },
   updatedAt: 1_700_000_000_000,
 } as const;
 
@@ -89,8 +94,9 @@ describe("kapel config", () => {
       backend: "codex",
       models: {
         orchestrator: "default",
-        worker: "default",
-        cheap: "default",
+        complex: "default",
+        middle: "default",
+        low: "default",
       },
       updatedAt: 2,
     };

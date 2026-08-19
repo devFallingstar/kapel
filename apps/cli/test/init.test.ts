@@ -79,6 +79,9 @@ const TEMPLATE_YAML = [
   "  lead:",
   "    provider: anthropic",
   "    model: claude-opus-5",
+  "  complex:",
+  "    provider: anthropic",
+  "    model: claude-opus-5",
   "  reviewer:",
   "    provider: openai",
   "    model: gpt-5.1",
@@ -94,7 +97,12 @@ function kapelConfig(overrides: Partial<KapelConfig> = {}): KapelConfig {
   return {
     version: KAPEL_CONFIG_VERSION,
     backend: "claude-code",
-    models: { orchestrator: "opus", worker: "sonnet", cheap: "haiku" },
+    models: {
+      orchestrator: "opus",
+      complex: "opus",
+      middle: "sonnet",
+      low: "haiku",
+    },
     updatedAt: 1,
     ...overrides,
   };
@@ -106,6 +114,41 @@ describe("seedModelsInto", () => {
     expect(seeded).toContain("# a trailing comment the template ships");
     expect(seeded).toContain("agents:\n  orchestrator: lead");
     expect(seeded).not.toContain("claude-opus-5");
+  });
+
+  it("seeds all five aliases from the three worker tiers", () => {
+    const seeded = seedModelsInto(
+      TEMPLATE_YAML,
+      kapelConfig({
+        backend: "codex",
+        models: {
+          orchestrator: "gpt-5.1",
+          complex: "gpt-5.1-codex",
+          middle: "gpt-5.1",
+          low: "gpt-5-mini",
+        },
+      }),
+    );
+    expect(seeded).toContain(
+      [
+        "models:",
+        "  lead:",
+        "    provider: openai",
+        "    model: gpt-5.1",
+        "  complex:",
+        "    provider: openai",
+        "    model: gpt-5.1-codex",
+        "  worker:",
+        "    provider: openai",
+        "    model: gpt-5.1",
+        "  cheap:",
+        "    provider: openai",
+        "    model: gpt-5-mini",
+        "  reviewer:",
+        "    provider: openai",
+        "    model: gpt-5.1",
+      ].join("\n"),
+    );
   });
 
   it("gives the reviewer the orchestrator's model", () => {
@@ -205,6 +248,9 @@ describe("runInit", () => {
       [
         "models:",
         "  lead:",
+        "    provider: anthropic",
+        "    model: opus",
+        "  complex:",
         "    provider: anthropic",
         "    model: opus",
         "  worker:",

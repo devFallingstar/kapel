@@ -292,7 +292,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 | vim 모드, 이모지 shortcode, 음성 입력, 맞춤법 검사, prompt suggestions | Claude Code에는 있지만 전부 "입력기 위의 장식"이다. P0-1로 기본 입력기가 정상이 된 뒤에도 체감 이득이 작고, 각각이 영구 유지 부담이다. |
 | Claude Code의 fullscreen renderer급 자체 TUI를 대화형에 도입 | 대화형은 **라인 기반**으로 유지한다. 스크롤백·`grep`·리다이렉트 친화성이 CI/스크립트와 함께 쓰이는 kapel의 성격에 더 맞고, Ink는 `--tui`(orchestrate 대시보드)에만 두는 현재 분리가 옳다. |
 | Codex의 `--profile` 다층 config, opencode의 8단 config 병합 | kapel은 **머신 층(`~/.kapel/config.json`) + 저장소 층(`.agent/`)** 두 개로 충분하다. 층이 늘면 "왜 이 모델이 골라졌나"를 설명하는 비용이 층 수에 비례해 늘고, 그건 이 제품이 가장 잘해야 하는 설명 능력과 정면 충돌한다. |
-| opencode식 provider 마켓플레이스(수백 개 모델 나열) | kapel의 올바른 추상화는 **orchestrator / worker / cheap 세 슬롯**이다(이미 `KapelModels`가 그렇게 되어 있다). 모델 목록이 아니라 역할이 사용자에게 노출돼야 한다. |
+| opencode식 provider 마켓플레이스(수백 개 모델 나열) | kapel의 올바른 추상화는 **orchestrator / complex / middle / low 네 슬롯**이다(이미 `KapelModels`가 그렇게 되어 있다). 모델 목록이 아니라 역할이 사용자에게 노출돼야 한다. |
 | Claude Code의 auto memory(모델이 스스로 쓰는 메모리) | kapel은 "정책을 컴파일해 결정론적으로 집행한다"를 파는 제품이다. 모델이 몰래 축적한 메모리가 라우팅·리뷰 결과를 바꾸면 `kapel explain`의 설명이 거짓이 된다. 사람이 쓴 `AGENTS.md`(P0-5)까지만 간다. |
 | LSP 통합 | opencode만 갖고 있고, 검증기(`validation:`)가 이미 typecheck/lint를 태스크 게이트로 돌린다. 편집 시점 진단보다 **머지 전 게이트**가 kapel의 실행 모델에 맞다. |
 

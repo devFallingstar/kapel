@@ -19,7 +19,12 @@ function config(overrides: Partial<KapelConfig> = {}): KapelConfig {
   return {
     version: KAPEL_CONFIG_VERSION,
     backend: "claude-code",
-    models: { orchestrator: "opus", worker: "sonnet", cheap: "haiku" },
+    models: {
+      orchestrator: "opus",
+      complex: "opus",
+      middle: "sonnet",
+      low: "haiku",
+    },
     updatedAt: 1_700_000_000_000,
     ...overrides,
   };
@@ -93,10 +98,13 @@ describe("resolveOrchestratorModel", () => {
   });
 
   it("reads the per-role model out of the config", () => {
-    expect(resolveRoleModel("worker", undefined, {}, config()).value).toBe(
+    expect(resolveRoleModel("complex", undefined, {}, config()).value).toBe(
+      "opus",
+    );
+    expect(resolveRoleModel("middle", undefined, {}, config()).value).toBe(
       "sonnet",
     );
-    expect(resolveRoleModel("cheap", undefined, {}, config()).value).toBe(
+    expect(resolveRoleModel("low", undefined, {}, config()).value).toBe(
       "haiku",
     );
   });
