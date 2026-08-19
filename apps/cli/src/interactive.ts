@@ -9,7 +9,7 @@ import type {
   UsageDimension,
   UsageTotals,
 } from "@agent/ai";
-import { UNATTRIBUTED, UsageTracker } from "@agent/ai";
+import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type { AgentLoopRunContext, ChatTurnResult } from "@agent/coding-agent";
 import {
   AgentChatSession,
@@ -57,12 +57,21 @@ import {
 } from "./delegated-chat.js";
 import { loadDotEnvFile } from "./env.js";
 import { createHistoryAppender, loadHistory } from "./history.js";
+import type { CompleterResult, InputCompleter } from "./input.js";
 import {
   createInputManager,
   INPUT_SIGINT,
   type InputManager,
 } from "./input.js";
 import { composeSystemPrompt, loadInstructions } from "./instructions.js";
+import type { FileLister } from "./mention.js";
+import {
+  annotateMentions,
+  completeMention,
+  createFileLister,
+  mentionTokenAt,
+  workspaceFileExists,
+} from "./mention.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import {
   DEFAULT_ISOLATION,
@@ -511,6 +520,12 @@ export interface InteractiveControllerDeps {
    * (the tests) gets by simply not passing one.
    */
   readonly checkpoints?: CheckpointStore;
+  /**
+   * Decides whether an `@mention` names a real workspace file, for the
+   * send-time annotation. Defaults to a containment-checked `stat` under
+   * {@link workspacePath}; tests override it to keep the decision in memory.
+   */
+  readonly fileExists?: (relativePath: string) => boolean | Promise<boolean>;
   readonly newId?: () => string;
   readonly now?: () => number;
 }
@@ -533,6 +548,29 @@ interface SlashCommand {
   readonly name: string;
   readonly usage: string;
   readonly help: string;
+  /**
+   * The command's argument vocabulary, when it has a finite and knowable one.
+   *
+   * Only `/model` does. `/resume` takes a session id — finite, but a property
+   * of the store rather than of the command, and the ids are already one
+   * `/sessions` away; `/orchestrate` takes free-form English; everything else
+   * takes nothing at all. Completing a word the command does not actually
+   * accept would be worse than completing nothing, so this stays empty
+   * wherever the vocabulary is not genuinely closed.
+   */
+  readonly args?: readonly string[];
+}
+
+/**
+ * The aliases `/model` can switch to — the built-in catalog's ids.
+ *
+ * A delegated backend will accept names beyond this list (the external CLI
+ * owns that vocabulary), which is why `/model` itself does not validate
+ * against the catalog; offering it on Tab is a shortcut for the common case,
+ * not a constraint on what may be typed.
+ */
+function modelAliases(): readonly string[] {
+  return Object.keys(defaultModelCatalog()).sort();
 }
 
 const SLASH_COMMANDS: readonly SlashCommand[] = [
@@ -553,6 +591,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     name: "model",
     usage: "/model [alias]",
     help: "show or switch the model for future turns",
+    args: modelAliases(),
   },
   {
     name: "config",
@@ -578,15 +617,59 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
 ];
 
 /**
- * Tab completion for the input editor: `/` plus a prefix of a known command
- * name completes against {@link SLASH_COMMANDS}; anything else offers no
+ * Tab completion for slash commands, in two halves.
+ *
+ * Before the first space, `/` plus a prefix completes the command *name*
+ * against {@link SLASH_COMMANDS}. After it, the last word completes against
+ * that command's {@link SlashCommand.args} — the model aliases for `/model`,
+ * nothing for anything else, because nothing else has a closed vocabulary
+ * worth guessing at. A line that is not a slash command offers no
  * completions. Matches `readline`'s synchronous `Completer` shape.
  */
-export function slashCompleter(line: string): [string[], string] {
+export function slashCompleter(line: string): CompleterResult {
   if (!line.startsWith("/")) return [[], line];
-  const names = SLASH_COMMANDS.map((command) => `/${command.name}`);
-  const hits = names.filter((name) => name.startsWith(line));
-  return [hits.length > 0 ? hits : names, line];
+
+  const space = line.indexOf(" ");
+  if (space === -1) {
+    const names = SLASH_COMMANDS.map((command) => `/${command.name}`);
+    const hits = names.filter((name) => name.startsWith(line));
+    return [hits.length > 0 ? hits : names, line];
+  }
+
+  const name = line.slice(1, space).toLowerCase();
+  const values = SLASH_COMMANDS.find((command) => command.name === name)?.args;
+  if (values === undefined || values.length === 0) return [[], line];
+
+  // Only the word under the cursor is replaced, so `/model claude-` completes
+  // in place instead of swallowing the command that precedes it.
+  const argument = line.slice(space + 1);
+  const partial = argument.slice(argument.lastIndexOf(" ") + 1);
+  const hits = values.filter((value) => value.startsWith(partial));
+  return [hits.length > 0 ? [...hits] : [...values], partial];
+}
+
+/**
+ * The REPL's one completer: `@` mentions when a mention is being typed, slash
+ * commands otherwise.
+ *
+ * Routing on the token under the cursor rather than on the first character of
+ * the line is what lets the two coexist — `@` wins wherever it appears
+ * (including inside a slash command's arguments), `/` only ever applies to a
+ * line that starts with one, and a plain sentence gets neither.
+ *
+ * Async only when it has to be: the slash half returns its tuple directly, and
+ * only the mention half — which may spawn `git ls-files` — returns a promise.
+ * Without a {@link FileLister} (no workspace to list) the mention half is
+ * simply absent and every line falls through to {@link slashCompleter}.
+ */
+export function createReplCompleter(files?: FileLister): InputCompleter {
+  return (line: string): CompleterResult | Promise<CompleterResult> => {
+    if (files !== undefined) {
+      const token = mentionTokenAt(line);
+      if (token !== undefined) return completeMention(files, token);
+    }
+    return slashCompleter(line);
+  };
 }
 
 function errorText(error: unknown): string {
@@ -743,6 +826,11 @@ export async function createInteractiveController(
     await build(chat.toModelMessages(), sessionRef);
   };
 
+  const fileExists =
+    deps.fileExists ??
+    ((relativePath: string) =>
+      workspaceFileExists(deps.workspacePath, relativePath));
+
   const handleMessage = async (
     text: string,
     signal?: AbortSignal,
@@ -760,10 +848,16 @@ export async function createInteractiveController(
       titleDirty = true;
     }
 
+    // `@path` mentions stay verbatim in the message and gain one trailing
+    // line naming the files they resolved to (see `annotateMentions`). The
+    // title and the checkpoint label above deliberately come from the text as
+    // typed — the annotation is for the agent, not for the history.
+    const instruction = await annotateMentions(text, fileExists);
+
     const before = deps.usage.totals();
     let result: ChatTurnLike | undefined;
     try {
-      result = await chat.send(text, {
+      result = await chat.send(instruction, {
         runId: sessionId,
         workspacePath: deps.workspacePath,
         ...(signal === undefined ? {} : { signal }),
@@ -1094,7 +1188,7 @@ export async function createInteractiveController(
       cwd,
       ...(isDelegatedBackend(backend) ? [approvalsLine(backend)] : []),
       "type /help for commands, /exit to quit",
-      "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands",
+      "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files",
       "",
     ],
     handleLine: async (line, signal) => {
@@ -1402,13 +1496,17 @@ export async function runInteractive(
       current: undefined,
     };
 
+    // One lister for the whole REPL: its cache is what keeps a burst of Tabs
+    // from spawning `git ls-files` per keystroke.
+    const mentionFiles = createFileLister({ workspacePath });
+
     const inputManager = interactiveTty
       ? createInputManager({
           input: process.stdin,
           output: process.stdout,
           history: await loadHistory(),
           onHistoryAppend: createHistoryAppender(),
-          completer: slashCompleter,
+          completer: createReplCompleter(mentionFiles),
           onIdleSigint: () => activeTurn.current?.abort(),
         })
       : undefined;

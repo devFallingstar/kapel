@@ -1,5 +1,6 @@
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
+import type { CompleterResult } from "../src/input.js";
 import {
   CONTINUATION_PROMPT,
   createInputManager,
@@ -8,6 +9,7 @@ import {
   INPUT_SIGINT,
   initialAssembly,
   reduceAssemblyLine,
+  toReadlineCompleter,
 } from "../src/input.js";
 
 const CTRL_C = "\x03";
@@ -127,6 +129,55 @@ describe("CONTINUATION_PROMPT", () => {
   });
 });
 
+// --- completion adapter --------------------------------------------------------
+
+/** Calls the callback-form completer and resolves what it handed back. */
+function completeThrough(
+  completer: ReturnType<typeof toReadlineCompleter>,
+  line: string,
+): Promise<CompleterResult> {
+  return new Promise((resolve) => {
+    completer(line, (_error, result) => resolve(result));
+  });
+}
+
+describe("toReadlineCompleter", () => {
+  it("presents itself in the two-argument form readline treats as async", () => {
+    expect(toReadlineCompleter(() => [[], ""]).length).toBe(2);
+  });
+
+  it("passes a synchronous completer's result straight through", async () => {
+    const completer = toReadlineCompleter((line) => [["/help"], line]);
+    await expect(completeThrough(completer, "/he")).resolves.toEqual([
+      ["/help"],
+      "/he",
+    ]);
+  });
+
+  it("awaits an asynchronous completer", async () => {
+    const completer = toReadlineCompleter(async (line) => {
+      await tick(5);
+      return [["@a.ts"], line] as CompleterResult;
+    });
+    await expect(completeThrough(completer, "@a")).resolves.toEqual([
+      ["@a.ts"],
+      "@a",
+    ]);
+  });
+
+  it("turns a throw or a rejection into 'no completions', never an error", async () => {
+    const thrower = toReadlineCompleter(() => {
+      throw new Error("listing exploded");
+    });
+    await expect(completeThrough(thrower, "@a")).resolves.toEqual([[], "@a"]);
+
+    const rejecter = toReadlineCompleter(() =>
+      Promise.reject(new Error("git is gone")),
+    );
+    await expect(completeThrough(rejecter, "@a")).resolves.toEqual([[], "@a"]);
+  });
+});
+
 // --- InputManager --------------------------------------------------------------
 
 describe("InputManager.readMessage", () => {
@@ -239,6 +290,78 @@ describe("InputManager.readMessage", () => {
 
     input.write("bar\n");
     await result;
+    manager.close();
+  });
+});
+
+describe("InputManager tab completion", () => {
+  const TAB = "\t";
+
+  it("inserts the remainder of a unique prefix completion", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      completer: (line) => [["/model"], line],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("/mo");
+    await tick(5);
+    input.write(TAB);
+    await tick(20);
+    input.write("\n");
+    await expect(result).resolves.toBe("/model");
+
+    manager.close();
+  });
+
+  it("substitutes a fuzzy winner that shares no prefix with what was typed", async () => {
+    const { input, output } = makeIo();
+    // The `@` case: the completion replaces the token rather than extending
+    // it, which is the only way `@clisrc` can become a real path.
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      completer: async (line) => {
+        await tick(5);
+        const token = line.slice(line.lastIndexOf(" ") + 1);
+        return token.startsWith("@")
+          ? ([["@apps/cli/src/input.ts"], token] as CompleterResult)
+          : ([[], line] as CompleterResult);
+      },
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("look at @clisrc");
+    await tick(5);
+    input.write(TAB);
+    await tick(40);
+    input.write("\n");
+    await expect(result).resolves.toBe("look at @apps/cli/src/input.ts");
+
+    manager.close();
+  });
+
+  it("leaves the line alone when the completer offers nothing", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      completer: (line) => [[], line],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("hello wo");
+    await tick(5);
+    input.write(TAB);
+    await tick(20);
+    input.write("\n");
+    await expect(result).resolves.toBe("hello wo");
+
     manager.close();
   });
 });

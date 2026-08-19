@@ -90,6 +90,62 @@ export const INPUT_SIGINT: unique symbol = Symbol("input-sigint");
 
 export type InputReadResult = string | undefined | typeof INPUT_SIGINT;
 
+/** `readline`'s completer contract: the candidates, and the span they replace. */
+export type CompleterResult = [string[], string];
+
+/**
+ * A Tab completer for the editor, synchronous or not.
+ *
+ * The async half is what `@` file mentions need: listing a workspace means
+ * spawning `git ls-files` or walking directories, neither of which can be done
+ * from a synchronous completer without blocking the event loop the prompt is
+ * running on. `readline` supports both — it dispatches on the completer's
+ * arity — so {@link toReadlineCompleter} always hands it the callback form and
+ * lets a promise resolve into that callback.
+ */
+export type InputCompleter = (
+  line: string,
+) => CompleterResult | Promise<CompleterResult>;
+
+type ReadlineCompleter = (
+  line: string,
+  callback: (error: null | Error, result: CompleterResult) => void,
+) => void;
+
+function isPromise(value: unknown): value is Promise<CompleterResult> {
+  return typeof (value as { then?: unknown } | undefined)?.then === "function";
+}
+
+/**
+ * Adapts an {@link InputCompleter} to the two-argument form `readline` treats
+ * as asynchronous.
+ *
+ * A completer that throws or rejects yields "no completions" rather than an
+ * error: Tab is a convenience, and a transiently unreadable workspace should
+ * cost the user their completion, not their prompt — node would otherwise
+ * print `Tab completion error: …` straight over the line being typed.
+ */
+export function toReadlineCompleter(
+  completer: InputCompleter,
+): ReadlineCompleter {
+  return (line, callback) => {
+    const empty: CompleterResult = [[], line];
+    try {
+      const result = completer(line);
+      if (isPromise(result)) {
+        result.then(
+          (value) => callback(null, value),
+          () => callback(null, empty),
+        );
+        return;
+      }
+      callback(null, result);
+    } catch {
+      callback(null, empty);
+    }
+  };
+}
+
 export interface InputManagerOptions {
   readonly input: NodeJS.ReadableStream & { isTTY?: boolean };
   readonly output: NodeJS.WritableStream;
@@ -97,7 +153,8 @@ export interface InputManagerOptions {
   readonly history?: readonly string[];
   /** Called once per accepted top-level message, with its recall-safe form. */
   readonly onHistoryAppend?: (entry: string) => void;
-  readonly completer?: (line: string) => [string[], string];
+  /** Tab completion; may be async — see {@link InputCompleter}. */
+  readonly completer?: InputCompleter;
   /** Ctrl-C while no read is pending — e.g. a turn is running. */
   readonly onIdleSigint?: () => void;
   /** How long to wait for more lines before resolving a paste as one message. */
@@ -136,7 +193,9 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     terminal: true,
     history: options.history ? [...options.history] : [],
     historySize: 200,
-    ...(options.completer ? { completer: options.completer } : {}),
+    ...(options.completer
+      ? { completer: toReadlineCompleter(options.completer) }
+      : {}),
   });
 
   let closed = false;

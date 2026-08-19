@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -29,6 +29,7 @@ import type {
 import {
   chatUsageBreakdown,
   createInteractiveController,
+  createReplCompleter,
   inputManagerLineSource,
   instructionsBannerLine,
   matchChatSession,
@@ -41,6 +42,7 @@ import {
   usageDeltaLine,
   usageTotalsLine,
 } from "../src/interactive.js";
+import type { FileLister } from "../src/mention.js";
 import { TextRenderer } from "../src/render.js";
 import type { ResolvedModel } from "../src/run.js";
 
@@ -337,6 +339,63 @@ describe("interactive controller — messages", () => {
     const probe = newStore("probe.db");
     expect(await probe.listChatSessions()).toEqual([]);
     expect(h.session().sends).toHaveLength(1);
+  });
+});
+
+// --- @ mentions -------------------------------------------------------------
+
+describe("interactive controller — @ mentions", () => {
+  const fileExists = (relativePath: string): boolean =>
+    relativePath === "apps/cli/src/input.ts" || relativePath === "README.md";
+
+  it("appends the mentioned-files line to what the agent is sent", async () => {
+    const h = await harness({ fileExists });
+    await h.controller.handleLine("look at @apps/cli/src/input.ts please");
+
+    expect(h.session().sends[0]?.instruction).toBe(
+      "look at @apps/cli/src/input.ts please\n\n[mentioned files: apps/cli/src/input.ts]",
+    );
+  });
+
+  it("lists several mentions on the one line, and never their contents", async () => {
+    const h = await harness({ fileExists });
+    await h.controller.handleLine(
+      "compare @README.md and @apps/cli/src/input.ts",
+    );
+
+    expect(h.session().sends[0]?.instruction).toContain(
+      "[mentioned files: README.md, apps/cli/src/input.ts]",
+    );
+  });
+
+  it("leaves a message with no resolvable mention exactly as typed", async () => {
+    const h = await harness({ fileExists });
+    await h.controller.handleLine("ping @here about @nothing.ts");
+
+    expect(h.session().sends[0]?.instruction).toBe(
+      "ping @here about @nothing.ts",
+    );
+  });
+
+  it("titles the session from the text as typed, not from the annotation", async () => {
+    const h = await harness({ fileExists });
+    await h.controller.handleLine("look at @README.md");
+
+    const loaded = await h.store.loadChatSession(h.controller.sessionId());
+    expect(loaded?.record.title).toBe("look at @README.md");
+  });
+
+  it("resolves mentions against the real workspace by default", async () => {
+    const workspacePath = path.join(tempDir, "mention-workspace");
+    await mkdir(path.join(workspacePath, "src"), { recursive: true });
+    await writeFile(path.join(workspacePath, "src", "a.ts"), "const a = 1;\n");
+
+    const h = await harness({ workspacePath });
+    await h.controller.handleLine("read @src/a.ts and @src/missing.ts");
+
+    expect(h.session().sends[0]?.instruction).toBe(
+      "read @src/a.ts and @src/missing.ts\n\n[mentioned files: src/a.ts]",
+    );
   });
 });
 
@@ -804,6 +863,84 @@ describe("slashCompleter", () => {
 
     const [unknown] = slashCompleter("/zzz");
     expect(unknown).toEqual(bare);
+  });
+
+  it("completes /model's argument against the built-in model catalog", () => {
+    const [all, completeOn] = slashCompleter("/model ");
+    expect(completeOn).toBe("");
+    expect(all).toContain("claude-sonnet-5");
+    expect(all).toContain("gpt-5.1");
+
+    const [narrowed, partial] = slashCompleter("/model claude-o");
+    expect(partial).toBe("claude-o");
+    expect(narrowed.every((alias) => alias.startsWith("claude-o"))).toBe(true);
+    expect(narrowed).toContain("claude-opus-5");
+    expect(narrowed).not.toContain("claude-sonnet-5");
+  });
+
+  it("completes only the word under the cursor, not the whole line", () => {
+    const [, completeOn] = slashCompleter("/model foo claude-");
+    expect(completeOn).toBe("claude-");
+  });
+
+  it("offers nothing for commands with no finite argument vocabulary", () => {
+    // `/resume` takes a session id (a property of the store, not of the
+    // command) and `/orchestrate` takes free-form English.
+    expect(slashCompleter("/resume ab")).toEqual([[], "/resume ab"]);
+    expect(slashCompleter("/orchestrate ship it")).toEqual([
+      [],
+      "/orchestrate ship it",
+    ]);
+    expect(slashCompleter("/undo ")).toEqual([[], "/undo "]);
+  });
+
+  it("falls back to the whole vocabulary when the typed argument matches none", () => {
+    const [hits] = slashCompleter("/model zzz");
+    expect(hits).toContain("claude-sonnet-5");
+  });
+});
+
+describe("createReplCompleter", () => {
+  const files: FileLister = {
+    list: () =>
+      Promise.resolve(["apps/cli/src/input.ts", "apps/cli/src/render.ts"]),
+    invalidate: () => undefined,
+  };
+
+  it("routes a mention token to the file completer, asynchronously", async () => {
+    const completer = createReplCompleter(files);
+    const result = completer("look at @clisrcinp");
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toEqual([
+      ["@apps/cli/src/input.ts"],
+      "@clisrcinp",
+    ]);
+  });
+
+  it("routes a slash line to the slash completer, synchronously", () => {
+    const completer = createReplCompleter(files);
+    expect(completer("/mo")).toEqual([["/model"], "/mo"]);
+  });
+
+  it("lets @ win inside a slash command's arguments", async () => {
+    const completer = createReplCompleter(files);
+    await expect(completer("/orchestrate fix @clisrcren")).resolves.toEqual([
+      ["@apps/cli/src/render.ts"],
+      "@clisrcren",
+    ]);
+  });
+
+  it("offers nothing for a plain sentence", () => {
+    expect(createReplCompleter(files)("just talking")).toEqual([
+      [],
+      "just talking",
+    ]);
+  });
+
+  it("falls back to slash completion when there is no file lister", () => {
+    const completer = createReplCompleter();
+    expect(completer("look at @clisrc")).toEqual([[], "look at @clisrc"]);
+    expect(completer("/mo")).toEqual([["/model"], "/mo"]);
   });
 });
 
