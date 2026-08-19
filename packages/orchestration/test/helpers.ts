@@ -10,6 +10,7 @@ import type {
   PlannedTask,
   RuntimeTask,
   TaskResult,
+  WorkerExecutionContext,
   WorkerExecutor,
 } from "../src/index.js";
 
@@ -173,6 +174,7 @@ export interface WorkerCall {
   readonly agent: string;
   readonly attempt: number;
   readonly startedAt: number;
+  readonly context?: WorkerExecutionContext;
   finishedAt?: number;
 }
 
@@ -203,12 +205,14 @@ export class ScriptedWorker implements WorkerExecutor {
     task: RuntimeTask,
     agent: string,
     signal?: AbortSignal,
+    context?: WorkerExecutionContext,
   ): Promise<TaskResult> {
     const call: WorkerCall = {
       taskId: task.spec.id,
       agent,
       attempt: task.attempts,
       startedAt: Date.now() - this.#start,
+      ...(context !== undefined ? { context } : {}),
     };
     this.calls.push(call);
     this.#running += 1;

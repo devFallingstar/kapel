@@ -4,6 +4,7 @@ import {
   DeterministicScheduler,
   PolicyRouter,
   type RuntimeTask,
+  type SchedulerOptions,
   TaskGraph,
   type TaskResult,
 } from "../src/index.js";
@@ -36,8 +37,14 @@ class RecordingSink implements EventSink {
 function scheduler(
   worker: ScriptedWorker,
   events?: EventSink,
+  options?: SchedulerOptions,
 ): DeterministicScheduler {
-  return new DeterministicScheduler(new PolicyRouter(), worker, events);
+  return new DeterministicScheduler(
+    new PolicyRouter(),
+    worker,
+    events,
+    options,
+  );
 }
 
 /** Sleeps `ms`, then succeeds. */
@@ -80,13 +87,18 @@ describe("DeterministicScheduler", () => {
 
   it("fills a freed slot immediately instead of waiting for the wave", async () => {
     // T01 is slow; T02 is quick and unblocks T03. A wave scheduler would hold
-    // T03 back until T01 finished.
+    // T03 back until T01 finished. Areas are disjoint so this exercises pure
+    // slot-filling, not the affected-area conflict gating.
     const worker = new ScriptedWorker(timed({ T01: 80, T02: 10, T03: 10 }));
     const graph = new TaskGraph(
       makePlan([
-        makeTask({ id: "T01" }),
-        makeTask({ id: "T02" }),
-        makeTask({ id: "T03", dependencies: ["T02"] }),
+        makeTask({ id: "T01", affectedAreas: ["areaT01"] }),
+        makeTask({ id: "T02", affectedAreas: ["areaT02"] }),
+        makeTask({
+          id: "T03",
+          dependencies: ["T02"],
+          affectedAreas: ["areaT03"],
+        }),
       ]),
     );
 
@@ -108,7 +120,11 @@ describe("DeterministicScheduler", () => {
     const worker = new ScriptedWorker(timed({}));
     const graph = new TaskGraph(
       makePlan(
-        ["T01", "T02", "T03", "T04", "T05"].map((id) => makeTask({ id })),
+        // Disjoint areas: this test is about the concurrency limit, not
+        // affected-area conflict gating.
+        ["T01", "T02", "T03", "T04", "T05"].map((id) =>
+          makeTask({ id, affectedAreas: [`area-${id}`] }),
+        ),
       ),
     );
 
@@ -476,5 +492,298 @@ describe("DeterministicScheduler", () => {
     expect(task.assignedAgent).toBe("implementer");
     expect(task.result?.changedFiles).toEqual(["a.ts"]);
     expect(task.attempts).toBe(1);
+  });
+
+  describe("affected-area conflict gating", () => {
+    it("serializes two mutating tasks whose affected areas overlap, holding the second until the first frees its slot", async () => {
+      const worker = new ScriptedWorker(timed({ T01: 30, T02: 5 }));
+      const events = new RecordingSink();
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "implementation",
+            affectedAreas: ["src/api"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "testing",
+            affectedAreas: ["src/api/handler.ts"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker, events).run(
+        "run-1",
+        graph,
+        makePolicy({ maxConcurrency: 2 }),
+      );
+
+      expect(worker.peakConcurrency).toBe(1);
+      const t01 = worker.callsFor("T01")[0];
+      const t02 = worker.callsFor("T02")[0];
+      expect(t02?.startedAt).toBeGreaterThanOrEqual(t01?.finishedAt ?? 0);
+      expect(graph.all().every((task) => task.status === "completed")).toBe(
+        true,
+      );
+
+      const held = events.ofType("task.held");
+      expect(held).toHaveLength(1);
+      expect(held[0]?.data).toEqual({ taskId: "T02", conflictsWith: "T01" });
+    });
+
+    it("emits task.held at most once per (task, blocking task) pair", async () => {
+      // T02 is quick and will observe the same running T01 as a blocker on
+      // several dispatch passes while T01 is still in flight.
+      const worker = new ScriptedWorker(timed({ T01: 40, T02: 5 }));
+      const events = new RecordingSink();
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "implementation",
+            affectedAreas: ["src"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "implementation",
+            affectedAreas: ["src/x"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker, events).run(
+        "run-1",
+        graph,
+        makePolicy({ maxConcurrency: 2 }),
+      );
+
+      expect(events.ofType("task.held")).toHaveLength(1);
+    });
+
+    it("runs two mutating tasks with disjoint affected areas fully in parallel", async () => {
+      const worker = new ScriptedWorker(timed({ T01: 30, T02: 30 }));
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "implementation",
+            affectedAreas: ["src/api"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "implementation",
+            affectedAreas: ["src/web"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker).run(
+        "run-1",
+        graph,
+        makePolicy({ maxConcurrency: 2 }),
+      );
+
+      expect(worker.peakConcurrency).toBe(2);
+      expect(graph.all().every((task) => task.status === "completed")).toBe(
+        true,
+      );
+    });
+
+    it("does not serialize a read-only exploration task against an overlapping mutating task", async () => {
+      const worker = new ScriptedWorker(timed({ T01: 30, T02: 30 }));
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "exploration",
+            affectedAreas: ["src/api"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "implementation",
+            affectedAreas: ["src/api"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker).run(
+        "run-1",
+        graph,
+        makePolicy({ maxConcurrency: 2 }),
+      );
+
+      expect(worker.peakConcurrency).toBe(2);
+    });
+
+    it("does not serialize two read-only tasks against each other", async () => {
+      const worker = new ScriptedWorker(timed({ T01: 30, T02: 30 }));
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "exploration",
+            affectedAreas: ["src/api"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "review",
+            affectedAreas: ["src/api"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker).run(
+        "run-1",
+        graph,
+        makePolicy({ maxConcurrency: 2 }),
+      );
+
+      expect(worker.peakConcurrency).toBe(2);
+    });
+
+    it("restores the old fully-parallel behavior when serializeOverlappingAreas is false", async () => {
+      const worker = new ScriptedWorker(timed({ T01: 30, T02: 30 }));
+      const events = new RecordingSink();
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "implementation",
+            affectedAreas: ["src/api"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "implementation",
+            affectedAreas: ["src/api"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker, events, {
+        serializeOverlappingAreas: false,
+      }).run("run-1", graph, makePolicy({ maxConcurrency: 2 }));
+
+      expect(worker.peakConcurrency).toBe(2);
+      expect(events.ofType("task.held")).toHaveLength(0);
+    });
+
+    it("does not deadlock when every ready task is held back by one running task", async () => {
+      // T01 claims the whole repo; T02 and T03 are ready immediately but both
+      // conflict with it, so the dispatch loop must not mistake "nothing
+      // dispatchable this tick" for "unrunnable forever".
+      const worker = new ScriptedWorker(timed({ T01: 20, T02: 5, T03: 5 }));
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({
+            id: "T01",
+            type: "implementation",
+            affectedAreas: ["**"],
+          }),
+          makeTask({
+            id: "T02",
+            type: "implementation",
+            affectedAreas: ["src/a"],
+          }),
+          makeTask({
+            id: "T03",
+            type: "implementation",
+            affectedAreas: ["src/b"],
+          }),
+        ]),
+      );
+
+      await expect(
+        scheduler(worker).run(
+          "run-1",
+          graph,
+          makePolicy({ maxConcurrency: 3 }),
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(graph.all().every((task) => task.status === "completed")).toBe(
+        true,
+      );
+      expect(worker.calls).toHaveLength(3);
+    });
+
+    it("still throws the original deadlock error when nothing is running and nothing can dispatch", async () => {
+      const worker = new ScriptedWorker((call) => makeResult(call.taskId));
+      const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+      const blocked: RuntimeTask = graph.get("T01");
+      blocked.status = "blocked";
+
+      await expect(
+        scheduler(worker).run("run-1", graph, makePolicy()),
+      ).rejects.toThrow("Scheduler deadlock");
+    });
+  });
+
+  describe("dependency-result context", () => {
+    it("gives a root task an empty dependencyResults array", async () => {
+      const worker = new ScriptedWorker((call) => makeResult(call.taskId));
+      const graph = new TaskGraph(
+        makePlan([makeTask({ id: "T01", affectedAreas: ["areaA"] })]),
+      );
+
+      await scheduler(worker).run("run-1", graph, makePolicy());
+
+      expect(worker.callsFor("T01")[0]?.context?.dependencyResults).toEqual([]);
+    });
+
+    it("delivers a dependent task its dependencies' results", async () => {
+      const worker = new ScriptedWorker((call) =>
+        makeResult(call.taskId, "success", {
+          summary: `${call.taskId}: done`,
+        }),
+      );
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({ id: "T01", affectedAreas: ["areaA"] }),
+          makeTask({
+            id: "T02",
+            dependencies: ["T01"],
+            affectedAreas: ["areaB"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker).run("run-1", graph, makePolicy());
+
+      const context = worker.callsFor("T02")[0]?.context;
+      expect(context?.dependencyResults).toHaveLength(1);
+      expect(context?.dependencyResults[0]).toMatchObject({
+        taskId: "T01",
+        summary: "T01: done",
+      });
+    });
+
+    it("orders dependencyResults to match dependency-declaration order, not completion order", async () => {
+      // T02 is faster than T01 and finishes first, so if the scheduler used
+      // completion order this would come out as [T02, T01] instead.
+      const worker = new ScriptedWorker(timed({ T01: 30, T02: 5 }));
+      const graph = new TaskGraph(
+        makePlan([
+          makeTask({ id: "T01", affectedAreas: ["areaA"] }),
+          makeTask({ id: "T02", affectedAreas: ["areaB"] }),
+          makeTask({
+            id: "T03",
+            dependencies: ["T01", "T02"],
+            affectedAreas: ["areaC"],
+          }),
+        ]),
+      );
+
+      await scheduler(worker).run(
+        "run-1",
+        graph,
+        makePolicy({ maxConcurrency: 2 }),
+      );
+
+      const context = worker.callsFor("T03")[0]?.context;
+      expect(context?.dependencyResults.map((result) => result.taskId)).toEqual(
+        ["T01", "T02"],
+      );
+    });
   });
 });

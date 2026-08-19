@@ -1,3 +1,8 @@
+export {
+  areasOverlap,
+  MUTATING_TASK_TYPES,
+  tasksConflict,
+} from "./conflicts.js";
 export { TaskGraph } from "./graph.js";
 export type { PlanRewriteResult } from "./plan-policy.js";
 export { applyPolicyToPlan } from "./plan-policy.js";
@@ -27,6 +32,7 @@ export type {
   TaskResult,
   TaskStatus,
   TaskType,
+  WorkerExecutionContext,
   WorkerExecutor,
 } from "./types.js";
 export { complexityRank, isTerminal, TERMINAL_STATUSES } from "./types.js";

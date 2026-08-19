@@ -60,11 +60,18 @@ export interface RuntimeTask {
   result?: TaskResult;
 }
 
+/** Results a task's direct dependencies produced, handed to its worker. */
+export interface WorkerExecutionContext {
+  /** Results of the task's direct dependencies, in dependency-declaration order. */
+  readonly dependencyResults: readonly TaskResult[];
+}
+
 export interface WorkerExecutor {
   execute(
     task: RuntimeTask,
     agent: string,
     signal?: AbortSignal,
+    context?: WorkerExecutionContext,
   ): Promise<TaskResult>;
 }
 

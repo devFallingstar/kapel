@@ -1,8 +1,9 @@
 import type { EscalationRule, OrchestrationPolicy } from "@agent/policy";
 import type { AgentEvent, EventSink } from "@agent/protocol";
+import { tasksConflict } from "./conflicts.js";
 import type { TaskGraph } from "./graph.js";
 import type { AgentRouter } from "./router.js";
-import type { WorkerExecutor } from "./types.js";
+import type { WorkerExecutionContext, WorkerExecutor } from "./types.js";
 import { isTerminal, type RuntimeTask, type TaskResult } from "./types.js";
 
 /** Optional knobs; every field has a policy-derived default. */
@@ -12,6 +13,12 @@ export interface SchedulerOptions {
    * `policy.defaultMaxAttempts`.
    */
   readonly maxAttempts?: number;
+  /**
+   * When true (the default), a ready task whose affected areas overlap a
+   * currently-running task's is held back rather than dispatched, so two
+   * tasks that may write to the same part of the repo never run at once.
+   */
+  readonly serializeOverlappingAreas?: boolean;
 }
 
 /** Why a task was cancelled rather than run to completion. */
@@ -42,7 +49,11 @@ export class DeterministicScheduler {
       policy.parallelizeIndependentTasks === false
         ? 1
         : Math.max(1, policy.maxConcurrency);
+    const serializeOverlappingAreas =
+      this.options?.serializeOverlappingAreas ?? true;
     const running = new Map<number, Promise<number>>();
+    const runningTasks = new Map<number, RuntimeTask>();
+    const heldPairsEmitted = new Set<string>();
     let sequence = 0;
 
     for (;;) {
@@ -50,13 +61,23 @@ export class DeterministicScheduler {
 
       if (!aborted) {
         while (running.size < limit) {
-          const next = graph.ready()[0];
+          const next = await this.#nextDispatchable(
+            runId,
+            graph,
+            serializeOverlappingAreas,
+            runningTasks,
+            heldPairsEmitted,
+          );
           if (next === undefined) break;
           const key = sequence;
           sequence += 1;
+          runningTasks.set(key, next);
           running.set(
             key,
-            this.#attempt(runId, next, graph, policy, signal).then(() => key),
+            this.#attempt(runId, next, graph, policy, signal).then(() => {
+              runningTasks.delete(key);
+              return key;
+            }),
           );
         }
       }
@@ -75,6 +96,41 @@ export class DeterministicScheduler {
       const finished = await Promise.race(running.values());
       running.delete(finished);
     }
+  }
+
+  /**
+   * The next ready task that is safe to dispatch: the first one (in
+   * `graph.ready()` order) that does not conflict with any currently
+   * running task. Ready tasks held back by a running conflict each emit
+   * `task.held` at most once per (task, blocking task) pair.
+   */
+  async #nextDispatchable(
+    runId: string,
+    graph: TaskGraph,
+    serializeOverlappingAreas: boolean,
+    runningTasks: ReadonlyMap<number, RuntimeTask>,
+    heldPairsEmitted: Set<string>,
+  ): Promise<RuntimeTask | undefined> {
+    const ready = graph.ready();
+    if (!serializeOverlappingAreas) return ready[0];
+
+    const runningList = [...runningTasks.values()];
+    for (const candidate of ready) {
+      const blocker = runningList.find((other) =>
+        tasksConflict(candidate.spec, other.spec),
+      );
+      if (blocker === undefined) return candidate;
+
+      const pairKey = `${candidate.spec.id}:${blocker.spec.id}`;
+      if (!heldPairsEmitted.has(pairKey)) {
+        heldPairsEmitted.add(pairKey);
+        await this.#emit(runId, "task.held", candidate.spec.id, {
+          taskId: candidate.spec.id,
+          conflictsWith: blocker.spec.id,
+        });
+      }
+    }
+    return undefined;
   }
 
   /** Runs one attempt of `task` and settles it: retried, failed or completed. */
@@ -108,7 +164,8 @@ export class DeterministicScheduler {
       attempt: task.attempts,
     });
 
-    const result = await this.#execute(task, agent, signal);
+    const context = this.#dependencyContext(graph, task);
+    const result = await this.#execute(task, agent, signal, context);
     task.result = result;
 
     if (result.status === "success") {
@@ -144,14 +201,33 @@ export class DeterministicScheduler {
     await this.#cancelDependents(runId, graph, task.spec.id);
   }
 
+  /**
+   * The results of `task`'s direct dependencies, in dependency-declaration
+   * order. Dependencies with no recorded result (should not happen for a
+   * task that reached "ready", but the graph does not guarantee it) are
+   * skipped rather than filled with a placeholder.
+   */
+  #dependencyContext(
+    graph: TaskGraph,
+    task: RuntimeTask,
+  ): WorkerExecutionContext {
+    const dependencyResults: TaskResult[] = [];
+    for (const dependencyId of task.spec.dependencies) {
+      const result = graph.get(dependencyId).result;
+      if (result !== undefined) dependencyResults.push(result);
+    }
+    return { dependencyResults };
+  }
+
   /** A worker that throws counts as a failed attempt, not a crashed run. */
   async #execute(
     task: RuntimeTask,
     agent: string,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    context: WorkerExecutionContext,
   ): Promise<TaskResult> {
     try {
-      return await this.worker.execute(task, agent, signal);
+      return await this.worker.execute(task, agent, signal, context);
     } catch (error) {
       return {
         taskId: task.spec.id,
