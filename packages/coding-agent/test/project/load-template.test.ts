@@ -1,0 +1,70 @@
+import { describe, expect, it } from "vitest";
+import { loadAgentProject } from "../../src/project/index.js";
+import {
+  cleanupWorkspace,
+  copyTemplateAgentDir,
+  makeWorkspace,
+} from "./test-helpers.js";
+
+describe("loadAgentProject - templates/default/.agent fixture", () => {
+  it("loads the repo template end to end", async () => {
+    const workspacePath = await makeWorkspace();
+    try {
+      const agentDir = await copyTemplateAgentDir(workspacePath);
+      const project = await loadAgentProject(workspacePath);
+
+      expect(project).toBeDefined();
+      if (!project) throw new Error("unreachable");
+
+      expect(project.root).toBe(agentDir);
+      expect(project.agents).toHaveLength(4);
+
+      const names = project.agents.map((agent) => agent.name).sort();
+      expect(names).toEqual(["coder", "explorer", "lead", "reviewer"]);
+
+      expect(project.knownAgentNames()).toEqual(
+        new Set(["coder", "explorer", "lead", "reviewer"]),
+      );
+
+      const lead = project.agent("lead");
+      expect(lead).toBeDefined();
+      expect(lead?.role).toBe("orchestrator");
+      expect(lead?.modelAlias).toBe("lead");
+      expect(lead?.tools).toEqual(["task.*", "worker.*", "result.*", "plan.*"]);
+      expect(lead?.systemPrompt).toContain("Act as the engineering lead.");
+
+      const explorer = project.agent("explorer");
+      expect(explorer?.role).toBe("worker");
+      expect(explorer?.modelAlias).toBe("cheap");
+      expect(explorer?.tools).toEqual(["read", "grep", "glob", "git.diff"]);
+
+      // Slots in config.yaml resolve to existing agents.
+      expect(project.config.agentSlots).toEqual({
+        orchestrator: "lead",
+        defaultWorker: "coder",
+        explorer: "explorer",
+        reviewer: "reviewer",
+      });
+
+      // Models declared in config.yaml.
+      expect(project.config.models.lead).toEqual({
+        provider: "openai",
+        model: "gpt-5.6-sol",
+      });
+      expect(project.config.models.reviewer).toEqual({
+        provider: "anthropic",
+        model: "claude-opus",
+      });
+
+      expect(project.orchestrationMarkdown).toBeDefined();
+      expect(project.orchestrationMarkdown).toContain("Orchestration Policy");
+      expect(project.orchestrationMarkdown).toContain(
+        "Use `explorer` for inexpensive read-only repository exploration.",
+      );
+
+      expect(project.agent("nonexistent")).toBeUndefined();
+    } finally {
+      await cleanupWorkspace(workspacePath);
+    }
+  });
+});
