@@ -8,8 +8,10 @@ import type {
   ModelMessage,
   ModelProvider,
   ModelRequest,
+  UsageBreakdown,
   UsageTotals,
 } from "@agent/ai";
+import { UNATTRIBUTED } from "@agent/ai";
 import type { ChatTurnResult } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
@@ -25,6 +27,7 @@ import type {
   SessionFactoryArgs,
 } from "../src/interactive.js";
 import {
+  chatUsageBreakdown,
   createInteractiveController,
   inputManagerLineSource,
   instructionsBannerLine,
@@ -129,12 +132,18 @@ class FakeUsage {
   inputTokens = 0;
   outputTokens = 0;
   costUsd = 0;
+  /** Per-model attribution, empty unless a test sets one. */
+  breakdown = new Map<string, UsageBreakdown>();
 
   totals(): UsageTotals {
     return {
       usage: { inputTokens: this.inputTokens, outputTokens: this.outputTokens },
       costUsd: this.costUsd,
     };
+  }
+
+  breakdownBy(): ReadonlyMap<string, UsageBreakdown> {
+    return this.breakdown;
   }
 }
 
@@ -372,6 +381,48 @@ describe("interactive controller — slash commands", () => {
     h.usage.costUsd = 0.0125;
     expect((await h.controller.handleLine("/usage")).output).toEqual([
       "tokens — input: 1500, output: 250  (~$0.0125)",
+    ]);
+  });
+
+  it("/usage breaks the total down by model", async () => {
+    const h = await harness();
+    h.usage.inputTokens = 42_345;
+    h.usage.outputTokens = 8_100;
+    h.usage.costUsd = 0.1742;
+    h.usage.breakdown = new Map<string, UsageBreakdown>([
+      [
+        "claude-sonnet-5",
+        {
+          key: "claude-sonnet-5",
+          usage: { inputTokens: 12_345, outputTokens: 2_100 },
+          costUsd: 0.1142,
+          pricing: "known",
+          models: ["claude-sonnet-5"],
+          agents: ["agent"],
+          tasks: [UNATTRIBUTED],
+          samples: 2,
+        },
+      ],
+      [
+        "claude-code",
+        {
+          key: "claude-code",
+          usage: { inputTokens: 30_000, outputTokens: 6_000 },
+          costUsd: 0,
+          // A subscription-billed CLI: real tokens, no price to report.
+          pricing: "unknown",
+          models: ["claude-code"],
+          agents: [UNATTRIBUTED],
+          tasks: [UNATTRIBUTED],
+          samples: 1,
+        },
+      ],
+    ]);
+
+    expect((await h.controller.handleLine("/usage")).output).toEqual([
+      "tokens — input: 42345, output: 8100  (~$0.1742)",
+      "  claude-sonnet-5: 12.3k in / 2.1k out · $0.11",
+      "  claude-code: 30.0k in / 6.0k out · n/a",
     ]);
   });
 
@@ -984,5 +1035,58 @@ describe("interactive REPL / streamed turn output", () => {
     expect(/[\u0000-\u0008\u000b-\u001f]/.test(screen.chunks.join(""))).toBe(
       false,
     );
+  });
+});
+
+describe("chatUsageBreakdown", () => {
+  const native = new Map<string, UsageBreakdown>([
+    [
+      "claude-sonnet-5",
+      {
+        key: "claude-sonnet-5",
+        usage: { inputTokens: 100, outputTokens: 20 },
+        costUsd: 0.001,
+        pricing: "known",
+        models: ["claude-sonnet-5"],
+        agents: ["agent"],
+        tasks: [UNATTRIBUTED],
+        samples: 1,
+      },
+    ],
+  ]);
+
+  function totals(
+    inputTokens: number,
+    outputTokens: number,
+    costUsd: number,
+  ): UsageTotals {
+    return { usage: { inputTokens, outputTokens }, costUsd };
+  }
+
+  it("adds one bucket per delegating backend that spent something", () => {
+    const merged = chatUsageBreakdown(native, [
+      { label: "claude-code", totals: totals(300, 40, 0) },
+      { label: "codex", totals: totals(0, 0, 0) },
+    ]);
+
+    expect([...merged.keys()]).toEqual(["claude-sonnet-5", "claude-code"]);
+    const delegated = merged.get("claude-code");
+    expect(delegated?.usage).toEqual({ inputTokens: 300, outputTokens: 40 });
+    // No reported cost means unknown, not free.
+    expect(delegated?.pricing).toBe("unknown");
+  });
+
+  it("trusts a cost the backend itself reported", () => {
+    const merged = chatUsageBreakdown(native, [
+      { label: "claude-code", totals: totals(300, 40, 0.25) },
+    ]);
+    expect(merged.get("claude-code")?.pricing).toBe("known");
+    expect(merged.get("claude-code")?.costUsd).toBe(0.25);
+  });
+
+  it("leaves the native breakdown untouched", () => {
+    const merged = chatUsageBreakdown(native, []);
+    expect([...merged.keys()]).toEqual(["claude-sonnet-5"]);
+    expect(native.size).toBe(1);
   });
 });

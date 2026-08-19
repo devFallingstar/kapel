@@ -1,3 +1,5 @@
+import type { UsageTags } from "./usage.js";
+
 export type ModelRole = "orchestrator" | "worker" | "reviewer";
 
 export interface ModelCapabilities {
@@ -117,9 +119,15 @@ export interface ModelRegistry {
   providerFor(model: ModelDefinition): ModelProvider;
 }
 
-/** Sink for accumulating token usage (and therefore cost) across turns. */
+/**
+ * Sink for accumulating token usage (and therefore cost) across turns.
+ *
+ * `tags` is optional on both sides of the contract: a caller that knows which
+ * agent or task is spending says so, an older two-argument call still records,
+ * and an implementation is free to ignore the attribution entirely.
+ */
 export interface UsageRecorder {
-  record(model: ModelDefinition, usage: ModelUsage): void;
+  record(model: ModelDefinition, usage: ModelUsage, tags?: UsageTags): void;
 }
 
 export { defaultModelCatalog } from "./catalog.js";
@@ -132,5 +140,16 @@ export { OpenAIProvider } from "./providers/openai.js";
 export { StaticModelRegistry } from "./registry.js";
 export type { SseMessage } from "./sse.js";
 export { parseSse } from "./sse.js";
-export type { UsageTotals } from "./usage.js";
-export { UsageTracker } from "./usage.js";
+export type {
+  UsageBreakdown,
+  UsageDimension,
+  UsagePricing,
+  UsageTags,
+  UsageTotals,
+} from "./usage.js";
+export {
+  UNATTRIBUTED,
+  UsageTracker,
+  usageCostUsd,
+  usageRecordingProvider,
+} from "./usage.js";

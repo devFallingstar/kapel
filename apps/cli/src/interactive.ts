@@ -5,9 +5,11 @@ import type {
   ModelDefinition,
   ModelMessage,
   ModelProvider,
+  UsageBreakdown,
+  UsageDimension,
   UsageTotals,
 } from "@agent/ai";
-import { UsageTracker } from "@agent/ai";
+import { UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type { AgentLoopRunContext, ChatTurnResult } from "@agent/coding-agent";
 import {
   AgentChatSession,
@@ -69,7 +71,7 @@ import { DEFAULT_PERMISSIONS } from "./permissions.js";
 import { formatTable } from "./plan.js";
 import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
-import { TextRenderer } from "./render.js";
+import { TextRenderer, usageRollupLines } from "./render.js";
 import type { ResolvedModel } from "./run.js";
 import {
   agentLoopOptions,
@@ -410,6 +412,41 @@ export function usageTotalsLine(totals: UsageTotals): string {
     : line;
 }
 
+/**
+ * `/usage`'s per-model view: whatever the native tracker attributed, plus one
+ * bucket per delegating backend that ran a turn this process.
+ *
+ * A delegated backend bills a subscription, not tokens, so its bucket carries
+ * real token counts and a price only when the CLI itself reported one —
+ * otherwise `unknown`, which renders as `n/a` rather than a misleading `$0.00`.
+ */
+export function chatUsageBreakdown(
+  native: ReadonlyMap<string, UsageBreakdown>,
+  delegated: readonly {
+    readonly label: string;
+    readonly totals: UsageTotals;
+  }[],
+): ReadonlyMap<string, UsageBreakdown> {
+  const out = new Map(native);
+  for (const { label, totals } of delegated) {
+    const { inputTokens, outputTokens } = totals.usage;
+    if (inputTokens === 0 && outputTokens === 0 && totals.costUsd === 0) {
+      continue;
+    }
+    out.set(label, {
+      key: label,
+      usage: totals.usage,
+      costUsd: totals.costUsd,
+      pricing: totals.costUsd > 0 ? "known" : "unknown",
+      models: [label],
+      agents: [UNATTRIBUTED],
+      tasks: [UNATTRIBUTED],
+      samples: 1,
+    });
+  }
+  return out;
+}
+
 /** What one turn cost, as a difference between two cumulative snapshots. */
 export function usageDeltaLine(
   before: UsageTotals,
@@ -439,8 +476,19 @@ export interface InteractiveControllerDeps {
   readonly provider?: ModelProvider;
   /** Where the conversation starts; see {@link resolveStartSession}. */
   readonly start: InteractiveStart;
-  /** Cumulative usage across every turn of this process. */
-  readonly usage: { totals(): UsageTotals };
+  /**
+   * Cumulative usage across every turn of this process.
+   *
+   * `breakdownBy` is optional: a source that cannot attribute its spend (a
+   * bare delegated total) still reports a running total, and `/usage` prints
+   * the breakdown only when there is one to print.
+   */
+  readonly usage: {
+    totals(): UsageTotals;
+    breakdownBy?(
+      dimension: UsageDimension,
+    ): ReadonlyMap<string, UsageBreakdown>;
+  };
   /** Resolves a `/model <alias>` switch. Defaults to the real registry. */
   readonly resolveModel?: (alias: string) => Promise<ResolvedModel>;
   /** Runs `/orchestrate <objective>`; absent means the command is unavailable. */
@@ -973,6 +1021,13 @@ export async function createInteractiveController(
         return await slashConfig();
       case "usage":
         emit(usageTotalsLine(deps.usage.totals()));
+        // Indented under the total: the same tokens, split by which model
+        // spent them. Absent when the usage source cannot attribute anything.
+        for (const line of usageRollupLines(
+          deps.usage.breakdownBy?.("model") ?? new Map(),
+        )) {
+          emit(`  ${line}`);
+        }
         return drain();
       case "compact":
         return await slashCompact();
@@ -1243,11 +1298,37 @@ export async function runInteractive(
     // created here and not inside the per-session engine below.
     const sessionAllowlist = new SessionAllowlist();
     const nativeUsage = new UsageTracker();
-    const delegatedUsage = new DelegatedUsage();
+    // One ledger per delegating backend rather than one for all of them: a
+    // `/config` can switch backends mid-thread, and `/usage` should then say
+    // which CLI spent what instead of merging Codex's tokens into Claude
+    // Code's line.
+    const delegatedUsage = new Map<
+      Exclude<BackendName, "native">,
+      DelegatedUsage
+    >();
+    const delegatedUsageFor = (
+      target: Exclude<BackendName, "native">,
+    ): DelegatedUsage => {
+      const existing = delegatedUsage.get(target);
+      if (existing !== undefined) return existing;
+      const created = new DelegatedUsage();
+      delegatedUsage.set(target, created);
+      return created;
+    };
     // One usage view over both engines, so `/usage` and the per-turn delta
     // read the same however the conversation is being run — and keep adding up
     // across a `/config` that switches from one to the other mid-thread.
-    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
+    const usage = {
+      totals: () => sumTotals(nativeUsage, ...delegatedUsage.values()),
+      breakdownBy: (dimension: UsageDimension) =>
+        chatUsageBreakdown(
+          nativeUsage.breakdownBy(dimension),
+          [...delegatedUsage].map(([label, ledger]) => ({
+            label,
+            totals: ledger.totals(),
+          })),
+        ),
+    };
 
     // The renderer owns everything the turn puts on screen: streamed assistant
     // text, tool lines, and the status line that fills the silence in between.
@@ -1325,7 +1406,7 @@ export async function runInteractive(
           const result = await chat.send(instruction, {
             ...(context.signal === undefined ? {} : { signal: context.signal }),
           });
-          delegatedUsage.add(result);
+          delegatedUsageFor(target).add(result);
           return result;
         },
         toModelMessages: () => chat.toModelMessages(),

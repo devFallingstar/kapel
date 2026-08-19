@@ -1,4 +1,10 @@
-import type { UsageTotals } from "@agent/ai";
+import type {
+  ModelUsage,
+  UsageBreakdown,
+  UsagePricing,
+  UsageTotals,
+} from "@agent/ai";
+import { UNATTRIBUTED } from "@agent/ai";
 import type {
   AgentLoopResult,
   ClaudeCodeRunResult,
@@ -21,6 +27,89 @@ export type DelegatedRunResult = CodexRunResult | ClaudeCodeRunResult;
 /** Renders loop events (and the final result) to an output stream. */
 export interface Renderer extends EventSink {
   result(result: CliRunResult, usage: UsageTotals): void;
+}
+
+// --- Cost attribution formatting --------------------------------------------
+//
+// Shared by the run summary (`orchestrate.ts`) and `/usage` (`interactive.ts`),
+// which report the same numbers in two shapes and must not drift apart.
+
+/** `945`, `12.3k`, `1.2M` — token counts short enough to sit in a table cell. */
+export function formatTokenCount(tokens: number): string {
+  if (tokens < 1_000) return String(tokens);
+  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return `${(tokens / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * `$0.42`, `$0.0031`, `$0.42+`, `n/a`.
+ *
+ * An unpriced model reports `n/a`, never `$0.00`: the tokens were not free,
+ * their price is simply not known here (a delegated, subscription-billed
+ * backend, or a catalog entry that ships without rates). `+` marks a bucket
+ * that mixes priced and unpriced samples, so its figure is a lower bound.
+ */
+export function formatCostUsd(costUsd: number, pricing: UsagePricing): string {
+  if (pricing === "unknown") return "n/a";
+  const amount = costUsd >= 0.01 ? costUsd.toFixed(2) : costUsd.toFixed(4);
+  return pricing === "partial" ? `$${amount}+` : `$${amount}`;
+}
+
+/** `12.3k in (1.0k cached) / 2.1k out` — one bucket's tokens, spelled out. */
+export function formatTokenFlow(usage: ModelUsage): string {
+  const cached = usage.cachedInputTokens;
+  const input =
+    cached === undefined || cached === 0
+      ? `${formatTokenCount(usage.inputTokens)} in`
+      : `${formatTokenCount(usage.inputTokens)} in (${formatTokenCount(cached)} cached)`;
+  return `${input} / ${formatTokenCount(usage.outputTokens)} out`;
+}
+
+export interface UsageBreakdownLineOptions {
+  /** Prefix the tokens with how many tasks fed this bucket (`1 task · …`). */
+  readonly countTasks?: boolean;
+}
+
+/**
+ * One line of a usage rollup:
+ * `claude-opus-5: 1 task · 12.3k in / 2.1k out · $0.42`.
+ *
+ * `countTasks` is for the orchestrate summary, where "which model did how much
+ * work" is the whole question; the interactive `/usage` has no tasks and omits
+ * that segment.
+ */
+export function usageBreakdownLine(
+  entry: UsageBreakdown,
+  options: UsageBreakdownLineOptions = {},
+): string {
+  const parts: string[] = [];
+  if (options.countTasks === true) {
+    const tasks = entry.tasks.filter((id) => id !== UNATTRIBUTED).length;
+    parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`);
+  }
+  parts.push(formatTokenFlow(entry.usage));
+  parts.push(formatCostUsd(entry.costUsd, entry.pricing));
+  return `${entry.key}: ${parts.join(" · ")}`;
+}
+
+/**
+ * The per-model rollup, most expensive first, then most tokens — the order
+ * that answers "where did the money go" without the reader scanning.
+ */
+export function usageRollupLines(
+  breakdown: ReadonlyMap<string, UsageBreakdown>,
+  options: UsageBreakdownLineOptions = {},
+): readonly string[] {
+  return [...breakdown.values()]
+    .sort(
+      (a, b) =>
+        b.costUsd - a.costUsd ||
+        b.usage.inputTokens +
+          b.usage.outputTokens -
+          (a.usage.inputTokens + a.usage.outputTokens) ||
+        a.key.localeCompare(b.key),
+    )
+    .map((entry) => usageBreakdownLine(entry, options));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

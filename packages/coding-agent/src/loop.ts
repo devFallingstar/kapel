@@ -414,7 +414,7 @@ export class AgentLoopEngine {
             calls.push({ id: event.id, name: event.name, input: event.input });
             break;
           case "usage":
-            this.#recordUsage(event);
+            this.#recordUsage(event, context);
             break;
           case "done":
             finishReason = event.finishReason;
@@ -430,7 +430,10 @@ export class AgentLoopEngine {
     return { text, calls, finishReason };
   }
 
-  #recordUsage(event: Extract<ModelEvent, { type: "usage" }>): void {
+  #recordUsage(
+    event: Extract<ModelEvent, { type: "usage" }>,
+    context: AgentLoopRunContext,
+  ): void {
     const recorder = this.#options.usage;
     if (recorder === undefined) return;
 
@@ -441,7 +444,10 @@ export class AgentLoopEngine {
         ? {}
         : { cachedInputTokens: event.cachedInputTokens }),
     };
-    recorder.record(this.#options.agent.model, usage);
+    recorder.record(this.#options.agent.model, usage, {
+      agent: this.#options.agent.name,
+      ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
+    });
   }
 
   /**

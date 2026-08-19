@@ -1,6 +1,7 @@
 import { appendFile } from "node:fs/promises";
 import path from "node:path";
-import { UsageTracker } from "@agent/ai";
+import type { ModelDefinition, ModelEvent, ModelProvider } from "@agent/ai";
+import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type {
   AgentProject,
   ProjectValidator,
@@ -19,7 +20,10 @@ import type { OrchestrateCommandOptions } from "../src/orchestrate.js";
 import {
   DEFAULT_ISOLATION,
   defaultExecutorFactory,
+  PLANNER_AGENT,
+  planningThrough,
   runOrchestrate,
+  runSummaryLines,
   validateIsolation,
   validateWorkerMode,
   worktreeIsolationError,
@@ -680,5 +684,173 @@ describe("kapel orchestrate", () => {
       expect(code).toBe(0);
       expect(lines.some((line) => line.startsWith("validators:"))).toBe(false);
     });
+  });
+});
+
+describe("runSummaryLines", () => {
+  const catalog = defaultModelCatalog();
+
+  function model(id: string): ModelDefinition {
+    const found = catalog[id];
+    if (found === undefined) throw new Error(`${id} missing from catalog`);
+    return found;
+  }
+
+  function runtimeTask(id: string, agent: string): RuntimeTask {
+    return {
+      spec: task(id, { title: `Task ${id}` }),
+      status: "completed",
+      assignedAgent: agent,
+      attempts: 1,
+    };
+  }
+
+  /** A three-task run: an expensive planner, a cheap worker, one review. */
+  function threeTaskRun(): { tasks: RuntimeTask[]; usage: UsageTracker } {
+    const usage = new UsageTracker();
+    usage.record(
+      model("claude-opus-5"),
+      { inputTokens: 12_345, outputTokens: 2_100 },
+      { agent: "planner" },
+    );
+    for (const [id, agent] of [
+      ["T01", "explorer"],
+      ["T02", "coder"],
+      ["T03", "reviewer"],
+    ] as const) {
+      usage.record(
+        model("claude-haiku-4-5"),
+        { inputTokens: 10_000, outputTokens: 2_000 },
+        { agent, taskId: id },
+      );
+    }
+    return {
+      tasks: [
+        runtimeTask("T01", "explorer"),
+        runtimeTask("T02", "coder"),
+        runtimeTask("T03", "reviewer"),
+      ],
+      usage,
+    };
+  }
+
+  it("puts the model, tokens and cost of each task in the table", () => {
+    const { tasks, usage } = threeTaskRun();
+    const lines = runSummaryLines(tasks, usage);
+
+    expect(lines[1]).toBe(
+      "STATUS     ID   AGENT     TRIES  MODEL             TOKENS      $      TITLE",
+    );
+    expect(lines[2]).toBe(
+      "completed  T01  explorer  1      claude-haiku-4-5  10.0k/2.0k  $0.02  Task T01",
+    );
+  });
+
+  it("rolls the run up per model, then reports the grand total", () => {
+    const { tasks, usage } = threeTaskRun();
+    const lines = runSummaryLines(tasks, usage);
+
+    expect(lines.slice(-4)).toEqual([
+      "3/3 tasks completed",
+      // Planning is attributed to the model that did it, and to no task.
+      "claude-opus-5: 0 tasks · 12.3k in / 2.1k out · $0.11",
+      "claude-haiku-4-5: 3 tasks · 30.0k in / 6.0k out · $0.06",
+      "tokens — input: 42345, output: 8100  (~$0.1742)",
+    ]);
+  });
+
+  it("keeps the per-model rollup summing to the run total", () => {
+    const { usage } = threeTaskRun();
+    const byModel = [...usage.totalsBy("model").values()];
+    const totals = usage.totals();
+
+    expect(
+      byModel.reduce((sum, entry) => sum + entry.usage.inputTokens, 0),
+    ).toBe(totals.usage.inputTokens);
+    expect(
+      byModel.reduce((sum, entry) => sum + entry.usage.outputTokens, 0),
+    ).toBe(totals.usage.outputTokens);
+    expect(byModel.reduce((sum, entry) => sum + entry.costUsd, 0)).toBeCloseTo(
+      totals.costUsd,
+      10,
+    );
+  });
+
+  it("shows a dash for a task nothing was recorded against", () => {
+    const tasks = [runtimeTask("T01", "coder")];
+    const lines = runSummaryLines(tasks, new UsageTracker());
+
+    expect(lines[2]).toBe(
+      "completed  T01  coder  1      -      -       -  Task T01",
+    );
+    // Nothing spent, nothing to roll up: the total line still closes the report.
+    expect(lines[lines.length - 1]).toBe("tokens — input: 0, output: 0");
+  });
+
+  it("reports tokens with n/a cost for a model that ships without prices", () => {
+    const usage = new UsageTracker();
+    usage.record(
+      model("gpt-5.1"),
+      { inputTokens: 4_000, outputTokens: 900 },
+      { agent: "coder", taskId: "T01" },
+    );
+    const lines = runSummaryLines([runtimeTask("T01", "coder")], usage);
+
+    expect(lines[2]).toBe(
+      "completed  T01  coder  1      gpt-5.1  4.0k/900  n/a  Task T01",
+    );
+    expect(lines.at(-2)).toBe("gpt-5.1: 1 task · 4.0k in / 900 out · n/a");
+  });
+});
+
+describe("planningThrough", () => {
+  const catalog = defaultModelCatalog();
+
+  function plannerModel(): ModelDefinition {
+    const found = catalog["claude-opus-5"];
+    if (found === undefined) throw new Error("claude-opus-5 missing");
+    return found;
+  }
+
+  /** A provider that reports usage without going anywhere near the network. */
+  function fakeProvider(): ModelProvider {
+    return {
+      id: "fake",
+      supports: () => true,
+      stream: async function* () {
+        yield {
+          type: "usage",
+          inputTokens: 12_345,
+          outputTokens: 2_100,
+        } satisfies ModelEvent;
+        yield { type: "done", finishReason: "stop" } satisfies ModelEvent;
+      },
+    };
+  }
+
+  it("attributes what the planning call spent to the planner", async () => {
+    const usage = new UsageTracker();
+    let handed: ModelProvider | undefined;
+    const factory = planningThrough(usage, (args) => {
+      handed = args.provider;
+      return { plan: async () => SAMPLE_PLAN };
+    });
+
+    const model = plannerModel();
+    factory({ provider: fakeProvider(), model, knownAgents: [] });
+    if (handed === undefined) throw new Error("no provider was handed over");
+    for await (const _event of handed.stream({ model, messages: [] })) {
+      // drain
+    }
+
+    expect(usage.totals().usage).toEqual({
+      inputTokens: 12_345,
+      outputTokens: 2_100,
+    });
+    const byAgent = usage.breakdownBy("agent");
+    expect([...byAgent.keys()]).toEqual([PLANNER_AGENT]);
+    // Planning belongs to no task, so it never lands in a task row.
+    expect([...usage.breakdownBy("task").keys()]).toEqual([UNATTRIBUTED]);
+    expect(byAgent.get(PLANNER_AGENT)?.models).toEqual(["claude-opus-5"]);
   });
 });

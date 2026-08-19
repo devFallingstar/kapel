@@ -1,8 +1,17 @@
-import { UsageTracker } from "@agent/ai";
+import type { UsageBreakdown } from "@agent/ai";
+import { UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type { AgentLoopResult, CodexRunResult } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
-import { JsonRenderer, TextRenderer } from "../src/render.js";
+import {
+  formatCostUsd,
+  formatTokenCount,
+  formatTokenFlow,
+  JsonRenderer,
+  TextRenderer,
+  usageBreakdownLine,
+  usageRollupLines,
+} from "../src/render.js";
 import { StatusLine } from "../src/status-line.js";
 
 /** Minimal fake `NodeJS.WritableStream` that just captures every write. */
@@ -946,5 +955,102 @@ describe("JsonRenderer / model.text.delta", () => {
       type: "model.turn.completed",
       data: { text: "Hello", toolCallCount: 0 },
     });
+  });
+});
+
+describe("cost attribution formatting", () => {
+  function entry(overrides: Partial<UsageBreakdown> = {}): UsageBreakdown {
+    return {
+      key: "claude-opus-5",
+      usage: { inputTokens: 12_345, outputTokens: 2_100 },
+      costUsd: 0.42,
+      pricing: "known",
+      models: ["claude-opus-5"],
+      agents: ["orchestrator"],
+      tasks: ["T01"],
+      samples: 1,
+      ...overrides,
+    };
+  }
+
+  it("abbreviates token counts without inventing precision", () => {
+    expect(formatTokenCount(0)).toBe("0");
+    expect(formatTokenCount(999)).toBe("999");
+    expect(formatTokenCount(1_000)).toBe("1.0k");
+    expect(formatTokenCount(12_345)).toBe("12.3k");
+    expect(formatTokenCount(2_400_000)).toBe("2.4M");
+  });
+
+  it("renders an unpriced bucket as n/a rather than $0.00", () => {
+    expect(formatCostUsd(0, "unknown")).toBe("n/a");
+    expect(formatCostUsd(1.23, "unknown")).toBe("n/a");
+    expect(formatCostUsd(0, "known")).toBe("$0.0000");
+    expect(formatCostUsd(0.0031, "known")).toBe("$0.0031");
+    expect(formatCostUsd(0.42, "known")).toBe("$0.42");
+    expect(formatCostUsd(0.42, "partial")).toBe("$0.42+");
+  });
+
+  it("spells out a bucket's tokens, cached input included", () => {
+    expect(formatTokenFlow({ inputTokens: 12_345, outputTokens: 2_100 })).toBe(
+      "12.3k in / 2.1k out",
+    );
+    expect(
+      formatTokenFlow({
+        inputTokens: 12_345,
+        outputTokens: 2_100,
+        cachedInputTokens: 4_000,
+      }),
+    ).toBe("12.3k in (4.0k cached) / 2.1k out");
+  });
+
+  it("counts only real tasks in a rollup line", () => {
+    expect(usageBreakdownLine(entry(), { countTasks: true })).toBe(
+      "claude-opus-5: 1 task · 12.3k in / 2.1k out · $0.42",
+    );
+    expect(
+      usageBreakdownLine(entry({ tasks: ["T01", "T02", "T03"] }), {
+        countTasks: true,
+      }),
+    ).toBe("claude-opus-5: 3 tasks · 12.3k in / 2.1k out · $0.42");
+    // Planning is attributed to a model but to no task.
+    expect(
+      usageBreakdownLine(entry({ tasks: [UNATTRIBUTED] }), {
+        countTasks: true,
+      }),
+    ).toBe("claude-opus-5: 0 tasks · 12.3k in / 2.1k out · $0.42");
+    expect(usageBreakdownLine(entry())).toBe(
+      "claude-opus-5: 12.3k in / 2.1k out · $0.42",
+    );
+  });
+
+  it("orders the rollup by spend, then by tokens", () => {
+    const breakdown = new Map<string, UsageBreakdown>([
+      [
+        "claude-haiku-4-5",
+        entry({
+          key: "claude-haiku-4-5",
+          usage: { inputTokens: 30_000, outputTokens: 6_000 },
+          costUsd: 0.03,
+          tasks: ["T01", "T02", "T03"],
+        }),
+      ],
+      ["claude-opus-5", entry()],
+      [
+        "gpt-5.1",
+        entry({
+          key: "gpt-5.1",
+          usage: { inputTokens: 900, outputTokens: 100 },
+          costUsd: 0,
+          pricing: "unknown",
+          tasks: ["T04"],
+        }),
+      ],
+    ]);
+
+    expect(usageRollupLines(breakdown, { countTasks: true })).toEqual([
+      "claude-opus-5: 1 task · 12.3k in / 2.1k out · $0.42",
+      "claude-haiku-4-5: 3 tasks · 30.0k in / 6.0k out · $0.03",
+      "gpt-5.1: 1 task · 900 in / 100 out · n/a",
+    ]);
   });
 });
