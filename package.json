@@ -19,9 +19,11 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24",
+    "@types/react": "^19",
+    "ink-testing-library": "^4.0.0",
     "typescript": "^5",
-    "vitest": "^3",
-    "@types/react": "^19"
+    "vitest": "^3"
   }
 }
