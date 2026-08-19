@@ -86,6 +86,46 @@ export const taskResults = sqliteTable(
 );
 
 /**
+ * One interactive chat conversation, scoped to the workspace directory it was
+ * started in. `workspace_path` is stored verbatim — normalization (e.g.
+ * `path.resolve`) is the caller's job, so listings match on the exact string.
+ */
+export const chatSessions = sqliteTable(
+  "chat_sessions",
+  {
+    id: text("id").primaryKey(),
+    workspacePath: text("workspace_path").notNull(),
+    title: text("title").notNull(),
+    modelAlias: text("model_alias"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    messageCount: integer("message_count").notNull().default(0),
+  },
+  (table) => [
+    index("chat_sessions_workspace_path_idx").on(table.workspacePath),
+    index("chat_sessions_updated_at_idx").on(table.updatedAt),
+  ],
+);
+
+/**
+ * A single message of a chat session, stored as an opaque JSON blob keyed by
+ * its position in the transcript so re-saving a snapshot is idempotent.
+ */
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    sessionId: text("session_id").notNull(),
+    seq: integer("seq").notNull(),
+    messageJson: text("message_json").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sessionId, table.seq] }),
+    index("chat_messages_session_id_idx").on(table.sessionId),
+  ],
+);
+
+/**
  * Idempotent DDL for the whole store. Applied on every open instead of
  * shipping migration files: the schema is append-only and small enough that
  * `CREATE ... IF NOT EXISTS` is the entire story.
@@ -126,6 +166,30 @@ CREATE TABLE IF NOT EXISTS task_results (
   PRIMARY KEY (run_id, task_id)
 );
 CREATE INDEX IF NOT EXISTS task_results_run_id_idx ON task_results (run_id);
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id TEXT PRIMARY KEY,
+  workspace_path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  model_alias TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  message_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS chat_sessions_workspace_path_idx
+  ON chat_sessions (workspace_path);
+CREATE INDEX IF NOT EXISTS chat_sessions_updated_at_idx
+  ON chat_sessions (updated_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  message_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS chat_messages_session_id_idx
+  ON chat_messages (session_id);
 `;
 
 /** Insertion order within one timestamp, used to keep `listEvents` stable. */

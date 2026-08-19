@@ -1,4 +1,8 @@
 import { join } from "node:path";
+// Type-only, on the same footing as the `@agent/orchestration` import below:
+// the workspace package resolves through the hoisted `node_modules/@agent/*`
+// links, and the import is erased at emit, so nothing is required at runtime.
+import type { ModelMessage } from "@agent/ai";
 import type { ExecutionPlan, TaskResult } from "@agent/orchestration";
 import type { OrchestrationPolicy } from "@agent/policy";
 import type { AgentEvent } from "@agent/protocol";
@@ -8,6 +12,8 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { RunRecord, SessionStore } from "./index.js";
 import {
   BOOTSTRAP_DDL,
+  chatMessages,
+  chatSessions,
   eventRowid,
   events,
   type RunStatus,
@@ -66,6 +72,60 @@ export interface PersistedTaskResult {
 
 export interface ListRunsOptions {
   readonly limit?: number;
+}
+
+/** A stored interactive chat session, as listed or resumed by the CLI. */
+export interface ChatSessionRecord {
+  readonly id: string;
+  /**
+   * The workspace directory this conversation belongs to, exactly as it was
+   * written. The store never normalizes it — callers should `path.resolve`
+   * before writing and before filtering, since matching is verbatim.
+   */
+  readonly workspacePath: string;
+  readonly title: string;
+  readonly modelAlias?: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly messageCount: number;
+}
+
+/** One transcript message plus its position, which is also its identity. */
+export interface PersistedChatMessage {
+  readonly seq: number;
+  readonly message: ModelMessage;
+}
+
+export interface NewChatSession {
+  readonly id: string;
+  readonly workspacePath: string;
+  readonly title: string;
+  readonly modelAlias?: string;
+  readonly createdAt: number;
+}
+
+export interface ListChatSessionsOptions {
+  readonly limit?: number;
+}
+
+/** A chat session read back whole: its metadata and its ordered transcript. */
+export interface ChatSessionTranscript {
+  readonly record: ChatSessionRecord;
+  readonly messages: readonly ModelMessage[];
+}
+
+const CHAT_TITLE_MAX = 60;
+
+/**
+ * Derives a session title from the first thing a user typed: first line,
+ * trimmed, and truncated to 60 characters with an ellipsis. Used by the CLI
+ * for auto-titling, so it never throws and always returns something short.
+ */
+export function chatTitleFrom(instruction: string): string {
+  const firstLine = (instruction.split("\n")[0] ?? "").trim();
+  if (firstLine.length <= CHAT_TITLE_MAX) return firstLine;
+  // The ellipsis is part of the budget: the result is never over the cap.
+  return `${firstLine.slice(0, CHAT_TITLE_MAX - 1).trimEnd()}…`;
 }
 
 /** Everything a resumed orchestration needs to pick a run back up. */
@@ -403,9 +463,172 @@ export class SqliteSessionStore implements SessionStore {
     return rows.map(toAgentEvent);
   }
 
+  // --- Chat sessions ------------------------------------------------------
+
+  /**
+   * Registers a new conversation. Idempotent on `id`: re-creating an existing
+   * session leaves the stored row (and its transcript) untouched, so a caller
+   * that cannot tell whether it already started is free to call this anyway.
+   */
+  async createChatSession(session: NewChatSession): Promise<void> {
+    this.#db
+      .insert(chatSessions)
+      .values({
+        id: session.id,
+        workspacePath: session.workspacePath,
+        title: session.title,
+        modelAlias: session.modelAlias ?? null,
+        createdAt: session.createdAt,
+        updatedAt: session.createdAt,
+        messageCount: 0,
+      })
+      .onConflictDoNothing()
+      .run();
+  }
+
+  /**
+   * Writes messages by `(sessionId, seq)` in one transaction, last write
+   * wins. Because identity is the sequence number rather than insertion
+   * order, re-saving an overlapping snapshot of the transcript is safe: it
+   * rewrites those rows instead of duplicating them.
+   *
+   * Afterwards the session's `updatedAt` is bumped and its `messageCount`
+   * recomputed as `max(seq) + 1` over everything stored for the session, so
+   * incremental and whole-transcript saves agree. An empty batch is a no-op —
+   * it does not touch the session.
+   */
+  async appendChatMessages(
+    sessionId: string,
+    messages: readonly PersistedChatMessage[],
+  ): Promise<void> {
+    if (messages.length === 0) return;
+    const now = Date.now();
+    const rows = messages.map((entry) => ({
+      sessionId,
+      seq: entry.seq,
+      messageJson: stringifyJson(entry.message) ?? "null",
+      createdAt: now,
+    }));
+
+    this.#db.transaction((tx) => {
+      for (const row of rows) {
+        tx.insert(chatMessages)
+          .values(row)
+          .onConflictDoUpdate({
+            target: [chatMessages.sessionId, chatMessages.seq],
+            set: { messageJson: row.messageJson, createdAt: row.createdAt },
+          })
+          .run();
+      }
+
+      const highest = tx
+        .select({ maxSeq: sql<number | null>`max(${chatMessages.seq})` })
+        .from(chatMessages)
+        .where(eq(chatMessages.sessionId, sessionId))
+        .get();
+      tx.update(chatSessions)
+        .set({ updatedAt: now, messageCount: (highest?.maxSeq ?? -1) + 1 })
+        .where(eq(chatSessions.id, sessionId))
+        .run();
+    });
+  }
+
+  /** Renames a session and marks it as freshly touched. */
+  async setChatSessionTitle(sessionId: string, title: string): Promise<void> {
+    this.#db
+      .update(chatSessions)
+      .set({ title, updatedAt: Date.now() })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+  }
+
+  /**
+   * Sessions newest-touched first. `workspacePath` is compared verbatim —
+   * the caller is expected to have `path.resolve`d both the value it stored
+   * and the value it filters by; the store does no normalization of its own.
+   */
+  async listChatSessions(
+    workspacePath?: string,
+    options?: ListChatSessionsOptions,
+  ): Promise<readonly ChatSessionRecord[]> {
+    const limit = options?.limit;
+    const selection = this.#db.select().from(chatSessions);
+    const filtered =
+      workspacePath === undefined
+        ? selection
+        : selection.where(eq(chatSessions.workspacePath, workspacePath));
+    // `id` breaks ties so a listing is stable when two sessions share a
+    // millisecond, which snapshot saves in a tight loop can produce.
+    const ordered = filtered.orderBy(
+      desc(chatSessions.updatedAt),
+      desc(chatSessions.createdAt),
+      desc(chatSessions.id),
+    );
+    const rows =
+      limit === undefined
+        ? ordered.all()
+        : ordered.limit(Math.max(0, limit)).all();
+    return rows.map(toChatSessionRecord);
+  }
+
+  /**
+   * Reads a session and its transcript, ordered by `seq`. Messages whose JSON
+   * no longer parses are skipped rather than thrown over: a single corrupt
+   * row must not make a conversation unresumable.
+   */
+  async loadChatSession(
+    sessionId: string,
+  ): Promise<ChatSessionTranscript | undefined> {
+    const row = this.#db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.id, sessionId))
+      .limit(1)
+      .get();
+    if (row === undefined) return undefined;
+
+    const messageRows = this.#db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, sessionId))
+      .orderBy(asc(chatMessages.seq))
+      .all();
+    const messages: ModelMessage[] = [];
+    for (const messageRow of messageRows) {
+      const message = parseJson<ModelMessage>(messageRow.messageJson);
+      if (message === undefined || message === null) continue;
+      messages.push(message);
+    }
+    return { record: toChatSessionRecord(row), messages };
+  }
+
+  /** Drops a session and its transcript together. */
+  async deleteChatSession(sessionId: string): Promise<void> {
+    this.#db.transaction((tx) => {
+      tx.delete(chatMessages)
+        .where(eq(chatMessages.sessionId, sessionId))
+        .run();
+      tx.delete(chatSessions).where(eq(chatSessions.id, sessionId)).run();
+    });
+  }
+
   close(): void {
     this.#sqlite.close();
   }
+}
+
+function toChatSessionRecord(
+  row: typeof chatSessions.$inferSelect,
+): ChatSessionRecord {
+  return {
+    id: row.id,
+    workspacePath: row.workspacePath,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    messageCount: row.messageCount,
+    ...(row.modelAlias === null ? {} : { modelAlias: row.modelAlias }),
+  };
 }
 
 function toAgentEvent(row: typeof events.$inferSelect): AgentEvent {

@@ -16,6 +16,8 @@ export interface SessionStore {
 
 export {
   BOOTSTRAP_DDL,
+  chatMessages,
+  chatSessions,
   events,
   type RunStatus,
   runs,
@@ -23,8 +25,14 @@ export {
   taskResults,
 } from "./schema.js";
 export {
+  type ChatSessionRecord,
+  type ChatSessionTranscript,
+  chatTitleFrom,
   defaultSessionDbPath,
+  type ListChatSessionsOptions,
   type ListRunsOptions,
+  type NewChatSession,
+  type PersistedChatMessage,
   type PersistedRun,
   type PersistedRunSummary,
   type PersistedTaskResult,
