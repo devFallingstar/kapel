@@ -3,12 +3,10 @@ import type { ModelDefinition, ModelProvider, UsageTotals } from "@agent/ai";
 import { UsageTracker } from "@agent/ai";
 import { AgentLoop, builtinTools, PermissionEngine } from "@agent/coding-agent";
 import type { AgentDefinition } from "@agent/core";
+import type { KapelConfig } from "./config.js";
+import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
-import {
-  buildRegistry,
-  credentialHintForProvider,
-  resolveModelAlias,
-} from "./models.js";
+import { buildRegistry, credentialHintForProvider } from "./models.js";
 import { DEFAULT_PERMISSIONS } from "./permissions.js";
 import { createPrompter, createPromptState } from "./prompter.js";
 import { JsonRenderer, type Renderer, TextRenderer } from "./render.js";
@@ -21,6 +19,8 @@ export interface RunObjectiveOptions {
   readonly yes: boolean;
   readonly json: boolean;
   readonly system?: string;
+  /** The machine's configuration, when there is one; see `config-runtime.ts`. */
+  readonly config?: KapelConfig;
 }
 
 export function defaultSystemPrompt(workspaceRoot: string): string {
@@ -90,7 +90,11 @@ export async function runObjective(
   const workspacePath = path.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
 
-  const alias = resolveModelAlias(process.env, options.model);
+  const alias = resolveOrchestratorModel(
+    options.model,
+    process.env,
+    options.config,
+  ).value;
   const resolved = await resolveModelAndProvider(process.env, alias);
   if ("error" in resolved) {
     console.error(resolved.error);

@@ -40,6 +40,73 @@ function codexEvent(type: string, data: unknown): AgentEvent {
   };
 }
 
+describe("TextRenderer / claude-code.* events", () => {
+  function claudeEvent(type: string, data: unknown): AgentEvent {
+    return { id: "evt-1", runId: "run-1", timestamp: 0, type, data };
+  }
+
+  it("buffers streamed text and writes it once the block ends", () => {
+    const { renderer: r, stream } = renderer();
+    for (const text of ["Fixed ", "the ", "test."]) {
+      r.emit(
+        claudeEvent("claude-code.content_block_delta", {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text },
+          },
+        }),
+      );
+    }
+    expect(stream.lines).toEqual([]);
+
+    r.emit(
+      claudeEvent("claude-code.content_block_stop", {
+        type: "stream_event",
+        event: { type: "content_block_stop" },
+      }),
+    );
+    expect(stream.lines).toEqual(["Fixed the test."]);
+  });
+
+  it("names each tool as it starts", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(claudeEvent("claude-code.tool_use", { name: "Edit", id: "t1" }));
+    expect(stream.lines).toEqual(["→ claude: Edit"]);
+  });
+
+  it("stays quiet for the events it does not model", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      claudeEvent("claude-code.message_start", {
+        event: { type: "message_start" },
+      }),
+    );
+    r.emit(claudeEvent("claude-code.completed", { status: "success" }));
+    expect(stream.lines).toEqual([]);
+  });
+
+  it("reports a Claude Code result with its exit code and usage", () => {
+    const { renderer: r, stream } = renderer();
+    r.result(
+      {
+        status: "failed",
+        summary: "Claude Code exited with code 1: nope",
+        exitCode: 1,
+        usage: { inputTokens: 12, outputTokens: 3 },
+        events: 4,
+      },
+      new UsageTracker().totals(),
+    );
+    expect(stream.lines).toEqual([
+      "status: failed",
+      "Claude Code exited with code 1: nope",
+      "exit code: 1",
+      "tokens — input: 12, output: 3",
+    ]);
+  });
+});
+
 describe("TextRenderer / codex.* events", () => {
   it("prints the agent_message text from a top-level item", () => {
     const { renderer: r, stream } = renderer();

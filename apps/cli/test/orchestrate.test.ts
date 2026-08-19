@@ -328,6 +328,17 @@ describe("defaultExecutorFactory / validation", () => {
     // validator-shaped `tests.commands`.
     expect(result.tests.commands).toEqual([]);
   });
+
+  it("says --backend claude-code is not supported here rather than running natively", async () => {
+    await expect(
+      defaultExecutorFactory(
+        factoryArgs({
+          project: projectWithValidators([]),
+          backend: "claude-code",
+        }),
+      ),
+    ).rejects.toThrow(/does not support --backend claude-code/);
+  });
 });
 
 describe("kapel orchestrate", () => {

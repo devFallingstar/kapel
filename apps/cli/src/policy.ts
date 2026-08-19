@@ -18,8 +18,9 @@ import {
   serializeLockfile,
   validatePolicy,
 } from "@agent/coding-agent";
+import type { KapelConfig } from "./config.js";
+import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
-import { resolveModelAlias } from "./models.js";
 import { resolveModelAndProvider } from "./run.js";
 
 /** Options shared by all `kapel policy <command>` subcommands — the global `--cwd`/`-m`/`--json` flags. */
@@ -27,6 +28,8 @@ export interface PolicyCommandOptions {
   readonly cwd: string;
   readonly model?: string;
   readonly json: boolean;
+  /** The machine's configuration, when there is one; see `config-runtime.ts`. */
+  readonly config?: KapelConfig;
 }
 
 /** Where a policy subcommand writes its output. Overridable in tests. */
@@ -152,7 +155,11 @@ export async function runPolicyCompile(
   if ("exitCode" in loaded) return loaded.exitCode;
   const { project, markdown } = loaded;
 
-  const alias = resolveModelAlias(process.env, options.model);
+  const alias = resolveOrchestratorModel(
+    options.model,
+    process.env,
+    options.config,
+  ).value;
   const resolved = await resolveModelAndProvider(process.env, alias);
   if ("error" in resolved) {
     if (options.json) jsonLine(output, { ok: false, error: resolved.error });

@@ -17,8 +17,9 @@ import {
   PolicyRouter,
   ProjectConfigError,
 } from "@agent/coding-agent";
+import type { KapelConfig } from "./config.js";
+import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
-import { resolveModelAlias } from "./models.js";
 import { createProjectModelResolver } from "./project-models.js";
 import { resolveModelAndProvider } from "./run.js";
 
@@ -38,6 +39,8 @@ export interface PlanCommandOptions {
   readonly cwd: string;
   readonly model?: string;
   readonly json: boolean;
+  /** The machine's configuration, when there is one; see `config-runtime.ts`. */
+  readonly config?: KapelConfig;
 }
 
 /** Builds the planner used by `kapel plan`/`kapel orchestrate`. Overridable in tests. */
@@ -168,7 +171,11 @@ async function resolvePlannerModel(
     }
   }
 
-  const alias = resolveModelAlias(process.env, options.model);
+  const alias = resolveOrchestratorModel(
+    options.model,
+    process.env,
+    options.config,
+  ).value;
   return resolveModelAndProvider(process.env, alias);
 }
 

@@ -189,6 +189,15 @@ async function workspaceExecutorFactory(
 ): Promise<WorkspaceExecutorFactory> {
   const { runId, events, taskTimeoutMs } = args;
 
+  if (args.backend === "claude-code") {
+    // There is no Claude Code worker executor yet: the orchestrator would
+    // silently fall through to the native loop, which needs an API key the
+    // whole point of this backend is not to need. Say so instead.
+    throw new Error(
+      'Orchestration does not support --backend claude-code yet. Use --backend codex or --backend native here; `kapel "<objective>"` and `kapel chat` do run on Claude Code.',
+    );
+  }
+
   if (args.backend === "codex") {
     const availability = await CodexBackend.checkAvailability();
     if (!availability.installed) {

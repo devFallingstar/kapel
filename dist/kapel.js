@@ -38,7 +38,7 @@ function finishTuiState(state, outcome) {
 }
 function reduceTuiEvent(state, event2) {
   const base = adoptEnvelope(state, event2);
-  const data = isRecord6(event2.data) ? event2.data : {};
+  const data = isRecord7(event2.data) ? event2.data : {};
   const tasks = reduceTasks(base.tasks, event2, data);
   const line = formatEventLine(event2);
   const log = line === void 0 ? base.log : appendLog(base.log, line);
@@ -47,7 +47,7 @@ function reduceTuiEvent(state, event2) {
   return { ...base, tasks, log };
 }
 function formatEventLine(event2) {
-  const data = isRecord6(event2.data) ? event2.data : {};
+  const data = isRecord7(event2.data) ? event2.data : {};
   if (event2.type.startsWith("codex."))
     return formatCodexLine(data);
   const taskId = taskIdOf2(event2, data);
@@ -71,10 +71,10 @@ function formatEventLine(event2) {
       return `\u25B6 ${taskId} \u2192 ${agent} (attempt ${num2(data.attempt) ?? 1})`;
     }
     case "task.completed": {
-      const result = isRecord6(data.result) ? data.result : {};
-      const glyph = result.status === "success" ? "\u2714" : "\u2716";
+      const result = isRecord7(data.result) ? data.result : {};
+      const glyph2 = result.status === "success" ? "\u2714" : "\u2716";
       const suffix = data.final === false ? " (retrying)" : "";
-      return `${glyph} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
+      return `${glyph2} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
     }
     case "task.escalated": {
       const from = str2(data.from) ?? "(unassigned)";
@@ -148,7 +148,7 @@ function reduceTasks(tasks, event2, data) {
         break;
       }
       case "task.completed": {
-        const result = isRecord6(data.result) ? data.result : {};
+        const result = isRecord7(data.result) ? data.result : {};
         const summary = str2(result.summary);
         if (summary !== void 0)
           draft.summary = firstLine3(summary);
@@ -240,7 +240,7 @@ function appendLog(log, line) {
   const next = [...log, line];
   return next.length <= MAX_LOG_LINES ? next : next.slice(next.length - MAX_LOG_LINES);
 }
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null;
 }
 function str2(value) {
@@ -300,9 +300,9 @@ function formatCodexLine(data) {
   }
 }
 function codexItem(data) {
-  if (isRecord6(data.item))
+  if (isRecord7(data.item))
     return data.item;
-  if (isRecord6(data.msg) && isRecord6(data.msg.item))
+  if (isRecord7(data.msg) && isRecord7(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -315,7 +315,7 @@ function codexMessageText2(item) {
     return str2(content);
   if (!Array.isArray(content))
     return void 0;
-  const joined = content.map((part) => typeof part === "string" ? part : isRecord6(part) ? str2(part.text) ?? "" : "").join("");
+  const joined = content.map((part) => typeof part === "string" ? part : isRecord7(part) ? str2(part.text) ?? "" : "").join("");
   return str2(joined);
 }
 function codexCommandText2(item) {
@@ -336,10 +336,10 @@ function codexFileText(item) {
   for (const change of changes) {
     if (typeof change === "string")
       paths.push(change);
-    else if (isRecord6(change)) {
-      const path11 = str2(change.path) ?? str2(change.file);
-      if (path11 !== void 0)
-        paths.push(path11);
+    else if (isRecord7(change)) {
+      const path13 = str2(change.path) ?? str2(change.file);
+      if (path13 !== void 0)
+        paths.push(path13);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -547,22 +547,17 @@ var init_dist = __esm({
 });
 
 // apps/cli/dist/index.js
-import path10 from "node:path";
+import path12 from "node:path";
 import { Command } from "commander";
 
 // apps/cli/dist/backend.js
-var BACKEND_NAMES = ["native", "codex"];
+var BACKEND_NAMES = ["native", "codex", "claude-code"];
 var DEFAULT_BACKEND = "native";
 function isBackendName(value) {
   return BACKEND_NAMES.includes(value);
 }
-function resolveBackendName(env, flag) {
-  if (flag !== void 0 && flag !== "")
-    return flag;
-  const fromEnv = env.AGENT_BACKEND;
-  if (fromEnv !== void 0 && fromEnv !== "")
-    return fromEnv;
-  return DEFAULT_BACKEND;
+function isDelegatedBackend(backend) {
+  return backend === "codex" || backend === "claude-code";
 }
 function validateBackendName(raw) {
   if (isBackendName(raw))
@@ -586,9 +581,6 @@ function validateSandboxMode(raw) {
 function fullAutoForSandbox(sandbox) {
   return sandbox !== "read-only";
 }
-function codexModelOverride(raw) {
-  return raw === void 0 || raw === "" ? void 0 : raw;
-}
 function codexInstallGuidance(availability) {
   const lines = [
     "The Codex CLI is not installed.",
@@ -609,53 +601,946 @@ function codexLoginGuidance(availability) {
   }
   return lines.join("\n");
 }
+function claudeCodeInstallGuidance(availability) {
+  const lines = [
+    "The Claude Code CLI is not installed.",
+    "Install it with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription."
+  ];
+  if (availability.detail !== void 0 && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+function claudeCodeLoginGuidance(availability) {
+  const lines = [
+    "The Claude Code CLI is installed but you are not logged in.",
+    "Run `claude` once and log in with your Claude subscription \u2014 no Anthropic API key needed."
+  ];
+  if (availability.detail !== void 0 && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
 
-// apps/cli/dist/env.js
-import { readFile } from "node:fs/promises";
+// apps/cli/dist/config.js
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
-var LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
-function unquote(raw) {
-  const value = raw.trim();
-  if (value.length < 2)
-    return value;
-  const first = value[0];
-  const last = value[value.length - 1];
-  if (first === '"' && last === '"' || first === "'" && last === "'") {
-    return value.slice(1, -1);
-  }
-  return value;
+
+// packages/ai/dist/catalog.js
+var FULL_CAPABILITIES = {
+  tools: true,
+  reasoning: true,
+  vision: true,
+  structuredOutput: true
+};
+function claude(id, inputPerMTok, outputPerMTok, contextWindow, maxOutputTokens) {
+  return {
+    provider: "anthropic",
+    id,
+    contextWindow,
+    maxOutputTokens,
+    capabilities: FULL_CAPABILITIES,
+    pricing: {
+      inputPerMTok,
+      outputPerMTok,
+      cachedInputPerMTok: Number((inputPerMTok * 0.1).toFixed(4))
+    }
+  };
 }
-function parseDotEnv(content) {
-  const result = {};
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#"))
-      continue;
-    const match = LINE_RE.exec(line);
-    if (match === null)
-      continue;
-    const [, key = "", rawValue = ""] = match;
-    if (key === "")
-      continue;
-    result[key] = unquote(rawValue);
-  }
-  return result;
+var MILLION = 1e6;
+var K128 = 128e3;
+function defaultModelCatalog() {
+  return {
+    // --- Anthropic -------------------------------------------------------
+    "claude-fable-5": claude("claude-fable-5", 10, 50, MILLION, K128),
+    "claude-opus-5": claude("claude-opus-5", 5, 25, MILLION, K128),
+    "claude-opus-4-8": claude("claude-opus-4-8", 5, 25, MILLION, K128),
+    "claude-opus-4-7": claude("claude-opus-4-7", 5, 25, MILLION, K128),
+    "claude-opus-4-6": claude("claude-opus-4-6", 5, 25, MILLION, K128),
+    // Sonnet 5 has promotional pricing of $2/$10 per MTok through 2026-08-31;
+    // the standard rate below is what applies afterwards.
+    "claude-sonnet-5": claude("claude-sonnet-5", 3, 15, MILLION, K128),
+    "claude-sonnet-4-6": claude("claude-sonnet-4-6", 3, 15, MILLION, K128),
+    "claude-haiku-4-5": claude("claude-haiku-4-5", 1, 5, 2e5, 64e3),
+    // --- OpenAI ----------------------------------------------------------
+    // No pricing shipped: OpenAI rates are not verified here. Override
+    // `pricing` on these entries to get non-zero cost accounting.
+    "gpt-5.1": {
+      provider: "openai",
+      id: "gpt-5.1",
+      capabilities: FULL_CAPABILITIES
+    },
+    "gpt-5-mini": {
+      provider: "openai",
+      id: "gpt-5-mini",
+      capabilities: FULL_CAPABILITIES
+    }
+  };
 }
-function applyDotEnv(parsed, target = process.env) {
-  for (const [key, value] of Object.entries(parsed)) {
-    if (target[key] === void 0)
-      target[key] = value;
-  }
-}
-async function loadDotEnvFile(workspaceRoot, target = process.env) {
-  const filePath = path.join(workspaceRoot, ".env");
-  let content;
+
+// packages/ai/dist/sse.js
+async function* parseSse(stream, signal) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName;
+  let dataLines = [];
+  const takePending = () => {
+    if (dataLines.length === 0) {
+      eventName = void 0;
+      return void 0;
+    }
+    const message = {
+      event: eventName,
+      data: dataLines.join("\n")
+    };
+    eventName = void 0;
+    dataLines = [];
+    return message;
+  };
+  const consumeLine = (rawLine) => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line === "")
+      return takePending();
+    if (line.startsWith(":"))
+      return void 0;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" "))
+      value = value.slice(1);
+    if (field === "event")
+      eventName = value;
+    else if (field === "data")
+      dataLines.push(value);
+    return void 0;
+  };
+  const onAbort = () => {
+    void reader.cancel().catch(() => void 0);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    content = await readFile(filePath, "utf8");
-  } catch {
-    return;
+    while (true) {
+      if (signal?.aborted)
+        return;
+      const { done, value } = await reader.read();
+      if (signal?.aborted)
+        return;
+      if (done)
+        break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const rawLine = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const message = consumeLine(rawLine);
+        if (message !== void 0)
+          yield message;
+        newline = buffer.indexOf("\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer !== "") {
+      const message = consumeLine(buffer);
+      if (message !== void 0)
+        yield message;
+      buffer = "";
+    }
+    const trailing = takePending();
+    if (trailing !== void 0)
+      yield trailing;
+  } catch (error) {
+    if (signal?.aborted)
+      return;
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    try {
+      await reader.cancel();
+    } catch {
+    }
   }
-  applyDotEnv(parseDotEnv(content), target);
+}
+
+// packages/ai/dist/providers/errors.js
+var ProviderError = class extends Error {
+  provider;
+  status;
+  body;
+  constructor(init) {
+    super(init.message);
+    this.name = "ProviderError";
+    this.provider = init.provider;
+    this.status = init.status;
+    this.body = init.body;
+  }
+};
+
+// packages/ai/dist/providers/anthropic.js
+var OAUTH_BETA = "oauth-2025-04-20";
+var DEFAULT_BASE_URL = "https://api.anthropic.com";
+var ANTHROPIC_VERSION = "2023-06-01";
+var DEFAULT_MAX_TOKENS = 4096;
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+function asNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function parseToolInput(raw) {
+  const trimmed = raw.trim();
+  if (trimmed === "")
+    return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return raw;
+  }
+}
+function toWireTool(tool) {
+  return {
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema
+  };
+}
+function toWireToolChoice(choice) {
+  switch (choice.type) {
+    case "auto":
+      return { type: "auto" };
+    case "any":
+      return { type: "any" };
+    case "tool":
+      return { type: "tool", name: choice.name };
+  }
+}
+function mapMessages(messages) {
+  const systemParts = [];
+  const wire = [];
+  for (const message of messages) {
+    switch (message.role) {
+      case "system":
+        if (message.content !== "")
+          systemParts.push(message.content);
+        break;
+      case "user":
+        wire.push({ role: "user", content: message.content });
+        break;
+      case "tool": {
+        const block = {
+          type: "tool_result",
+          tool_use_id: message.toolCallId ?? "",
+          content: message.content
+        };
+        if (message.isError === true)
+          block.is_error = true;
+        wire.push({ role: "user", content: [block] });
+        break;
+      }
+      case "assistant": {
+        const calls = message.toolCalls ?? [];
+        if (calls.length === 0) {
+          wire.push({ role: "assistant", content: message.content });
+          break;
+        }
+        const blocks = [];
+        if (message.content !== "")
+          blocks.push({ type: "text", text: message.content });
+        for (const call of calls) {
+          blocks.push({
+            type: "tool_use",
+            id: call.id,
+            name: call.name,
+            input: call.input
+          });
+        }
+        wire.push({ role: "assistant", content: blocks });
+        break;
+      }
+    }
+  }
+  return {
+    system: systemParts.length === 0 ? void 0 : systemParts.join("\n\n"),
+    messages: wire
+  };
+}
+var AnthropicProvider = class {
+  id = "anthropic";
+  #credential;
+  #baseUrl;
+  constructor(options) {
+    const { apiKey, authToken } = options;
+    if (apiKey !== void 0 && authToken !== void 0) {
+      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`, not both.");
+    }
+    if (apiKey === void 0 && authToken === void 0) {
+      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`.");
+    }
+    this.#credential = apiKey !== void 0 ? { kind: "api-key", value: apiKey } : { kind: "auth-token", value: authToken };
+    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  }
+  /**
+   * Base request headers plus credential headers: `x-api-key` for an API
+   * key, or `authorization: Bearer <token>` plus the OAuth beta flag for an
+   * auth token (never both `x-api-key` and `authorization` — the API
+   * rejects requests carrying both). The OAuth beta flag is comma-joined
+   * onto `anthropic-beta` rather than overwriting it, in case a future
+   * feature already populated that header for this request.
+   */
+  #headers() {
+    const headers = {
+      "content-type": "application/json",
+      "anthropic-version": ANTHROPIC_VERSION,
+      accept: "text/event-stream"
+    };
+    if (this.#credential.kind === "api-key") {
+      headers["x-api-key"] = this.#credential.value;
+      return headers;
+    }
+    headers.authorization = `Bearer ${this.#credential.value}`;
+    const existingBeta = headers["anthropic-beta"];
+    headers["anthropic-beta"] = existingBeta === void 0 || existingBeta === "" ? OAUTH_BETA : `${existingBeta},${OAUTH_BETA}`;
+    return headers;
+  }
+  supports(model) {
+    return model.provider === "anthropic";
+  }
+  #buildBody(request) {
+    const { system, messages } = mapMessages(request.messages);
+    const body = {
+      model: request.model.id,
+      max_tokens: request.maxOutputTokens ?? request.model.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
+      stream: true,
+      messages
+    };
+    if (system !== void 0)
+      body.system = system;
+    if (request.tools !== void 0 && request.tools.length > 0) {
+      body.tools = request.tools.map(toWireTool);
+    }
+    if (request.toolChoice !== void 0) {
+      body.tool_choice = toWireToolChoice(request.toolChoice);
+    }
+    if (request.temperature !== void 0)
+      body.temperature = request.temperature;
+    return body;
+  }
+  async *stream(request, signal) {
+    const response = await fetch(`${this.#baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: this.#headers(),
+      body: JSON.stringify(this.#buildBody(request)),
+      signal: signal ?? null
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: `Anthropic request failed with status ${response.status}`,
+        body
+      });
+    }
+    if (response.body === null) {
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: "Anthropic response had no body"
+      });
+    }
+    const blocks = /* @__PURE__ */ new Map();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cachedInputTokens = 0;
+    let finishReason = "end_turn";
+    const readUsage = (usage) => {
+      if (!isRecord(usage))
+        return;
+      if (typeof usage.input_tokens === "number")
+        inputTokens = usage.input_tokens;
+      if (typeof usage.output_tokens === "number")
+        outputTokens = usage.output_tokens;
+      if (typeof usage.cache_read_input_tokens === "number") {
+        cachedInputTokens = usage.cache_read_input_tokens;
+      }
+    };
+    const finalEvents = () => [
+      {
+        type: "usage",
+        inputTokens,
+        outputTokens,
+        ...cachedInputTokens > 0 ? { cachedInputTokens } : {}
+      },
+      { type: "done", finishReason }
+    ];
+    for await (const message of parseSse(response.body, signal)) {
+      if (signal?.aborted)
+        return;
+      let payload;
+      try {
+        payload = JSON.parse(message.data);
+      } catch {
+        continue;
+      }
+      if (!isRecord(payload))
+        continue;
+      const type = typeof payload.type === "string" ? payload.type : message.event ?? "";
+      if (type === "error") {
+        const error = isRecord(payload.error) ? payload.error : void 0;
+        const detail = error !== void 0 && typeof error.message === "string" ? error.message : "Anthropic stream error";
+        throw new ProviderError({
+          provider: this.id,
+          status: response.status,
+          message: detail,
+          body: message.data
+        });
+      }
+      if (type === "message_start") {
+        const wrapped = isRecord(payload.message) ? payload.message : void 0;
+        if (wrapped !== void 0)
+          readUsage(wrapped.usage);
+        continue;
+      }
+      if (type === "content_block_start") {
+        const index2 = asNumber(payload.index);
+        const block = isRecord(payload.content_block) ? payload.content_block : void 0;
+        if (block !== void 0 && block.type === "tool_use") {
+          blocks.set(index2, {
+            id: typeof block.id === "string" ? block.id : "",
+            name: typeof block.name === "string" ? block.name : "",
+            json: ""
+          });
+        }
+        continue;
+      }
+      if (type === "content_block_delta") {
+        const index2 = asNumber(payload.index);
+        const delta = isRecord(payload.delta) ? payload.delta : void 0;
+        if (delta === void 0)
+          continue;
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
+          if (delta.text !== "")
+            yield { type: "text.delta", text: delta.text };
+        } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+          const pendingBlock = blocks.get(index2);
+          if (pendingBlock !== void 0)
+            pendingBlock.json += delta.partial_json;
+        }
+        continue;
+      }
+      if (type === "content_block_stop") {
+        const index2 = asNumber(payload.index);
+        const pendingBlock = blocks.get(index2);
+        if (pendingBlock !== void 0) {
+          blocks.delete(index2);
+          yield {
+            type: "tool.call",
+            id: pendingBlock.id,
+            name: pendingBlock.name,
+            input: parseToolInput(pendingBlock.json)
+          };
+        }
+        continue;
+      }
+      if (type === "message_delta") {
+        const delta = isRecord(payload.delta) ? payload.delta : void 0;
+        if (delta !== void 0 && typeof delta.stop_reason === "string") {
+          finishReason = delta.stop_reason;
+        }
+        readUsage(payload.usage);
+        continue;
+      }
+      if (type === "message_stop") {
+        for (const event2 of finalEvents())
+          yield event2;
+        return;
+      }
+    }
+    if (signal?.aborted)
+      return;
+    for (const event2 of finalEvents())
+      yield event2;
+  }
+};
+
+// packages/ai/dist/providers/openai.js
+var DEFAULT_BASE_URL2 = "https://api.openai.com/v1";
+function isRecord2(value) {
+  return typeof value === "object" && value !== null;
+}
+function asNumber2(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function toWireMessage(message) {
+  switch (message.role) {
+    case "tool":
+      return {
+        role: "tool",
+        content: message.content,
+        tool_call_id: message.toolCallId ?? ""
+      };
+    case "assistant": {
+      const calls = message.toolCalls ?? [];
+      if (calls.length === 0)
+        return { role: "assistant", content: message.content };
+      return {
+        role: "assistant",
+        content: message.content === "" ? null : message.content,
+        tool_calls: calls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(call.input) }
+        }))
+      };
+    }
+    default:
+      return { role: message.role, content: message.content };
+  }
+}
+function toWireTool2(tool) {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema
+    }
+  };
+}
+function toWireToolChoice2(choice) {
+  switch (choice.type) {
+    case "auto":
+      return "auto";
+    case "any":
+      return "required";
+    case "tool":
+      return { type: "function", function: { name: choice.name } };
+  }
+}
+function parseArguments(raw) {
+  const trimmed = raw.trim();
+  if (trimmed === "")
+    return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return raw;
+  }
+}
+var OpenAIProvider = class {
+  id = "openai";
+  #apiKey;
+  #baseUrl;
+  constructor(options) {
+    this.#apiKey = options.apiKey;
+    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL2).replace(/\/+$/, "");
+  }
+  supports(model) {
+    return model.provider === "openai" || model.provider === "openai-compatible";
+  }
+  #buildBody(request) {
+    const body = {
+      model: request.model.id,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: request.messages.map(toWireMessage)
+    };
+    if (request.tools !== void 0 && request.tools.length > 0) {
+      body.tools = request.tools.map(toWireTool2);
+    }
+    if (request.toolChoice !== void 0) {
+      body.tool_choice = toWireToolChoice2(request.toolChoice);
+    }
+    if (request.temperature !== void 0)
+      body.temperature = request.temperature;
+    if (request.maxOutputTokens !== void 0) {
+      body.max_completion_tokens = request.maxOutputTokens;
+    }
+    return body;
+  }
+  async *stream(request, signal) {
+    const response = await fetch(`${this.#baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.#apiKey}`,
+        accept: "text/event-stream"
+      },
+      body: JSON.stringify(this.#buildBody(request)),
+      signal: signal ?? null
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: `OpenAI request failed with status ${response.status}`,
+        body
+      });
+    }
+    if (response.body === null) {
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: "OpenAI response had no body"
+      });
+    }
+    const pending = /* @__PURE__ */ new Map();
+    let finishReason = "stop";
+    let emittedToolCalls = false;
+    const flushToolCalls = () => {
+      if (emittedToolCalls)
+        return [];
+      emittedToolCalls = true;
+      const indexes = [...pending.keys()].sort((a, b) => a - b);
+      const events2 = [];
+      for (const index2 of indexes) {
+        const call = pending.get(index2);
+        if (call === void 0)
+          continue;
+        events2.push({
+          type: "tool.call",
+          id: call.id,
+          name: call.name,
+          input: parseArguments(call.args)
+        });
+      }
+      return events2;
+    };
+    for await (const message of parseSse(response.body, signal)) {
+      if (signal?.aborted)
+        return;
+      if (message.data === "[DONE]")
+        break;
+      let chunk;
+      try {
+        chunk = JSON.parse(message.data);
+      } catch {
+        continue;
+      }
+      if (!isRecord2(chunk))
+        continue;
+      const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+      const choice = choices[0];
+      if (isRecord2(choice)) {
+        const delta = isRecord2(choice.delta) ? choice.delta : void 0;
+        if (delta !== void 0 && typeof delta.content === "string" && delta.content !== "") {
+          yield { type: "text.delta", text: delta.content };
+        }
+        if (delta !== void 0 && Array.isArray(delta.tool_calls)) {
+          for (const entry of delta.tool_calls) {
+            if (!isRecord2(entry))
+              continue;
+            const index2 = typeof entry.index === "number" ? entry.index : 0;
+            let call = pending.get(index2);
+            if (call === void 0) {
+              call = { id: "", name: "", args: "" };
+              pending.set(index2, call);
+            }
+            if (typeof entry.id === "string")
+              call.id = entry.id;
+            const fn = isRecord2(entry.function) ? entry.function : void 0;
+            if (fn !== void 0) {
+              if (typeof fn.name === "string")
+                call.name = fn.name;
+              if (typeof fn.arguments === "string")
+                call.args += fn.arguments;
+            }
+          }
+        }
+        if (typeof choice.finish_reason === "string") {
+          finishReason = choice.finish_reason;
+          for (const event2 of flushToolCalls())
+            yield event2;
+        }
+      }
+      if (isRecord2(chunk.usage)) {
+        const usage = chunk.usage;
+        const details = isRecord2(usage.prompt_tokens_details) ? usage.prompt_tokens_details : void 0;
+        const cached = details === void 0 ? 0 : asNumber2(details.cached_tokens);
+        yield {
+          type: "usage",
+          inputTokens: asNumber2(usage.prompt_tokens),
+          outputTokens: asNumber2(usage.completion_tokens),
+          ...cached > 0 ? { cachedInputTokens: cached } : {}
+        };
+      }
+    }
+    if (signal?.aborted)
+      return;
+    for (const event2 of flushToolCalls())
+      yield event2;
+    yield { type: "done", finishReason };
+  }
+};
+
+// packages/ai/dist/registry.js
+var StaticModelRegistry = class {
+  #models;
+  #providers;
+  constructor(models, providers) {
+    this.#models = models;
+    this.#providers = providers;
+  }
+  get(alias) {
+    const model = this.#models[alias];
+    if (model === void 0) {
+      const known = Object.keys(this.#models).sort().join(", ");
+      throw new Error(`Unknown model alias "${alias}". Known aliases: ${known === "" ? "(none registered)" : known}`);
+    }
+    return model;
+  }
+  providerFor(model) {
+    const provider = this.#providers.find((candidate) => candidate.supports(model));
+    if (provider === void 0) {
+      const known = this.#providers.map((candidate) => candidate.id).join(", ");
+      throw new Error(`No provider supports model "${model.provider}/${model.id}". Registered providers: ${known === "" ? "(none registered)" : known}`);
+    }
+    return provider;
+  }
+  aliases() {
+    return Object.keys(this.#models);
+  }
+};
+
+// packages/ai/dist/usage.js
+var PER_MILLION = 1e6;
+function newBucket() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    hasCached: false,
+    costUsd: 0
+  };
+}
+function usageCostUsd(pricing, usage) {
+  if (pricing === void 0)
+    return 0;
+  const cached = usage.cachedInputTokens ?? 0;
+  const cachedRate = pricing.cachedInputPerMTok ?? pricing.inputPerMTok;
+  const total = usage.inputTokens * pricing.inputPerMTok + usage.outputTokens * pricing.outputPerMTok + cached * cachedRate;
+  return total / PER_MILLION;
+}
+function toUsage(bucket) {
+  return {
+    inputTokens: bucket.inputTokens,
+    outputTokens: bucket.outputTokens,
+    ...bucket.hasCached ? { cachedInputTokens: bucket.cachedInputTokens } : {}
+  };
+}
+var UsageTracker = class {
+  #byModel = /* @__PURE__ */ new Map();
+  #total = newBucket();
+  record(model, usage) {
+    const key = `${model.provider}/${model.id}`;
+    let bucket = this.#byModel.get(key);
+    if (bucket === void 0) {
+      bucket = newBucket();
+      this.#byModel.set(key, bucket);
+    }
+    const cached = usage.cachedInputTokens ?? 0;
+    const cost = usageCostUsd(model.pricing, usage);
+    for (const target of [bucket, this.#total]) {
+      target.inputTokens += usage.inputTokens;
+      target.outputTokens += usage.outputTokens;
+      target.cachedInputTokens += cached;
+      target.hasCached = target.hasCached || usage.cachedInputTokens !== void 0;
+      target.costUsd += cost;
+    }
+  }
+  totals() {
+    return { usage: toUsage(this.#total), costUsd: this.#total.costUsd };
+  }
+  byModel() {
+    const out = /* @__PURE__ */ new Map();
+    for (const [key, bucket] of this.#byModel) {
+      out.set(key, { usage: toUsage(bucket), costUsd: bucket.costUsd });
+    }
+    return out;
+  }
+};
+
+// apps/cli/dist/config.js
+var KAPEL_CONFIG_VERSION = 1;
+var BACKENDS = ["claude-code", "codex", "native"];
+function envValue(env, name) {
+  const value = (env ?? process.env)[name];
+  return value === void 0 || value === "" ? void 0 : value;
+}
+function kapelConfigDir(env) {
+  return envValue(env, "KAPEL_CONFIG_DIR") ?? path.join(homedir(), ".kapel");
+}
+function kapelConfigPath(env) {
+  return path.join(kapelConfigDir(env), "config.json");
+}
+function isBackend(value) {
+  return typeof value === "string" && BACKENDS.includes(value);
+}
+function modelString(value) {
+  return typeof value === "string" && value !== "" ? value : void 0;
+}
+function parseConfig(raw) {
+  if (typeof raw !== "object" || raw === null)
+    return void 0;
+  const record = raw;
+  if (record.version !== KAPEL_CONFIG_VERSION)
+    return void 0;
+  if (!isBackend(record.backend))
+    return void 0;
+  const models = record.models;
+  if (typeof models !== "object" || models === null)
+    return void 0;
+  const modelRecord = models;
+  const orchestrator = modelString(modelRecord.orchestrator);
+  const worker = modelString(modelRecord.worker);
+  const cheap = modelString(modelRecord.cheap);
+  if (orchestrator === void 0 || worker === void 0 || cheap === void 0) {
+    return void 0;
+  }
+  const updatedAt = record.updatedAt;
+  return {
+    version: KAPEL_CONFIG_VERSION,
+    backend: record.backend,
+    models: { orchestrator, worker, cheap },
+    updatedAt: typeof updatedAt === "number" ? updatedAt : 0
+  };
+}
+async function loadKapelConfig(env) {
+  let text2;
+  try {
+    text2 = await readFile(kapelConfigPath(env), "utf8");
+  } catch {
+    return void 0;
+  }
+  try {
+    return parseConfig(JSON.parse(text2));
+  } catch {
+    return void 0;
+  }
+}
+async function saveKapelConfig(config, env) {
+  const filePath = kapelConfigPath(env);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const full = {
+    version: KAPEL_CONFIG_VERSION,
+    backend: config.backend,
+    models: {
+      orchestrator: config.models.orchestrator,
+      worker: config.models.worker,
+      cheap: config.models.cheap
+    },
+    updatedAt: config.updatedAt ?? Date.now()
+  };
+  await writeFile(filePath, `${JSON.stringify(full, null, 2)}
+`, "utf8");
+  try {
+    await chmod(filePath, 384);
+  } catch {
+  }
+  return filePath;
+}
+function backendChoices() {
+  return [
+    {
+      value: "claude-code",
+      label: "Claude Code",
+      hint: "use your Claude Code subscription login \u2014 no API key"
+    },
+    {
+      value: "codex",
+      label: "Codex",
+      hint: "use your ChatGPT login via the OpenAI Codex CLI \u2014 no API key"
+    },
+    {
+      value: "native",
+      label: "API key (Anthropic/OpenAI)",
+      hint: "call model APIs directly with a key or token"
+    }
+  ];
+}
+var CLAUDE_CODE_CHOICES = [
+  { value: "opus", label: "opus", hint: "Claude Opus \u2014 highest capability" },
+  { value: "sonnet", label: "sonnet", hint: "Claude Sonnet \u2014 balanced" },
+  { value: "haiku", label: "haiku", hint: "Claude Haiku \u2014 fastest/cheapest" },
+  {
+    value: "default",
+    label: "default",
+    hint: "whatever your Claude Code account defaults to"
+  }
+];
+var CODEX_CHOICES = [
+  { value: "default", label: "default", hint: "let the Codex CLI choose" },
+  {
+    value: "gpt-5.1-codex",
+    label: "gpt-5.1-codex",
+    hint: "only if your account has it"
+  },
+  { value: "gpt-5.1", label: "gpt-5.1", hint: "only if your account has it" },
+  {
+    value: "gpt-5-mini",
+    label: "gpt-5-mini",
+    hint: "only if your account has it"
+  }
+];
+function nativeChoices() {
+  const catalog = defaultModelCatalog();
+  return Object.keys(catalog).sort().map((alias) => {
+    const definition = catalog[alias];
+    const provider = definition?.provider ?? "unknown";
+    const hint = definition?.pricing === void 0 ? provider : `${provider} \xB7 pricing available`;
+    return { value: alias, label: alias, hint };
+  });
+}
+function choicesForBackend(backend) {
+  if (backend === "claude-code")
+    return CLAUDE_CODE_CHOICES;
+  if (backend === "codex")
+    return CODEX_CHOICES;
+  return nativeChoices();
+}
+function modelChoicesFor(backend, role) {
+  const suggested = defaultModelsFor(backend)[role];
+  return choicesForBackend(backend).map((choice) => {
+    if (choice.value !== suggested)
+      return choice;
+    const hint = choice.hint === void 0 ? "suggested for this role" : `${choice.hint} \xB7 suggested for this role`;
+    return { value: choice.value, label: choice.label, hint };
+  });
+}
+function pickNative(preferred) {
+  const catalog = defaultModelCatalog();
+  const aliases = Object.keys(catalog).sort();
+  if (aliases.includes(preferred))
+    return preferred;
+  const anthropic = aliases.find((alias) => catalog[alias]?.provider === "anthropic");
+  return anthropic ?? aliases[0] ?? preferred;
+}
+function defaultModelsFor(backend) {
+  if (backend === "claude-code") {
+    return { orchestrator: "opus", worker: "sonnet", cheap: "haiku" };
+  }
+  if (backend === "codex") {
+    return { orchestrator: "default", worker: "default", cheap: "default" };
+  }
+  return {
+    orchestrator: pickNative("claude-opus-5"),
+    worker: pickNative("claude-sonnet-5"),
+    cheap: pickNative("claude-haiku-4-5")
+  };
+}
+function backendLabel(backend) {
+  return backendChoices().find((choice) => choice.value === backend)?.label ?? backend;
+}
+function describeConfig(config) {
+  return [
+    `backend: ${backendLabel(config.backend)} (${config.backend})`,
+    `orchestrator model: ${config.models.orchestrator}`,
+    `worker model (normal complexity): ${config.models.worker}`,
+    `worker model (low complexity): ${config.models.cheap}`,
+    `updated: ${new Date(config.updatedAt).toISOString()}`
+  ];
 }
 
 // packages/orchestration/dist/conflicts.js
@@ -1760,8 +2645,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path11 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path11}: ${issue.message}`;
+    const path13 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path13}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -1849,7 +2734,245 @@ var AgentEventSchema = z5.object({
   data: z5.unknown().optional()
 });
 
-// packages/coding-agent/dist/backends/codex.js
+// packages/coding-agent/dist/backend-chat.js
+var DEFAULT_TRANSCRIPT_TURNS = 12;
+var TRANSCRIPT_ENTRY_CHARS = 2e3;
+var CANCELLED_SUMMARY = "Turn cancelled before the backend replied.";
+function copyEntry(entry) {
+  return { role: entry.role, content: entry.content, at: entry.at };
+}
+function errorMessage(error) {
+  if (error instanceof Error)
+    return error.message;
+  return String(error);
+}
+function isAbort(error, signal) {
+  if (signal?.aborted === true)
+    return true;
+  return error instanceof Error && error.name === "AbortError";
+}
+function firstText(...values) {
+  for (const value of values) {
+    if (value !== void 0 && value !== "")
+      return value;
+  }
+  return void 0;
+}
+var BackendChatSession = class _BackendChatSession {
+  #options;
+  #entries = [];
+  #sessionRef;
+  #turn = 0;
+  #sending = false;
+  constructor(options) {
+    this.#options = options;
+  }
+  /**
+   * Rebuilds a session from an {@link entries} snapshot and, when the backend
+   * supports continuation, the session id that snapshot ended on. Turn
+   * numbering resumes from the number of restored user entries so events keep
+   * counting up across a process restart.
+   */
+  static restore(options, entries, sessionRef) {
+    const session = new _BackendChatSession(options);
+    for (const entry of entries)
+      session.#entries.push(copyEntry(entry));
+    session.#turn = session.#entries.filter((entry) => entry.role === "user").length;
+    session.#sessionRef = sessionRef;
+    return session;
+  }
+  /**
+   * Rebuilds a session from the same `chat_messages` snapshot the native path
+   * persists. System and tool messages are dropped — a delegating backend has
+   * its own system prompt and runs its own tools — as are empty assistant
+   * turns, which on the native path are the tool-call-only ones.
+   */
+  static fromModelMessages(options, messages, sessionRef) {
+    const at = Date.now();
+    const entries = [];
+    for (const message of messages) {
+      if (message.role !== "user" && message.role !== "assistant")
+        continue;
+      if (message.content.trim() === "")
+        continue;
+      entries.push({ role: message.role, content: message.content, at });
+    }
+    return _BackendChatSession.restore(options, entries, sessionRef);
+  }
+  /**
+   * Runs one user turn: the instruction is recorded, handed to the runner with
+   * either the transcript or the backend's session id, and the reply recorded.
+   *
+   * The user entry is recorded even when the turn fails, is cancelled, or the
+   * runner throws, so the conversation still reads as a conversation. An
+   * assistant entry is only recorded when the backend actually produced text.
+   *
+   * @throws if another send on this session is still in flight.
+   */
+  async send(instruction, context) {
+    if (this.#sending) {
+      throw new Error("BackendChatSession.send: a send is already in flight; turns must be serialized.");
+    }
+    this.#sending = true;
+    const signal = context?.signal;
+    const taskId = context?.taskId;
+    try {
+      const prior = this.#entries.map(copyEntry);
+      this.#entries.push({
+        role: "user",
+        content: instruction,
+        at: Date.now()
+      });
+      this.#turn += 1;
+      const turn = this.#turn;
+      await this.#emit(taskId, "chat.turn.started", {
+        turn,
+        backend: "delegated"
+      });
+      const result = await this.#runTurn(instruction, prior, signal, taskId);
+      await this.#emit(taskId, "chat.turn.completed", {
+        turn,
+        status: result.status
+      });
+      return result;
+    } finally {
+      this.#sending = false;
+    }
+  }
+  /** A defensive copy of the recorded conversation, oldest first. */
+  entries() {
+    return this.#entries.map(copyEntry);
+  }
+  /** The backend-native session id of the last turn that reported one. */
+  sessionRef() {
+    return this.#sessionRef;
+  }
+  /**
+   * The conversation as provider messages, so a CLI can persist a delegated
+   * chat through the very same `chat_messages` storage the native path uses.
+   */
+  toModelMessages() {
+    return this.#entries.map((entry) => ({
+      role: entry.role,
+      content: entry.content
+    }));
+  }
+  async #runTurn(instruction, prior, signal, taskId) {
+    if (signal?.aborted === true) {
+      return { status: "failed", summary: CANCELLED_SUMMARY };
+    }
+    let outcome;
+    try {
+      outcome = await this.#options.runner(this.#request(instruction, prior, signal, taskId));
+    } catch (error) {
+      return {
+        status: "failed",
+        summary: isAbort(error, signal) ? CANCELLED_SUMMARY : errorMessage(error)
+      };
+    }
+    if (outcome.sessionRef !== void 0 && outcome.sessionRef !== "") {
+      this.#sessionRef = outcome.sessionRef;
+    }
+    const reply = firstText(outcome.output, outcome.summary);
+    if (reply !== void 0) {
+      this.#entries.push({
+        role: "assistant",
+        content: reply,
+        at: Date.now()
+      });
+    }
+    return {
+      status: outcome.status,
+      summary: outcome.summary,
+      ...outcome.output === void 0 ? {} : { output: outcome.output },
+      ...outcome.usage === void 0 ? {} : {
+        usage: {
+          inputTokens: outcome.usage.inputTokens,
+          outputTokens: outcome.usage.outputTokens
+        }
+      },
+      ...outcome.costUsd === void 0 ? {} : { costUsd: outcome.costUsd }
+    };
+  }
+  /**
+   * Continuation and stateless mode are mutually exclusive by construction:
+   * either the backend has the history (session id, empty transcript) or we do
+   * (no session id, the last N entries).
+   */
+  #request(instruction, prior, signal, taskId) {
+    const continuing = this.#options.supportsContinuation === true && this.#sessionRef !== void 0;
+    const limit = this.#options.transcriptTurns ?? DEFAULT_TRANSCRIPT_TURNS;
+    const transcript = continuing ? [] : limit <= 0 ? [] : prior.slice(Math.max(0, prior.length - limit));
+    return {
+      instruction,
+      transcript,
+      ...continuing && this.#sessionRef !== void 0 ? { sessionRef: this.#sessionRef } : {},
+      context: {
+        runId: this.#options.runId,
+        workspacePath: this.#options.workspacePath,
+        ...taskId === void 0 ? {} : { taskId },
+        ...signal === void 0 ? {} : { signal }
+      }
+    };
+  }
+  /**
+   * Best-effort emission on the configured sink, building the same envelope
+   * `AgentLoopEngine.emit` does so a renderer cannot tell the delegated path
+   * from the native one.
+   */
+  async #emit(taskId, type, data) {
+    const sink = this.#options.events;
+    if (sink === void 0)
+      return;
+    const event2 = {
+      id: crypto.randomUUID(),
+      runId: this.#options.runId,
+      timestamp: Date.now(),
+      type,
+      ...taskId === void 0 ? {} : { taskId },
+      data
+    };
+    try {
+      await sink.emit(event2);
+    } catch {
+    }
+  }
+};
+function clamp(text2, limit) {
+  if (text2.length <= limit)
+    return text2;
+  return `${text2.slice(0, limit)}\u2026`;
+}
+function renderTranscript(transcript) {
+  const lines = transcript.map((entry) => `${entry.role}: ${clamp(entry.content, TRANSCRIPT_ENTRY_CHARS)}`);
+  return `Earlier in this conversation:
+${lines.join("\n")}`;
+}
+function backendTurnRunner(backend, options) {
+  const withTranscript = options?.promptWithTranscript ?? true;
+  return async (request) => {
+    const context = withTranscript && request.transcript.length > 0 ? [renderTranscript(request.transcript)] : [];
+    const result = await backend.run({
+      instruction: request.instruction,
+      ...context.length === 0 ? {} : { context }
+    }, {
+      runId: request.context.runId,
+      workspacePath: request.context.workspacePath,
+      ...request.context.taskId === void 0 ? {} : { taskId: request.context.taskId },
+      ...request.context.signal === void 0 ? {} : { signal: request.context.signal }
+    });
+    return {
+      status: result.status,
+      summary: result.summary,
+      ...result.output === void 0 ? {} : { output: result.output },
+      ...result.sessionId === void 0 ? {} : { sessionRef: result.sessionId },
+      ...result.usage === void 0 ? {} : { usage: result.usage },
+      ...result.costUsd === void 0 ? {} : { costUsd: result.costUsd }
+    };
+  };
+}
+
+// packages/coding-agent/dist/backends/claude-code.js
 import { execFile as execFile2, spawn } from "node:child_process";
 
 // packages/coding-agent/dist/platform/shell.js
@@ -1903,17 +3026,19 @@ function executableCandidates(binary, platform = process.platform) {
   return [binary, `${binary}.cmd`, `${binary}.exe`];
 }
 
-// packages/coding-agent/dist/backends/codex.js
-var DEFAULT_BINARY = "codex";
-var DEFAULT_SANDBOX = "workspace-write";
+// packages/coding-agent/dist/backends/claude-code.js
+var DEFAULT_BINARY = "claude";
+var DEFAULT_PERMISSION_MODE = "acceptEdits";
 var KILL_GRACE_MS = 2e3;
 var MAX_STDERR_CHARS = 5e4;
+var STDERR_TAIL_CHARS = 2e3;
 var MAX_RAW_LINES = 20;
 var MAX_RAW_LINE_CHARS = 500;
 var PROBE_TIMEOUT_MS = 5e3;
 var PROBE_MAX_BUFFER = 512 * 1024;
-var INSTALL_HINT = "Install the Codex CLI with `npm install -g @openai/codex`, then authenticate with `codex login`.";
-function isRecord(value) {
+var INSTALL_HINT = "Install the Claude Code CLI with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription (no API key required).";
+var LOGIN_HINT = "Run `claude` and log in with your Claude subscription (no API key required).";
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstString(...values) {
@@ -1925,25 +3050,6 @@ function firstString(...values) {
 }
 function toCount(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function extractMessageText(item) {
-  const direct = firstString(item.text, item.message, item.content);
-  if (direct !== void 0)
-    return direct;
-  const content = item.content;
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const part of content) {
-      if (typeof part === "string")
-        parts.push(part);
-      else if (isRecord(part) && typeof part.text === "string")
-        parts.push(part.text);
-    }
-    const joined = parts.join("");
-    if (joined !== "")
-      return joined;
-  }
-  return void 0;
 }
 function buildPrompt(input) {
   const context = input.context ?? [];
@@ -1992,7 +3098,7 @@ async function probe(binaryPath, args) {
   }
   return result;
 }
-var CodexBackend = class {
+var ClaudeCodeBackend = class {
   #options;
   constructor(options = {}) {
     this.#options = options;
@@ -2000,7 +3106,469 @@ var CodexBackend = class {
   async run(input, context) {
     const binary = this.#options.binaryPath ?? DEFAULT_BINARY;
     const timeoutMs = this.#options.timeoutMs;
-    const args = this.#buildArgs(buildPrompt(input), context.workspacePath);
+    const args = this.#buildArgs(buildPrompt(input));
+    const signals = [];
+    if (context.signal !== void 0)
+      signals.push(context.signal);
+    const timeoutSignal = timeoutMs === void 0 ? void 0 : AbortSignal.timeout(timeoutMs);
+    if (timeoutSignal !== void 0)
+      signals.push(timeoutSignal);
+    const signal = signals.length === 0 ? void 0 : AbortSignal.any(signals);
+    const state = {
+      assistantText: "",
+      finalResult: void 0,
+      sessionId: void 0,
+      costUsd: void 0,
+      stopReason: void 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      messageOutputTokens: 0,
+      sawUsage: false,
+      parsedEvents: 0,
+      errors: [],
+      rawLines: [],
+      stderr: "",
+      stderrTruncated: false
+    };
+    let queue = Promise.resolve();
+    const emit2 = (type, data) => {
+      const sink = this.#options.events;
+      if (sink === void 0)
+        return;
+      const event2 = {
+        id: crypto.randomUUID(),
+        runId: context.runId,
+        timestamp: Date.now(),
+        type,
+        ...context.taskId === void 0 ? {} : { taskId: context.taskId },
+        data
+      };
+      queue = queue.then(async () => {
+        try {
+          await sink.emit(event2);
+        } catch {
+        }
+      });
+    };
+    const finish = async (result) => {
+      emit2("claude-code.completed", {
+        status: result.status,
+        exitCode: result.exitCode
+      });
+      await queue;
+      return result;
+    };
+    const settle = (status, summary, exitCode2) => {
+      const output = finalText(state);
+      return {
+        status,
+        summary,
+        ...output === void 0 ? {} : { output },
+        exitCode: exitCode2,
+        ...state.sawUsage ? {
+          usage: {
+            inputTokens: state.inputTokens,
+            outputTokens: state.outputTokens
+          }
+        } : {},
+        ...state.costUsd === void 0 ? {} : { costUsd: state.costUsd },
+        ...state.sessionId === void 0 ? {} : { sessionId: state.sessionId },
+        events: state.parsedEvents
+      };
+    };
+    if (signal?.aborted === true) {
+      return finish(settle("failed", "Claude Code run cancelled before it started.", null));
+    }
+    const candidates = executableCandidates(binary);
+    let spawnOutcome = await this.#spawnClaude(candidates[0] ?? binary, args, context.workspacePath, signal, timeoutSignal, state, emit2);
+    for (const candidate of candidates.slice(1)) {
+      if (spawnOutcome.kind !== "spawn-error" || spawnOutcome.error.code !== "ENOENT") {
+        break;
+      }
+      spawnOutcome = await this.#spawnClaude(candidate, args, context.workspacePath, signal, timeoutSignal, state, emit2);
+    }
+    if (spawnOutcome.kind === "spawn-error") {
+      const error = spawnOutcome.error;
+      const enoent = error.code === "ENOENT";
+      const summary = enoent ? `Claude Code CLI not found (tried to run "${binary}"). ${INSTALL_HINT}` : `Failed to start the Claude Code CLI ("${binary}"): ${error.message}`;
+      return finish(settle("failed", summary, null));
+    }
+    const { exitCode } = spawnOutcome;
+    if (spawnOutcome.timedOut) {
+      return finish(settle("failed", `Claude Code run timed out after ${String(timeoutMs)}ms and the process was terminated.`, exitCode));
+    }
+    if (spawnOutcome.aborted) {
+      return finish(settle("failed", "Claude Code run cancelled; the process was terminated.", exitCode));
+    }
+    if (exitCode === 0) {
+      return finish(settle("success", finalText(state) ?? "Claude Code completed with no final message.", exitCode));
+    }
+    const reason = failureReason(state);
+    return finish(settle("failed", `Claude Code exited with code ${String(exitCode)}: ${reason}`, exitCode));
+  }
+  #buildArgs(prompt) {
+    const permissionMode = this.#options.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    const args = [
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--permission-mode",
+      permissionMode
+    ];
+    if (this.#options.verbose !== false)
+      args.push("--verbose");
+    const model = this.#options.model;
+    if (model !== void 0)
+      args.push("--model", model);
+    const allowedTools = this.#options.allowedTools;
+    if (allowedTools !== void 0 && allowedTools.length > 0) {
+      args.push("--allowedTools", allowedTools.join(","));
+    }
+    for (const dir of this.#options.addDirs ?? []) {
+      args.push("--add-dir", dir);
+    }
+    const extra = this.#options.extraArgs;
+    if (extra !== void 0)
+      args.push(...extra);
+    args.push(prompt);
+    return args;
+  }
+  #spawnClaude(binary, args, workspacePath, signal, timeoutSignal, state, emit2) {
+    return new Promise((resolve5) => {
+      const child = spawn(binary, [...args], {
+        cwd: workspacePath,
+        stdio: ["ignore", "pipe", "pipe"],
+        ...detachedSpawnOptions()
+      });
+      let settled = false;
+      let aborted = false;
+      let killTimer;
+      const killGroup = (sig) => {
+        killProcessTree(child, sig);
+      };
+      const onAbort = () => {
+        aborted = true;
+        killGroup("SIGTERM");
+        killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
+        killTimer.unref();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const cleanup = () => {
+        if (killTimer !== void 0)
+          clearTimeout(killTimer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      let pending = "";
+      const consumeLine = (line) => {
+        const trimmed = line.replace(/\r$/, "");
+        if (trimmed.trim() === "")
+          return;
+        let parsed;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          pushRawLine(state, trimmed);
+          return;
+        }
+        if (!isRecord3(parsed)) {
+          pushRawLine(state, trimmed);
+          return;
+        }
+        state.parsedEvents += 1;
+        applyLine(parsed, state, emit2);
+      };
+      child.stdout?.on("data", (chunk) => {
+        pending += chunk.toString("utf8");
+        let index2 = pending.indexOf("\n");
+        while (index2 !== -1) {
+          consumeLine(pending.slice(0, index2));
+          pending = pending.slice(index2 + 1);
+          index2 = pending.indexOf("\n");
+        }
+      });
+      child.stderr?.on("data", (chunk) => {
+        if (state.stderrTruncated)
+          return;
+        state.stderr += chunk.toString("utf8");
+        if (state.stderr.length > MAX_STDERR_CHARS) {
+          state.stderr = state.stderr.slice(0, MAX_STDERR_CHARS);
+          state.stderrTruncated = true;
+        }
+      });
+      child.on("error", (error) => {
+        if (settled)
+          return;
+        settled = true;
+        cleanup();
+        resolve5({ kind: "spawn-error", error });
+      });
+      child.on("close", (code) => {
+        if (settled)
+          return;
+        settled = true;
+        cleanup();
+        if (pending !== "")
+          consumeLine(pending);
+        resolve5({
+          kind: "exit",
+          exitCode: code,
+          aborted,
+          timedOut: aborted && timeoutSignal?.aborted === true
+        });
+      });
+    });
+  }
+  /**
+   * Reports whether the Claude Code CLI is installed and whether the user is
+   * logged in. Never throws: failures are encoded in `detail`.
+   */
+  static async checkAvailability(binaryPath) {
+    const binary = binaryPath ?? DEFAULT_BINARY;
+    const version = await probe(binary, ["--version"]);
+    if (!version.ok) {
+      const detail = version.spawnFailed ? `Could not run "${binary}". ${INSTALL_HINT}` : `\`${binary} --version\` failed: ${tail(version.detail, 500)}`;
+      return { installed: false, loggedIn: false, detail };
+    }
+    const auth = await probe(binary, ["auth", "status"]);
+    if (auth.ok) {
+      const detail = tail(`${version.detail}
+${auth.detail}`, 500);
+      return {
+        installed: true,
+        loggedIn: true,
+        ...detail === "" ? {} : { detail }
+      };
+    }
+    const reason = auth.detail === "" ? "" : ` (${tail(auth.detail, 500)})`;
+    return {
+      installed: true,
+      loggedIn: false,
+      detail: `Claude Code CLI is installed but not logged in${reason}. ${LOGIN_HINT}`
+    };
+  }
+};
+function pushRawLine(state, line) {
+  state.rawLines.push(line.slice(0, MAX_RAW_LINE_CHARS));
+  if (state.rawLines.length > MAX_RAW_LINES)
+    state.rawLines.shift();
+}
+function finalText(state) {
+  const result = state.finalResult;
+  if (result !== void 0 && result.trim() !== "")
+    return result;
+  const streamed = state.assistantText.trim();
+  return streamed === "" ? void 0 : streamed;
+}
+function failureReason(state) {
+  const reported = state.errors.at(-1);
+  if (reported !== void 0)
+    return reported;
+  if (state.stderr.trim() !== "")
+    return tail(state.stderr, STDERR_TAIL_CHARS);
+  const text2 = finalText(state);
+  if (text2 !== void 0)
+    return tail(text2, STDERR_TAIL_CHARS);
+  if (state.rawLines.length > 0)
+    return state.rawLines.slice(-3).join("\n");
+  if (state.stopReason !== void 0)
+    return `stopped with reason "${state.stopReason}"`;
+  return "no error details were reported";
+}
+function isFinalResult(line) {
+  return typeof line.result === "string" && !isRecord3(line.event);
+}
+function applyLine(line, state, emit2) {
+  if (isFinalResult(line)) {
+    emit2("claude-code.result", line);
+    applyResult(line, state);
+    return;
+  }
+  const event2 = isRecord3(line.event) ? line.event : line;
+  const kind = firstString(event2.type, line.type) ?? "unknown";
+  emit2(`claude-code.${kind}`, line);
+  applyStreamEvent(kind, event2, state, emit2);
+}
+function applyResult(line, state) {
+  if (typeof line.result === "string")
+    state.finalResult = line.result;
+  const sessionId = firstString(line.session_id, line.sessionId);
+  if (sessionId !== void 0)
+    state.sessionId = sessionId;
+  const cost = line.total_cost_usd ?? line.totalCostUsd;
+  if (typeof cost === "number" && Number.isFinite(cost))
+    state.costUsd = cost;
+  if (line.is_error === true) {
+    state.errors.push(firstString(line.result, line.subtype) ?? "Claude Code reported an error with no message");
+  }
+  const usage = isRecord3(line.usage) ? line.usage : void 0;
+  if (usage !== void 0 && !state.sawUsage) {
+    state.sawUsage = true;
+    state.inputTokens += toCount(usage.input_tokens) + toCount(usage.cache_read_input_tokens);
+    state.outputTokens += toCount(usage.output_tokens);
+  }
+}
+function applyStreamEvent(kind, event2, state, emit2) {
+  switch (kind) {
+    case "message_start": {
+      const message = isRecord3(event2.message) ? event2.message : void 0;
+      const rawUsage = message === void 0 ? void 0 : message.usage;
+      const usage = isRecord3(rawUsage) ? rawUsage : void 0;
+      if (usage !== void 0) {
+        state.sawUsage = true;
+        state.inputTokens += toCount(usage.input_tokens) + toCount(usage.cache_read_input_tokens);
+        const output = toCount(usage.output_tokens);
+        state.outputTokens += output;
+        state.messageOutputTokens = output;
+      } else {
+        state.messageOutputTokens = 0;
+      }
+      return;
+    }
+    case "content_block_start": {
+      const block = isRecord3(event2.content_block) ? event2.content_block : void 0;
+      if (block?.type !== "tool_use")
+        return;
+      const name = firstString(block.name) ?? "unknown";
+      emit2("claude-code.tool_use", {
+        name,
+        ...typeof block.id === "string" ? { id: block.id } : {},
+        ...typeof event2.index === "number" ? { index: event2.index } : {}
+      });
+      return;
+    }
+    case "content_block_delta": {
+      const delta = isRecord3(event2.delta) ? event2.delta : void 0;
+      if (delta?.type !== "text_delta")
+        return;
+      if (typeof delta.text === "string")
+        state.assistantText += delta.text;
+      return;
+    }
+    case "message_delta": {
+      const delta = isRecord3(event2.delta) ? event2.delta : void 0;
+      const stopReason = firstString(delta?.stop_reason);
+      if (stopReason !== void 0)
+        state.stopReason = stopReason;
+      const usage = isRecord3(event2.usage) ? event2.usage : void 0;
+      if (usage !== void 0 && typeof usage.output_tokens === "number") {
+        const output = toCount(usage.output_tokens);
+        if (output >= state.messageOutputTokens) {
+          state.sawUsage = true;
+          state.outputTokens += output - state.messageOutputTokens;
+          state.messageOutputTokens = output;
+        }
+      }
+      return;
+    }
+    case "error": {
+      const error = isRecord3(event2.error) ? event2.error : event2;
+      state.errors.push(firstString(error.message, error.type, event2.message) ?? "Claude Code reported an error with no message");
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+// packages/coding-agent/dist/backends/codex.js
+import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
+var DEFAULT_BINARY2 = "codex";
+var DEFAULT_SANDBOX = "workspace-write";
+var KILL_GRACE_MS2 = 2e3;
+var MAX_STDERR_CHARS2 = 5e4;
+var MAX_RAW_LINES2 = 20;
+var MAX_RAW_LINE_CHARS2 = 500;
+var PROBE_TIMEOUT_MS2 = 5e3;
+var PROBE_MAX_BUFFER2 = 512 * 1024;
+var INSTALL_HINT2 = "Install the Codex CLI with `npm install -g @openai/codex`, then authenticate with `codex login`.";
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function firstString2(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value !== "")
+      return value;
+  }
+  return void 0;
+}
+function toCount2(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function extractMessageText(item) {
+  const direct = firstString2(item.text, item.message, item.content);
+  if (direct !== void 0)
+    return direct;
+  const content = item.content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const part of content) {
+      if (typeof part === "string")
+        parts.push(part);
+      else if (isRecord4(part) && typeof part.text === "string")
+        parts.push(part.text);
+    }
+    const joined = parts.join("");
+    if (joined !== "")
+      return joined;
+  }
+  return void 0;
+}
+function buildPrompt2(input) {
+  const context = input.context ?? [];
+  if (context.length === 0)
+    return input.instruction;
+  const blocks = context.map((entry, index2) => `<context index="${index2 + 1}">
+${entry}
+</context>`);
+  return `${input.instruction}
+
+<additional-context>
+${blocks.join("\n")}
+</additional-context>`;
+}
+function tail2(text2, limit) {
+  const trimmed = text2.trim();
+  if (trimmed.length <= limit)
+    return trimmed;
+  return `...${trimmed.slice(trimmed.length - limit)}`;
+}
+function probeOnce2(binaryPath, args) {
+  return new Promise((resolve5) => {
+    execFile3(binaryPath, [...args], { timeout: PROBE_TIMEOUT_MS2, maxBuffer: PROBE_MAX_BUFFER2 }, (error, stdout, stderr) => {
+      const detail = `${String(stdout)}
+${String(stderr)}`.trim();
+      if (error === null) {
+        resolve5({ ok: true, spawnFailed: false, detail });
+        return;
+      }
+      const code = error.code;
+      resolve5({
+        ok: false,
+        spawnFailed: typeof code === "string",
+        detail: detail === "" ? error.message : detail
+      });
+    });
+  });
+}
+async function probe2(binaryPath, args) {
+  const candidates = executableCandidates(binaryPath);
+  let result = await probeOnce2(candidates[0] ?? binaryPath, args);
+  for (const candidate of candidates.slice(1)) {
+    if (!result.spawnFailed)
+      break;
+    result = await probeOnce2(candidate, args);
+  }
+  return result;
+}
+var CodexBackend = class {
+  #options;
+  constructor(options = {}) {
+    this.#options = options;
+  }
+  async run(input, context) {
+    const binary = this.#options.binaryPath ?? DEFAULT_BINARY2;
+    const timeoutMs = this.#options.timeoutMs;
+    const args = this.#buildArgs(buildPrompt2(input), context.workspacePath);
     const signals = [];
     if (context.signal !== void 0)
       signals.push(context.signal);
@@ -2074,7 +3642,7 @@ var CodexBackend = class {
     if (spawnOutcome.kind === "spawn-error") {
       const error = spawnOutcome.error;
       const enoent = error.code === "ENOENT";
-      const summary = enoent ? `Codex CLI not found (tried to run "${binary}"). ${INSTALL_HINT}` : `Failed to start the Codex CLI ("${binary}"): ${error.message}`;
+      const summary = enoent ? `Codex CLI not found (tried to run "${binary}"). ${INSTALL_HINT2}` : `Failed to start the Codex CLI ("${binary}"): ${error.message}`;
       return finish(settle("failed", summary, null));
     }
     const { exitCode } = spawnOutcome;
@@ -2088,7 +3656,7 @@ var CodexBackend = class {
       const message = state.lastAgentMessage;
       return finish(settle("success", message ?? "Codex completed with no final message.", exitCode));
     }
-    const reason = failureReason(state);
+    const reason = failureReason2(state);
     return finish(settle("failed", `Codex exited with code ${String(exitCode)}: ${reason}`, exitCode));
   }
   #buildArgs(prompt, workspacePath) {
@@ -2110,7 +3678,7 @@ var CodexBackend = class {
   }
   #spawnCodex(binary, args, workspacePath, signal, timeoutSignal, state, emit2) {
     return new Promise((resolve5) => {
-      const child = spawn(binary, [...args], {
+      const child = spawn2(binary, [...args], {
         cwd: workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
         ...detachedSpawnOptions()
@@ -2124,7 +3692,7 @@ var CodexBackend = class {
       const onAbort = () => {
         aborted = true;
         killGroup("SIGTERM");
-        killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
+        killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS2);
         killTimer.unref();
       };
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -2142,14 +3710,14 @@ var CodexBackend = class {
         try {
           parsed = JSON.parse(trimmed);
         } catch {
-          state.rawLines.push(trimmed.slice(0, MAX_RAW_LINE_CHARS));
-          if (state.rawLines.length > MAX_RAW_LINES)
+          state.rawLines.push(trimmed.slice(0, MAX_RAW_LINE_CHARS2));
+          if (state.rawLines.length > MAX_RAW_LINES2)
             state.rawLines.shift();
           return;
         }
-        if (!isRecord(parsed)) {
-          state.rawLines.push(trimmed.slice(0, MAX_RAW_LINE_CHARS));
-          if (state.rawLines.length > MAX_RAW_LINES)
+        if (!isRecord4(parsed)) {
+          state.rawLines.push(trimmed.slice(0, MAX_RAW_LINE_CHARS2));
+          if (state.rawLines.length > MAX_RAW_LINES2)
             state.rawLines.shift();
           return;
         }
@@ -2169,8 +3737,8 @@ var CodexBackend = class {
         if (state.stderrTruncated)
           return;
         state.stderr += chunk.toString("utf8");
-        if (state.stderr.length > MAX_STDERR_CHARS) {
-          state.stderr = state.stderr.slice(0, MAX_STDERR_CHARS);
+        if (state.stderr.length > MAX_STDERR_CHARS2) {
+          state.stderr = state.stderr.slice(0, MAX_STDERR_CHARS2);
           state.stderrTruncated = true;
         }
       });
@@ -2202,15 +3770,15 @@ var CodexBackend = class {
    * completed `codex login`. Never throws: failures are encoded in `detail`.
    */
   static async checkAvailability(binaryPath) {
-    const binary = binaryPath ?? DEFAULT_BINARY;
-    const version = await probe(binary, ["--version"]);
+    const binary = binaryPath ?? DEFAULT_BINARY2;
+    const version = await probe2(binary, ["--version"]);
     if (!version.ok) {
-      const detail = version.spawnFailed ? `Could not run "${binary}". ${INSTALL_HINT}` : `\`${binary} --version\` failed: ${tail(version.detail, 500)}`;
+      const detail = version.spawnFailed ? `Could not run "${binary}". ${INSTALL_HINT2}` : `\`${binary} --version\` failed: ${tail2(version.detail, 500)}`;
       return { installed: false, loggedIn: false, detail };
     }
-    const login = await probe(binary, ["login", "status"]);
+    const login = await probe2(binary, ["login", "status"]);
     if (login.ok) {
-      const detail = tail(`${version.detail}
+      const detail = tail2(`${version.detail}
 ${login.detail}`, 500);
       return {
         installed: true,
@@ -2218,7 +3786,7 @@ ${login.detail}`, 500);
         ...detail === "" ? {} : { detail }
       };
     }
-    const reason = login.detail === "" ? "" : ` (${tail(login.detail, 500)})`;
+    const reason = login.detail === "" ? "" : ` (${tail2(login.detail, 500)})`;
     return {
       installed: true,
       loggedIn: false,
@@ -2226,21 +3794,21 @@ ${login.detail}`, 500);
     };
   }
 };
-function failureReason(state) {
+function failureReason2(state) {
   const reported = state.errors.at(-1);
   if (reported !== void 0)
     return reported;
   if (state.stderr.trim() !== "")
-    return tail(state.stderr, 1e3);
+    return tail2(state.stderr, 1e3);
   if (state.rawLines.length > 0)
     return state.rawLines.slice(-3).join("\n");
   return "no error details were reported";
 }
 function applyEvent(event2, state, emit2) {
-  const source = isRecord(event2.msg) && typeof event2.msg.type === "string" ? event2.msg : event2;
+  const source = isRecord4(event2.msg) && typeof event2.msg.type === "string" ? event2.msg : event2;
   const kind = typeof source.type === "string" ? source.type : "unknown";
   emit2(`codex.${kind}`, event2);
-  const item = isRecord(source.item) ? source.item : void 0;
+  const item = isRecord4(source.item) ? source.item : void 0;
   if (item !== void 0 && item.type === "agent_message") {
     const text2 = extractMessageText(item);
     if (text2 !== void 0)
@@ -2251,12 +3819,12 @@ function applyEvent(event2, state, emit2) {
       state.lastAgentMessage = text2;
   }
   if (kind === "error") {
-    state.errors.push(firstString(source.message, source.error, source.detail) ?? "Codex reported an error with no message");
+    state.errors.push(firstString2(source.message, source.error, source.detail) ?? "Codex reported an error with no message");
   }
-  const usage = isRecord(source.usage) ? source.usage : void 0;
+  const usage = isRecord4(source.usage) ? source.usage : void 0;
   if (usage !== void 0) {
-    const inputTokens = toCount(usage.input_tokens ?? usage.inputTokens);
-    const outputTokens = toCount(usage.output_tokens ?? usage.outputTokens);
+    const inputTokens = toCount2(usage.input_tokens ?? usage.inputTokens);
+    const outputTokens = toCount2(usage.output_tokens ?? usage.outputTokens);
     if (inputTokens !== 0 || outputTokens !== 0 || kind.startsWith("turn.")) {
       state.sawUsage = true;
       state.inputTokens += inputTokens;
@@ -2295,7 +3863,7 @@ function serializeToolOutput(output) {
     return output;
   return JSON.stringify(output) ?? "";
 }
-function errorMessage(error) {
+function errorMessage2(error) {
   if (error instanceof Error)
     return error.message;
   return String(error);
@@ -2459,7 +4027,7 @@ var AgentLoopEngine = class {
       }
       return await this.#complete(context, {
         status: "failed",
-        summary: `Model request failed: ${errorMessage(error)}`,
+        summary: `Model request failed: ${errorMessage2(error)}`,
         ...lastNonEmptyText === "" ? {} : { output: lastNonEmptyText },
         iterations,
         toolCalls
@@ -2621,7 +4189,7 @@ var AgentLoopEngine = class {
         role: "tool",
         toolCallId: call.id,
         isError: true,
-        content: `Tool "${call.name}" failed: ${errorMessage(error)}`
+        content: `Tool "${call.name}" failed: ${errorMessage2(error)}`
       };
     }
   }
@@ -2784,8 +4352,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path11 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path11}: ${issue.message}`;
+    const path13 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path13}: ${issue.message}`;
   });
 }
 
@@ -3053,7 +4621,7 @@ async function loadAgentProject(workspaceRoot) {
 }
 
 // packages/coding-agent/dist/tools/bash.js
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 import { z as z9 } from "zod";
 
 // packages/coding-agent/dist/tools/json-schema.js
@@ -3068,7 +4636,7 @@ function toInputSchema(schema) {
 var DEFAULT_TIMEOUT_MS = 12e4;
 var MAX_TIMEOUT_MS = 6e5;
 var MAX_OUTPUT_CHARS = 1e5;
-var KILL_GRACE_MS2 = 2e3;
+var KILL_GRACE_MS3 = 2e3;
 var InputSchema = z9.object({
   command: z9.string().min(1).describe("Shell command to run in the workspace (bash -lc on POSIX, cmd.exe /c on Windows)."),
   timeoutMs: z9.number().int().positive().max(MAX_TIMEOUT_MS).optional().describe("Maximum time to allow the command to run, in milliseconds. Defaults to 120000, max 600000.")
@@ -3098,7 +4666,7 @@ var BashTool = class {
     }
     return new Promise((resolvePromise, reject) => {
       const shell = shellInvocationFor(input.command);
-      const child = spawn2(shell.command, [...shell.args], {
+      const child = spawn3(shell.command, [...shell.args], {
         cwd: context.workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
         ...detachedSpawnOptions()
@@ -3114,13 +4682,13 @@ var BashTool = class {
       const timeoutTimer = setTimeout(() => {
         timedOut = true;
         killGroup("SIGTERM");
-        setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS2).unref();
+        setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS3).unref();
       }, timeoutMs);
       timeoutTimer.unref();
       const onAbort = () => {
         aborted = true;
         killGroup("SIGTERM");
-        setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS2).unref();
+        setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS3).unref();
       };
       context.signal.addEventListener("abort", onAbort, { once: true });
       const cleanup = () => {
@@ -3161,7 +4729,7 @@ var BashTool = class {
 };
 
 // packages/coding-agent/dist/tools/edit-file.js
-import { readFile as readFile5, writeFile } from "node:fs/promises";
+import { readFile as readFile5, writeFile as writeFile2 } from "node:fs/promises";
 import { z as z10 } from "zod";
 
 // packages/coding-agent/dist/tools/paths.js
@@ -3226,16 +4794,16 @@ var EditFileTool = class {
     const replacements = input.replaceAll ? occurrences : 1;
     const newContent = input.replaceAll ? raw.split(input.oldText).join(input.newText) : raw.replace(input.oldText, input.newText);
     checkAbort(context.signal);
-    await writeFile(target, newContent, "utf8");
+    await writeFile2(target, newContent, "utf8");
     return { path: input.path, replacements };
   }
 };
 
 // packages/coding-agent/dist/tools/git-diff.js
-import { execFile as execFile3 } from "node:child_process";
+import { execFile as execFile4 } from "node:child_process";
 import { promisify } from "node:util";
 import { z as z11 } from "zod";
-var execFileAsync = promisify(execFile3);
+var execFileAsync = promisify(execFile4);
 var MAX_DIFF_CHARS = 2e5;
 var MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 var InputSchema3 = z11.object({
@@ -3597,7 +5165,7 @@ var ReadFileTool = class {
 };
 
 // packages/coding-agent/dist/tools/write-file.js
-import { mkdir, stat as stat3, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z as z15 } from "zod";
 var InputSchema7 = z15.object({
@@ -3626,9 +5194,9 @@ var WriteFileTool = class {
     } catch {
       created = true;
     }
-    await mkdir(dirname(target), { recursive: true });
+    await mkdir2(dirname(target), { recursive: true });
     checkAbort(context.signal);
-    await writeFile2(target, input.content, "utf8");
+    await writeFile3(target, input.content, "utf8");
     const bytesWritten = Buffer.byteLength(input.content, "utf8");
     return { path: input.path, bytesWritten, created };
   }
@@ -3648,17 +5216,17 @@ function builtinTools() {
 }
 
 // packages/coding-agent/dist/validation/runner.js
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn4 } from "node:child_process";
 var MAX_VALIDATOR_OUTPUT_CHARS = 2e4;
 var TRUNCATION_MARKER = "...[earlier output truncated]\n";
-var KILL_GRACE_MS3 = 2e3;
+var KILL_GRACE_MS4 = 2e3;
 function capTail(text2, alreadyDropped) {
   if (!alreadyDropped && text2.length <= MAX_VALIDATOR_OUTPUT_CHARS)
     return text2;
   const budget = MAX_VALIDATOR_OUTPUT_CHARS - TRUNCATION_MARKER.length;
   return `${TRUNCATION_MARKER}${text2.slice(Math.max(0, text2.length - budget))}`;
 }
-function errorMessage2(error) {
+function errorMessage3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function runOne(validator, workspacePath, signal) {
@@ -3700,7 +5268,7 @@ function runOne(validator, workspacePath, signal) {
     let child;
     try {
       const shell = shellInvocationFor(validator.command);
-      child = spawn3(shell.command, [...shell.args], {
+      child = spawn4(shell.command, [...shell.args], {
         cwd: workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
         ...detachedSpawnOptions()
@@ -3711,7 +5279,7 @@ function runOne(validator, workspacePath, signal) {
         command: validator.command,
         passed: false,
         exitCode: null,
-        output: `Could not start the validator: ${errorMessage2(error)}`,
+        output: `Could not start the validator: ${errorMessage3(error)}`,
         durationMs: Date.now() - startedAt,
         timedOut: false
       });
@@ -3722,7 +5290,7 @@ function runOne(validator, workspacePath, signal) {
     };
     const killHard = () => {
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS3).unref();
+      setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS4).unref();
     };
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
@@ -3752,7 +5320,7 @@ function runOne(validator, workspacePath, signal) {
         passed: false,
         exitCode: null,
         extra: `
-Could not run the validator: ${errorMessage2(error)}`
+Could not run the validator: ${errorMessage3(error)}`
       });
     });
     child.on("close", (code) => {
@@ -3823,7 +5391,7 @@ async function emit(opts, type, data) {
 // packages/coding-agent/dist/validation/validating-executor.js
 var MAX_ISSUE_OUTPUT_CHARS = 1e3;
 var FAILED_VALIDATION_CONFIDENCE = 0.2;
-function errorMessage3(error) {
+function errorMessage4(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function truncate(text2, limit) {
@@ -3887,7 +5455,7 @@ var ValidatingExecutor = class {
         status: "failed",
         unresolvedIssues: [
           ...result.unresolvedIssues,
-          `Validation could not be run: ${errorMessage3(error)}`
+          `Validation could not be run: ${errorMessage4(error)}`
         ],
         confidence: FAILED_VALIDATION_CONFIDENCE
       };
@@ -4070,9 +5638,9 @@ ${WORKER_SYSTEM_POSTAMBLE}`;
 }
 
 // packages/coding-agent/dist/workers/normalize.js
-import { execFile as execFile4 } from "node:child_process";
+import { execFile as execFile5 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
-var execFileAsync2 = promisify2(execFile4);
+var execFileAsync2 = promisify2(execFile5);
 var MAX_BUFFER_BYTES2 = 10 * 1024 * 1024;
 var CONFIDENCE = {
   success: 0.8,
@@ -4097,9 +5665,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path11 = record.slice(3);
-    if (path11 !== "")
-      paths.add(path11);
+    const path13 = record.slice(3);
+    if (path13 !== "")
+      paths.add(path13);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -4188,7 +5756,7 @@ function selectToolsForAgent(tools, patterns) {
     return prefixes.some((prefix) => name === prefix || name.startsWith(`${prefix}.`));
   });
 }
-function errorMessage4(error) {
+function errorMessage5(error) {
   return error instanceof Error ? error.message : String(error);
 }
 var AgentLoopWorkerExecutor = class {
@@ -4208,7 +5776,7 @@ var AgentLoopWorkerExecutor = class {
     try {
       resolved = this.#options.resolveModel(projectAgent.modelAlias);
     } catch (error) {
-      return failedTaskResult(taskId, `Could not resolve model alias "${projectAgent.modelAlias}" for agent ${agent}: ${errorMessage4(error)}`);
+      return failedTaskResult(taskId, `Could not resolve model alias "${projectAgent.modelAlias}" for agent ${agent}: ${errorMessage5(error)}`);
     }
     const configuredPermissions = this.#options.permissionOverrides ?? DEFAULT_WORKER_PERMISSIONS;
     const selected = selectToolsForAgent(builtinTools(), projectAgent.tools);
@@ -4249,7 +5817,7 @@ var AgentLoopWorkerExecutor = class {
     } catch (error) {
       run = {
         status: "failed",
-        summary: `Agent loop crashed: ${errorMessage4(error)}`
+        summary: `Agent loop crashed: ${errorMessage5(error)}`
       };
     }
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
@@ -4259,7 +5827,7 @@ var AgentLoopWorkerExecutor = class {
 };
 
 // packages/coding-agent/dist/workers/child-process-executor.js
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn5 } from "node:child_process";
 
 // packages/coding-agent/dist/workers/protocol.js
 import { z as z17 } from "zod";
@@ -4425,10 +5993,10 @@ async function serveWorkerRequest(io, handler, options = {}) {
 }
 
 // packages/coding-agent/dist/workers/child-process-executor.js
-var KILL_GRACE_MS4 = 2e3;
-var MAX_STDERR_CHARS2 = 5e4;
-var STDERR_TAIL_CHARS = 2e3;
-function tail2(text2, limit) {
+var KILL_GRACE_MS5 = 2e3;
+var MAX_STDERR_CHARS3 = 5e4;
+var STDERR_TAIL_CHARS2 = 2e3;
+function tail3(text2, limit) {
   const trimmed = text2.trim();
   if (trimmed.length <= limit)
     return trimmed;
@@ -4485,7 +6053,7 @@ var ChildProcessWorkerExecutor = class {
     let stderr = "";
     let stderrTruncated = false;
     const outcome = await new Promise((resolve5) => {
-      const child = spawn4(executable, [...command.slice(1)], {
+      const child = spawn5(executable, [...command.slice(1)], {
         cwd: workspacePath,
         stdio: ["pipe", "pipe", "pipe"],
         ...detachedSpawnOptions(),
@@ -4500,7 +6068,7 @@ var ChildProcessWorkerExecutor = class {
       const onAbort = () => {
         aborted = true;
         killGroup("SIGTERM");
-        killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS4);
+        killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS5);
         killTimer.unref();
       };
       combined?.addEventListener("abort", onAbort, { once: true });
@@ -4534,8 +6102,8 @@ var ChildProcessWorkerExecutor = class {
         if (stderrTruncated)
           return;
         stderr += chunk.toString("utf8");
-        if (stderr.length > MAX_STDERR_CHARS2) {
-          stderr = stderr.slice(0, MAX_STDERR_CHARS2);
+        if (stderr.length > MAX_STDERR_CHARS3) {
+          stderr = stderr.slice(0, MAX_STDERR_CHARS3);
           stderrTruncated = true;
         }
       });
@@ -4574,7 +6142,7 @@ var ChildProcessWorkerExecutor = class {
     if (result !== void 0) {
       return result.taskId === taskId ? result : { ...result, taskId };
     }
-    const stderrTail = stderr.trim() === "" ? "" : ` stderr: ${tail2(stderr, STDERR_TAIL_CHARS)}`;
+    const stderrTail = stderr.trim() === "" ? "" : ` stderr: ${tail3(stderr, STDERR_TAIL_CHARS2)}`;
     if (outcome.timedOut === true) {
       return failedTaskResult(taskId, `Worker process timed out after ${String(taskTimeoutMs)}ms and was terminated.${stderrTail}`);
     }
@@ -4619,19 +6187,19 @@ var CodexWorkerExecutor = class {
 };
 
 // packages/workspace/dist/index.js
-import { execFile as execFile6 } from "node:child_process";
+import { execFile as execFile7 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
 
 // packages/workspace/dist/worktrees.js
-import { mkdir as mkdir2, rm, rmdir } from "node:fs/promises";
+import { mkdir as mkdir3, rm, rmdir } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute as isAbsolute3, join as join6, relative as relative3, resolve as resolve3, sep as sep3 } from "node:path";
 
 // packages/workspace/dist/git.js
-import { execFile as execFile5 } from "node:child_process";
+import { execFile as execFile6 } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { isAbsolute as isAbsolute2, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
 import { promisify as promisify3 } from "node:util";
-var execFileAsync3 = promisify3(execFile5);
+var execFileAsync3 = promisify3(execFile6);
 var MAX_BUFFER_BYTES3 = 64 * 1024 * 1024;
 var MAX_SEGMENT_LENGTH = 100;
 var WorktreeError = class extends Error {
@@ -4713,20 +6281,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path11;
+  let path13;
   let branch;
   const flush = () => {
-    if (path11 !== void 0) {
-      entries.push({ path: path11, branch });
+    if (path13 !== void 0) {
+      entries.push({ path: path13, branch });
     }
-    path11 = void 0;
+    path13 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path11 = value.slice("worktree ".length);
+      path13 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -4734,11 +6302,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path11) {
+async function realPathOrSelf(path13) {
   try {
-    return await realpath(path11);
+    return await realpath(path13);
   } catch {
-    return resolve2(path11);
+    return resolve2(path13);
   }
 }
 function isUnder(parent, child) {
@@ -4777,16 +6345,16 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path11 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path13 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path11, branch, signal);
-    await mkdir2(dirname2(path11), { recursive: true });
-    await runGit2(["worktree", "add", path11, "-b", branch, baseCommit], {
+    await this.#removeLeftovers(path13, branch, signal);
+    await mkdir3(dirname2(path13), { recursive: true });
+    await runGit2(["worktree", "add", path13, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
       signal
     });
-    return { path: path11, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    return { path: path13, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -5034,13 +6602,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path11, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path11], {
+  async #removeLeftovers(path13, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path13], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path11, { recursive: true, force: true });
+    await rm(path13, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -5061,11 +6629,11 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path11 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path11.startsWith(ignored)) {
+      const path13 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path13.startsWith(ignored)) {
         continue;
       }
-      paths.push(path11);
+      paths.push(path13);
     }
     return paths;
   }
@@ -5088,11 +6656,11 @@ function truncateDiff(diff) {
 }
 
 // packages/workspace/dist/index.js
-var execFileAsync4 = promisify4(execFile6);
+var execFileAsync4 = promisify4(execFile7);
 
 // packages/coding-agent/dist/workers/worktree-executor.js
 var MAX_LISTED_FILES = 10;
-function errorMessage5(error) {
+function errorMessage6(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function listFiles(files) {
@@ -5134,7 +6702,7 @@ var WorktreeIsolatedExecutor = class {
     try {
       worktree = await this.#manager.create(this.#options.runId, taskId, signal);
     } catch (error) {
-      return failedTaskResult(taskId, `Could not create an isolated worktree for ${taskId}: ${errorMessage5(error)}`);
+      return failedTaskResult(taskId, `Could not create an isolated worktree for ${taskId}: ${errorMessage6(error)}`);
     }
     await this.#emit("worktree.created", taskId, {
       taskId,
@@ -5149,7 +6717,7 @@ var WorktreeIsolatedExecutor = class {
     try {
       return await this.#options.createExecutor(worktree.path).execute(task, agent, signal, context);
     } catch (error) {
-      return failedTaskResult(task.spec.id, `Worker crashed inside the task worktree: ${errorMessage5(error)}`);
+      return failedTaskResult(task.spec.id, `Worker crashed inside the task worktree: ${errorMessage6(error)}`);
     }
   }
   /**
@@ -5170,7 +6738,7 @@ var WorktreeIsolatedExecutor = class {
         status: inner.status === "failed" ? "failed" : "partial",
         changedFiles: [],
         issues: [
-          `Could not collect the task worktree: ${errorMessage5(error)}`,
+          `Could not collect the task worktree: ${errorMessage6(error)}`,
           `The checkout at ${worktree.path} (branch ${worktree.branch}) was left in place.`
         ]
       });
@@ -5188,7 +6756,7 @@ var WorktreeIsolatedExecutor = class {
         changedFiles: collected.changedFiles,
         commit: collected.commit,
         issues: [
-          `Could not merge the task branch into the base: ${errorMessage5(error)}`,
+          `Could not merge the task branch into the base: ${errorMessage6(error)}`,
           keptBranchIssue(worktree.branch)
         ]
       });
@@ -5272,744 +6840,102 @@ var WorktreeIsolatedExecutor = class {
   }
 };
 
-// apps/cli/dist/plan.js
-import { readFile as readFile8 } from "node:fs/promises";
-import path3 from "node:path";
-
-// packages/ai/dist/catalog.js
-var FULL_CAPABILITIES = {
-  tools: true,
-  reasoning: true,
-  vision: true,
-  structuredOutput: true
+// apps/cli/dist/config-wizard.js
+var BACKEND_TITLE = "Which coding backend should kapel use?";
+var ROLE_TITLES = {
+  orchestrator: "Main orchestrator model",
+  worker: "Worker model \u2014 normal complexity",
+  cheap: "Worker model \u2014 low complexity / exploration"
 };
-function claude(id, inputPerMTok, outputPerMTok, contextWindow, maxOutputTokens) {
-  return {
-    provider: "anthropic",
-    id,
-    contextWindow,
-    maxOutputTokens,
-    capabilities: FULL_CAPABILITIES,
-    pricing: {
-      inputPerMTok,
-      outputPerMTok,
-      cachedInputPerMTok: Number((inputPerMTok * 0.1).toFixed(4))
-    }
-  };
+var ROLES = ["orchestrator", "worker", "cheap"];
+var BACKEND_FIX = {
+  "claude-code": "fix: npm install -g @anthropic-ai/claude-code, then run `claude` once and log in",
+  codex: "fix: npm install -g @openai/codex, then `codex login`",
+  native: "fix: set ANTHROPIC_API_KEY or OPENAI_API_KEY in your shell environment"
+};
+function isBackend2(value) {
+  return value === "claude-code" || value === "codex" || value === "native";
 }
-var MILLION = 1e6;
-var K128 = 128e3;
-function defaultModelCatalog() {
-  return {
-    // --- Anthropic -------------------------------------------------------
-    "claude-fable-5": claude("claude-fable-5", 10, 50, MILLION, K128),
-    "claude-opus-5": claude("claude-opus-5", 5, 25, MILLION, K128),
-    "claude-opus-4-8": claude("claude-opus-4-8", 5, 25, MILLION, K128),
-    "claude-opus-4-7": claude("claude-opus-4-7", 5, 25, MILLION, K128),
-    "claude-opus-4-6": claude("claude-opus-4-6", 5, 25, MILLION, K128),
-    // Sonnet 5 has promotional pricing of $2/$10 per MTok through 2026-08-31;
-    // the standard rate below is what applies afterwards.
-    "claude-sonnet-5": claude("claude-sonnet-5", 3, 15, MILLION, K128),
-    "claude-sonnet-4-6": claude("claude-sonnet-4-6", 3, 15, MILLION, K128),
-    "claude-haiku-4-5": claude("claude-haiku-4-5", 1, 5, 2e5, 64e3),
-    // --- OpenAI ----------------------------------------------------------
-    // No pricing shipped: OpenAI rates are not verified here. Override
-    // `pricing` on these entries to get non-zero cost accounting.
-    "gpt-5.1": {
-      provider: "openai",
-      id: "gpt-5.1",
-      capabilities: FULL_CAPABILITIES
-    },
-    "gpt-5-mini": {
-      provider: "openai",
-      id: "gpt-5-mini",
-      capabilities: FULL_CAPABILITIES
-    }
-  };
+async function ask(deps, title, choices, initial) {
+  const values = await deps.prompt.select({ title, choices, initial });
+  if (values === void 0)
+    return void 0;
+  return values[0];
 }
-
-// packages/ai/dist/sse.js
-async function* parseSse(stream, signal) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let eventName;
-  let dataLines = [];
-  const takePending = () => {
-    if (dataLines.length === 0) {
-      eventName = void 0;
-      return void 0;
-    }
-    const message = {
-      event: eventName,
-      data: dataLines.join("\n")
+function initialFor(backend, role, choices, current) {
+  const previous = current?.models[role];
+  if (previous !== void 0 && choices.some((choice) => choice.value === previous)) {
+    return previous;
+  }
+  return defaultModelsFor(backend)[role];
+}
+async function warnIfUnavailable(deps, backend) {
+  const check = deps.checkBackend;
+  if (check === void 0)
+    return;
+  let result;
+  try {
+    result = await check(backend);
+  } catch (error) {
+    result = {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error)
     };
-    eventName = void 0;
-    dataLines = [];
-    return message;
-  };
-  const consumeLine = (rawLine) => {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-    if (line === "")
-      return takePending();
-    if (line.startsWith(":"))
-      return void 0;
-    const colon = line.indexOf(":");
-    const field = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? "" : line.slice(colon + 1);
-    if (value.startsWith(" "))
-      value = value.slice(1);
-    if (field === "event")
-      eventName = value;
-    else if (field === "data")
-      dataLines.push(value);
+  }
+  if (result.ok)
+    return;
+  const detail = result.detail === void 0 ? "" : `: ${result.detail}`;
+  deps.write(`warning: ${backend} does not look ready${detail}`);
+  deps.write(BACKEND_FIX[backend]);
+  deps.write("continuing setup \u2014 you can fix this later and re-run `kapel config`.");
+}
+async function runConfigWizard(deps) {
+  const cancelled = () => {
+    deps.write("setup cancelled");
     return void 0;
   };
-  const onAbort = () => {
-    void reader.cancel().catch(() => void 0);
+  const backendValue = await ask(deps, BACKEND_TITLE, backendChoices(), deps.current?.backend ?? "claude-code");
+  if (backendValue === void 0 || !isBackend2(backendValue)) {
+    return cancelled();
+  }
+  const backend = backendValue;
+  await warnIfUnavailable(deps, backend);
+  const picked = {};
+  for (const role of ROLES) {
+    const choices = modelChoicesFor(backend, role);
+    const answer = await ask(deps, ROLE_TITLES[role], choices, initialFor(backend, role, choices, deps.current));
+    if (answer === void 0)
+      return cancelled();
+    picked[role] = answer;
+  }
+  const defaults = defaultModelsFor(backend);
+  const models = {
+    orchestrator: picked.orchestrator ?? defaults.orchestrator,
+    worker: picked.worker ?? defaults.worker,
+    cheap: picked.cheap ?? defaults.cheap
   };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    while (true) {
-      if (signal?.aborted)
-        return;
-      const { done, value } = await reader.read();
-      if (signal?.aborted)
-        return;
-      if (done)
-        break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline = buffer.indexOf("\n");
-      while (newline !== -1) {
-        const rawLine = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        const message = consumeLine(rawLine);
-        if (message !== void 0)
-          yield message;
-        newline = buffer.indexOf("\n");
-      }
-    }
-    buffer += decoder.decode();
-    if (buffer !== "") {
-      const message = consumeLine(buffer);
-      if (message !== void 0)
-        yield message;
-      buffer = "";
-    }
-    const trailing = takePending();
-    if (trailing !== void 0)
-      yield trailing;
-  } catch (error) {
-    if (signal?.aborted)
-      return;
-    throw error;
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    try {
-      await reader.cancel();
-    } catch {
-    }
-  }
-}
-
-// packages/ai/dist/providers/errors.js
-var ProviderError = class extends Error {
-  provider;
-  status;
-  body;
-  constructor(init) {
-    super(init.message);
-    this.name = "ProviderError";
-    this.provider = init.provider;
-    this.status = init.status;
-    this.body = init.body;
-  }
-};
-
-// packages/ai/dist/providers/anthropic.js
-var OAUTH_BETA = "oauth-2025-04-20";
-var DEFAULT_BASE_URL = "https://api.anthropic.com";
-var ANTHROPIC_VERSION = "2023-06-01";
-var DEFAULT_MAX_TOKENS = 4096;
-function isRecord2(value) {
-  return typeof value === "object" && value !== null;
-}
-function asNumber(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function parseToolInput(raw) {
-  const trimmed = raw.trim();
-  if (trimmed === "")
-    return {};
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return raw;
-  }
-}
-function toWireTool(tool) {
-  return {
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema
+  const config = {
+    version: KAPEL_CONFIG_VERSION,
+    backend,
+    models,
+    updatedAt: (deps.now ?? Date.now)()
   };
+  for (const line of describeConfig(config))
+    deps.write(line);
+  if (deps.save !== false) {
+    const filePath = await saveKapelConfig({ backend, models, updatedAt: config.updatedAt }, deps.env);
+    deps.write(`saved to ${filePath}`);
+  }
+  return config;
 }
-function toWireToolChoice(choice) {
-  switch (choice.type) {
-    case "auto":
-      return { type: "auto" };
-    case "any":
-      return { type: "any" };
-    case "tool":
-      return { type: "tool", name: choice.name };
-  }
+async function ensureKapelConfig(deps) {
+  const existing = await loadKapelConfig(deps.env);
+  if (existing !== void 0)
+    return existing;
+  if (!deps.interactive)
+    return void 0;
+  return await runConfigWizard(deps);
 }
-function mapMessages(messages) {
-  const systemParts = [];
-  const wire = [];
-  for (const message of messages) {
-    switch (message.role) {
-      case "system":
-        if (message.content !== "")
-          systemParts.push(message.content);
-        break;
-      case "user":
-        wire.push({ role: "user", content: message.content });
-        break;
-      case "tool": {
-        const block = {
-          type: "tool_result",
-          tool_use_id: message.toolCallId ?? "",
-          content: message.content
-        };
-        if (message.isError === true)
-          block.is_error = true;
-        wire.push({ role: "user", content: [block] });
-        break;
-      }
-      case "assistant": {
-        const calls = message.toolCalls ?? [];
-        if (calls.length === 0) {
-          wire.push({ role: "assistant", content: message.content });
-          break;
-        }
-        const blocks = [];
-        if (message.content !== "")
-          blocks.push({ type: "text", text: message.content });
-        for (const call of calls) {
-          blocks.push({
-            type: "tool_use",
-            id: call.id,
-            name: call.name,
-            input: call.input
-          });
-        }
-        wire.push({ role: "assistant", content: blocks });
-        break;
-      }
-    }
-  }
-  return {
-    system: systemParts.length === 0 ? void 0 : systemParts.join("\n\n"),
-    messages: wire
-  };
-}
-var AnthropicProvider = class {
-  id = "anthropic";
-  #credential;
-  #baseUrl;
-  constructor(options) {
-    const { apiKey, authToken } = options;
-    if (apiKey !== void 0 && authToken !== void 0) {
-      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`, not both.");
-    }
-    if (apiKey === void 0 && authToken === void 0) {
-      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`.");
-    }
-    this.#credential = apiKey !== void 0 ? { kind: "api-key", value: apiKey } : { kind: "auth-token", value: authToken };
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-  }
-  /**
-   * Base request headers plus credential headers: `x-api-key` for an API
-   * key, or `authorization: Bearer <token>` plus the OAuth beta flag for an
-   * auth token (never both `x-api-key` and `authorization` — the API
-   * rejects requests carrying both). The OAuth beta flag is comma-joined
-   * onto `anthropic-beta` rather than overwriting it, in case a future
-   * feature already populated that header for this request.
-   */
-  #headers() {
-    const headers = {
-      "content-type": "application/json",
-      "anthropic-version": ANTHROPIC_VERSION,
-      accept: "text/event-stream"
-    };
-    if (this.#credential.kind === "api-key") {
-      headers["x-api-key"] = this.#credential.value;
-      return headers;
-    }
-    headers.authorization = `Bearer ${this.#credential.value}`;
-    const existingBeta = headers["anthropic-beta"];
-    headers["anthropic-beta"] = existingBeta === void 0 || existingBeta === "" ? OAUTH_BETA : `${existingBeta},${OAUTH_BETA}`;
-    return headers;
-  }
-  supports(model) {
-    return model.provider === "anthropic";
-  }
-  #buildBody(request) {
-    const { system, messages } = mapMessages(request.messages);
-    const body = {
-      model: request.model.id,
-      max_tokens: request.maxOutputTokens ?? request.model.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
-      stream: true,
-      messages
-    };
-    if (system !== void 0)
-      body.system = system;
-    if (request.tools !== void 0 && request.tools.length > 0) {
-      body.tools = request.tools.map(toWireTool);
-    }
-    if (request.toolChoice !== void 0) {
-      body.tool_choice = toWireToolChoice(request.toolChoice);
-    }
-    if (request.temperature !== void 0)
-      body.temperature = request.temperature;
-    return body;
-  }
-  async *stream(request, signal) {
-    const response = await fetch(`${this.#baseUrl}/v1/messages`, {
-      method: "POST",
-      headers: this.#headers(),
-      body: JSON.stringify(this.#buildBody(request)),
-      signal: signal ?? null
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: `Anthropic request failed with status ${response.status}`,
-        body
-      });
-    }
-    if (response.body === null) {
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: "Anthropic response had no body"
-      });
-    }
-    const blocks = /* @__PURE__ */ new Map();
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cachedInputTokens = 0;
-    let finishReason = "end_turn";
-    const readUsage = (usage) => {
-      if (!isRecord2(usage))
-        return;
-      if (typeof usage.input_tokens === "number")
-        inputTokens = usage.input_tokens;
-      if (typeof usage.output_tokens === "number")
-        outputTokens = usage.output_tokens;
-      if (typeof usage.cache_read_input_tokens === "number") {
-        cachedInputTokens = usage.cache_read_input_tokens;
-      }
-    };
-    const finalEvents = () => [
-      {
-        type: "usage",
-        inputTokens,
-        outputTokens,
-        ...cachedInputTokens > 0 ? { cachedInputTokens } : {}
-      },
-      { type: "done", finishReason }
-    ];
-    for await (const message of parseSse(response.body, signal)) {
-      if (signal?.aborted)
-        return;
-      let payload;
-      try {
-        payload = JSON.parse(message.data);
-      } catch {
-        continue;
-      }
-      if (!isRecord2(payload))
-        continue;
-      const type = typeof payload.type === "string" ? payload.type : message.event ?? "";
-      if (type === "error") {
-        const error = isRecord2(payload.error) ? payload.error : void 0;
-        const detail = error !== void 0 && typeof error.message === "string" ? error.message : "Anthropic stream error";
-        throw new ProviderError({
-          provider: this.id,
-          status: response.status,
-          message: detail,
-          body: message.data
-        });
-      }
-      if (type === "message_start") {
-        const wrapped = isRecord2(payload.message) ? payload.message : void 0;
-        if (wrapped !== void 0)
-          readUsage(wrapped.usage);
-        continue;
-      }
-      if (type === "content_block_start") {
-        const index2 = asNumber(payload.index);
-        const block = isRecord2(payload.content_block) ? payload.content_block : void 0;
-        if (block !== void 0 && block.type === "tool_use") {
-          blocks.set(index2, {
-            id: typeof block.id === "string" ? block.id : "",
-            name: typeof block.name === "string" ? block.name : "",
-            json: ""
-          });
-        }
-        continue;
-      }
-      if (type === "content_block_delta") {
-        const index2 = asNumber(payload.index);
-        const delta = isRecord2(payload.delta) ? payload.delta : void 0;
-        if (delta === void 0)
-          continue;
-        if (delta.type === "text_delta" && typeof delta.text === "string") {
-          if (delta.text !== "")
-            yield { type: "text.delta", text: delta.text };
-        } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-          const pendingBlock = blocks.get(index2);
-          if (pendingBlock !== void 0)
-            pendingBlock.json += delta.partial_json;
-        }
-        continue;
-      }
-      if (type === "content_block_stop") {
-        const index2 = asNumber(payload.index);
-        const pendingBlock = blocks.get(index2);
-        if (pendingBlock !== void 0) {
-          blocks.delete(index2);
-          yield {
-            type: "tool.call",
-            id: pendingBlock.id,
-            name: pendingBlock.name,
-            input: parseToolInput(pendingBlock.json)
-          };
-        }
-        continue;
-      }
-      if (type === "message_delta") {
-        const delta = isRecord2(payload.delta) ? payload.delta : void 0;
-        if (delta !== void 0 && typeof delta.stop_reason === "string") {
-          finishReason = delta.stop_reason;
-        }
-        readUsage(payload.usage);
-        continue;
-      }
-      if (type === "message_stop") {
-        for (const event2 of finalEvents())
-          yield event2;
-        return;
-      }
-    }
-    if (signal?.aborted)
-      return;
-    for (const event2 of finalEvents())
-      yield event2;
-  }
-};
-
-// packages/ai/dist/providers/openai.js
-var DEFAULT_BASE_URL2 = "https://api.openai.com/v1";
-function isRecord3(value) {
-  return typeof value === "object" && value !== null;
-}
-function asNumber2(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function toWireMessage(message) {
-  switch (message.role) {
-    case "tool":
-      return {
-        role: "tool",
-        content: message.content,
-        tool_call_id: message.toolCallId ?? ""
-      };
-    case "assistant": {
-      const calls = message.toolCalls ?? [];
-      if (calls.length === 0)
-        return { role: "assistant", content: message.content };
-      return {
-        role: "assistant",
-        content: message.content === "" ? null : message.content,
-        tool_calls: calls.map((call) => ({
-          id: call.id,
-          type: "function",
-          function: { name: call.name, arguments: JSON.stringify(call.input) }
-        }))
-      };
-    }
-    default:
-      return { role: message.role, content: message.content };
-  }
-}
-function toWireTool2(tool) {
-  return {
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema
-    }
-  };
-}
-function toWireToolChoice2(choice) {
-  switch (choice.type) {
-    case "auto":
-      return "auto";
-    case "any":
-      return "required";
-    case "tool":
-      return { type: "function", function: { name: choice.name } };
-  }
-}
-function parseArguments(raw) {
-  const trimmed = raw.trim();
-  if (trimmed === "")
-    return {};
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return raw;
-  }
-}
-var OpenAIProvider = class {
-  id = "openai";
-  #apiKey;
-  #baseUrl;
-  constructor(options) {
-    this.#apiKey = options.apiKey;
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL2).replace(/\/+$/, "");
-  }
-  supports(model) {
-    return model.provider === "openai" || model.provider === "openai-compatible";
-  }
-  #buildBody(request) {
-    const body = {
-      model: request.model.id,
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: request.messages.map(toWireMessage)
-    };
-    if (request.tools !== void 0 && request.tools.length > 0) {
-      body.tools = request.tools.map(toWireTool2);
-    }
-    if (request.toolChoice !== void 0) {
-      body.tool_choice = toWireToolChoice2(request.toolChoice);
-    }
-    if (request.temperature !== void 0)
-      body.temperature = request.temperature;
-    if (request.maxOutputTokens !== void 0) {
-      body.max_completion_tokens = request.maxOutputTokens;
-    }
-    return body;
-  }
-  async *stream(request, signal) {
-    const response = await fetch(`${this.#baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.#apiKey}`,
-        accept: "text/event-stream"
-      },
-      body: JSON.stringify(this.#buildBody(request)),
-      signal: signal ?? null
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: `OpenAI request failed with status ${response.status}`,
-        body
-      });
-    }
-    if (response.body === null) {
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: "OpenAI response had no body"
-      });
-    }
-    const pending = /* @__PURE__ */ new Map();
-    let finishReason = "stop";
-    let emittedToolCalls = false;
-    const flushToolCalls = () => {
-      if (emittedToolCalls)
-        return [];
-      emittedToolCalls = true;
-      const indexes = [...pending.keys()].sort((a, b) => a - b);
-      const events2 = [];
-      for (const index2 of indexes) {
-        const call = pending.get(index2);
-        if (call === void 0)
-          continue;
-        events2.push({
-          type: "tool.call",
-          id: call.id,
-          name: call.name,
-          input: parseArguments(call.args)
-        });
-      }
-      return events2;
-    };
-    for await (const message of parseSse(response.body, signal)) {
-      if (signal?.aborted)
-        return;
-      if (message.data === "[DONE]")
-        break;
-      let chunk;
-      try {
-        chunk = JSON.parse(message.data);
-      } catch {
-        continue;
-      }
-      if (!isRecord3(chunk))
-        continue;
-      const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-      const choice = choices[0];
-      if (isRecord3(choice)) {
-        const delta = isRecord3(choice.delta) ? choice.delta : void 0;
-        if (delta !== void 0 && typeof delta.content === "string" && delta.content !== "") {
-          yield { type: "text.delta", text: delta.content };
-        }
-        if (delta !== void 0 && Array.isArray(delta.tool_calls)) {
-          for (const entry of delta.tool_calls) {
-            if (!isRecord3(entry))
-              continue;
-            const index2 = typeof entry.index === "number" ? entry.index : 0;
-            let call = pending.get(index2);
-            if (call === void 0) {
-              call = { id: "", name: "", args: "" };
-              pending.set(index2, call);
-            }
-            if (typeof entry.id === "string")
-              call.id = entry.id;
-            const fn = isRecord3(entry.function) ? entry.function : void 0;
-            if (fn !== void 0) {
-              if (typeof fn.name === "string")
-                call.name = fn.name;
-              if (typeof fn.arguments === "string")
-                call.args += fn.arguments;
-            }
-          }
-        }
-        if (typeof choice.finish_reason === "string") {
-          finishReason = choice.finish_reason;
-          for (const event2 of flushToolCalls())
-            yield event2;
-        }
-      }
-      if (isRecord3(chunk.usage)) {
-        const usage = chunk.usage;
-        const details = isRecord3(usage.prompt_tokens_details) ? usage.prompt_tokens_details : void 0;
-        const cached = details === void 0 ? 0 : asNumber2(details.cached_tokens);
-        yield {
-          type: "usage",
-          inputTokens: asNumber2(usage.prompt_tokens),
-          outputTokens: asNumber2(usage.completion_tokens),
-          ...cached > 0 ? { cachedInputTokens: cached } : {}
-        };
-      }
-    }
-    if (signal?.aborted)
-      return;
-    for (const event2 of flushToolCalls())
-      yield event2;
-    yield { type: "done", finishReason };
-  }
-};
-
-// packages/ai/dist/registry.js
-var StaticModelRegistry = class {
-  #models;
-  #providers;
-  constructor(models, providers) {
-    this.#models = models;
-    this.#providers = providers;
-  }
-  get(alias) {
-    const model = this.#models[alias];
-    if (model === void 0) {
-      const known = Object.keys(this.#models).sort().join(", ");
-      throw new Error(`Unknown model alias "${alias}". Known aliases: ${known === "" ? "(none registered)" : known}`);
-    }
-    return model;
-  }
-  providerFor(model) {
-    const provider = this.#providers.find((candidate) => candidate.supports(model));
-    if (provider === void 0) {
-      const known = this.#providers.map((candidate) => candidate.id).join(", ");
-      throw new Error(`No provider supports model "${model.provider}/${model.id}". Registered providers: ${known === "" ? "(none registered)" : known}`);
-    }
-    return provider;
-  }
-  aliases() {
-    return Object.keys(this.#models);
-  }
-};
-
-// packages/ai/dist/usage.js
-var PER_MILLION = 1e6;
-function newBucket() {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedInputTokens: 0,
-    hasCached: false,
-    costUsd: 0
-  };
-}
-function usageCostUsd(pricing, usage) {
-  if (pricing === void 0)
-    return 0;
-  const cached = usage.cachedInputTokens ?? 0;
-  const cachedRate = pricing.cachedInputPerMTok ?? pricing.inputPerMTok;
-  const total = usage.inputTokens * pricing.inputPerMTok + usage.outputTokens * pricing.outputPerMTok + cached * cachedRate;
-  return total / PER_MILLION;
-}
-function toUsage(bucket) {
-  return {
-    inputTokens: bucket.inputTokens,
-    outputTokens: bucket.outputTokens,
-    ...bucket.hasCached ? { cachedInputTokens: bucket.cachedInputTokens } : {}
-  };
-}
-var UsageTracker = class {
-  #byModel = /* @__PURE__ */ new Map();
-  #total = newBucket();
-  record(model, usage) {
-    const key = `${model.provider}/${model.id}`;
-    let bucket = this.#byModel.get(key);
-    if (bucket === void 0) {
-      bucket = newBucket();
-      this.#byModel.set(key, bucket);
-    }
-    const cached = usage.cachedInputTokens ?? 0;
-    const cost = usageCostUsd(model.pricing, usage);
-    for (const target of [bucket, this.#total]) {
-      target.inputTokens += usage.inputTokens;
-      target.outputTokens += usage.outputTokens;
-      target.cachedInputTokens += cached;
-      target.hasCached = target.hasCached || usage.cachedInputTokens !== void 0;
-      target.costUsd += cost;
-    }
-  }
-  totals() {
-    return { usage: toUsage(this.#total), costUsd: this.#total.costUsd };
-  }
-  byModel() {
-    const out = /* @__PURE__ */ new Map();
-    for (const [key, bucket] of this.#byModel) {
-      out.set(key, { usage: toUsage(bucket), costUsd: bucket.costUsd });
-    }
-    return out;
-  }
-};
 
 // apps/cli/dist/auth.js
 import { execFile as execFileCb } from "node:child_process";
@@ -6034,9 +6960,9 @@ async function resolveAnthropicCredential(env, opts) {
   }
   if (opts?.allowProfile === false)
     return void 0;
-  const execFile8 = opts?.execFile ?? defaultExecFile;
+  const execFile9 = opts?.execFile ?? defaultExecFile;
   try {
-    const { stdout } = await execFile8("ant", ["auth", "print-credentials", "--access-token"], { timeout: OAUTH_TIMEOUT_MS, env });
+    const { stdout } = await execFile9("ant", ["auth", "print-credentials", "--access-token"], { timeout: OAUTH_TIMEOUT_MS, env });
     const token = stdout.trim();
     if (token === "" || token.includes("\n"))
       return void 0;
@@ -6048,14 +6974,6 @@ async function resolveAnthropicCredential(env, opts) {
 
 // apps/cli/dist/models.js
 var DEFAULT_MODEL_ALIAS = "claude-sonnet-5";
-function resolveModelAlias(env, flag) {
-  if (flag !== void 0 && flag !== "")
-    return flag;
-  const fromEnv = env.AGENT_MODEL;
-  if (fromEnv !== void 0 && fromEnv !== "")
-    return fromEnv;
-  return DEFAULT_MODEL_ALIAS;
-}
 function envVarForProvider(provider) {
   if (provider === "anthropic")
     return "ANTHROPIC_API_KEY";
@@ -6136,6 +7054,373 @@ async function listModels(env, opts) {
   });
 }
 
+// apps/cli/dist/select-prompt.js
+import * as readline from "node:readline";
+var NOOP = { type: "noop" };
+var CANCEL = { type: "cancel" };
+var DEFAULT_SELECT_FOOTER = "\u2191\u2193 move \xB7 space select \xB7 enter confirm \xB7 esc cancel";
+function asArray(initial) {
+  if (initial === void 0)
+    return [];
+  return typeof initial === "string" ? [initial] : initial.slice();
+}
+function initialSelectState(choices, options) {
+  const multi = options?.multi ?? false;
+  const known = new Set(choices.map((choice) => choice.value));
+  const wanted = asArray(options?.initial).filter((value) => known.has(value));
+  const selected = multi ? wanted : wanted.slice(0, 1);
+  const first = selected[0];
+  const cursorFrom = first === void 0 ? -1 : choices.findIndex((choice) => choice.value === first);
+  return {
+    choices,
+    cursor: cursorFrom === -1 ? 0 : cursorFrom,
+    selected,
+    multi
+  };
+}
+function wrap(index2, length) {
+  return (index2 % length + length) % length;
+}
+function moveTo(state, cursor) {
+  if (cursor === state.cursor)
+    return { type: "state", state };
+  return { type: "state", state: { ...state, cursor } };
+}
+function toggle(state) {
+  const current = state.choices[state.cursor];
+  if (current === void 0)
+    return NOOP;
+  if (!state.multi) {
+    if (state.selected.length === 1 && state.selected[0] === current.value) {
+      return { type: "state", state };
+    }
+    return { type: "state", state: { ...state, selected: [current.value] } };
+  }
+  const selected = state.selected.includes(current.value) ? state.selected.filter((value) => value !== current.value) : [...state.selected, current.value];
+  return { type: "state", state: { ...state, selected } };
+}
+function submit(state) {
+  if (state.multi || state.selected.length > 0) {
+    return { type: "submit", values: state.selected };
+  }
+  const current = state.choices[state.cursor];
+  return {
+    type: "submit",
+    values: current === void 0 ? [] : [current.value]
+  };
+}
+function digitOf(key) {
+  const raw = key.name ?? key.sequence;
+  if (raw === void 0 || !/^[1-9]$/.test(raw))
+    return void 0;
+  return Number(raw);
+}
+function reduceSelectKey(state, key) {
+  const name = key.name;
+  const length = state.choices.length;
+  if (key.ctrl === true) {
+    return name === "c" || name === "d" ? CANCEL : NOOP;
+  }
+  if (name === "escape")
+    return CANCEL;
+  if (name === "return" || name === "enter")
+    return submit(state);
+  if (name === "space" || key.sequence === " ")
+    return toggle(state);
+  if (length === 0)
+    return NOOP;
+  if (name === "up" || name === "k") {
+    return moveTo(state, wrap(state.cursor - 1, length));
+  }
+  if (name === "down" || name === "j") {
+    return moveTo(state, wrap(state.cursor + 1, length));
+  }
+  if (name === "home")
+    return moveTo(state, 0);
+  if (name === "end")
+    return moveTo(state, length - 1);
+  const digit = digitOf(key);
+  if (digit !== void 0 && digit <= length)
+    return moveTo(state, digit - 1);
+  return NOOP;
+}
+function ansi(code, text2, enabled) {
+  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
+}
+function glyph(state, selected) {
+  if (state.multi)
+    return selected ? "\u2611" : "\u2610";
+  return selected ? "\u25C9" : "\u25EF";
+}
+function renderSelect(state, options) {
+  const color = options.color;
+  const lines = [ansi("1", options.title, color)];
+  state.choices.forEach((choice, index2) => {
+    const marker = index2 === state.cursor ? "\u276F " : "  ";
+    const box = glyph(state, state.selected.includes(choice.value));
+    const label = index2 === state.cursor ? ansi("1", choice.label, color) : choice.label;
+    const hint = choice.hint === void 0 ? "" : ` ${ansi("2", `(${choice.hint})`, color)}`;
+    lines.push(`${marker}${box} ${label}${hint}`);
+  });
+  lines.push(ansi("2", options.footer ?? DEFAULT_SELECT_FOOTER, color));
+  return lines;
+}
+function labelFor(choices, value) {
+  return choices.find((choice) => choice.value === value)?.label ?? value;
+}
+function summarizeSelection(choices, values, options) {
+  const answer = values === void 0 ? "cancelled" : values.length === 0 ? "(none)" : values.map((value) => labelFor(choices, value)).join(", ");
+  return `${ansi("1", options.title, options.color)} ${ansi("2", "\u203A", options.color)} ${answer}`;
+}
+function runSelectPrompt(io, options) {
+  const stateOptions = {
+    ...options.initial === void 0 ? {} : { initial: options.initial },
+    ...options.multi === void 0 ? {} : { multi: options.multi }
+  };
+  let state = initialSelectState(options.choices, stateOptions);
+  if (io.input.isTTY !== true) {
+    if (state.selected.length > 0)
+      return Promise.resolve(state.selected);
+    const first = options.choices[0];
+    return Promise.resolve(first === void 0 ? [] : [first.value]);
+  }
+  const color = io.output.isTTY === true;
+  const renderOptions = {
+    title: options.title,
+    color,
+    ...options.footer === void 0 ? {} : { footer: options.footer }
+  };
+  return new Promise((resolve5) => {
+    let drawn = 0;
+    const erase = () => {
+      if (drawn > 0)
+        io.output.write(`\x1B[${drawn}A\r\x1B[0J`);
+      drawn = 0;
+    };
+    const draw = () => {
+      const lines = renderSelect(state, renderOptions);
+      erase();
+      io.output.write(`${lines.join("\n")}
+`);
+      drawn = lines.length;
+    };
+    const onKeypress = (_chunk, key) => {
+      const action = reduceSelectKey(state, key ?? {});
+      if (action.type === "noop")
+        return;
+      if (action.type === "state") {
+        if (action.state === state)
+          return;
+        state = action.state;
+        draw();
+        return;
+      }
+      finish(action.type === "submit" ? action.values : void 0);
+    };
+    let settled = false;
+    const finish = (values) => {
+      if (settled)
+        return;
+      settled = true;
+      io.input.removeListener("keypress", onKeypress);
+      io.input.setRawMode?.(false);
+      erase();
+      io.output.write(`${summarizeSelection(options.choices, values, { title: options.title, color })}
+`);
+      resolve5(values);
+    };
+    readline.emitKeypressEvents(io.input);
+    io.input.setRawMode?.(true);
+    io.input.resume();
+    io.input.on("keypress", onKeypress);
+    draw();
+  });
+}
+
+// apps/cli/dist/config-runtime.js
+function present(value) {
+  return value !== void 0 && value !== "";
+}
+function resolveBackendSetting(flag, env, config) {
+  if (present(flag)) {
+    return { value: validateBackendName(flag), source: "flag" };
+  }
+  const fromEnv = env.AGENT_BACKEND;
+  if (present(fromEnv)) {
+    return { value: validateBackendName(fromEnv), source: "env" };
+  }
+  if (config !== void 0) {
+    return { value: config.backend, source: "config" };
+  }
+  return { value: DEFAULT_BACKEND, source: "default" };
+}
+function resolveRoleModel(role, flag, env, config) {
+  if (present(flag))
+    return { value: flag, source: "flag" };
+  const fromEnv = env.AGENT_MODEL;
+  if (present(fromEnv))
+    return { value: fromEnv, source: "env" };
+  if (config !== void 0) {
+    return { value: config.models[role], source: "config" };
+  }
+  return { value: DEFAULT_MODEL_ALIAS, source: "default" };
+}
+function resolveOrchestratorModel(flag, env, config) {
+  return resolveRoleModel("orchestrator", flag, env, config);
+}
+function delegatedModelOverride(resolved) {
+  if (resolved.source === "default")
+    return void 0;
+  if (resolved.value === "default")
+    return void 0;
+  return resolved.value;
+}
+var FIRST_RUN_INTRO = [
+  "kapel is not configured yet \u2014 a few questions, once (skip with --no-setup).",
+  ""
+];
+function ttyWizardPrompt(io) {
+  const target = io ?? {
+    input: process.stdin,
+    output: process.stdout
+  };
+  return { select: (options) => runSelectPrompt(target, options) };
+}
+async function checkBackendAvailability(backend, env = process.env) {
+  if (backend === "claude-code") {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    return {
+      ok: availability.installed && availability.loggedIn,
+      ...availability.detail === void 0 ? {} : { detail: availability.detail }
+    };
+  }
+  if (backend === "codex") {
+    const availability = await CodexBackend.checkAvailability();
+    return {
+      ok: availability.installed && availability.loggedIn,
+      ...availability.detail === void 0 ? {} : { detail: availability.detail }
+    };
+  }
+  const configured = present(env.ANTHROPIC_API_KEY) || present(env.ANTHROPIC_AUTH_TOKEN) || present(env.OPENAI_API_KEY);
+  return configured ? { ok: true } : { ok: false, detail: "no provider credential is set in this shell" };
+}
+async function ensureFirstRunConfig(options) {
+  const interactive = options.interactive && options.noSetup !== true;
+  const ensure = options.ensure ?? ensureKapelConfig;
+  const write2 = options.write ?? ((line) => {
+    console.log(line);
+  });
+  const prompt = ttyWizardPrompt(options.io);
+  let announced = false;
+  const announcingPrompt = {
+    select: async (selectOptions) => {
+      if (!announced) {
+        announced = true;
+        for (const line of FIRST_RUN_INTRO)
+          write2(line);
+      }
+      return await prompt.select(selectOptions);
+    }
+  };
+  return await ensure({
+    interactive,
+    prompt: announcingPrompt,
+    write: write2,
+    checkBackend: (backend) => checkBackendAvailability(backend, options.env ?? process.env),
+    ...options.env === void 0 ? {} : { env: options.env }
+  });
+}
+
+// apps/cli/dist/config-cmd.js
+var NOT_CONFIGURED = "not configured yet \u2014 run `kapel config`";
+async function runConfigCommand(options, deps) {
+  const env = deps.env;
+  const filePath = kapelConfigPath(env);
+  if (options.path === true) {
+    deps.log(filePath);
+    return 0;
+  }
+  const load = deps.load ?? loadKapelConfig;
+  const current = await load(env);
+  if (options.show === true) {
+    if (current === void 0) {
+      deps.log(NOT_CONFIGURED);
+      deps.log(`path: ${filePath}`);
+      return 0;
+    }
+    for (const line of describeConfig(current))
+      deps.log(line);
+    deps.log(`path: ${filePath}`);
+    return 0;
+  }
+  if (!deps.interactive) {
+    deps.error("`kapel config` needs an interactive terminal. Use `kapel config --show` to print the current configuration.");
+    return 1;
+  }
+  const wizard = deps.wizard ?? runConfigWizard;
+  const wizardDeps = {
+    prompt: ttyWizardPrompt(),
+    write: deps.log,
+    checkBackend: (backend) => checkBackendAvailability(backend, env),
+    ...current === void 0 ? {} : { current },
+    ...env === void 0 ? {} : { env }
+  };
+  await wizard(wizardDeps);
+  return 0;
+}
+
+// apps/cli/dist/env.js
+import { readFile as readFile8 } from "node:fs/promises";
+import path2 from "node:path";
+var LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
+function unquote(raw) {
+  const value = raw.trim();
+  if (value.length < 2)
+    return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if (first === '"' && last === '"' || first === "'" && last === "'") {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+function parseDotEnv(content) {
+  const result = {};
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#"))
+      continue;
+    const match = LINE_RE.exec(line);
+    if (match === null)
+      continue;
+    const [, key = "", rawValue = ""] = match;
+    if (key === "")
+      continue;
+    result[key] = unquote(rawValue);
+  }
+  return result;
+}
+function applyDotEnv(parsed, target = process.env) {
+  for (const [key, value] of Object.entries(parsed)) {
+    if (target[key] === void 0)
+      target[key] = value;
+  }
+}
+async function loadDotEnvFile(workspaceRoot, target = process.env) {
+  const filePath = path2.join(workspaceRoot, ".env");
+  let content;
+  try {
+    content = await readFile8(filePath, "utf8");
+  } catch {
+    return;
+  }
+  applyDotEnv(parseDotEnv(content), target);
+}
+
+// apps/cli/dist/plan.js
+import { readFile as readFile9 } from "node:fs/promises";
+import path4 from "node:path";
+
 // apps/cli/dist/project-models.js
 var ASSUMED_CAPABILITIES = {
   tools: true,
@@ -6176,7 +7461,7 @@ async function createProjectModelResolver(project, env) {
 }
 
 // apps/cli/dist/run.js
-import path2 from "node:path";
+import path3 from "node:path";
 
 // apps/cli/dist/permissions.js
 var DEFAULT_PERMISSIONS = {
@@ -6190,7 +7475,7 @@ var DEFAULT_PERMISSIONS = {
 };
 
 // apps/cli/dist/prompter.js
-import * as readline from "node:readline";
+import * as readline2 from "node:readline";
 var PREVIEW_MAX = 120;
 function createPromptState() {
   return { active: false };
@@ -6228,7 +7513,7 @@ function createPrompter(options) {
   };
 }
 function askOnce(request, input, output) {
-  const rl = readline.createInterface({ input, output, terminal: true });
+  const rl = readline2.createInterface({ input, output, terminal: true });
   const preview = previewInput(request.input);
   return new Promise((resolve5) => {
     let settled = false;
@@ -6248,13 +7533,14 @@ function askOnce(request, input, output) {
 }
 
 // apps/cli/dist/render.js
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null;
 }
-function isCodexResult(result) {
+function isDelegatedResult(result) {
   return "events" in result;
 }
 var CODEX_PREFIX = "codex.";
+var CLAUDE_CODE_PREFIX = "claude-code.";
 function firstNonEmptyString(...values) {
   for (const value of values) {
     if (typeof value === "string" && value.trim() !== "")
@@ -6263,9 +7549,9 @@ function firstNonEmptyString(...values) {
   return void 0;
 }
 function codexItemFrom(data) {
-  if (isRecord4(data.item))
+  if (isRecord5(data.item))
     return data.item;
-  if (isRecord4(data.msg) && isRecord4(data.msg.item))
+  if (isRecord5(data.msg) && isRecord5(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -6281,7 +7567,7 @@ function codexMessageText(item) {
     for (const part of content) {
       if (typeof part === "string")
         parts.push(part);
-      else if (isRecord4(part) && typeof part.text === "string") {
+      else if (isRecord5(part) && typeof part.text === "string") {
         parts.push(part.text);
       }
     }
@@ -6313,7 +7599,7 @@ function codexFileChangeText(item) {
     for (const change of changes) {
       if (typeof change === "string")
         paths.push(change);
-      else if (isRecord4(change)) {
+      else if (isRecord5(change)) {
         const p = firstNonEmptyString(change.path, change.file);
         if (p !== void 0)
           paths.push(p);
@@ -6339,7 +7625,7 @@ function firstLine(text2) {
   const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
   return line === void 0 ? "(no summary)" : truncate3(line, 120);
 }
-function ansi(code, text2, enabled) {
+function ansi2(code, text2, enabled) {
   return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
 }
 var EXIT_LABEL = {
@@ -6350,6 +7636,8 @@ var EXIT_LABEL = {
 var TextRenderer = class {
   #output;
   #color;
+  /** Text deltas of the Claude Code block currently streaming; see `#emitClaudeCode`. */
+  #claudeText = "";
   constructor(output = process.stdout) {
     this.#output = output;
     this.#color = "isTTY" in output && output.isTTY === true;
@@ -6359,15 +7647,19 @@ var TextRenderer = class {
 `);
   }
   #dim(text2) {
-    return ansi("2", text2, this.#color);
+    return ansi2("2", text2, this.#color);
   }
   #bold(text2) {
-    return ansi("1", text2, this.#color);
+    return ansi2("1", text2, this.#color);
   }
   emit(event2) {
-    const data = isRecord4(event2.data) ? event2.data : {};
+    const data = isRecord5(event2.data) ? event2.data : {};
     if (event2.type.startsWith(CODEX_PREFIX)) {
       this.#emitCodex(data);
+      return;
+    }
+    if (event2.type.startsWith(CLAUDE_CODE_PREFIX)) {
+      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data);
       return;
     }
     switch (event2.type) {
@@ -6423,7 +7715,7 @@ var TextRenderer = class {
         break;
       }
       case "task.completed": {
-        const result = isRecord4(data.result) ? data.result : {};
+        const result = isRecord5(data.result) ? data.result : {};
         const ok = result.status === "success";
         const retrying = data.final === false;
         const suffix = retrying ? this.#dim(" (retrying)") : "";
@@ -6558,11 +7850,51 @@ var TextRenderer = class {
         break;
     }
   }
+  /**
+   * Renders a normalized `claude-code.*` event.
+   *
+   * The payload is a raw Claude API streaming line, so the two things worth
+   * showing are pulled out of it by hand: the assistant's own text, buffered
+   * per content block rather than written a delta at a time (this renderer is
+   * line-oriented — a partial word is not a line), and the name of each tool
+   * as it starts, which is what makes a long turn legible. Everything else —
+   * `message_start`, usage rollups, the synthetic `completed` marker, and any
+   * event type this wrapper does not model yet — stays quiet, exactly as the
+   * native renderer does for unknown types.
+   */
+  #emitClaudeCode(kind, data) {
+    const event2 = isRecord5(data.event) ? data.event : data;
+    switch (kind) {
+      case "tool_use": {
+        const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
+        this.#write(`${this.#dim("\u2192")} claude: ${name}`);
+        break;
+      }
+      case "content_block_delta": {
+        const delta = isRecord5(event2.delta) ? event2.delta : void 0;
+        if (delta?.type !== "text_delta")
+          break;
+        if (typeof delta.text === "string")
+          this.#claudeText += delta.text;
+        break;
+      }
+      case "content_block_stop":
+      case "message_stop": {
+        const text2 = this.#claudeText.trim();
+        this.#claudeText = "";
+        if (text2 !== "")
+          this.#write(text2);
+        break;
+      }
+      default:
+        break;
+    }
+  }
   result(result, usage) {
     this.#write("");
     this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
     this.#write(result.summary);
-    if (isCodexResult(result)) {
+    if (isDelegatedResult(result)) {
       if (result.exitCode !== null && result.exitCode !== 0) {
         this.#write(this.#dim(`exit code: ${result.exitCode}`));
       }
@@ -6625,7 +7957,7 @@ function defaultSystemPrompt(workspaceRoot) {
     "- Finish by giving a short summary of what changed and why."
   ].join("\n");
 }
-function errorMessage6(error) {
+function errorMessage7(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function resolveModelAndProvider(env, alias) {
@@ -6634,7 +7966,7 @@ async function resolveModelAndProvider(env, alias) {
   try {
     model = registry.get(alias);
   } catch (error) {
-    return { error: errorMessage6(error) };
+    return { error: errorMessage7(error) };
   }
   try {
     const provider = registry.providerFor(model);
@@ -6647,9 +7979,9 @@ async function resolveModelAndProvider(env, alias) {
   }
 }
 async function runObjective(objective, options) {
-  const workspacePath = path2.resolve(options.cwd);
+  const workspacePath = path3.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
-  const alias = resolveModelAlias(process.env, options.model);
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
   const resolved = await resolveModelAndProvider(process.env, alias);
   if ("error" in resolved) {
     console.error(resolved.error);
@@ -6728,12 +8060,12 @@ function fail(output, json, message, extra = {}) {
     output.error(message);
   return { exitCode: 1 };
 }
-function errorMessage7(error) {
+function errorMessage8(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function readOptionalFile(filePath) {
   try {
-    return await readFile8(filePath, "utf8");
+    return await readFile9(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -6761,16 +8093,16 @@ async function resolvePlannerModel(project, policy, options, output) {
       const resolved = resolve5(orchestrator.modelAlias);
       return { model: resolved.model, provider: resolved.provider };
     } catch (error) {
-      output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage7(error)}`);
+      output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage8(error)}`);
     }
   }
-  const alias = resolveModelAlias(process.env, options.model);
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
   return resolveModelAndProvider(process.env, alias);
 }
 async function preparePlan(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const { json } = options;
-  const workspacePath = path3.resolve(options.cwd);
+  const workspacePath = path4.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   let project;
   try {
@@ -6791,7 +8123,7 @@ async function preparePlan(objective, options, deps = {}) {
   if (markdown === void 0 || markdown.trim() === "") {
     return fail(output, json, "No orchestration policy found \u2014 .agent/orchestration.md is missing or empty");
   }
-  const lockPath = path3.join(project.root, LOCK_FILE_NAME);
+  const lockPath = path4.join(project.root, LOCK_FILE_NAME);
   const status = checkLock(markdown, await readOptionalFile(lockPath));
   if (!status.fresh) {
     if (status.reason === "missing") {
@@ -6912,7 +8244,7 @@ async function runPlan(objective, options, deps = {}) {
 
 // apps/cli/dist/sessions.js
 import { existsSync } from "node:fs";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // packages/session/dist/schema.js
 import { sql } from "drizzle-orm";
@@ -7438,10 +8770,10 @@ function storeSink(store) {
   };
 }
 function sessionDbPathFor(workspacePath) {
-  return defaultSessionDbPath(path4.join(path4.resolve(workspacePath), ".agent"));
+  return defaultSessionDbPath(path5.join(path5.resolve(workspacePath), ".agent"));
 }
 async function openRunStore(workspacePath) {
-  const agentDir = await findAgentDir(path4.resolve(workspacePath));
+  const agentDir = await findAgentDir(path5.resolve(workspacePath));
   if (agentDir === void 0)
     return void 0;
   try {
@@ -7489,7 +8821,7 @@ function isoTime(epochMs) {
 }
 
 // apps/cli/dist/explain-cmd.js
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null;
 }
 function str(value) {
@@ -7536,7 +8868,7 @@ function routeSentence(route) {
   return route.fallback === "suggestedAgent" ? `routed to ${route.agent} \u2014 no routing rule matched, so the plan's suggestedAgent was used` : `routed to ${route.agent} \u2014 no routing rule matched and the task suggested no agent, so it fell back to the policy's orchestrator`;
 }
 function digestEvent(event2) {
-  const data = isRecord5(event2.data) ? event2.data : {};
+  const data = isRecord6(event2.data) ? event2.data : {};
   switch (event2.type) {
     case "task.held": {
       const blocker = str(data.conflictsWith);
@@ -7567,7 +8899,7 @@ function digestEvent(event2) {
       return files.length === 0 ? `not merged \u2014 ${str(data.reason) ?? "unknown reason"}` : `not merged \u2014 conflicts in ${files.join(", ")}`;
     }
     case "task.completed": {
-      const result = isRecord5(data.result) ? data.result : {};
+      const result = isRecord6(data.result) ? data.result : {};
       const status = str(result.status) ?? "?";
       const retrying = data.final === false ? " (retrying)" : "";
       return `completed \u2014 ${status}: ${firstLine2(result.summary)}${retrying}`;
@@ -7661,11 +8993,56 @@ async function runExplainCommand(taskId, options, deps = {}) {
 }
 
 // apps/cli/dist/init.js
-import { cp, rm as rm2, stat as stat4 } from "node:fs/promises";
-import path5 from "node:path";
+import { cp, readFile as readFile10, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+import path6 from "node:path";
 import { fileURLToPath } from "node:url";
 var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
 var MAX_WALK_LEVELS = 6;
+var PROJECT_ROLE_SOURCES = [
+  ["lead", "orchestrator"],
+  ["worker", "worker"],
+  ["cheap", "cheap"],
+  // The reviewer reads someone else's work and judges it, which is the
+  // orchestrator's kind of job rather than a worker's — so it gets the
+  // orchestrator's model rather than a fourth answer nobody was asked for.
+  ["reviewer", "orchestrator"]
+];
+var ANTHROPIC_MODEL = /^(claude-|opus|sonnet|haiku)/;
+function providerForModel(model, backend) {
+  if (ANTHROPIC_MODEL.test(model))
+    return "anthropic";
+  if (model === "default") {
+    return backend === "claude-code" ? "anthropic" : "openai";
+  }
+  return "openai";
+}
+function renderModelsBlock(config) {
+  const lines = ["models:"];
+  for (const [projectRole, role] of PROJECT_ROLE_SOURCES) {
+    const model = config.models[role];
+    lines.push(`  ${projectRole}:`, `    provider: ${providerForModel(model, config.backend)}`, `    model: ${model}`);
+  }
+  return lines;
+}
+function seedModelsInto(templateYaml, config) {
+  const lines = templateYaml.split("\n");
+  const start = lines.findIndex((line) => line.trimEnd() === "models:");
+  if (start === -1)
+    return templateYaml;
+  let end = start + 1;
+  while (end < lines.length) {
+    const line = lines[end] ?? "";
+    if (line.trim() !== "" && !/^\s/.test(line))
+      break;
+    end += 1;
+  }
+  return [
+    ...lines.slice(0, start),
+    ...renderModelsBlock(config),
+    "",
+    ...lines.slice(end)
+  ].join("\n");
+}
 async function pathExists(candidate) {
   try {
     await stat4(candidate);
@@ -7677,10 +9054,10 @@ async function pathExists(candidate) {
 async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   let dir = startDir;
   for (let level = 0; level <= maxLevels; level += 1) {
-    const candidate = path5.join(dir, ...TEMPLATE_RELATIVE);
+    const candidate = path6.join(dir, ...TEMPLATE_RELATIVE);
     if (await pathExists(candidate))
       return candidate;
-    const parent = path5.dirname(dir);
+    const parent = path6.dirname(dir);
     if (parent === dir)
       break;
     dir = parent;
@@ -7688,7 +9065,7 @@ async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   throw new Error(`Could not find ${TEMPLATE_RELATIVE.join("/")} by walking up from ${startDir} (searched ${maxLevels} levels up). Is this CLI running from within the multi-model-orchestration-agent repo?`);
 }
 async function runInit(options) {
-  const entryDir = path5.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
+  const entryDir = path6.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
   let templateDir;
   try {
     templateDir = await locateTemplate(entryDir);
@@ -7696,7 +9073,7 @@ async function runInit(options) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const target = path5.join(options.cwd, ".agent");
+  const target = path6.join(options.cwd, ".agent");
   const exists = await pathExists(target);
   if (exists && options.force !== true) {
     console.error(`${target} already exists. Re-run with --force to overwrite it.`);
@@ -7707,16 +9084,87 @@ async function runInit(options) {
   await cp(templateDir, target, { recursive: true });
   console.log(`Created ${target}`);
   console.log(`  (from ${templateDir})`);
+  const config = options.config;
+  if (config !== void 0) {
+    const configPath = path6.join(target, "config.yaml");
+    try {
+      const template = await readFile10(configPath, "utf8");
+      await writeFile4(configPath, seedModelsInto(template, config), "utf8");
+      console.log("  (models seeded from your kapel configuration)");
+    } catch {
+    }
+  }
   return 0;
 }
 
 // apps/cli/dist/interactive.js
-import { mkdir as mkdir3 } from "node:fs/promises";
-import path6 from "node:path";
-import * as readline2 from "node:readline";
+import { mkdir as mkdir4 } from "node:fs/promises";
+import path7 from "node:path";
+import * as readline3 from "node:readline";
+
+// apps/cli/dist/delegated-chat.js
+var DelegatedUsage = class {
+  #inputTokens = 0;
+  #outputTokens = 0;
+  #costUsd = 0;
+  add(turn) {
+    if (turn.usage !== void 0) {
+      this.#inputTokens += turn.usage.inputTokens;
+      this.#outputTokens += turn.usage.outputTokens;
+    }
+    if (turn.costUsd !== void 0)
+      this.#costUsd += turn.costUsd;
+  }
+  totals() {
+    return {
+      usage: {
+        inputTokens: this.#inputTokens,
+        outputTokens: this.#outputTokens
+      },
+      costUsd: this.#costUsd
+    };
+  }
+};
+function claudeCodeTurnRunner(options = {}) {
+  const create = options.createBackend ?? ((backendOptions) => new ClaudeCodeBackend(backendOptions));
+  return async (request) => {
+    const resume = request.sessionRef;
+    const backend = create({
+      ...options.model === void 0 ? {} : { model: options.model },
+      ...options.events === void 0 ? {} : { events: options.events },
+      ...options.timeoutMs === void 0 ? {} : { timeoutMs: options.timeoutMs },
+      ...resume === void 0 ? {} : { extraArgs: ["--resume", resume] }
+    });
+    return await backendTurnRunner(backend, {
+      promptWithTranscript: resume === void 0
+    })(request);
+  };
+}
+function createDelegatedChatSession(options) {
+  const claudeCode = options.backend === "claude-code";
+  const runner = options.runner ?? (claudeCode ? claudeCodeTurnRunner({
+    ...options.model === void 0 ? {} : { model: options.model },
+    ...options.events === void 0 ? {} : { events: options.events },
+    ...options.timeoutMs === void 0 ? {} : { timeoutMs: options.timeoutMs },
+    ...options.createClaudeCodeBackend === void 0 ? {} : { createBackend: options.createClaudeCodeBackend }
+  }) : backendTurnRunner(new CodexBackend({
+    ...options.model === void 0 ? {} : { model: options.model },
+    sandbox: DEFAULT_SANDBOX_MODE,
+    fullAuto: fullAutoForSandbox(DEFAULT_SANDBOX_MODE),
+    ...options.events === void 0 ? {} : { events: options.events },
+    ...options.timeoutMs === void 0 ? {} : { timeoutMs: options.timeoutMs }
+  })));
+  return BackendChatSession.fromModelMessages({
+    runner,
+    workspacePath: options.workspacePath,
+    runId: options.runId,
+    supportsContinuation: claudeCode,
+    ...options.events === void 0 ? {} : { events: options.events }
+  }, options.messages ?? [], options.sessionRef);
+}
 
 // apps/cli/dist/orchestrate.js
-import { execFile as execFile7 } from "node:child_process";
+import { execFile as execFile8 } from "node:child_process";
 import { resolve as resolve4 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { promisify as promisify5 } from "node:util";
@@ -7734,7 +9182,7 @@ function validateIsolation(raw) {
     return raw;
   throw new Error(`Invalid --isolation value "${raw}": expected one of ${ISOLATION_MODES.join(", ")}.`);
 }
-var execFileAsync5 = promisify5(execFile7);
+var execFileAsync5 = promisify5(execFile8);
 async function worktreeIsolationError(workspacePath) {
   try {
     await execFileAsync5("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
@@ -7748,6 +9196,9 @@ function cliEntryPath() {
 }
 async function workspaceExecutorFactory(args) {
   const { runId, events: events2, taskTimeoutMs } = args;
+  if (args.backend === "claude-code") {
+    throw new Error('Orchestration does not support --backend claude-code yet. Use --backend codex or --backend native here; `kapel "<objective>"` and `kapel chat` do run on Claude Code.');
+  }
   if (args.backend === "codex") {
     const availability = await CodexBackend.checkAvailability();
     if (!availability.installed) {
@@ -8032,11 +9483,19 @@ async function runOrchestrate(objective, options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.2.0";
+var CLI_VERSION = "0.3.0";
 var SHORT_ID = 8;
 var SESSIONS_LIMIT = 20;
 function shortId(id) {
   return id.slice(0, SHORT_ID);
+}
+function toChatLike(session) {
+  if ("toModelMessages" in session)
+    return session;
+  return {
+    send: (instruction, context) => session.send(instruction, context),
+    toModelMessages: () => session.messages()
+  };
 }
 function availableSessionsHint(records) {
   if (records.length === 0)
@@ -8106,6 +9565,29 @@ async function resolveStartSession(store, workspacePath, selector, newId = () =>
   }
   return { start: startFrom(transcript) };
 }
+function sumTotals(...sources) {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens;
+  let costUsd = 0;
+  for (const source of sources) {
+    const totals = source.totals();
+    inputTokens += totals.usage.inputTokens;
+    outputTokens += totals.usage.outputTokens;
+    if (totals.usage.cachedInputTokens !== void 0) {
+      cachedInputTokens = (cachedInputTokens ?? 0) + totals.usage.cachedInputTokens;
+    }
+    costUsd += totals.costUsd;
+  }
+  return {
+    usage: {
+      inputTokens,
+      outputTokens,
+      ...cachedInputTokens === void 0 ? {} : { cachedInputTokens }
+    },
+    costUsd
+  };
+}
 function usageTotalsLine(totals) {
   const parts = [
     `input: ${totals.usage.inputTokens}`,
@@ -8143,6 +9625,11 @@ var SLASH_COMMANDS = [
     usage: "/model [alias]",
     help: "show or switch the model for future turns"
   },
+  {
+    name: "config",
+    usage: "/config",
+    help: "re-run setup (backend and models) and apply it here"
+  },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
   {
     name: "orchestrate",
@@ -8153,10 +9640,18 @@ var SLASH_COMMANDS = [
 function errorText2(error) {
   return error instanceof Error ? error.message : String(error);
 }
+function bannerModel(backend, modelAlias) {
+  return isDelegatedBackend(backend) ? `${backend} \xB7 ${modelAlias}` : modelAlias;
+}
+function approvalsLine(backend) {
+  const cli = backend === "codex" ? "Codex" : "Claude Code";
+  return `approvals are enforced by the ${cli} CLI \u2014 kapel does not prompt here`;
+}
 async function createInteractiveController(deps) {
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const now = deps.now ?? (() => Date.now());
   const resolveModel = deps.resolveModel ?? ((alias) => resolveModelAndProvider(process.env, alias));
+  let backend = deps.backend ?? "native";
   let modelAlias = deps.modelAlias;
   let model = deps.model;
   let provider = deps.provider;
@@ -8164,12 +9659,21 @@ async function createInteractiveController(deps) {
   let title = deps.start.title;
   let persisted = deps.start.persisted;
   let titleDirty = false;
-  let session = await deps.createSession({
+  const factoryArgs = (messages, sessionRef) => ({
+    sessionId,
+    backend,
     modelAlias,
-    model,
-    provider,
-    messages: deps.start.messages
+    messages,
+    ...model === void 0 ? {} : { model },
+    ...provider === void 0 ? {} : { provider },
+    ...sessionRef === void 0 ? {} : { sessionRef }
   });
+  let session = await deps.createSession(factoryArgs(deps.start.messages));
+  let chat = toChatLike(session);
+  const build = async (messages, sessionRef) => {
+    session = await deps.createSession(factoryArgs(messages, sessionRef));
+    chat = toChatLike(session);
+  };
   const lines = [];
   const emit2 = (line) => {
     lines.push(line);
@@ -8184,7 +9688,7 @@ async function createInteractiveController(deps) {
     const store = deps.store;
     if (store === void 0)
       return;
-    const snapshot = session.messages();
+    const snapshot = chat.toModelMessages();
     if (snapshot.length === 0)
       return;
     try {
@@ -8207,13 +9711,9 @@ async function createInteractiveController(deps) {
       emit2(`(not saved: ${errorText2(error)})`);
     }
   };
-  const rebuildSession = async () => {
-    session = await deps.createSession({
-      modelAlias,
-      model,
-      provider,
-      messages: session.messages()
-    });
+  const rebuildSession = async (keepSessionRef) => {
+    const sessionRef = keepSessionRef ? chat.sessionRef?.() : void 0;
+    await build(chat.toModelMessages(), sessionRef);
   };
   const handleMessage = async (text2, signal) => {
     if (title === "") {
@@ -8223,7 +9723,7 @@ async function createInteractiveController(deps) {
     const before = deps.usage.totals();
     let result;
     try {
-      result = await session.send(text2, {
+      result = await chat.send(text2, {
         runId: sessionId,
         workspacePath: deps.workspacePath,
         ...signal === void 0 ? {} : { signal }
@@ -8261,12 +9761,7 @@ async function createInteractiveController(deps) {
     title = "";
     persisted = false;
     titleDirty = false;
-    session = await deps.createSession({
-      modelAlias,
-      model,
-      provider,
-      messages: []
-    });
+    await build([]);
     emit2(`started a new session ${shortId(sessionId)}`);
     return drain("new-session");
   };
@@ -8323,31 +9818,73 @@ async function createInteractiveController(deps) {
     title = transcript.record.title;
     persisted = true;
     titleDirty = false;
-    session = await deps.createSession({
-      modelAlias,
-      model,
-      provider,
-      messages: transcript.messages
-    });
+    await build(transcript.messages);
     emit2(`resumed ${title === "" ? shortId(sessionId) : title} (${transcript.messages.length} messages)`);
     return drain("resumed");
   };
+  const modelLine = () => {
+    if (provider === void 0 || model === void 0) {
+      return `model: ${modelAlias} (${backend})`;
+    }
+    return `model: ${modelAlias} (${provider.id}/${model.id})`;
+  };
   const slashModel = async (argument) => {
     if (argument === "") {
-      emit2(`model: ${modelAlias} (${provider.id}/${model.id})`);
+      emit2(modelLine());
       return drain();
     }
-    const resolved = await resolveModel(argument);
-    if ("error" in resolved) {
-      emit2(resolved.error);
-      return drain();
+    if (backend === "native") {
+      const resolved = await resolveModel(argument);
+      if ("error" in resolved) {
+        emit2(resolved.error);
+        return drain();
+      }
+      model = resolved.model;
+      provider = resolved.provider;
     }
     modelAlias = argument;
-    model = resolved.model;
-    provider = resolved.provider;
-    await rebuildSession();
+    await rebuildSession(true);
     emit2(`model switched to ${modelAlias} \u2014 future turns use it.`);
     return drain("model-changed");
+  };
+  const slashConfig = async () => {
+    if (deps.configure === void 0) {
+      emit2("/config needs a terminal \u2014 run `kapel config` from one.");
+      return drain();
+    }
+    const config = await deps.configure();
+    if (config === void 0)
+      return drain();
+    const nextBackend = config.backend;
+    const nextAlias = config.models.orchestrator;
+    if (nextBackend === backend && nextAlias === modelAlias) {
+      emit2("config unchanged.");
+      return drain();
+    }
+    if (nextBackend === "native") {
+      const resolved = await resolveModel(nextAlias);
+      if ("error" in resolved) {
+        emit2(resolved.error);
+        emit2("keeping the current backend for this conversation.");
+        return drain();
+      }
+      model = resolved.model;
+      provider = resolved.provider;
+    } else {
+      model = void 0;
+      provider = void 0;
+    }
+    const changes = [];
+    if (nextBackend !== backend)
+      changes.push(`backend ${backend} \u2192 ${nextBackend}`);
+    if (nextAlias !== modelAlias)
+      changes.push(`model ${modelAlias} \u2192 ${nextAlias}`);
+    const backendChanged = nextBackend !== backend;
+    backend = nextBackend;
+    modelAlias = nextAlias;
+    await rebuildSession(!backendChanged);
+    emit2(`${changes.join(", ")} \u2014 future turns use it.`);
+    return drain("config-changed");
   };
   const slashOrchestrate = async (objective) => {
     if (deps.orchestrate === void 0) {
@@ -8386,6 +9923,8 @@ async function createInteractiveController(deps) {
         return await slashResume(argument);
       case "model":
         return await slashModel(argument);
+      case "config":
+        return await slashConfig();
       case "usage":
         emit2(usageTotalsLine(deps.usage.totals()));
         return drain();
@@ -8400,10 +9939,12 @@ async function createInteractiveController(deps) {
     sessionId: () => sessionId,
     title: () => title,
     modelAlias: () => modelAlias,
+    backend: () => backend,
     session: () => session,
     banner: (cwd) => [
-      `kapel v${CLI_VERSION}  ${modelAlias}  session ${shortId(sessionId)}`,
+      `kapel v${CLI_VERSION}  ${bannerModel(backend, modelAlias)}  session ${shortId(sessionId)}`,
       cwd,
+      ...isDelegatedBackend(backend) ? [approvalsLine(backend)] : [],
       "type /help for commands, /exit to quit",
       ""
     ],
@@ -8418,9 +9959,9 @@ async function createInteractiveController(deps) {
   };
 }
 async function openChatStore(workspacePath) {
-  const agentDir = path6.join(workspacePath, ".agent");
+  const agentDir = path7.join(workspacePath, ".agent");
   try {
-    await mkdir3(agentDir, { recursive: true });
+    await mkdir4(agentDir, { recursive: true });
     return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
   } catch {
     return void 0;
@@ -8430,7 +9971,7 @@ var SIGINT_LINE = /* @__PURE__ */ Symbol("sigint");
 function ttyLineSource() {
   return {
     next: (promptText) => new Promise((resolve5) => {
-      const rl = readline2.createInterface({
+      const rl = readline3.createInterface({
         input: process.stdin,
         output: process.stdout,
         terminal: true
@@ -8451,7 +9992,7 @@ function ttyLineSource() {
   };
 }
 function pipedLineSource() {
-  const rl = readline2.createInterface({
+  const rl = readline3.createInterface({
     input: process.stdin,
     terminal: false
   });
@@ -8492,17 +10033,44 @@ function pipedLineSource() {
 function dim(text2, color) {
   return color ? `\x1B[2m${text2}\x1B[0m` : text2;
 }
+async function startDelegatedOrNative(backend, alias) {
+  if (backend === "claude-code") {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    if (!availability.installed) {
+      return { error: claudeCodeInstallGuidance(availability) };
+    }
+    if (!availability.loggedIn) {
+      return { error: claudeCodeLoginGuidance(availability) };
+    }
+    return {};
+  }
+  if (backend === "codex") {
+    const availability = await CodexBackend.checkAvailability();
+    if (!availability.installed) {
+      return { error: codexInstallGuidance(availability) };
+    }
+    if (!availability.loggedIn) {
+      return { error: codexLoginGuidance(availability) };
+    }
+    return {};
+  }
+  return await resolveModelAndProvider(process.env, alias);
+}
 async function runInteractive(options) {
   if (options.json) {
     console.error('--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".');
     return 1;
   }
-  const workspacePath = path6.resolve(options.cwd);
+  const workspacePath = path7.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
-  const alias = resolveModelAlias(process.env, options.model);
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved) {
-    console.error(resolved.error);
+  const backend = resolveBackendSetting(options.backend, process.env, options.config).value;
+  const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config);
+  const alias = modelSetting.value;
+  const delegatedModel2 = delegatedModelOverride(modelSetting);
+  const chatAlias = isDelegatedBackend(backend) ? delegatedModel2 ?? "default" : alias;
+  const startup = await startDelegatedOrNative(backend, alias);
+  if ("error" in startup) {
+    console.error(startup.error);
     return 1;
   }
   const store = options.save === false ? void 0 : await openChatStore(workspacePath);
@@ -8523,8 +10091,38 @@ async function runInteractive(options) {
       interactive: interactiveTty,
       state: promptState
     });
-    const usage = new UsageTracker();
-    const createSession = (args) => {
+    const nativeUsage = new UsageTracker();
+    const delegatedUsage = new DelegatedUsage();
+    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
+    const delegatedModelFor = (aliasForBuild) => aliasForBuild === chatAlias ? delegatedModel2 : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
+    const delegatedSession = (target, args) => {
+      const forwardedModel = delegatedModelFor(args.modelAlias);
+      const chat = createDelegatedChatSession({
+        backend: target,
+        workspacePath,
+        runId: args.sessionId,
+        messages: args.messages,
+        events: renderer,
+        ...forwardedModel === void 0 ? {} : { model: forwardedModel },
+        ...args.sessionRef === void 0 ? {} : { sessionRef: args.sessionRef },
+        ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
+      });
+      return {
+        send: async (instruction, context) => {
+          const result = await chat.send(instruction, {
+            ...context.signal === void 0 ? {} : { signal: context.signal }
+          });
+          delegatedUsage.add(result);
+          return result;
+        },
+        toModelMessages: () => chat.toModelMessages(),
+        sessionRef: () => chat.sessionRef()
+      };
+    };
+    const nativeSession = (args) => {
+      if (args.model === void 0 || args.provider === void 0) {
+        throw new Error("the native backend needs a resolved model and provider.");
+      }
       const agent = {
         name: "agent",
         role: "worker",
@@ -8541,12 +10139,14 @@ async function runInteractive(options) {
           defaultDecision: "ask",
           ...prompter === void 0 ? {} : { prompter }
         }),
-        usage,
+        usage: nativeUsage,
         events: renderer,
         maxIterations: options.maxIterations,
         ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
       }, args.messages);
     };
+    const createSession = (args) => args.backend === "native" ? nativeSession(args) : delegatedSession(args.backend, args);
+    const wizardTty = interactiveTty && process.stdout.isTTY === true && !options.json;
     const controller = await createInteractiveController({
       workspacePath,
       ...store === void 0 ? {} : { store },
@@ -8554,12 +10154,23 @@ async function runInteractive(options) {
       write: (line) => {
         console.log(line);
       },
-      modelAlias: alias,
-      model: resolved.model,
-      provider: resolved.provider,
+      backend,
+      modelAlias: chatAlias,
+      ...startup.model === void 0 ? {} : { model: startup.model },
+      ...startup.provider === void 0 ? {} : { provider: startup.provider },
       start: started.start,
       usage,
-      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias))
+      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
+      ...wizardTty ? {
+        configure: () => runConfigWizard({
+          prompt: ttyWizardPrompt(),
+          write: (line) => {
+            console.log(line);
+          },
+          checkBackend: (target) => checkBackendAvailability(target),
+          ...options.config === void 0 ? {} : { current: options.config }
+        })
+      } : {}
     });
     const color = process.stdout.isTTY === true;
     for (const line of controller.banner(workspacePath))
@@ -8643,8 +10254,8 @@ function orchestrateOptionsFor(options, alias) {
 }
 
 // apps/cli/dist/policy.js
-import { readFile as readFile9, writeFile as writeFile3 } from "node:fs/promises";
-import path7 from "node:path";
+import { readFile as readFile11, writeFile as writeFile5 } from "node:fs/promises";
+import path8 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
@@ -8656,7 +10267,7 @@ function jsonLine3(output, value) {
 }
 async function readOptionalFile2(filePath) {
   try {
-    return await readFile9(filePath, "utf8");
+    return await readFile11(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -8709,13 +10320,13 @@ async function loadProjectForPolicy(workspacePath, output, json) {
 }
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path7.resolve(options.cwd);
+  const workspacePath = path8.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const alias = resolveModelAlias(process.env, options.model);
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
   const resolved = await resolveModelAndProvider(process.env, alias);
   if ("error" in resolved) {
     if (options.json)
@@ -8765,8 +10376,8 @@ async function runPolicyCompile(options, deps = {}) {
   }
   const lock = createLockfile({ markdown, result, model: model.id });
   const serialized = serializeLockfile(lock);
-  const lockPath = path7.join(project.root, LOCK_FILE_NAME2);
-  await writeFile3(lockPath, serialized, "utf8");
+  const lockPath = path8.join(project.root, LOCK_FILE_NAME2);
+  await writeFile5(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
     ...validationWarnings.map((issue) => issue.message)
@@ -8791,13 +10402,13 @@ async function runPolicyCompile(options, deps = {}) {
 }
 async function runPolicyCheck(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path7.resolve(options.cwd);
+  const workspacePath = path8.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path7.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path8.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   if (!status.fresh) {
@@ -8841,13 +10452,13 @@ async function runPolicyCheck(options, deps = {}) {
 }
 async function runPolicyExplain(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path7.resolve(options.cwd);
+  const workspacePath = path8.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path7.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path8.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   let lock;
@@ -8891,12 +10502,12 @@ async function runPolicyExplain(options, deps = {}) {
 }
 
 // apps/cli/dist/resume-cmd.js
-import { readFile as readFile10 } from "node:fs/promises";
-import path8 from "node:path";
+import { readFile as readFile12 } from "node:fs/promises";
+import path9 from "node:path";
 var LOCK_FILE_NAME3 = "orchestration.lock.json";
 async function readOptionalFile3(filePath) {
   try {
-    return await readFile10(filePath, "utf8");
+    return await readFile12(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -8917,14 +10528,14 @@ function stableJson(value) {
 }
 async function policyDriftWarning(project, snapshot) {
   const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile3(path8.join(project.root, LOCK_FILE_NAME3));
+  const raw = await readOptionalFile3(path9.join(project.root, LOCK_FILE_NAME3));
   const status = checkLock(markdown, raw);
-  const tail3 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
+  const tail4 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
   if (!status.fresh) {
-    return `Warning: this project's policy lock is ${status.reason} (\`kapel policy compile\` would refresh it). ${tail3}`;
+    return `Warning: this project's policy lock is ${status.reason} (\`kapel policy compile\` would refresh it). ${tail4}`;
   }
   if (stableJson(status.lock.policy) !== stableJson(snapshot)) {
-    return `Warning: this project's policy has changed since run started. ${tail3}`;
+    return `Warning: this project's policy has changed since run started. ${tail4}`;
   }
   return void 0;
 }
@@ -8948,7 +10559,7 @@ async function rebuildGraph(store, runId, plan, completed) {
 }
 async function runResume(runId, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
-  const workspacePath = path8.resolve(options.cwd);
+  const workspacePath = path9.resolve(options.cwd);
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
   const fail2 = (message) => {
     if (options.json)
@@ -9032,10 +10643,50 @@ async function runResume(runId, options, deps = {}) {
   }
 }
 
+// apps/cli/dist/run-claude-code.js
+import path10 from "node:path";
+async function runClaudeCodeObjective(objective, options) {
+  const workspacePath = path10.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const availability = await ClaudeCodeBackend.checkAvailability();
+  if (!availability.installed) {
+    console.error(claudeCodeInstallGuidance(availability));
+    return 1;
+  }
+  if (!availability.loggedIn) {
+    console.error(claudeCodeLoginGuidance(availability));
+    return 1;
+  }
+  const renderer = options.json ? new JsonRenderer() : new TextRenderer();
+  const backend = new ClaudeCodeBackend({
+    ...options.model === void 0 ? {} : { model: options.model },
+    events: renderer,
+    ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
+  });
+  const controller = new AbortController();
+  const onSigint = () => controller.abort();
+  process.on("SIGINT", onSigint);
+  try {
+    const result = await backend.run({ instruction: objective }, {
+      runId: crypto.randomUUID(),
+      workspacePath,
+      signal: controller.signal
+    });
+    renderer.result(result, new UsageTracker().totals());
+    if (result.status === "success")
+      return 0;
+    if (result.status === "partial")
+      return 2;
+    return 1;
+  } finally {
+    process.off("SIGINT", onSigint);
+  }
+}
+
 // apps/cli/dist/run-codex.js
-import path9 from "node:path";
+import path11 from "node:path";
 async function runCodexObjective(objective, options) {
-  const workspacePath = path9.resolve(options.cwd);
+  const workspacePath = path11.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await CodexBackend.checkAvailability();
   if (!availability.installed) {
@@ -9187,6 +10838,12 @@ async function runWorkerCommand(deps = {}) {
 }
 
 // apps/cli/dist/index.js
+async function runtimeConfig(raw) {
+  return await ensureFirstRunConfig({
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true && !raw.json,
+    noSetup: raw.setup === false
+  });
+}
 function parsePositive(raw, flag, integer2) {
   const value = integer2 ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
   if (!Number.isFinite(value) || value <= 0) {
@@ -9194,7 +10851,7 @@ function parsePositive(raw, flag, integer2) {
   }
   return value;
 }
-function toRunOptions(raw) {
+function toRunOptions(raw, config) {
   const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   return {
@@ -9204,13 +10861,17 @@ function toRunOptions(raw) {
     json: raw.json,
     ...raw.model === void 0 ? {} : { model: raw.model },
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
-    ...raw.system === void 0 ? {} : { system: raw.system }
+    ...raw.system === void 0 ? {} : { system: raw.system },
+    ...config === void 0 ? {} : { config }
   };
 }
-function toCodexRunOptions(raw) {
+function delegatedModel(raw, config) {
+  return delegatedModelOverride(resolveOrchestratorModel(raw.model, process.env, config));
+}
+function toCodexRunOptions(raw, config) {
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   const sandbox = validateSandboxMode(raw.sandbox);
-  const model = codexModelOverride(raw.model);
+  const model = delegatedModel(raw, config);
   return {
     cwd: raw.cwd,
     json: raw.json,
@@ -9220,7 +10881,17 @@ function toCodexRunOptions(raw) {
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
   };
 }
-function toInteractiveOptions(raw, chat = {}) {
+function toClaudeCodeRunOptions(raw, config) {
+  const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
+  const model = delegatedModel(raw, config);
+  return {
+    cwd: raw.cwd,
+    json: raw.json,
+    ...model === void 0 ? {} : { model },
+    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
+  };
+}
+function toInteractiveOptions(raw, chat = {}, config) {
   const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   return {
@@ -9233,12 +10904,15 @@ function toInteractiveOptions(raw, chat = {}) {
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
     ...raw.system === void 0 ? {} : { system: raw.system },
     ...chat.continue === void 0 ? {} : { continue: chat.continue },
-    ...chat.session === void 0 ? {} : { session: chat.session }
+    ...chat.session === void 0 ? {} : { session: chat.session },
+    ...raw.backend === void 0 ? {} : { backend: raw.backend },
+    ...config === void 0 ? {} : { config }
   };
 }
 async function chatAndExit(raw, chat = {}) {
   try {
-    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat));
+    const config = await runtimeConfig(raw);
+    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat, config));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -9252,21 +10926,24 @@ async function runAndExit(objectiveParts, raw) {
     return;
   }
   try {
-    const backend = validateBackendName(raw.backend);
+    const config = await runtimeConfig(raw);
+    const backend = resolveBackendSetting(raw.backend, process.env, config).value;
     if (backend === "codex") {
-      const options2 = toCodexRunOptions(raw);
-      process.exitCode = await runCodexObjective(objective, options2);
+      process.exitCode = await runCodexObjective(objective, toCodexRunOptions(raw, config));
       return;
     }
-    const options = toRunOptions(raw);
-    process.exitCode = await runObjective(objective, options);
+    if (backend === "claude-code") {
+      process.exitCode = await runClaudeCodeObjective(objective, toClaudeCodeRunOptions(raw, config));
+      return;
+    }
+    process.exitCode = await runObjective(objective, toRunOptions(raw, config));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
 }
 var program = new Command();
-program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version(CLI_VERSION).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", "execution backend to use: native | codex", resolveBackendName(process.env)).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE);
+program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version(CLI_VERSION).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", `execution backend to use: ${BACKEND_NAMES.join(" | ")} (default: native, or AGENT_BACKEND, or your \`kapel config\`)`).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults");
 program.argument("[objective...]", 'the coding objective to work on, e.g. "fix the failing test"').action(async (objective, opts) => {
   if (objective.length === 0) {
     if (process.stdin.isTTY === true) {
@@ -9286,14 +10963,27 @@ program.command("exec").description("Run the coding agent loop (same as the defa
 });
 program.command("init").description("Create a .agent configuration in the current repository").option("--force", "overwrite an existing .agent directory", false).action(async (opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
+  const config = await loadKapelConfig();
   process.exitCode = await runInit({
-    cwd: path10.resolve(cwd),
-    force: opts.force
+    cwd: path12.resolve(cwd),
+    force: opts.force,
+    ...config === void 0 ? {} : { config }
+  });
+});
+program.command("config").description("Configure which backend and models kapel uses (stored in ~/.kapel/config.json)").option("--show", "print the current configuration and where it lives", false).option("--path", "print the configuration file path", false).action(async (opts) => {
+  process.exitCode = await runConfigCommand(opts, {
+    log: (line) => {
+      console.log(line);
+    },
+    error: (line) => {
+      console.error(line);
+    },
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true
   });
 });
 program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
-  await loadDotEnvFile(path10.resolve(cwd));
+  await loadDotEnvFile(path12.resolve(cwd));
   const entries = await listModels(process.env);
   if (entries.length === 0) {
     console.log("(no models registered)");
@@ -9305,43 +10995,46 @@ program.command("models").description("List available model aliases and provider
   }
   console.log();
   console.log('backend codex \u2014 uses the OpenAI Codex CLI with its own ChatGPT OAuth (run: kapel --backend codex "...")');
+  console.log('backend claude-code \u2014 uses the Claude Code CLI with your Claude subscription login (run: kapel --backend claude-code "...")');
 });
-function planOptions(command) {
+function planOptions(command, config) {
   const raw = command.optsWithGlobals();
   return {
     cwd: raw.cwd,
     json: raw.json,
-    ...raw.model === void 0 ? {} : { model: raw.model }
+    ...raw.model === void 0 ? {} : { model: raw.model },
+    ...config === void 0 ? {} : { config }
   };
 }
-function executionOptions(command, opts) {
+function executionOptions(command, opts, backend) {
   const raw = command.optsWithGlobals();
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
   return {
     workerMode: validateWorkerMode(opts.workerMode),
     isolation: validateIsolation(opts.isolation),
-    backend: validateBackendName(raw.backend),
+    backend,
     maxIterations,
     validate: opts.validate,
     tui: opts.tui,
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
   };
 }
-function orchestrateOptions(command, opts) {
+function orchestrateOptions(command, opts, config) {
+  const raw = command.optsWithGlobals();
   return {
-    ...planOptions(command),
-    ...executionOptions(command, opts),
+    ...planOptions(command, config),
+    ...executionOptions(command, opts, resolveBackendSetting(raw.backend, process.env, config).value),
     dryRun: opts.dryRun,
     save: opts.save
   };
 }
-function resumeOptions(command, opts) {
+function resumeOptions(command, opts, config) {
   const raw = command.optsWithGlobals();
   return {
     cwd: raw.cwd,
     json: raw.json,
-    ...executionOptions(command, opts)
+    ...executionOptions(command, opts, resolveBackendSetting(raw.backend, process.env, config).value)
   };
 }
 function withExecutionOptions(command) {
@@ -9362,14 +11055,17 @@ async function objectiveCommand(parts, usage, run) {
   }
 }
 program.command("plan").description("Plan an objective into a task graph and print it, without executing anything").argument("<objective...>", "the objective to plan").action(async (objective, _opts, command) => {
-  await objectiveCommand(objective, 'Usage: kapel plan "<objective>"', (text2) => runPlan(text2, planOptions(command)));
+  const config = await runtimeConfig(command.optsWithGlobals());
+  await objectiveCommand(objective, 'Usage: kapel plan "<objective>"', (text2) => runPlan(text2, planOptions(command, config)));
 });
 withExecutionOptions(program.command("orchestrate").description("Plan an objective and execute the resulting task graph across routed workers").argument("<objective...>", "the objective to orchestrate")).option("--dry-run", "plan only \u2014 same output as `kapel plan`", false).option("--no-save", "do not record this run in .agent/sessions.db").action(async (objective, opts, command) => {
-  await objectiveCommand(objective, 'Usage: kapel orchestrate "<objective>"', (text2) => runOrchestrate(text2, orchestrateOptions(command, opts)));
+  const config = await runtimeConfig(command.optsWithGlobals());
+  await objectiveCommand(objective, 'Usage: kapel orchestrate "<objective>"', (text2) => runOrchestrate(text2, orchestrateOptions(command, opts, config)));
 });
 withExecutionOptions(program.command("resume").description("Re-execute the unfinished tasks of a recorded run").argument("<runId>", "the run to resume (see `kapel runs`)")).action(async (runId, opts, command) => {
   try {
-    process.exitCode = await runResume(runId, resumeOptions(command, opts));
+    const config = await runtimeConfig(command.optsWithGlobals());
+    process.exitCode = await runResume(runId, resumeOptions(command, opts, config));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -9404,24 +11100,26 @@ program.command("explain").description("Explain how one task of a recorded run w
 program.command("worker").description("Run one orchestration task from a protocol request on stdin (used by --worker-mode child)").action(async () => {
   process.exitCode = await runWorkerCommand();
 });
-function policyOptions(command) {
+function policyOptions(command, config) {
   const raw = command.optsWithGlobals();
   return {
     cwd: raw.cwd,
     json: raw.json,
-    ...raw.model === void 0 ? {} : { model: raw.model }
+    ...raw.model === void 0 ? {} : { model: raw.model },
+    ...config === void 0 ? {} : { config }
   };
 }
 var POLICY_SUBCOMMANDS = ["compile", "check", "explain"];
 var policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain)").argument("[unknownCommand]", "compile | check | explain");
 policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock using an LLM").action(async (_opts, command) => {
-  process.exitCode = await runPolicyCompile(policyOptions(command));
+  const config = await runtimeConfig(command.optsWithGlobals());
+  process.exitCode = await runPolicyCompile(policyOptions(command, config));
 });
 policyCommand.command("check").description("Check that the policy lock is fresh and valid (no LLM calls)").action(async (_opts, command) => {
-  process.exitCode = await runPolicyCheck(policyOptions(command));
+  process.exitCode = await runPolicyCheck(policyOptions(command, void 0));
 });
 policyCommand.command("explain").description("Print a human-readable summary of the compiled policy").action(async (_opts, command) => {
-  process.exitCode = await runPolicyExplain(policyOptions(command));
+  process.exitCode = await runPolicyExplain(policyOptions(command, void 0));
 });
 policyCommand.action((unknownCommand) => {
   if (unknownCommand === void 0) {

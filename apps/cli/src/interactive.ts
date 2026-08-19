@@ -12,6 +12,8 @@ import type { AgentLoopRunContext, ChatTurnResult } from "@agent/coding-agent";
 import {
   AgentChatSession,
   builtinTools,
+  ClaudeCodeBackend,
+  CodexBackend,
   PermissionEngine,
 } from "@agent/coding-agent";
 import type { AgentDefinition } from "@agent/core";
@@ -27,8 +29,28 @@ import {
   defaultSessionDbPath,
   SqliteSessionStore,
 } from "@agent/session";
+import type { BackendName } from "./backend.js";
+import {
+  claudeCodeInstallGuidance,
+  claudeCodeLoginGuidance,
+  codexInstallGuidance,
+  codexLoginGuidance,
+  isDelegatedBackend,
+} from "./backend.js";
+import type { KapelConfig } from "./config.js";
+import {
+  checkBackendAvailability,
+  delegatedModelOverride,
+  resolveBackendSetting,
+  resolveOrchestratorModel,
+  ttyWizardPrompt,
+} from "./config-runtime.js";
+import { runConfigWizard } from "./config-wizard.js";
+import {
+  createDelegatedChatSession,
+  DelegatedUsage,
+} from "./delegated-chat.js";
 import { loadDotEnvFile } from "./env.js";
-import { resolveModelAlias } from "./models.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import {
   DEFAULT_ISOLATION,
@@ -48,7 +70,7 @@ import { isoTime } from "./sessions.js";
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
  * here so both spellings of it come from one place.
  */
-export const CLI_VERSION = "0.2.0";
+export const CLI_VERSION = "0.3.0";
 
 /** How many characters of a session id identify it in listings and the banner. */
 const SHORT_ID = 8;
@@ -76,18 +98,69 @@ export interface InteractiveSession {
   messages(): readonly ModelMessage[];
 }
 
+/** What one turn reports back, for either kind of conversation. */
+export interface ChatTurnLike {
+  readonly status: ChatTurnResult["status"];
+  readonly summary: string;
+  readonly output?: string;
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+  };
+  readonly costUsd?: number;
+}
+
+/**
+ * The conversation as the controller sees it, whichever engine is behind it.
+ *
+ * The native `AgentChatSession` keeps `ModelMessage[]` and a provider; a
+ * `BackendChatSession` keeps user/assistant entries and an external CLI. Both
+ * can answer "run this turn" and "give me the transcript in the shape the
+ * store persists", and that is the whole of what `/new`, `/resume`, `/model`,
+ * `/config` and the snapshot writer need — so everything below this line is
+ * written once and works for both.
+ */
+export interface ChatLike {
+  send(
+    instruction: string,
+    context: AgentLoopRunContext,
+  ): Promise<ChatTurnLike>;
+  toModelMessages(): readonly ModelMessage[];
+  /** A delegating backend's own session id, when it is holding the thread. */
+  sessionRef?(): string | undefined;
+}
+
+/** Either shape a session factory may return. */
+export type InteractiveSessionLike = InteractiveSession | ChatLike;
+
+/** Adapts the native session's `messages()` to {@link ChatLike}. */
+export function toChatLike(session: InteractiveSessionLike): ChatLike {
+  if ("toModelMessages" in session) return session;
+  return {
+    send: (instruction, context) => session.send(instruction, context),
+    toModelMessages: () => session.messages(),
+  };
+}
+
 export interface SessionFactoryArgs {
+  /** The conversation's id — a delegated turn runs under it as its run id. */
+  readonly sessionId: string;
+  /** Which engine to build: the native loop, or a delegating CLI. */
+  readonly backend: BackendName;
   readonly modelAlias: string;
-  readonly model: ModelDefinition;
-  readonly provider: ModelProvider;
+  /** Absent for a delegated backend, which resolves no catalog model. */
+  readonly model?: ModelDefinition;
+  readonly provider?: ModelProvider;
   /** History to rebuild from — empty for a brand new conversation. */
   readonly messages: readonly ModelMessage[];
+  /** The delegating backend's session id, when one is being carried over. */
+  readonly sessionRef?: string;
 }
 
 /** Builds (or rebuilds) the conversation. Overridable in tests. */
 export type InteractiveSessionFactory = (
   args: SessionFactoryArgs,
-) => InteractiveSession | Promise<InteractiveSession>;
+) => InteractiveSessionLike | Promise<InteractiveSessionLike>;
 
 // --- The store the controller persists through ------------------------------
 
@@ -122,7 +195,8 @@ export type InteractiveEffect =
   | "exit"
   | "new-session"
   | "resumed"
-  | "model-changed";
+  | "model-changed"
+  | "config-changed";
 
 export interface DispatchResult {
   /** The lines this line produced, in order. Already written via `deps.write`. */
@@ -257,6 +331,34 @@ export async function resolveStartSession(
 
 // --- Usage formatting -------------------------------------------------------
 
+/** Adds two usage sources into one total — see the two engines in `runInteractive`. */
+export function sumTotals(
+  ...sources: readonly { totals(): UsageTotals }[]
+): UsageTotals {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens: number | undefined;
+  let costUsd = 0;
+  for (const source of sources) {
+    const totals = source.totals();
+    inputTokens += totals.usage.inputTokens;
+    outputTokens += totals.usage.outputTokens;
+    if (totals.usage.cachedInputTokens !== undefined) {
+      cachedInputTokens =
+        (cachedInputTokens ?? 0) + totals.usage.cachedInputTokens;
+    }
+    costUsd += totals.costUsd;
+  }
+  return {
+    usage: {
+      inputTokens,
+      outputTokens,
+      ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    },
+    costUsd,
+  };
+}
+
 /** `tokens — input: …, output: …[, cached: …][  (~$…)]` — the cumulative view. */
 export function usageTotalsLine(totals: UsageTotals): string {
   const parts = [
@@ -293,9 +395,12 @@ export interface InteractiveControllerDeps {
   readonly createSession: InteractiveSessionFactory;
   /** Every produced line goes here, in order. */
   readonly write: (line: string) => void;
+  /** Which engine the conversation runs on. Defaults to `native`. */
+  readonly backend?: BackendName;
   readonly modelAlias: string;
-  readonly model: ModelDefinition;
-  readonly provider: ModelProvider;
+  /** The resolved catalog model — absent on a delegated backend. */
+  readonly model?: ModelDefinition;
+  readonly provider?: ModelProvider;
   /** Where the conversation starts; see {@link resolveStartSession}. */
   readonly start: InteractiveStart;
   /** Cumulative usage across every turn of this process. */
@@ -304,6 +409,12 @@ export interface InteractiveControllerDeps {
   readonly resolveModel?: (alias: string) => Promise<ResolvedModel>;
   /** Runs `/orchestrate <objective>`; absent means the command is unavailable. */
   readonly orchestrate?: (objective: string) => Promise<number>;
+  /**
+   * Runs `/config` — the setup wizard — and returns the saved configuration,
+   * or `undefined` when it was cancelled. Absent means there is no terminal to
+   * run it on, and `/config` says so instead.
+   */
+  readonly configure?: () => Promise<KapelConfig | undefined>;
   readonly newId?: () => string;
   readonly now?: () => number;
 }
@@ -313,8 +424,10 @@ export interface InteractiveController {
   sessionId(): string;
   title(): string;
   modelAlias(): string;
+  /** Which engine the live conversation runs on. */
+  backend(): BackendName;
   /** The live conversation — the object `send` is called on. */
-  session(): InteractiveSession;
+  session(): InteractiveSessionLike;
   /** The banner the shell prints before the first prompt. */
   banner(cwd: string): readonly string[];
   handleLine(line: string, signal?: AbortSignal): Promise<DispatchResult>;
@@ -345,6 +458,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     usage: "/model [alias]",
     help: "show or switch the model for future turns",
   },
+  {
+    name: "config",
+    usage: "/config",
+    help: "re-run setup (backend and models) and apply it here",
+  },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
   {
     name: "orchestrate",
@@ -355,6 +473,26 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The banner's model field: `alias` natively, `backend · alias` when delegated. */
+export function bannerModel(backend: BackendName, modelAlias: string): string {
+  return isDelegatedBackend(backend)
+    ? `${backend} · ${modelAlias}`
+    : modelAlias;
+}
+
+/**
+ * The banner line that replaces kapel's own permission prompting.
+ *
+ * Nothing here asks before an edit or a command when the work is delegated:
+ * the external CLI runs the tools and enforces its own approvals, so saying so
+ * up front is the difference between "kapel stopped asking" and "kapel is not
+ * the one being asked".
+ */
+export function approvalsLine(backend: BackendName): string {
+  const cli = backend === "codex" ? "Codex" : "Claude Code";
+  return `approvals are enforced by the ${cli} CLI — kapel does not prompt here`;
 }
 
 /**
@@ -372,6 +510,7 @@ export async function createInteractiveController(
     deps.resolveModel ??
     ((alias: string) => resolveModelAndProvider(process.env, alias));
 
+  let backend: BackendName = deps.backend ?? "native";
   let modelAlias = deps.modelAlias;
   let model = deps.model;
   let provider = deps.provider;
@@ -381,12 +520,30 @@ export async function createInteractiveController(
   let persisted = deps.start.persisted;
   let titleDirty = false;
 
-  let session = await deps.createSession({
+  /** The factory arguments for the conversation as it stands right now. */
+  const factoryArgs = (
+    messages: readonly ModelMessage[],
+    sessionRef?: string,
+  ): SessionFactoryArgs => ({
+    sessionId,
+    backend,
     modelAlias,
-    model,
-    provider,
-    messages: deps.start.messages,
+    messages,
+    ...(model === undefined ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(sessionRef === undefined ? {} : { sessionRef }),
   });
+
+  let session = await deps.createSession(factoryArgs(deps.start.messages));
+  let chat = toChatLike(session);
+
+  const build = async (
+    messages: readonly ModelMessage[],
+    sessionRef?: string,
+  ): Promise<void> => {
+    session = await deps.createSession(factoryArgs(messages, sessionRef));
+    chat = toChatLike(session);
+  };
 
   const lines: string[] = [];
   const emit = (line: string): void => {
@@ -414,7 +571,7 @@ export async function createInteractiveController(
   const persist = async (): Promise<void> => {
     const store = deps.store;
     if (store === undefined) return;
-    const snapshot = session.messages();
+    const snapshot = chat.toModelMessages();
     // Nothing was said: there is no conversation to create a row for, and an
     // already-stored one has nothing new to write.
     if (snapshot.length === 0) return;
@@ -444,13 +601,17 @@ export async function createInteractiveController(
     }
   };
 
-  const rebuildSession = async (): Promise<void> => {
-    session = await deps.createSession({
-      modelAlias,
-      model,
-      provider,
-      messages: session.messages(),
-    });
+  /**
+   * Rebuilds the conversation in place, keeping everything said so far.
+   *
+   * `keepSessionRef` carries a delegating backend's own session id across the
+   * rebuild — right for `/model` and for a `/config` that only changed models,
+   * wrong the moment the backend itself changes, since one CLI's session id
+   * means nothing to another.
+   */
+  const rebuildSession = async (keepSessionRef: boolean): Promise<void> => {
+    const sessionRef = keepSessionRef ? chat.sessionRef?.() : undefined;
+    await build(chat.toModelMessages(), sessionRef);
   };
 
   const handleMessage = async (
@@ -463,9 +624,9 @@ export async function createInteractiveController(
     }
 
     const before = deps.usage.totals();
-    let result: ChatTurnResult | undefined;
+    let result: ChatTurnLike | undefined;
     try {
-      result = await session.send(text, {
+      result = await chat.send(text, {
         runId: sessionId,
         workspacePath: deps.workspacePath,
         ...(signal === undefined ? {} : { signal }),
@@ -509,12 +670,9 @@ export async function createInteractiveController(
     title = "";
     persisted = false;
     titleDirty = false;
-    session = await deps.createSession({
-      modelAlias,
-      model,
-      provider,
-      messages: [],
-    });
+    // No `sessionRef`: a new conversation must not continue the last one on
+    // the delegating backend's side either.
+    await build([]);
     emit(`started a new session ${shortId(sessionId)}`);
     return drain("new-session");
   };
@@ -580,36 +738,99 @@ export async function createInteractiveController(
     title = transcript.record.title;
     persisted = true;
     titleDirty = false;
-    session = await deps.createSession({
-      modelAlias,
-      model,
-      provider,
-      messages: transcript.messages,
-    });
+    await build(transcript.messages);
     emit(
       `resumed ${title === "" ? shortId(sessionId) : title} (${transcript.messages.length} messages)`,
     );
     return drain("resumed");
   };
 
+  /** `alias (provider/id)` natively; `alias (backend)` for a delegated one. */
+  const modelLine = (): string => {
+    if (provider === undefined || model === undefined) {
+      return `model: ${modelAlias} (${backend})`;
+    }
+    return `model: ${modelAlias} (${provider.id}/${model.id})`;
+  };
+
   const slashModel = async (argument: string): Promise<DispatchResult> => {
     if (argument === "") {
-      emit(`model: ${modelAlias} (${provider.id}/${model.id})`);
+      emit(modelLine());
       return drain();
     }
-    const resolved = await resolveModel(argument);
-    if ("error" in resolved) {
-      emit(resolved.error);
-      return drain();
+
+    if (backend === "native") {
+      const resolved = await resolveModel(argument);
+      if ("error" in resolved) {
+        emit(resolved.error);
+        return drain();
+      }
+      model = resolved.model;
+      provider = resolved.provider;
     }
+    // A delegated backend has no catalog to check the alias against — the
+    // external CLI owns the list of models the account may use, and it is the
+    // one that will complain if this is not on it.
     modelAlias = argument;
-    model = resolved.model;
-    provider = resolved.provider;
     // The history moves to the new model as-is; the turns already taken keep
     // whatever model produced them, so only future turns change hands.
-    await rebuildSession();
+    await rebuildSession(true);
     emit(`model switched to ${modelAlias} — future turns use it.`);
     return drain("model-changed");
+  };
+
+  /**
+   * `/config` — re-run setup, then make this conversation obey the answers.
+   *
+   * The conversation itself survives: a new backend or model is applied by
+   * rebuilding the session around the transcript, exactly the way `/model`
+   * does, so switching from Claude Code to a native model mid-thread keeps
+   * everything said so far.
+   */
+  const slashConfig = async (): Promise<DispatchResult> => {
+    if (deps.configure === undefined) {
+      emit("/config needs a terminal — run `kapel config` from one.");
+      return drain();
+    }
+
+    const config = await deps.configure();
+    if (config === undefined) return drain();
+
+    const nextBackend = config.backend;
+    const nextAlias = config.models.orchestrator;
+    if (nextBackend === backend && nextAlias === modelAlias) {
+      emit("config unchanged.");
+      return drain();
+    }
+
+    if (nextBackend === "native") {
+      const resolved = await resolveModel(nextAlias);
+      if ("error" in resolved) {
+        // The config is saved either way — it is the machine's setting, not
+        // this conversation's — but this REPL keeps what still works.
+        emit(resolved.error);
+        emit("keeping the current backend for this conversation.");
+        return drain();
+      }
+      model = resolved.model;
+      provider = resolved.provider;
+    } else {
+      model = undefined;
+      provider = undefined;
+    }
+
+    const changes: string[] = [];
+    if (nextBackend !== backend)
+      changes.push(`backend ${backend} → ${nextBackend}`);
+    if (nextAlias !== modelAlias)
+      changes.push(`model ${modelAlias} → ${nextAlias}`);
+    const backendChanged = nextBackend !== backend;
+    backend = nextBackend;
+    modelAlias = nextAlias;
+
+    await rebuildSession(!backendChanged);
+    emit(`${changes.join(", ")} — future turns use it.`);
+    return drain("config-changed");
   };
 
   const slashOrchestrate = async (
@@ -656,6 +877,8 @@ export async function createInteractiveController(
         return await slashResume(argument);
       case "model":
         return await slashModel(argument);
+      case "config":
+        return await slashConfig();
       case "usage":
         emit(usageTotalsLine(deps.usage.totals()));
         return drain();
@@ -671,10 +894,12 @@ export async function createInteractiveController(
     sessionId: () => sessionId,
     title: () => title,
     modelAlias: () => modelAlias,
+    backend: () => backend,
     session: () => session,
     banner: (cwd: string) => [
-      `kapel v${CLI_VERSION}  ${modelAlias}  session ${shortId(sessionId)}`,
+      `kapel v${CLI_VERSION}  ${bannerModel(backend, modelAlias)}  session ${shortId(sessionId)}`,
       cwd,
+      ...(isDelegatedBackend(backend) ? [approvalsLine(backend)] : []),
       "type /help for commands, /exit to quit",
       "",
     ],
@@ -701,6 +926,10 @@ export interface InteractiveOptions {
   readonly continue?: boolean;
   readonly session?: string;
   readonly system?: string;
+  /** The raw `--backend` flag, if one was passed. */
+  readonly backend?: string;
+  /** The machine's configuration, when there is one; see `config-runtime.ts`. */
+  readonly config?: KapelConfig;
 }
 
 /**
@@ -823,6 +1052,44 @@ function dim(text: string, color: boolean): string {
 }
 
 /**
+ * What a conversation needs before its first line: a usable model on the
+ * native path, a usable CLI on a delegated one.
+ *
+ * Both failures are reported the same way — one printable line and exit 1 —
+ * because "you have no credential" and "you are not logged in to Claude Code"
+ * are the same problem seen from two backends.
+ */
+async function startDelegatedOrNative(
+  backend: BackendName,
+  alias: string,
+): Promise<
+  | { readonly model?: ModelDefinition; readonly provider?: ModelProvider }
+  | { readonly error: string }
+> {
+  if (backend === "claude-code") {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    if (!availability.installed) {
+      return { error: claudeCodeInstallGuidance(availability) };
+    }
+    if (!availability.loggedIn) {
+      return { error: claudeCodeLoginGuidance(availability) };
+    }
+    return {};
+  }
+  if (backend === "codex") {
+    const availability = await CodexBackend.checkAvailability();
+    if (!availability.installed) {
+      return { error: codexInstallGuidance(availability) };
+    }
+    if (!availability.loggedIn) {
+      return { error: codexLoginGuidance(availability) };
+    }
+    return {};
+  }
+  return await resolveModelAndProvider(process.env, alias);
+}
+
+/**
  * Implements `kapel` with no objective, and `kapel chat`: a persistent
  * conversation with the coding agent, in this directory.
  *
@@ -843,10 +1110,30 @@ export async function runInteractive(
   const workspacePath = path.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
 
-  const alias = resolveModelAlias(process.env, options.model);
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved) {
-    console.error(resolved.error);
+  // `.env` is loaded first so a workspace-local `AGENT_BACKEND`/`AGENT_MODEL`
+  // takes part in the precedence chain exactly like a shell variable.
+  const backend = resolveBackendSetting(
+    options.backend,
+    process.env,
+    options.config,
+  ).value;
+  const modelSetting = resolveOrchestratorModel(
+    options.model,
+    process.env,
+    options.config,
+  );
+  const alias = modelSetting.value;
+  const delegatedModel = delegatedModelOverride(modelSetting);
+  // What the conversation calls its model. On a delegated backend with nothing
+  // chosen, that is honestly `default` — naming the native catalog's default
+  // alias would claim a model the external CLI was never told to use.
+  const chatAlias = isDelegatedBackend(backend)
+    ? (delegatedModel ?? "default")
+    : alias;
+
+  const startup = await startDelegatedOrNative(backend, alias);
+  if ("error" in startup) {
+    console.error(startup.error);
     return 1;
   }
 
@@ -871,9 +1158,64 @@ export async function runInteractive(
       interactive: interactiveTty,
       state: promptState,
     });
-    const usage = new UsageTracker();
+    const nativeUsage = new UsageTracker();
+    const delegatedUsage = new DelegatedUsage();
+    // One usage view over both engines, so `/usage` and the per-turn delta
+    // read the same however the conversation is being run — and keep adding up
+    // across a `/config` that switches from one to the other mid-thread.
+    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
 
-    const createSession: InteractiveSessionFactory = (args) => {
+    /**
+     * The model id to hand the delegating CLI for one build.
+     *
+     * The startup alias keeps the precedence chain's verdict (which knows
+     * whether anyone actually chose it); anything else got here through
+     * `/model` or `/config`, which is a human choosing it by definition.
+     */
+    const delegatedModelFor = (aliasForBuild: string): string | undefined =>
+      aliasForBuild === chatAlias
+        ? delegatedModel
+        : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
+
+    /** The delegated conversation, plus the usage bookkeeping around a turn. */
+    const delegatedSession = (
+      target: Exclude<BackendName, "native">,
+      args: SessionFactoryArgs,
+    ): ChatLike => {
+      const forwardedModel = delegatedModelFor(args.modelAlias);
+      const chat = createDelegatedChatSession({
+        backend: target,
+        workspacePath,
+        runId: args.sessionId,
+        messages: args.messages,
+        events: renderer,
+        ...(forwardedModel === undefined ? {} : { model: forwardedModel }),
+        ...(args.sessionRef === undefined
+          ? {}
+          : { sessionRef: args.sessionRef }),
+        ...(options.timeoutSeconds === undefined
+          ? {}
+          : { timeoutMs: options.timeoutSeconds * 1000 }),
+      });
+      return {
+        send: async (instruction, context) => {
+          const result = await chat.send(instruction, {
+            ...(context.signal === undefined ? {} : { signal: context.signal }),
+          });
+          delegatedUsage.add(result);
+          return result;
+        },
+        toModelMessages: () => chat.toModelMessages(),
+        sessionRef: () => chat.sessionRef(),
+      };
+    };
+
+    const nativeSession = (args: SessionFactoryArgs): InteractiveSession => {
+      if (args.model === undefined || args.provider === undefined) {
+        throw new Error(
+          "the native backend needs a resolved model and provider.",
+        );
+      }
       const agent: AgentDefinition = {
         name: "agent",
         role: "worker",
@@ -891,7 +1233,7 @@ export async function runInteractive(
             defaultDecision: "ask",
             ...(prompter === undefined ? {} : { prompter }),
           }),
-          usage,
+          usage: nativeUsage,
           events: renderer,
           maxIterations: options.maxIterations,
           ...(options.timeoutSeconds === undefined
@@ -902,6 +1244,14 @@ export async function runInteractive(
       );
     };
 
+    const createSession: InteractiveSessionFactory = (args) =>
+      args.backend === "native"
+        ? nativeSession(args)
+        : delegatedSession(args.backend, args);
+
+    const wizardTty =
+      interactiveTty && process.stdout.isTTY === true && !options.json;
+
     const controller = await createInteractiveController({
       workspacePath,
       ...(store === undefined ? {} : { store }),
@@ -909,13 +1259,29 @@ export async function runInteractive(
       write: (line) => {
         console.log(line);
       },
-      modelAlias: alias,
-      model: resolved.model,
-      provider: resolved.provider,
+      backend,
+      modelAlias: chatAlias,
+      ...(startup.model === undefined ? {} : { model: startup.model }),
+      ...(startup.provider === undefined ? {} : { provider: startup.provider }),
       start: started.start,
       usage,
       orchestrate: (objective) =>
         runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
+      ...(wizardTty
+        ? {
+            configure: () =>
+              runConfigWizard({
+                prompt: ttyWizardPrompt(),
+                write: (line) => {
+                  console.log(line);
+                },
+                checkBackend: (target) => checkBackendAvailability(target),
+                ...(options.config === undefined
+                  ? {}
+                  : { current: options.config }),
+              }),
+          }
+        : {}),
     });
 
     const color = process.stdout.isTTY === true;

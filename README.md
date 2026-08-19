@@ -9,18 +9,24 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.2.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.3.0.tgz
 
 cd /path/to/your/repo
-export ANTHROPIC_API_KEY=...          # see Authentication below for other options
-kapel                                 # opens an interactive agent for this directory
+kapel                                 # first run asks which backend and models to use
 ```
+
+The first time you run `kapel` on a terminal it asks four questions — which
+coding backend (Claude Code, Codex, or a plain API key) and which model to use
+for the orchestrator and for each class of worker — and stores the answers in
+`~/.kapel/config.json`. See [First-run setup](#first-run-setup). Piped,
+redirected or `--no-setup` runs skip it and fall back to environment variables
+and defaults, so nothing in CI ever blocks on a prompt.
 
 Once published to the npm registry this becomes simply `npm install -g @devfallingstar/kapel`.
 If the tarball URL is unreachable from your network, the equivalent two-step
 form is `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.2.0.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.3.0.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
@@ -33,7 +39,7 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-kapel v0.2.0  claude-sonnet-5  session 0f3c9a2b
+kapel v0.3.0  claude-sonnet-5  session 0f3c9a2b
 /path/to/your/repo
 type /help for commands, /exit to quit
 
@@ -52,7 +58,7 @@ kapel> now add a `sub` function next to it, with a test
 kapel> /exit
 ```
 
-Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
+Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
 
 Commands available at the prompt:
 
@@ -64,6 +70,7 @@ Commands available at the prompt:
 | `/sessions` | list this directory's conversations (id, last touched, messages, title) |
 | `/resume <id>` | switch to a stored conversation — a unique id prefix is enough |
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
+| `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
 | `/usage` | tokens and cost so far |
 | `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
 
@@ -98,12 +105,91 @@ Useful commands and flags:
 - `kapel models` — list available model aliases and their credential status
 - `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
 - `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
-- `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
+- `-m, --model <alias>` — pick the model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only)
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
-- `--backend <native|codex>` — execution backend (default `native`, or `AGENT_BACKEND`); see [Codex backend](#codex-backend)
+- `--backend <native|codex|claude-code>` — execution backend (default `native`, or `AGENT_BACKEND`, or your stored config); see [Codex backend](#codex-backend) and [Claude Code backend](#claude-code-backend)
 - `--sandbox <read-only|workspace-write|danger-full-access>` — Codex sandbox mode (default `workspace-write`)
+- `--no-setup` — never run the first-run wizard; use environment variables and defaults instead
+- `kapel config` — re-run setup; `--show` prints the current configuration and its path, `--path` prints just the path
+
+### First-run setup
+
+`kapel` needs to know two things before it can do anything: how to talk to a
+model, and which models to use. On a terminal it asks once, on the first run of
+any command that needs an answer, and stores what you say in
+`~/.kapel/config.json` (`$KAPEL_CONFIG_DIR` overrides the directory):
+
+```text
+Which coding backend should kapel use?
+❯ ◉ Claude Code (use your Claude Code subscription login — no API key)
+    ◯ Codex (use your ChatGPT login via the OpenAI Codex CLI — no API key)
+    ◯ API key (Anthropic/OpenAI) (call model APIs directly with a key or token)
+```
+
+…followed by the orchestrator model and the two worker models (normal and low
+complexity). The chosen backend is probed as you pick it, so a missing or
+logged-out CLI is reported there and then rather than on your first objective.
+
+```bash
+kapel config            # re-run the wizard at any time
+kapel config --show     # what is configured, and where the file lives
+kapel config --path     # just the path
+kapel --no-setup "…"    # never ask; use environment variables and defaults
+```
+
+Inside the interactive agent, `/config` runs the same wizard and applies the
+answers to the conversation you are already in — the thread is kept, only the
+turns that follow change backend or model.
+
+**Everything resolves in one order**, wherever a backend or a model is chosen
+(one-shot, chat, `plan`, `orchestrate`, `policy compile`):
+
+```text
+explicit CLI flag  >  environment variable  >  ~/.kapel/config.json  >  built-in default
+     --backend            AGENT_BACKEND              backend                 native
+     -m/--model           AGENT_MODEL                models.orchestrator     claude-sonnet-5
+```
+
+`.agent/config.yaml` is a separate, per-project thing: it says which model each
+*agent* of an orchestration run uses. `kapel init` seeds it from your global
+config when you have one (`lead` and `reviewer` from the orchestrator model,
+`worker` and `cheap` from the two worker models), and copies the template
+unchanged when you don't.
+
+### Claude Code backend
+
+Want Claude models without an `ANTHROPIC_API_KEY`? Pass `--backend claude-code`
+(or set `AGENT_BACKEND=claude-code`, or pick it in the wizard) to delegate the
+work to Anthropic's own Claude Code CLI, under your existing subscription
+login:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude                  # once, to log in with your Claude subscription
+kapel --backend claude-code "fix the failing test"
+kapel --backend claude-code            # …or a whole conversation
+```
+
+`kapel` never touches Anthropic's OAuth flow or Claude Code's credentials on
+this path — it spawns `claude -p` in the workspace and renders the stream it
+prints. `-m/--model` (or your configured orchestrator model) is forwarded to
+`--model`, which takes both aliases (`opus`, `sonnet`, `haiku`) and full model
+ids; `default` means "whatever your account defaults to" and is not forwarded.
+Permission prompts do not apply here — Claude Code enforces its own approvals,
+which the interactive banner says out loud.
+
+**Conversations continue on Claude Code's side.** The first turn runs plain;
+every turn after it passes `--resume <session_id>` with the id Claude Code
+reported, so the thread lives in the CLI rather than being re-sent. Resuming a
+stored conversation from the database (`kapel chat --continue`) replays the
+transcript once on the first turn and continues by id from there. Codex chats
+are stateless instead — `codex exec --json` does not report a resumable id —
+so each Codex turn carries the recent transcript with it.
+
+Orchestration (`kapel orchestrate`) does not support `--backend claude-code`
+yet and says so; use `--backend codex` or the native loop there.
 
 ### Authentication
 
@@ -173,7 +259,7 @@ Execution options:
 
 - `--worker-mode in-process` (default) — every task runs in this process through the native agent loop, using the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
 - `--worker-mode child` — each task runs in a separate `kapel worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
-- `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
+- `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)). `--backend claude-code` is not supported here yet.
 - `--isolation worktree` (default) / `--isolation none` — see [Worktree isolation](#worktree-isolation) below.
 - `--tui` — replace the streaming event lines with a live dashboard (task table, worker log, elapsed time). Text mode only: combining it with `--json` is an error, since the dashboard owns the terminal. The final status table and token totals are printed as usual once it comes down.
 - `--no-save` — don't record this run in `.agent/sessions.db`; see [Sessions](#sessions).

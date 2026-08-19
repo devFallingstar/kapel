@@ -1,10 +1,20 @@
 import type { UsageTotals } from "@agent/ai";
-import type { AgentLoopResult, CodexRunResult } from "@agent/coding-agent";
+import type {
+  AgentLoopResult,
+  ClaudeCodeRunResult,
+  CodexRunResult,
+} from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { previewInput } from "./prompter.js";
 
-/** Either shape a run can finish with: the native loop, or a Codex backend run. */
-export type CliRunResult = AgentLoopResult | CodexRunResult;
+/** How a run can finish: the native loop, or one of the delegating backends. */
+export type CliRunResult =
+  | AgentLoopResult
+  | CodexRunResult
+  | ClaudeCodeRunResult;
+
+/** The result shape of a delegated run — the only one carrying `exitCode`/`events`. */
+export type DelegatedRunResult = CodexRunResult | ClaudeCodeRunResult;
 
 /** Renders loop events (and the final result) to an output stream. */
 export interface Renderer extends EventSink {
@@ -15,12 +25,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** `CodexRunResult` is the only `CliRunResult` shape carrying `exitCode`/`events`. */
-function isCodexResult(result: CliRunResult): result is CodexRunResult {
+function isDelegatedResult(result: CliRunResult): result is DelegatedRunResult {
   return "events" in result;
 }
 
 const CODEX_PREFIX = "codex.";
+const CLAUDE_CODE_PREFIX = "claude-code.";
 
 function firstNonEmptyString(
   ...values: readonly unknown[]
@@ -132,6 +142,8 @@ const EXIT_LABEL: Record<CliRunResult["status"], string> = {
 export class TextRenderer implements Renderer {
   readonly #output: NodeJS.WritableStream;
   readonly #color: boolean;
+  /** Text deltas of the Claude Code block currently streaming; see `#emitClaudeCode`. */
+  #claudeText = "";
 
   constructor(output: NodeJS.WritableStream = process.stdout) {
     this.#output = output;
@@ -156,6 +168,11 @@ export class TextRenderer implements Renderer {
 
     if (event.type.startsWith(CODEX_PREFIX)) {
       this.#emitCodex(data);
+      return;
+    }
+
+    if (event.type.startsWith(CLAUDE_CODE_PREFIX)) {
+      this.#emitClaudeCode(event.type.slice(CLAUDE_CODE_PREFIX.length), data);
       return;
     }
 
@@ -381,12 +398,54 @@ export class TextRenderer implements Renderer {
     }
   }
 
+  /**
+   * Renders a normalized `claude-code.*` event.
+   *
+   * The payload is a raw Claude API streaming line, so the two things worth
+   * showing are pulled out of it by hand: the assistant's own text, buffered
+   * per content block rather than written a delta at a time (this renderer is
+   * line-oriented — a partial word is not a line), and the name of each tool
+   * as it starts, which is what makes a long turn legible. Everything else —
+   * `message_start`, usage rollups, the synthetic `completed` marker, and any
+   * event type this wrapper does not model yet — stays quiet, exactly as the
+   * native renderer does for unknown types.
+   */
+  #emitClaudeCode(kind: string, data: Record<string, unknown>): void {
+    const event = isRecord(data.event) ? data.event : data;
+
+    switch (kind) {
+      case "tool_use": {
+        const name =
+          typeof data.name === "string" && data.name !== ""
+            ? data.name
+            : "tool";
+        this.#write(`${this.#dim("→")} claude: ${name}`);
+        break;
+      }
+      case "content_block_delta": {
+        const delta = isRecord(event.delta) ? event.delta : undefined;
+        if (delta?.type !== "text_delta") break;
+        if (typeof delta.text === "string") this.#claudeText += delta.text;
+        break;
+      }
+      case "content_block_stop":
+      case "message_stop": {
+        const text = this.#claudeText.trim();
+        this.#claudeText = "";
+        if (text !== "") this.#write(text);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
   result(result: CliRunResult, usage: UsageTotals): void {
     this.#write("");
     this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
     this.#write(result.summary);
 
-    if (isCodexResult(result)) {
+    if (isDelegatedResult(result)) {
       if (result.exitCode !== null && result.exitCode !== 0) {
         this.#write(this.#dim(`exit code: ${result.exitCode}`));
       }

@@ -1,13 +1,19 @@
-import type { CodexAvailability } from "@agent/coding-agent";
+import type {
+  ClaudeCodeAvailability,
+  CodexAvailability,
+} from "@agent/coding-agent";
 import { describe, expect, it } from "vitest";
 import {
   BACKEND_NAMES,
+  claudeCodeInstallGuidance,
+  claudeCodeLoginGuidance,
   codexInstallGuidance,
   codexLoginGuidance,
   codexModelOverride,
   DEFAULT_BACKEND,
   DEFAULT_SANDBOX_MODE,
   fullAutoForSandbox,
+  isDelegatedBackend,
   resolveBackendName,
   SANDBOX_MODES,
   validateBackendName,
@@ -155,5 +161,33 @@ describe("codexLoginGuidance", () => {
       detail: "not logged in (401)",
     };
     expect(codexLoginGuidance(availability)).toContain("not logged in (401)");
+  });
+});
+
+describe("isDelegatedBackend", () => {
+  it("is true for the CLIs that run the work themselves", () => {
+    expect(isDelegatedBackend("codex")).toBe(true);
+    expect(isDelegatedBackend("claude-code")).toBe(true);
+    expect(isDelegatedBackend("native")).toBe(false);
+  });
+});
+
+describe("claude code guidance", () => {
+  const missing: ClaudeCodeAvailability = {
+    installed: false,
+    loggedIn: false,
+    detail: 'Could not run "claude".',
+  };
+
+  it("names the install command and the login step", () => {
+    const text = claudeCodeInstallGuidance(missing);
+    expect(text).toContain("npm install -g @anthropic-ai/claude-code");
+    expect(text).toContain('Could not run "claude".');
+  });
+
+  it("asks for a login when the CLI is there but nobody is signed in", () => {
+    const text = claudeCodeLoginGuidance({ installed: true, loggedIn: false });
+    expect(text).toContain("not logged in");
+    expect(text).toContain("no Anthropic API key needed");
   });
 });

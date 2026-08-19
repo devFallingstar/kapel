@@ -1,15 +1,31 @@
-import type { CodexAvailability } from "@agent/coding-agent";
+import type {
+  ClaudeCodeAvailability,
+  CodexAvailability,
+} from "@agent/coding-agent";
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
 /** Execution backends the CLI can dispatch an objective to. */
-export const BACKEND_NAMES = ["native", "codex"] as const;
+export const BACKEND_NAMES = ["native", "codex", "claude-code"] as const;
 export type BackendName = (typeof BACKEND_NAMES)[number];
 
 export const DEFAULT_BACKEND: BackendName = "native";
 
 function isBackendName(value: string): value is BackendName {
   return (BACKEND_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * Whether a backend hands the work to an external coding CLI rather than
+ * running kapel's own provider loop.
+ *
+ * The distinction decides more than which class gets constructed: a delegated
+ * backend authenticates itself, enforces its own approvals, and needs no API
+ * credential from us — so the model registry, the `PermissionEngine` and the
+ * permission prompter are all skipped on those paths.
+ */
+export function isDelegatedBackend(backend: BackendName): boolean {
+  return backend === "codex" || backend === "claude-code";
 }
 
 /**
@@ -108,6 +124,40 @@ export function codexLoginGuidance(availability: CodexAvailability): string {
   const lines = [
     "The Codex CLI is installed but you are not logged in.",
     "Run `codex login` to authenticate with your ChatGPT account — no OpenAI API key needed.",
+  ];
+  if (availability.detail !== undefined && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Human-readable guidance printed when the Claude Code CLI isn't installed.
+ * Mirrors {@link codexInstallGuidance} — same shape, same exit path.
+ */
+export function claudeCodeInstallGuidance(
+  availability: ClaudeCodeAvailability,
+): string {
+  const lines = [
+    "The Claude Code CLI is not installed.",
+    "Install it with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription.",
+  ];
+  if (availability.detail !== undefined && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Human-readable guidance printed when the Claude Code CLI is installed but
+ * no subscription login is present.
+ */
+export function claudeCodeLoginGuidance(
+  availability: ClaudeCodeAvailability,
+): string {
+  const lines = [
+    "The Claude Code CLI is installed but you are not logged in.",
+    "Run `claude` once and log in with your Claude subscription — no Anthropic API key needed.",
   ];
   if (availability.detail !== undefined && availability.detail !== "") {
     lines.push(availability.detail);

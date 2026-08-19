@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { Command } from "commander";
+import type { BackendName } from "./backend.js";
 import {
-  codexModelOverride,
+  BACKEND_NAMES,
   DEFAULT_SANDBOX_MODE,
   fullAutoForSandbox,
-  resolveBackendName,
   SANDBOX_MODES,
-  validateBackendName,
   validateSandboxMode,
 } from "./backend.js";
+import type { KapelConfig } from "./config.js";
+import { loadKapelConfig } from "./config.js";
+import { runConfigCommand } from "./config-cmd.js";
+import {
+  delegatedModelOverride,
+  ensureFirstRunConfig,
+  resolveBackendSetting,
+  resolveOrchestratorModel,
+} from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
 import { runExplainCommand } from "./explain-cmd.js";
 import { runInit } from "./init.js";
@@ -38,6 +46,7 @@ import {
 } from "./policy.js";
 import { type ResumeCommandOptions, runResume } from "./resume-cmd.js";
 import { runObjective } from "./run.js";
+import { runClaudeCodeObjective } from "./run-claude-code.js";
 import { runCodexObjective } from "./run-codex.js";
 import { DEFAULT_RUNS_LIMIT, runRunsCommand } from "./runs-cmd.js";
 import { runWorkerCommand } from "./worker-cmd.js";
@@ -50,8 +59,33 @@ interface RawRunOpts {
   readonly yes: boolean;
   readonly json: boolean;
   readonly system?: string;
-  readonly backend: string;
+  /** Undefined unless `--backend` was actually passed; see `resolveBackendSetting`. */
+  readonly backend?: string;
   readonly sandbox: string;
+  /** `--no-setup`: commander sets this false when the flag is passed. */
+  readonly setup?: boolean;
+}
+
+/**
+ * The machine's configuration for this invocation, asking for one on a first
+ * run.
+ *
+ * Every command that needs a model or a backend goes through here, so the
+ * wizard happens exactly once, before any work — and never at all when there
+ * is nobody to answer it (piped input, `--json`, `--no-setup`), when the
+ * command is `kapel config` (which runs its own), or for `kapel worker`, whose
+ * stdin belongs to the orchestration protocol.
+ */
+async function runtimeConfig(
+  raw: RawRunOpts,
+): Promise<KapelConfig | undefined> {
+  return await ensureFirstRunConfig({
+    interactive:
+      process.stdin.isTTY === true &&
+      process.stdout.isTTY === true &&
+      !raw.json,
+    noSetup: raw.setup === false,
+  });
 }
 
 function parsePositive(raw: string, flag: string, integer: boolean): number {
@@ -64,7 +98,10 @@ function parsePositive(raw: string, flag: string, integer: boolean): number {
   return value;
 }
 
-function toRunOptions(raw: RawRunOpts): Parameters<typeof runObjective>[1] {
+function toRunOptions(
+  raw: RawRunOpts,
+  config: KapelConfig | undefined,
+): Parameters<typeof runObjective>[1] {
   const maxIterations = parsePositive(
     raw.maxIterations,
     "--max-iterations",
@@ -83,18 +120,30 @@ function toRunOptions(raw: RawRunOpts): Parameters<typeof runObjective>[1] {
     ...(raw.model === undefined ? {} : { model: raw.model }),
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
     ...(raw.system === undefined ? {} : { system: raw.system }),
+    ...(config === undefined ? {} : { config }),
   };
+}
+
+/** The model id a delegating CLI is told to use, or `undefined` to let it choose. */
+function delegatedModel(
+  raw: RawRunOpts,
+  config: KapelConfig | undefined,
+): string | undefined {
+  return delegatedModelOverride(
+    resolveOrchestratorModel(raw.model, process.env, config),
+  );
 }
 
 function toCodexRunOptions(
   raw: RawRunOpts,
+  config: KapelConfig | undefined,
 ): Parameters<typeof runCodexObjective>[1] {
   const timeoutSeconds =
     raw.timeout === undefined
       ? undefined
       : parsePositive(raw.timeout, "--timeout", false);
   const sandbox = validateSandboxMode(raw.sandbox);
-  const model = codexModelOverride(raw.model);
+  const model = delegatedModel(raw, config);
 
   return {
     cwd: raw.cwd,
@@ -113,9 +162,28 @@ interface RawChatOpts {
   readonly save?: boolean;
 }
 
+function toClaudeCodeRunOptions(
+  raw: RawRunOpts,
+  config: KapelConfig | undefined,
+): Parameters<typeof runClaudeCodeObjective>[1] {
+  const timeoutSeconds =
+    raw.timeout === undefined
+      ? undefined
+      : parsePositive(raw.timeout, "--timeout", false);
+  const model = delegatedModel(raw, config);
+
+  return {
+    cwd: raw.cwd,
+    json: raw.json,
+    ...(model === undefined ? {} : { model }),
+    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+  };
+}
+
 function toInteractiveOptions(
   raw: RawRunOpts,
   chat: RawChatOpts = {},
+  config?: KapelConfig,
 ): InteractiveOptions {
   const maxIterations = parsePositive(
     raw.maxIterations,
@@ -138,6 +206,8 @@ function toInteractiveOptions(
     ...(raw.system === undefined ? {} : { system: raw.system }),
     ...(chat.continue === undefined ? {} : { continue: chat.continue }),
     ...(chat.session === undefined ? {} : { session: chat.session }),
+    ...(raw.backend === undefined ? {} : { backend: raw.backend }),
+    ...(config === undefined ? {} : { config }),
   };
 }
 
@@ -147,7 +217,10 @@ async function chatAndExit(
   chat: RawChatOpts = {},
 ): Promise<void> {
   try {
-    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat));
+    const config = await runtimeConfig(raw);
+    process.exitCode = await runInteractive(
+      toInteractiveOptions(raw, chat, config),
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -166,14 +239,27 @@ async function runAndExit(
   }
 
   try {
-    const backend = validateBackendName(raw.backend);
+    const config = await runtimeConfig(raw);
+    const backend = resolveBackendSetting(
+      raw.backend,
+      process.env,
+      config,
+    ).value;
     if (backend === "codex") {
-      const options = toCodexRunOptions(raw);
-      process.exitCode = await runCodexObjective(objective, options);
+      process.exitCode = await runCodexObjective(
+        objective,
+        toCodexRunOptions(raw, config),
+      );
       return;
     }
-    const options = toRunOptions(raw);
-    process.exitCode = await runObjective(objective, options);
+    if (backend === "claude-code") {
+      process.exitCode = await runClaudeCodeObjective(
+        objective,
+        toClaudeCodeRunOptions(raw, config),
+      );
+      return;
+    }
+    process.exitCode = await runObjective(objective, toRunOptions(raw, config));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -205,13 +291,16 @@ program
   .option("--system <text>", "override the default system prompt")
   .option(
     "--backend <name>",
-    "execution backend to use: native | codex",
-    resolveBackendName(process.env),
+    `execution backend to use: ${BACKEND_NAMES.join(" | ")} (default: native, or AGENT_BACKEND, or your \`kapel config\`)`,
   )
   .option(
     "--sandbox <mode>",
     `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`,
     DEFAULT_SANDBOX_MODE,
+  )
+  .option(
+    "--no-setup",
+    "skip the first-run setup wizard and use environment variables and defaults",
   );
 
 program
@@ -260,9 +349,34 @@ program
   .option("--force", "overwrite an existing .agent directory", false)
   .action(async (opts: { force: boolean }, command: Command) => {
     const cwd = (command.optsWithGlobals() as RawRunOpts).cwd;
+    // Read-only: `kapel init` seeds the project from an existing setup, but
+    // scaffolding a repository is not a reason to ask someone to configure a
+    // backend they may not have chosen yet.
+    const config = await loadKapelConfig();
     process.exitCode = await runInit({
       cwd: path.resolve(cwd),
       force: opts.force,
+      ...(config === undefined ? {} : { config }),
+    });
+  });
+
+program
+  .command("config")
+  .description(
+    "Configure which backend and models kapel uses (stored in ~/.kapel/config.json)",
+  )
+  .option("--show", "print the current configuration and where it lives", false)
+  .option("--path", "print the configuration file path", false)
+  .action(async (opts: { show: boolean; path: boolean }) => {
+    process.exitCode = await runConfigCommand(opts, {
+      log: (line) => {
+        console.log(line);
+      },
+      error: (line) => {
+        console.error(line);
+      },
+      interactive:
+        process.stdin.isTTY === true && process.stdout.isTTY === true,
     });
   });
 
@@ -291,14 +405,22 @@ program
       "backend codex — uses the OpenAI Codex CLI with its own ChatGPT OAuth " +
         '(run: kapel --backend codex "...")',
     );
+    console.log(
+      "backend claude-code — uses the Claude Code CLI with your Claude " +
+        'subscription login (run: kapel --backend claude-code "...")',
+    );
   });
 
-function planOptions(command: Command): PlanCommandOptions {
+function planOptions(
+  command: Command,
+  config: KapelConfig | undefined,
+): PlanCommandOptions {
   const raw = command.optsWithGlobals() as RawRunOpts;
   return {
     cwd: raw.cwd,
     json: raw.json,
     ...(raw.model === undefined ? {} : { model: raw.model }),
+    ...(config === undefined ? {} : { config }),
   };
 }
 
@@ -318,6 +440,7 @@ interface RawOrchestrateOpts extends RawExecutionOpts {
 function executionOptions(
   command: Command,
   opts: RawExecutionOpts,
+  backend: BackendName,
 ): Omit<ResumeCommandOptions, "cwd" | "json"> {
   const raw = command.optsWithGlobals() as RawRunOpts;
   const timeoutSeconds =
@@ -333,7 +456,7 @@ function executionOptions(
   return {
     workerMode: validateWorkerMode(opts.workerMode),
     isolation: validateIsolation(opts.isolation),
-    backend: validateBackendName(raw.backend),
+    backend,
     maxIterations,
     validate: opts.validate,
     tui: opts.tui,
@@ -344,10 +467,16 @@ function executionOptions(
 function orchestrateOptions(
   command: Command,
   opts: RawOrchestrateOpts,
+  config: KapelConfig | undefined,
 ): OrchestrateCommandOptions {
+  const raw = command.optsWithGlobals() as RawRunOpts;
   return {
-    ...planOptions(command),
-    ...executionOptions(command, opts),
+    ...planOptions(command, config),
+    ...executionOptions(
+      command,
+      opts,
+      resolveBackendSetting(raw.backend, process.env, config).value,
+    ),
     dryRun: opts.dryRun,
     save: opts.save,
   };
@@ -356,12 +485,17 @@ function orchestrateOptions(
 function resumeOptions(
   command: Command,
   opts: RawExecutionOpts,
+  config: KapelConfig | undefined,
 ): ResumeCommandOptions {
   const raw = command.optsWithGlobals() as RawRunOpts;
   return {
     cwd: raw.cwd,
     json: raw.json,
-    ...executionOptions(command, opts),
+    ...executionOptions(
+      command,
+      opts,
+      resolveBackendSetting(raw.backend, process.env, config).value,
+    ),
   };
 }
 
@@ -415,10 +549,11 @@ program
   )
   .argument("<objective...>", "the objective to plan")
   .action(async (objective: string[], _opts: unknown, command: Command) => {
+    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
     await objectiveCommand(
       objective,
       'Usage: kapel plan "<objective>"',
-      (text) => runPlan(text, planOptions(command)),
+      (text) => runPlan(text, planOptions(command, config)),
     );
   });
 
@@ -434,10 +569,14 @@ withExecutionOptions(
   .option("--no-save", "do not record this run in .agent/sessions.db")
   .action(
     async (objective: string[], opts: RawOrchestrateOpts, command: Command) => {
+      const config = await runtimeConfig(
+        command.optsWithGlobals() as RawRunOpts,
+      );
       await objectiveCommand(
         objective,
         'Usage: kapel orchestrate "<objective>"',
-        (text) => runOrchestrate(text, orchestrateOptions(command, opts)),
+        (text) =>
+          runOrchestrate(text, orchestrateOptions(command, opts, config)),
       );
     },
   );
@@ -449,7 +588,11 @@ withExecutionOptions(
     .argument("<runId>", "the run to resume (see `kapel runs`)"),
 ).action(async (runId: string, opts: RawExecutionOpts, command: Command) => {
   try {
-    process.exitCode = await runResume(runId, resumeOptions(command, opts));
+    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
+    process.exitCode = await runResume(
+      runId,
+      resumeOptions(command, opts, config),
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -504,12 +647,16 @@ program
     process.exitCode = await runWorkerCommand();
   });
 
-function policyOptions(command: Command): PolicyCommandOptions {
+function policyOptions(
+  command: Command,
+  config: KapelConfig | undefined,
+): PolicyCommandOptions {
   const raw = command.optsWithGlobals() as RawRunOpts;
   return {
     cwd: raw.cwd,
     json: raw.json,
     ...(raw.model === undefined ? {} : { model: raw.model }),
+    ...(config === undefined ? {} : { config }),
   };
 }
 
@@ -526,21 +673,24 @@ policyCommand
     "Compile .agent/orchestration.md into a policy lock using an LLM",
   )
   .action(async (_opts: unknown, command: Command) => {
-    process.exitCode = await runPolicyCompile(policyOptions(command));
+    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
+    process.exitCode = await runPolicyCompile(policyOptions(command, config));
   });
 
 policyCommand
   .command("check")
   .description("Check that the policy lock is fresh and valid (no LLM calls)")
   .action(async (_opts: unknown, command: Command) => {
-    process.exitCode = await runPolicyCheck(policyOptions(command));
+    process.exitCode = await runPolicyCheck(policyOptions(command, undefined));
   });
 
 policyCommand
   .command("explain")
   .description("Print a human-readable summary of the compiled policy")
   .action(async (_opts: unknown, command: Command) => {
-    process.exitCode = await runPolicyExplain(policyOptions(command));
+    process.exitCode = await runPolicyExplain(
+      policyOptions(command, undefined),
+    );
   });
 
 policyCommand.action((unknownCommand: string | undefined) => {

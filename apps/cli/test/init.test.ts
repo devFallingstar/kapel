@@ -1,9 +1,23 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { locateTemplate, runInit } from "../src/init.js";
+import type { KapelConfig } from "../src/config.js";
+import { KAPEL_CONFIG_VERSION } from "../src/config.js";
+import {
+  locateTemplate,
+  providerForModel,
+  runInit,
+  seedModelsInto,
+} from "../src/init.js";
 
 describe("locateTemplate", () => {
   it("finds templates/default/.agent by walking up from the real CLI dist layout", async () => {
@@ -59,6 +73,70 @@ describe("locateTemplate (synthetic layout)", () => {
   });
 });
 
+/** A template with the shape the real one has: a `models:` block, then more. */
+const TEMPLATE_YAML = [
+  "models:",
+  "  lead:",
+  "    provider: anthropic",
+  "    model: claude-opus-5",
+  "  reviewer:",
+  "    provider: openai",
+  "    model: gpt-5.1",
+  "",
+  "agents:",
+  "  orchestrator: lead",
+  "",
+  "# a trailing comment the template ships",
+  "",
+].join("\n");
+
+function kapelConfig(overrides: Partial<KapelConfig> = {}): KapelConfig {
+  return {
+    version: KAPEL_CONFIG_VERSION,
+    backend: "claude-code",
+    models: { orchestrator: "opus", worker: "sonnet", cheap: "haiku" },
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
+describe("seedModelsInto", () => {
+  it("replaces only the models block, keeping the rest of the template", () => {
+    const seeded = seedModelsInto(TEMPLATE_YAML, kapelConfig());
+    expect(seeded).toContain("# a trailing comment the template ships");
+    expect(seeded).toContain("agents:\n  orchestrator: lead");
+    expect(seeded).not.toContain("claude-opus-5");
+  });
+
+  it("gives the reviewer the orchestrator's model", () => {
+    const seeded = seedModelsInto(TEMPLATE_YAML, kapelConfig());
+    expect(seeded).toContain(
+      "  reviewer:\n    provider: anthropic\n    model: opus",
+    );
+  });
+
+  it("leaves a template with no models block alone", () => {
+    expect(
+      seedModelsInto("agents:\n  orchestrator: lead\n", kapelConfig()),
+    ).toBe("agents:\n  orchestrator: lead\n");
+  });
+});
+
+describe("providerForModel", () => {
+  it("reads Anthropic out of claude ids and Claude Code aliases", () => {
+    expect(providerForModel("claude-opus-5", "native")).toBe("anthropic");
+    expect(providerForModel("opus", "claude-code")).toBe("anthropic");
+    expect(providerForModel("sonnet", "claude-code")).toBe("anthropic");
+    expect(providerForModel("haiku", "claude-code")).toBe("anthropic");
+  });
+
+  it("resolves the `default` sentinel by backend, and everything else to OpenAI", () => {
+    expect(providerForModel("default", "claude-code")).toBe("anthropic");
+    expect(providerForModel("default", "codex")).toBe("openai");
+    expect(providerForModel("gpt-5.1-codex", "codex")).toBe("openai");
+  });
+});
+
 describe("runInit", () => {
   let root: string;
 
@@ -66,7 +144,7 @@ describe("runInit", () => {
     if (root !== undefined) await rm(root, { recursive: true, force: true });
   });
 
-  async function setup(): Promise<{
+  async function setup(configYaml = "models: {}\n"): Promise<{
     templateDir: string;
     entryUrl: string;
     target: string;
@@ -74,7 +152,7 @@ describe("runInit", () => {
     root = await mkdtemp(path.join(tmpdir(), "agent-cli-init-"));
     const templateDir = path.join(root, "templates", "default", ".agent");
     await mkdir(path.join(templateDir, "agents"), { recursive: true });
-    await writeFile(path.join(templateDir, "config.yaml"), "models: {}\n");
+    await writeFile(path.join(templateDir, "config.yaml"), configYaml);
     await writeFile(path.join(templateDir, "agents", "coder.md"), "# coder\n");
 
     const entryDir = path.join(root, "apps", "cli", "dist");
@@ -107,6 +185,58 @@ describe("runInit", () => {
     expect(code).toBe(1);
     const contents = await readdir(path.join(target, ".agent"));
     expect(contents).toEqual(["sentinel.txt"]);
+  });
+
+  it("seeds the project's models from the global configuration", async () => {
+    const { entryUrl, target } = await setup(TEMPLATE_YAML);
+
+    const code = await runInit({
+      cwd: target,
+      entryUrl,
+      config: kapelConfig(),
+    });
+
+    expect(code).toBe(0);
+    const yaml = await readFile(
+      path.join(target, ".agent", "config.yaml"),
+      "utf8",
+    );
+    expect(yaml).toBe(
+      [
+        "models:",
+        "  lead:",
+        "    provider: anthropic",
+        "    model: opus",
+        "  worker:",
+        "    provider: anthropic",
+        "    model: sonnet",
+        "  cheap:",
+        "    provider: anthropic",
+        "    model: haiku",
+        "  reviewer:",
+        "    provider: anthropic",
+        "    model: opus",
+        "",
+        "agents:",
+        "  orchestrator: lead",
+        "",
+        "# a trailing comment the template ships",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("copies the template verbatim when nothing is configured", async () => {
+    const { entryUrl, target } = await setup(TEMPLATE_YAML);
+
+    const code = await runInit({ cwd: target, entryUrl });
+
+    expect(code).toBe(0);
+    const yaml = await readFile(
+      path.join(target, ".agent", "config.yaml"),
+      "utf8",
+    );
+    expect(yaml).toBe(TEMPLATE_YAML);
   });
 
   it("overwrites an existing .agent when --force is passed", async () => {
