@@ -337,9 +337,9 @@ function codexFileText(item) {
     if (typeof change === "string")
       paths.push(change);
     else if (isRecord7(change)) {
-      const path13 = str2(change.path) ?? str2(change.file);
-      if (path13 !== void 0)
-        paths.push(path13);
+      const path14 = str2(change.path) ?? str2(change.file);
+      if (path14 !== void 0)
+        paths.push(path14);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -547,7 +547,7 @@ var init_dist = __esm({
 });
 
 // apps/cli/dist/index.js
-import path12 from "node:path";
+import path13 from "node:path";
 import { Command } from "commander";
 
 // apps/cli/dist/backend.js
@@ -2645,8 +2645,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path13 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path13}: ${issue.message}`;
+    const path14 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path14}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -4352,8 +4352,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path13 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path13}: ${issue.message}`;
+    const path14 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path14}: ${issue.message}`;
   });
 }
 
@@ -5665,9 +5665,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path13 = record.slice(3);
-    if (path13 !== "")
-      paths.add(path13);
+    const path14 = record.slice(3);
+    if (path14 !== "")
+      paths.add(path14);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -6281,20 +6281,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path13;
+  let path14;
   let branch;
   const flush = () => {
-    if (path13 !== void 0) {
-      entries.push({ path: path13, branch });
+    if (path14 !== void 0) {
+      entries.push({ path: path14, branch });
     }
-    path13 = void 0;
+    path14 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path13 = value.slice("worktree ".length);
+      path14 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -6302,11 +6302,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path13) {
+async function realPathOrSelf(path14) {
   try {
-    return await realpath(path13);
+    return await realpath(path14);
   } catch {
-    return resolve2(path13);
+    return resolve2(path14);
   }
 }
 function isUnder(parent, child) {
@@ -6345,16 +6345,16 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path13 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path14 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path13, branch, signal);
-    await mkdir3(dirname2(path13), { recursive: true });
-    await runGit2(["worktree", "add", path13, "-b", branch, baseCommit], {
+    await this.#removeLeftovers(path14, branch, signal);
+    await mkdir3(dirname2(path14), { recursive: true });
+    await runGit2(["worktree", "add", path14, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
       signal
     });
-    return { path: path13, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    return { path: path14, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -6602,13 +6602,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path13, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path13], {
+  async #removeLeftovers(path14, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path14], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path13, { recursive: true, force: true });
+    await rm(path14, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -6629,11 +6629,11 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path13 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path13.startsWith(ignored)) {
+      const path14 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path14.startsWith(ignored)) {
         continue;
       }
-      paths.push(path13);
+      paths.push(path14);
     }
     return paths;
   }
@@ -7279,12 +7279,14 @@ var FIRST_RUN_INTRO = [
   "kapel is not configured yet \u2014 a few questions, once (skip with --no-setup).",
   ""
 ];
-function ttyWizardPrompt(io) {
+var noSuspend = (fn) => fn();
+function ttyWizardPrompt(io, suspend) {
   const target = io ?? {
     input: process.stdin,
     output: process.stdout
   };
-  return { select: (options) => runSelectPrompt(target, options) };
+  const run = suspend ?? noSuspend;
+  return { select: (options) => run(() => runSelectPrompt(target, options)) };
 }
 async function checkBackendAvailability(backend, env = process.env) {
   if (backend === "claude-code") {
@@ -7310,7 +7312,7 @@ async function ensureFirstRunConfig(options) {
   const write2 = options.write ?? ((line) => {
     console.log(line);
   });
-  const prompt = ttyWizardPrompt(options.io);
+  const prompt = ttyWizardPrompt(options.io, options.suspend);
   let announced = false;
   const announcingPrompt = {
     select: async (selectOptions) => {
@@ -7501,20 +7503,31 @@ function createPrompter(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const state = options.state;
+  const ask2 = options.ask;
   return {
     ask: async (request) => {
       state.active = true;
       try {
-        return await askOnce(request, input, output);
+        return ask2 === void 0 ? await askOnce(request, input, output) : await askVia(request, ask2);
       } finally {
         state.active = false;
       }
     }
   };
 }
+function formatPermissionQuery(request) {
+  const preview = previewInput(request.input);
+  return `allow ${request.tool}? ${preview} [y/N] `;
+}
+async function askVia(request, ask2) {
+  const answer = await ask2(formatPermissionQuery(request));
+  if (typeof answer !== "string")
+    return false;
+  const normalized = answer.trim().toLowerCase();
+  return normalized === "y" || normalized === "yes";
+}
 function askOnce(request, input, output) {
   const rl = readline2.createInterface({ input, output, terminal: true });
-  const preview = previewInput(request.input);
   return new Promise((resolve5) => {
     let settled = false;
     const finish = (value) => {
@@ -7525,7 +7538,7 @@ function askOnce(request, input, output) {
       resolve5(value);
     };
     rl.on("SIGINT", () => finish(false));
-    rl.question(`allow ${request.tool}? ${preview} [y/N] `, (answer) => {
+    rl.question(formatPermissionQuery(request), (answer) => {
       const normalized = answer.trim().toLowerCase();
       finish(normalized === "y" || normalized === "yes");
     });
@@ -9098,9 +9111,9 @@ async function runInit(options) {
 }
 
 // apps/cli/dist/interactive.js
-import { mkdir as mkdir4 } from "node:fs/promises";
-import path7 from "node:path";
-import * as readline3 from "node:readline";
+import { mkdir as mkdir5 } from "node:fs/promises";
+import path8 from "node:path";
+import * as readline4 from "node:readline";
 
 // apps/cli/dist/delegated-chat.js
 var DelegatedUsage = class {
@@ -9161,6 +9174,269 @@ function createDelegatedChatSession(options) {
     supportsContinuation: claudeCode,
     ...options.events === void 0 ? {} : { events: options.events }
   }, options.messages ?? [], options.sessionRef);
+}
+
+// apps/cli/dist/history.js
+import { mkdir as mkdir4, readFile as readFile11, writeFile as writeFile5 } from "node:fs/promises";
+import path7 from "node:path";
+var HISTORY_LIMIT = 1e3;
+var TRIM_THRESHOLD = HISTORY_LIMIT * 2;
+function historyFilePath(env) {
+  return path7.join(kapelConfigDir(env), "history");
+}
+async function loadHistory(env) {
+  let raw;
+  try {
+    raw = await readFile11(historyFilePath(env), "utf8");
+  } catch {
+    return [];
+  }
+  const lines = raw.split("\n").filter((line) => line.trim() !== "");
+  const newestFirst = lines.reverse();
+  return newestFirst.slice(0, HISTORY_LIMIT);
+}
+function createHistoryAppender(env) {
+  const filePath = historyFilePath(env);
+  let chain = Promise.resolve();
+  let lastEntry;
+  let dirEnsured = false;
+  let lineCount;
+  async function ensureDir() {
+    if (dirEnsured)
+      return;
+    await mkdir4(path7.dirname(filePath), { recursive: true });
+    dirEnsured = true;
+  }
+  async function currentLineCount() {
+    try {
+      const raw = await readFile11(filePath, "utf8");
+      return raw.split("\n").filter((line) => line.trim() !== "").length;
+    } catch {
+      return 0;
+    }
+  }
+  async function appendOne(entry) {
+    try {
+      await ensureDir();
+      await writeFile5(filePath, `${entry}
+`, { flag: "a" });
+      lineCount = lineCount === void 0 ? await currentLineCount() : lineCount + 1;
+      if (lineCount > TRIM_THRESHOLD) {
+        await trim();
+      }
+    } catch {
+    }
+  }
+  async function trim() {
+    let raw;
+    try {
+      raw = await readFile11(filePath, "utf8");
+    } catch {
+      return;
+    }
+    const lines = raw.split("\n").filter((line) => line.trim() !== "");
+    const trimmed = lines.slice(-HISTORY_LIMIT);
+    await writeFile5(filePath, `${trimmed.join("\n")}
+`);
+    lineCount = trimmed.length;
+  }
+  return (entry) => {
+    if (entry === lastEntry)
+      return;
+    lastEntry = entry;
+    chain = chain.then(() => appendOne(entry));
+  };
+}
+
+// apps/cli/dist/input.js
+import * as readline3 from "node:readline";
+function initialAssembly() {
+  return { pending: [] };
+}
+var CONTINUATION_PROMPT = "... ";
+function reduceAssemblyLine(state, line) {
+  if (line === "" && state.pending.length > 0) {
+    return { type: "message", text: state.pending.join("\n") };
+  }
+  const endsInBackslash = line.endsWith("\\");
+  const endsInEscapedBackslash = line.endsWith("\\\\");
+  if (endsInBackslash && !endsInEscapedBackslash) {
+    const stripped = line.slice(0, -1);
+    return {
+      type: "continue",
+      state: { pending: [...state.pending, stripped] }
+    };
+  }
+  const finalLine = endsInEscapedBackslash ? line.slice(0, -1) : line;
+  const lines = [...state.pending, finalLine];
+  return { type: "message", text: lines.join("\n") };
+}
+function historyEntryFor(message) {
+  return message.replace(/\n/g, " ").trim();
+}
+var INPUT_SIGINT = /* @__PURE__ */ Symbol("input-sigint");
+var DEFAULT_PASTE_WINDOW_MS = 15;
+function rlHistory(rl) {
+  const history = rl.history;
+  return Array.isArray(history) ? history : void 0;
+}
+function createInputManager(options) {
+  const pasteWindowMs = options.pasteWindowMs ?? DEFAULT_PASTE_WINDOW_MS;
+  const rl = readline3.createInterface({
+    input: options.input,
+    output: options.output,
+    terminal: true,
+    history: options.history ? [...options.history] : [],
+    historySize: 200,
+    ...options.completer ? { completer: options.completer } : {}
+  });
+  let closed = false;
+  let readPending;
+  let questionPending;
+  function clearCoalesceTimer() {
+    if (readPending?.coalesceTimer !== void 0) {
+      clearTimeout(readPending.coalesceTimer);
+      readPending.coalesceTimer = void 0;
+    }
+  }
+  function fixupHistoryFor(message) {
+    const entry = historyEntryFor(message);
+    if (entry === "")
+      return;
+    options.onHistoryAppend?.(entry);
+    const history = rlHistory(rl);
+    if (history === void 0)
+      return;
+    const linesTyped = message.split("\n").length;
+    history.splice(0, Math.min(linesTyped, history.length));
+    if (history[0] !== entry) {
+      history.unshift(entry);
+    }
+  }
+  function resolveRead(value) {
+    if (readPending === void 0)
+      return;
+    clearCoalesceTimer();
+    const { resolve: resolve5 } = readPending;
+    readPending = void 0;
+    resolve5(value);
+  }
+  function scheduleCoalesceFlush() {
+    if (readPending === void 0)
+      return;
+    clearCoalesceTimer();
+    readPending.coalesceTimer = setTimeout(() => {
+      if (readPending === void 0)
+        return;
+      const message = readPending.coalesced ?? "";
+      readPending.assembly = initialAssembly();
+      fixupHistoryFor(message);
+      resolveRead(message);
+    }, pasteWindowMs);
+  }
+  rl.on("line", (line) => {
+    if (questionPending !== void 0) {
+      return;
+    }
+    if (readPending === void 0)
+      return;
+    const action = reduceAssemblyLine(readPending.assembly, line);
+    if (action.type === "continue") {
+      readPending.assembly = action.state;
+      rl.setPrompt(CONTINUATION_PROMPT);
+      rl.prompt();
+      return;
+    }
+    readPending.assembly = initialAssembly();
+    readPending.coalesced = readPending.coalesced === void 0 ? action.text : `${readPending.coalesced}
+${action.text}`;
+    scheduleCoalesceFlush();
+  });
+  rl.on("SIGINT", () => {
+    if (questionPending !== void 0) {
+      const { resolve: resolve5 } = questionPending;
+      questionPending = void 0;
+      resolve5(INPUT_SIGINT);
+      return;
+    }
+    if (readPending !== void 0) {
+      readPending.assembly = initialAssembly();
+      resolveRead(INPUT_SIGINT);
+      return;
+    }
+    options.onIdleSigint?.();
+  });
+  rl.on("close", () => {
+    closed = true;
+    if (questionPending !== void 0) {
+      const { resolve: resolve5 } = questionPending;
+      questionPending = void 0;
+      resolve5(void 0);
+    }
+    resolveRead(void 0);
+  });
+  return {
+    readMessage(promptText) {
+      if (closed)
+        return Promise.resolve(void 0);
+      if (readPending !== void 0 || questionPending !== void 0) {
+        throw new Error("InputManager.readMessage: a read is already in progress");
+      }
+      return new Promise((resolve5) => {
+        readPending = {
+          resolve: resolve5,
+          assembly: initialAssembly(),
+          promptText,
+          coalesceTimer: void 0,
+          coalesced: void 0
+        };
+        rl.setPrompt(promptText);
+        rl.prompt();
+      });
+    },
+    question(query) {
+      if (closed)
+        return Promise.resolve(void 0);
+      if (readPending !== void 0 || questionPending !== void 0) {
+        throw new Error("InputManager.question: a read is already in progress");
+      }
+      return new Promise((resolve5) => {
+        questionPending = { resolve: resolve5 };
+        rl.question(query, (answer) => {
+          if (questionPending === void 0)
+            return;
+          questionPending = void 0;
+          const history = rlHistory(rl);
+          if (history !== void 0 && history[0] === answer) {
+            history.shift();
+          }
+          resolve5(answer);
+        });
+      });
+    },
+    async withSuspended(fn) {
+      const input = options.input;
+      const wasRaw = input.isRaw === true;
+      rl.pause();
+      input.setRawMode?.(false);
+      try {
+        return await fn();
+      } finally {
+        const isTty = options.input.isTTY;
+        input.setRawMode?.(wasRaw || isTty === true);
+        rl.resume();
+        if (readPending !== void 0) {
+          rl.setPrompt(readPending.promptText);
+          rl.prompt();
+        }
+      }
+    },
+    close() {
+      if (closed)
+        return;
+      rl.close();
+    }
+  };
 }
 
 // apps/cli/dist/orchestrate.js
@@ -9483,7 +9759,7 @@ async function runOrchestrate(objective, options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.3.0";
+var CLI_VERSION = "0.4.0";
 var SHORT_ID = 8;
 var SESSIONS_LIMIT = 20;
 function shortId(id) {
@@ -9637,6 +9913,13 @@ var SLASH_COMMANDS = [
     help: "run the multi-agent pipeline on an objective"
   }
 ];
+function slashCompleter(line) {
+  if (!line.startsWith("/"))
+    return [[], line];
+  const names = SLASH_COMMANDS.map((command) => `/${command.name}`);
+  const hits = names.filter((name) => name.startsWith(line));
+  return [hits.length > 0 ? hits : names, line];
+}
 function errorText2(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -9946,6 +10229,7 @@ async function createInteractiveController(deps) {
       cwd,
       ...isDelegatedBackend(backend) ? [approvalsLine(backend)] : [],
       "type /help for commands, /exit to quit",
+      "\\ + Enter for multiline input, \u2191/\u2193 to recall, tab-complete /commands",
       ""
     ],
     handleLine: async (line, signal) => {
@@ -9959,40 +10243,26 @@ async function createInteractiveController(deps) {
   };
 }
 async function openChatStore(workspacePath) {
-  const agentDir = path7.join(workspacePath, ".agent");
+  const agentDir = path8.join(workspacePath, ".agent");
   try {
-    await mkdir4(agentDir, { recursive: true });
+    await mkdir5(agentDir, { recursive: true });
     return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
   } catch {
     return void 0;
   }
 }
 var SIGINT_LINE = /* @__PURE__ */ Symbol("sigint");
-function ttyLineSource() {
+function inputManagerLineSource(manager) {
   return {
-    next: (promptText) => new Promise((resolve5) => {
-      const rl = readline3.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        terminal: true
-      });
-      let settled = false;
-      const finish = (value) => {
-        if (settled)
-          return;
-        settled = true;
-        rl.close();
-        resolve5(value);
-      };
-      rl.on("SIGINT", () => finish(SIGINT_LINE));
-      rl.on("close", () => finish(void 0));
-      rl.question(promptText, (answer) => finish(answer));
-    }),
-    close: () => void 0
+    next: async (promptText) => {
+      const result = await manager.readMessage(promptText);
+      return result === INPUT_SIGINT ? SIGINT_LINE : result;
+    },
+    close: () => manager.close()
   };
 }
 function pipedLineSource() {
-  const rl = readline3.createInterface({
+  const rl = readline4.createInterface({
     input: process.stdin,
     terminal: false
   });
@@ -10061,7 +10331,7 @@ async function runInteractive(options) {
     console.error('--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".');
     return 1;
   }
-  const workspacePath = path7.resolve(options.cwd);
+  const workspacePath = path8.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const backend = resolveBackendSetting(options.backend, process.env, options.config).value;
   const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config);
@@ -10086,10 +10356,22 @@ async function runInteractive(options) {
     const interactiveTty = process.stdin.isTTY === true;
     const renderer = new TextRenderer();
     const promptState = createPromptState();
+    const activeTurn = {
+      current: void 0
+    };
+    const inputManager = interactiveTty ? createInputManager({
+      input: process.stdin,
+      output: process.stdout,
+      history: await loadHistory(),
+      onHistoryAppend: createHistoryAppender(),
+      completer: slashCompleter,
+      onIdleSigint: () => activeTurn.current?.abort()
+    }) : void 0;
     const prompter = createPrompter({
       yes: options.yes,
       interactive: interactiveTty,
-      state: promptState
+      state: promptState,
+      ...inputManager === void 0 ? {} : { ask: (query) => inputManager.question(query) }
     });
     const nativeUsage = new UsageTracker();
     const delegatedUsage = new DelegatedUsage();
@@ -10163,7 +10445,10 @@ async function runInteractive(options) {
       orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
       ...wizardTty ? {
         configure: () => runConfigWizard({
-          prompt: ttyWizardPrompt(),
+          // `/config` runs while the REPL's own InputManager still owns
+          // stdin — suspend it around the picker so the two don't fight
+          // over raw-mode keypresses.
+          prompt: ttyWizardPrompt(void 0, inputManager === void 0 ? void 0 : (fn) => inputManager.withSuspended(fn)),
           write: (line) => {
             console.log(line);
           },
@@ -10179,14 +10464,15 @@ async function runInteractive(options) {
       const label = started.start.title === "" ? shortId(started.start.sessionId) : started.start.title;
       console.log(dim(`resumed ${label} (${started.start.messages.length} messages)`, color));
     }
-    const lineSource = interactiveTty ? ttyLineSource() : pipedLineSource();
+    const lineSource = inputManager === void 0 ? pipedLineSource() : inputManagerLineSource(inputManager);
     try {
       return await replLoop({
         controller,
         lines: lineSource,
         promptState,
         promptText: dim("kapel> ", color),
-        color
+        color,
+        activeTurn
       });
     } finally {
       lineSource.close();
@@ -10201,7 +10487,7 @@ async function runInteractive(options) {
   }
 }
 async function replLoop(args) {
-  const { controller, lines, promptState, promptText, color } = args;
+  const { controller, lines, promptState, promptText, color, activeTurn } = args;
   let armed = false;
   for (; ; ) {
     const line = await lines.next(promptText);
@@ -10220,6 +10506,8 @@ async function replLoop(args) {
     }
     armed = false;
     const turn = new AbortController();
+    if (activeTurn !== void 0)
+      activeTurn.current = turn;
     const onSigint = () => {
       if (promptState.active)
         return;
@@ -10231,6 +10519,8 @@ async function replLoop(args) {
       result = await controller.handleLine(line, turn.signal);
     } finally {
       process.off("SIGINT", onSigint);
+      if (activeTurn !== void 0)
+        activeTurn.current = void 0;
     }
     if (result.effect === "exit")
       return 0;
@@ -10254,8 +10544,8 @@ function orchestrateOptionsFor(options, alias) {
 }
 
 // apps/cli/dist/policy.js
-import { readFile as readFile11, writeFile as writeFile5 } from "node:fs/promises";
-import path8 from "node:path";
+import { readFile as readFile12, writeFile as writeFile6 } from "node:fs/promises";
+import path9 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
@@ -10267,7 +10557,7 @@ function jsonLine3(output, value) {
 }
 async function readOptionalFile2(filePath) {
   try {
-    return await readFile11(filePath, "utf8");
+    return await readFile12(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -10320,7 +10610,7 @@ async function loadProjectForPolicy(workspacePath, output, json) {
 }
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path8.resolve(options.cwd);
+  const workspacePath = path9.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
@@ -10376,8 +10666,8 @@ async function runPolicyCompile(options, deps = {}) {
   }
   const lock = createLockfile({ markdown, result, model: model.id });
   const serialized = serializeLockfile(lock);
-  const lockPath = path8.join(project.root, LOCK_FILE_NAME2);
-  await writeFile5(lockPath, serialized, "utf8");
+  const lockPath = path9.join(project.root, LOCK_FILE_NAME2);
+  await writeFile6(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
     ...validationWarnings.map((issue) => issue.message)
@@ -10402,13 +10692,13 @@ async function runPolicyCompile(options, deps = {}) {
 }
 async function runPolicyCheck(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path8.resolve(options.cwd);
+  const workspacePath = path9.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path8.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path9.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   if (!status.fresh) {
@@ -10452,13 +10742,13 @@ async function runPolicyCheck(options, deps = {}) {
 }
 async function runPolicyExplain(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path8.resolve(options.cwd);
+  const workspacePath = path9.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path8.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path9.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   let lock;
@@ -10502,12 +10792,12 @@ async function runPolicyExplain(options, deps = {}) {
 }
 
 // apps/cli/dist/resume-cmd.js
-import { readFile as readFile12 } from "node:fs/promises";
-import path9 from "node:path";
+import { readFile as readFile13 } from "node:fs/promises";
+import path10 from "node:path";
 var LOCK_FILE_NAME3 = "orchestration.lock.json";
 async function readOptionalFile3(filePath) {
   try {
-    return await readFile12(filePath, "utf8");
+    return await readFile13(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -10528,7 +10818,7 @@ function stableJson(value) {
 }
 async function policyDriftWarning(project, snapshot) {
   const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile3(path9.join(project.root, LOCK_FILE_NAME3));
+  const raw = await readOptionalFile3(path10.join(project.root, LOCK_FILE_NAME3));
   const status = checkLock(markdown, raw);
   const tail4 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
   if (!status.fresh) {
@@ -10559,7 +10849,7 @@ async function rebuildGraph(store, runId, plan, completed) {
 }
 async function runResume(runId, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
-  const workspacePath = path9.resolve(options.cwd);
+  const workspacePath = path10.resolve(options.cwd);
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
   const fail2 = (message) => {
     if (options.json)
@@ -10644,9 +10934,9 @@ async function runResume(runId, options, deps = {}) {
 }
 
 // apps/cli/dist/run-claude-code.js
-import path10 from "node:path";
+import path11 from "node:path";
 async function runClaudeCodeObjective(objective, options) {
-  const workspacePath = path10.resolve(options.cwd);
+  const workspacePath = path11.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await ClaudeCodeBackend.checkAvailability();
   if (!availability.installed) {
@@ -10684,9 +10974,9 @@ async function runClaudeCodeObjective(objective, options) {
 }
 
 // apps/cli/dist/run-codex.js
-import path11 from "node:path";
+import path12 from "node:path";
 async function runCodexObjective(objective, options) {
-  const workspacePath = path11.resolve(options.cwd);
+  const workspacePath = path12.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await CodexBackend.checkAvailability();
   if (!availability.installed) {
@@ -10965,7 +11255,7 @@ program.command("init").description("Create a .agent configuration in the curren
   const cwd = command.optsWithGlobals().cwd;
   const config = await loadKapelConfig();
   process.exitCode = await runInit({
-    cwd: path12.resolve(cwd),
+    cwd: path13.resolve(cwd),
     force: opts.force,
     ...config === void 0 ? {} : { config }
   });
@@ -10983,7 +11273,7 @@ program.command("config").description("Configure which backend and models kapel 
 });
 program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
-  await loadDotEnvFile(path12.resolve(cwd));
+  await loadDotEnvFile(path13.resolve(cwd));
   const entries = await listModels(process.env);
   if (entries.length === 0) {
     console.log("(no models registered)");
