@@ -26,6 +26,7 @@ import type {
 import {
   createInteractiveController,
   inputManagerLineSource,
+  instructionsBannerLine,
   matchChatSession,
   openChatStore,
   resolveStartSession,
@@ -748,6 +749,19 @@ describe("interactive helpers", () => {
 
   it("shortens ids to eight characters", () => {
     expect(shortId("0123456789abcdef")).toBe("01234567");
+  });
+
+  it("instructionsBannerLine is undefined when nothing was loaded", () => {
+    expect(instructionsBannerLine([])).toBeUndefined();
+  });
+
+  it("instructionsBannerLine comma-joins the sources that were loaded", () => {
+    expect(instructionsBannerLine(["AGENTS.md"])).toBe(
+      "instructions: AGENTS.md",
+    );
+    expect(instructionsBannerLine(["AGENTS.md", ".agent/AGENTS.md"])).toBe(
+      "instructions: AGENTS.md, .agent/AGENTS.md",
+    );
   });
 });
 

@@ -6,6 +6,7 @@ import type { AgentDefinition } from "@agent/core";
 import type { KapelConfig } from "./config.js";
 import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
+import { composeSystemPrompt, loadInstructions } from "./instructions.js";
 import { buildRegistry, credentialHintForProvider } from "./models.js";
 import { DEFAULT_PERMISSIONS } from "./permissions.js";
 import { createPrompter, createPromptState } from "./prompter.js";
@@ -119,12 +120,15 @@ export async function runObjective(
   });
 
   const usage = new UsageTracker();
+  const instructions = loadInstructions(workspacePath, process.env);
 
   const agent: AgentDefinition = {
     name: "agent",
     role: "worker",
     model,
-    systemPrompt: options.system ?? defaultSystemPrompt(workspacePath),
+    systemPrompt:
+      options.system ??
+      composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
     tools: builtinTools().map((tool) => tool.name),
     permissions: DEFAULT_PERMISSIONS,
   };

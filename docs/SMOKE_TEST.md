@@ -162,6 +162,18 @@ kapel "calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.tes
 추가 확인: `-y`(프롬프트 생략), `--json`(JSONL 스트림 — 대화형에서는 지원하지
 않고 안내 후 종료 코드 1), Ctrl-C(중단), `--timeout 30`.
 
+**`AGENTS.md` 로딩** 확인 — 같은 저장소에 프로젝트 지시 파일을 두고 다시 실행합니다:
+
+```bash
+echo 'always run `node calc.test.js` after every edit' > AGENTS.md
+kapel
+```
+
+**기대 동작**: 배너 다음 줄에 `instructions: AGENTS.md`가 뜨고, 첫 턴부터 그
+규칙을 따릅니다. `.agent/AGENTS.md`(kapel 전용 규칙)와 `~/.kapel/AGENTS.md`
+(`$KAPEL_CONFIG_DIR` 우선, 머신/사용자 전역 규칙)도 같은 방식으로 합쳐지며,
+존재하는 파일만 배너에 나열됩니다 — 아무 파일도 없으면 그 줄 자체가 생략됩니다.
+
 ## 3. 시나리오 B — Codex 백엔드 (OpenAI OAuth)
 
 ```bash

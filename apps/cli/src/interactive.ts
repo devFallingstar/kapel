@@ -57,6 +57,7 @@ import {
   INPUT_SIGINT,
   type InputManager,
 } from "./input.js";
+import { composeSystemPrompt, loadInstructions } from "./instructions.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import {
   DEFAULT_ISOLATION,
@@ -511,6 +512,17 @@ export function bannerModel(backend: BackendName, modelAlias: string): string {
 export function approvalsLine(backend: BackendName): string {
   const cli = backend === "codex" ? "Codex" : "Claude Code";
   return `approvals are enforced by the ${cli} CLI — kapel does not prompt here`;
+}
+
+/**
+ * The banner line naming which `AGENTS.md` files were found, or `undefined`
+ * when none were — the shell only prints a line when this returns one.
+ */
+export function instructionsBannerLine(
+  sources: readonly string[],
+): string | undefined {
+  if (sources.length === 0) return undefined;
+  return `instructions: ${sources.join(", ")}`;
 }
 
 /**
@@ -1118,6 +1130,7 @@ export async function runInteractive(
 
   const workspacePath = path.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
+  const instructions = loadInstructions(workspacePath, process.env);
 
   // `.env` is loaded first so a workspace-local `AGENT_BACKEND`/`AGENT_MODEL`
   // takes part in the precedence chain exactly like a shell variable.
@@ -1252,7 +1265,9 @@ export async function runInteractive(
         name: "agent",
         role: "worker",
         model: args.model,
-        systemPrompt: options.system ?? defaultSystemPrompt(workspacePath),
+        systemPrompt:
+          options.system ??
+          composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
         tools: builtinTools().map((tool) => tool.name),
         permissions: DEFAULT_PERMISSIONS,
       };
@@ -1326,6 +1341,9 @@ export async function runInteractive(
 
     const color = process.stdout.isTTY === true;
     for (const line of controller.banner(workspacePath)) console.log(line);
+    const instructionsLine = instructionsBannerLine(instructions.sources);
+    if (instructionsLine !== undefined)
+      console.log(dim(instructionsLine, color));
     if (started.start.persisted) {
       const label =
         started.start.title === ""

@@ -161,6 +161,16 @@ config when you have one (`lead` and `reviewer` from the orchestrator model,
 `worker` and `cheap` from the two worker models), and copies the template
 unchanged when you don't.
 
+### Project instructions (AGENTS.md)
+
+Drop an `AGENTS.md` in your repo and kapel follows it from the first turn — the same file Codex and opencode already read, and that Claude Code picks up via `@AGENTS.md` imports, so a repository only has to write its rules once. Up to three are merged into the system prompt, machine-level first so a project's rules add to (never silently lose to) your personal ones:
+
+1. `~/.kapel/AGENTS.md` (`$KAPEL_CONFIG_DIR` overrides the directory) — your own rules, for every project.
+2. `AGENTS.md` at the repo root — project rules, shared with other agents.
+3. `.agent/AGENTS.md` — kapel-specific overrides.
+
+All that exist are concatenated in that order; a missing file is simply skipped. The interactive banner names whichever were loaded (`instructions: AGENTS.md, .agent/AGENTS.md`), and one-shot runs (`kapel "<objective>"`) apply them the same way, silently. The combined text is capped at 32 KiB. An explicit `--system "<prompt>"` replaces the default system prompt outright and is not combined with `AGENTS.md` files. Delegated backends (`--backend codex`, `--backend claude-code`) run the external CLI's own agent loop, which does not take a system prompt from kapel — those AGENTS.md files are not injected there, though the CLIs themselves may already read AGENTS.md-style files on their own.
+
 ### Claude Code backend
 
 Want Claude models without an `ANTHROPIC_API_KEY`? Pass `--backend claude-code`
