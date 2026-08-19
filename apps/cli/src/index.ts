@@ -231,6 +231,7 @@ interface RawOrchestrateOpts {
   readonly workerMode: string;
   readonly isolation: string;
   readonly dryRun: boolean;
+  readonly validate: boolean;
 }
 
 function orchestrateOptions(
@@ -255,6 +256,7 @@ function orchestrateOptions(
     isolation: validateIsolation(opts.isolation),
     backend: validateBackendName(raw.backend),
     maxIterations,
+    validate: opts.validate,
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
   };
 }
@@ -309,6 +311,10 @@ program
     DEFAULT_ISOLATION,
   )
   .option("--dry-run", "plan only — same output as `agent plan`", false)
+  .option(
+    "--no-validate",
+    "skip the project's configured validators for this run",
+  )
   .action(
     async (objective: string[], opts: RawOrchestrateOpts, command: Command) => {
       await objectiveCommand(

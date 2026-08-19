@@ -1,14 +1,19 @@
+import { appendFile } from "node:fs/promises";
+import path from "node:path";
 import { UsageTracker } from "@agent/ai";
 import type {
   AgentProject,
+  ProjectValidator,
   RuntimeTask,
   TaskResult,
   WorkerExecutor,
 } from "@agent/coding-agent";
 import {
   ChildProcessWorkerExecutor,
+  ValidatingExecutor,
   WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
+import type { AgentEvent } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OrchestrateCommandOptions } from "../src/orchestrate.js";
 import {
@@ -31,6 +36,7 @@ import {
   ROUTING_POLICY,
   SAMPLE_PLAN,
   successResult,
+  task,
   writeLock,
 } from "./orchestration-fixtures.js";
 
@@ -38,12 +44,55 @@ import {
 function emptyProject(): AgentProject {
   return {
     root: "/virtual/.agent",
-    config: { models: {}, agentSlots: {} },
+    config: { models: {}, agentSlots: {}, validators: [] },
     agents: [],
     orchestrationMarkdown: undefined,
     knownAgentNames: () => new Set<string>(),
     agent: () => undefined,
   };
+}
+
+/** {@link emptyProject} with a `validation:` list, as `defaultExecutorFactory` sees it. */
+function projectWithValidators(
+  validators: readonly ProjectValidator[],
+): AgentProject {
+  const base = emptyProject();
+  return { ...base, config: { ...base.config, validators } };
+}
+
+/** A `RuntimeTask` of a mutating type, the only kind `ValidatingExecutor` gates. */
+function mutatingTask(id: string): RuntimeTask {
+  return {
+    spec: task(id, { type: "implementation" }),
+    status: "running",
+    attempts: 1,
+  };
+}
+
+/** A `WorkerExecutor` stub that just counts how many times it ran. */
+class CountingExecutor implements WorkerExecutor {
+  calls = 0;
+
+  async execute(runtimeTask: RuntimeTask): Promise<TaskResult> {
+    this.calls += 1;
+    return successResult(runtimeTask.spec.id, `${runtimeTask.spec.id} done`);
+  }
+}
+
+/** Appends a real `validation:` list onto a copied template's `.agent/config.yaml`. */
+async function appendValidatorsConfig(
+  workspacePath: string,
+  validators: readonly ProjectValidator[],
+): Promise<void> {
+  const lines = validators.map(
+    (validator) =>
+      `  - name: ${validator.name}\n    command: ${JSON.stringify(validator.command)}`,
+  );
+  await appendFile(
+    path.join(workspacePath, ".agent", "config.yaml"),
+    `\nvalidation:\n${lines.join("\n")}\n`,
+    "utf8",
+  );
 }
 
 /**
@@ -158,6 +207,7 @@ describe("defaultExecutorFactory / isolation", () => {
       workerMode: "child",
       backend: "native",
       isolation,
+      validate: true,
     };
   }
 
@@ -173,6 +223,145 @@ describe("defaultExecutorFactory / isolation", () => {
       factoryArgs("/does/not/matter", "none"),
     );
     expect(executor).toBeInstanceOf(ChildProcessWorkerExecutor);
+  });
+});
+
+describe("defaultExecutorFactory / validation", () => {
+  let workspace: string;
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace("cli-validation-test-");
+  });
+
+  afterEach(async () => {
+    await cleanupWorkspace(workspace);
+  });
+
+  /** `baseExecutorFactory` bypasses codex/child/in-process selection entirely. */
+  function factoryArgs(
+    overrides: Partial<Parameters<typeof defaultExecutorFactory>[0]> = {},
+  ): Parameters<typeof defaultExecutorFactory>[0] {
+    return {
+      project: emptyProject(),
+      workspacePath: workspace,
+      runId: "run-1",
+      events: { emit: () => undefined },
+      usage: new UsageTracker(),
+      workerMode: "in-process",
+      backend: "native",
+      isolation: "none",
+      validate: true,
+      ...overrides,
+    };
+  }
+
+  it("wraps the base executor and runs configured validators for a mutating task", async () => {
+    const events: AgentEvent[] = [];
+    const inner = new CountingExecutor();
+    const validators: ProjectValidator[] = [
+      { name: "typecheck", command: "true" },
+    ];
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs({
+        project: projectWithValidators(validators),
+        events: {
+          emit: (event) => {
+            events.push(event);
+          },
+        },
+        baseExecutorFactory: () => inner,
+      }),
+    );
+
+    expect(executor).toBeInstanceOf(ValidatingExecutor);
+
+    const result = await executor.execute(mutatingTask("T01"), "coder");
+
+    expect(inner.calls).toBe(1);
+    expect(result.status).toBe("success");
+    expect(result.tests).toEqual({
+      passed: 1,
+      failed: 0,
+      commands: ["true"],
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "validation.started",
+      "validation.completed",
+    ]);
+  });
+
+  it("fails the task when a configured validator fails", async () => {
+    const inner = new CountingExecutor();
+    const validators: ProjectValidator[] = [{ name: "lint", command: "false" }];
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs({
+        project: projectWithValidators(validators),
+        baseExecutorFactory: () => inner,
+      }),
+    );
+
+    const result = await executor.execute(mutatingTask("T01"), "coder");
+    expect(result.status).toBe("failed");
+    expect(result.unresolvedIssues.join("\n")).toContain(
+      'Validator "lint" failed',
+    );
+  });
+
+  it("does not wrap the base executor when validate is false", async () => {
+    const inner = new CountingExecutor();
+    const validators: ProjectValidator[] = [
+      { name: "typecheck", command: "true" },
+    ];
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs({
+        project: projectWithValidators(validators),
+        validate: false,
+        baseExecutorFactory: () => inner,
+      }),
+    );
+
+    expect(executor).toBe(inner);
+  });
+
+  it("does not wrap the base executor when the project has no validators", async () => {
+    const inner = new CountingExecutor();
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs({
+        project: projectWithValidators([]),
+        baseExecutorFactory: () => inner,
+      }),
+    );
+
+    expect(executor).toBe(inner);
+  });
+
+  it("does not wrap the base executor under --backend codex, even with validators configured", async () => {
+    const inner = new CountingExecutor();
+    const validators: ProjectValidator[] = [
+      { name: "typecheck", command: "true" },
+    ];
+
+    // `baseExecutorFactory` short-circuits the real codex-availability probe
+    // `defaultExecutorFactory` would otherwise run for `backend: "codex"`.
+    const executor = await defaultExecutorFactory(
+      factoryArgs({
+        project: projectWithValidators(validators),
+        backend: "codex",
+        baseExecutorFactory: () => inner,
+      }),
+    );
+
+    expect(executor).toBe(inner);
+
+    const result = await executor.execute(mutatingTask("T01"), "coder");
+    expect(inner.calls).toBe(1);
+    // Confirms validators genuinely never ran: a passing result carries no
+    // validator-shaped `tests.commands`.
+    expect(result.tests.commands).toEqual([]);
   });
 });
 
@@ -427,5 +616,91 @@ describe("agent orchestrate", () => {
     } finally {
       await cleanupWorkspace(bare);
     }
+  });
+
+  describe("run header validators note", () => {
+    it("prints a validators note when the project has validators configured", async () => {
+      await appendValidatorsConfig(workspace, [
+        { name: "typecheck", command: "true" },
+        { name: "test", command: "true" },
+      ]);
+      const { output, lines } = capture();
+
+      const code = await runOrchestrate(
+        "add a health endpoint",
+        options(workspace),
+        {
+          output,
+          renderer: new TextRenderer(new CapturingStream().asStream()),
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          executorFactory: () => new ScriptedExecutor(),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines).toContain("validators: typecheck, test");
+    });
+
+    it("omits the note under --no-validate", async () => {
+      await appendValidatorsConfig(workspace, [
+        { name: "typecheck", command: "true" },
+      ]);
+      const { output, lines } = capture();
+
+      const code = await runOrchestrate(
+        "add a health endpoint",
+        options(workspace, { validate: false }),
+        {
+          output,
+          renderer: new TextRenderer(new CapturingStream().asStream()),
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          executorFactory: () => new ScriptedExecutor(),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines.some((line) => line.startsWith("validators:"))).toBe(false);
+    });
+
+    it("omits the note under --backend codex even when validators are configured", async () => {
+      await appendValidatorsConfig(workspace, [
+        { name: "typecheck", command: "true" },
+      ]);
+      const { output, lines } = capture();
+
+      const code = await runOrchestrate(
+        "add a health endpoint",
+        options(workspace, { backend: "codex" }),
+        {
+          output,
+          renderer: new TextRenderer(new CapturingStream().asStream()),
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          // A custom executorFactory bypasses the real codex-availability
+          // probe entirely — this test is only about the header note.
+          executorFactory: () => new ScriptedExecutor(),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines.some((line) => line.startsWith("validators:"))).toBe(false);
+    });
+
+    it("omits the note when the project has no validators configured", async () => {
+      const { output, lines } = capture();
+
+      const code = await runOrchestrate(
+        "add a health endpoint",
+        options(workspace),
+        {
+          output,
+          renderer: new TextRenderer(new CapturingStream().asStream()),
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          executorFactory: () => new ScriptedExecutor(),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines.some((line) => line.startsWith("validators:"))).toBe(false);
+    });
   });
 });

@@ -182,12 +182,17 @@ export class TextRenderer implements Renderer {
       case "task.completed":
       case "task.escalated":
       case "task.cancelled":
+      case "task.low_confidence":
         this.#emitTaskLifecycle(event.type, taskIdOf(event, data), data);
         break;
       case "worktree.created":
       case "worktree.integrated":
       case "worktree.removed":
         this.#emitWorktree(event.type, taskIdOf(event, data), data);
+        break;
+      case "validation.started":
+      case "validation.completed":
+        this.#emitValidation(event.type, taskIdOf(event, data), data);
         break;
       default:
         break;
@@ -233,6 +238,18 @@ export class TextRenderer implements Renderer {
       case "task.cancelled": {
         const reason = stringOrUndefined(data.reason) ?? "cancelled";
         this.#write(`⊘ ${taskId} (${reason})`);
+        break;
+      }
+      case "task.low_confidence": {
+        const confidence =
+          typeof data.confidence === "number" ? data.confidence : 0;
+        const threshold =
+          typeof data.threshold === "number" ? data.threshold : 0;
+        const verdict =
+          data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
+        this.#write(
+          `↻ ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} — ${verdict}`,
+        );
         break;
       }
       default:
@@ -282,6 +299,45 @@ export class TextRenderer implements Renderer {
         if (data.keptBranch !== true) break;
         const branch = stringOrUndefined(data.branch) ?? "?";
         this.#write(this.#dim(`⎇ ${taskId} branch kept: ${branch}`));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Renders the `validation.*` events {@link ValidatingExecutor} emits around
+   * each configured validator command.
+   *
+   * Kept quiet and dim on the way in — a validator starting is background
+   * noise most of the time — but its result always lands, pass or fail, since
+   * that is what decides whether the task's work is going to be kept.
+   */
+  #emitValidation(
+    type: string,
+    taskId: string,
+    data: Record<string, unknown>,
+  ): void {
+    switch (type) {
+      case "validation.started": {
+        const name = stringOrUndefined(data.name) ?? "?";
+        this.#write(this.#dim(`⚙ ${taskId} validator ${name}…`));
+        break;
+      }
+      case "validation.completed": {
+        const name = stringOrUndefined(data.name) ?? "?";
+        const passed = data.passed === true;
+        const seconds =
+          typeof data.durationMs === "number" ? data.durationMs / 1000 : 0;
+        const duration = `${seconds.toFixed(1)}s`;
+        if (passed) {
+          this.#write(`  ✓ ${name} (${duration})`);
+          break;
+        }
+        const exitCode =
+          typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
+        this.#write(`  ✗ ${name} (exit ${exitCode}, ${duration})`);
         break;
       }
       default:

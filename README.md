@@ -113,6 +113,20 @@ This applies to every worker mode and to `--backend codex` alike; isolation is a
 
 Worktree isolation needs the workspace to be a git repository with at least one commit; if it isn't, `agent orchestrate` says so and exits before planning work, suggesting `--isolation none`. Should a run be killed mid-flight, leftover checkouts and `agent-task/*` branches can be cleaned up with `git worktree prune` plus `git branch -D`.
 
+#### Validation and review
+
+`.agent/config.yaml` can gate every mutating task on a `validation:` list:
+
+```yaml
+validation:
+  - name: typecheck
+    command: npm run typecheck
+  - name: test
+    command: npm test        # timeoutSeconds: 300  (optional, default 600)
+```
+
+Each command runs via `bash -lc` **inside the task's own worktree, before it is merged back**; a failing command fails the task (and cancels its dependents) instead of merging broken work, and its output streams as `validation.started`/`validation.completed` events. Failed and low-confidence results are retried per the policy's `escalation`/`defaultMaxAttempts` rules, rerouting to another agent when configured. `--no-validate` skips validators for one run; they're skipped under `--backend codex` regardless, since Codex reports one result per task with no hook to run a separate suite against. Separately, a policy's `review:` rules inject **blocking** review tasks for matching risk categories — a rejected verdict fails the task (and the run) the same way a failed validator does.
+
 `agent worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
 
 ## Project plan

@@ -18,6 +18,7 @@ import {
   DeterministicScheduler,
   PolicyRouter,
   TaskGraph,
+  ValidatingExecutor,
   WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
 import type { EventSink } from "@agent/protocol";
@@ -102,6 +103,14 @@ export interface OrchestrateCommandOptions extends PlanCommandOptions {
   /** Applied per task, not to the run as a whole. */
   readonly timeoutSeconds?: number;
   readonly maxIterations?: number;
+  /**
+   * Run the project's `.agent/config.yaml` `validation:` commands inside each
+   * mutating task's workspace before it counts as done. Defaults to `true`;
+   * `--no-validate` sets this to `false`. Has no effect when the project
+   * declares no validators, or under `--backend codex` — see
+   * {@link shouldRunValidators}.
+   */
+  readonly validate?: boolean;
 }
 
 export interface ExecutorFactoryArgs {
@@ -116,6 +125,15 @@ export interface ExecutorFactoryArgs {
   readonly isolation: IsolationMode;
   readonly taskTimeoutMs?: number;
   readonly maxIterations?: number;
+  /** Whether the run wants validators to gate mutating tasks; see {@link shouldRunValidators}. */
+  readonly validate: boolean;
+  /**
+   * Overrides the per-workspace base executor, bypassing the
+   * codex/child/in-process selection in {@link workspaceExecutorFactory}.
+   * Test-only injection point, mirroring `PreparePlanDeps.plannerFactory`;
+   * production callers never set this.
+   */
+  readonly baseExecutorFactory?: WorkspaceExecutorFactory;
 }
 
 /** Builds the executor the scheduler drives. Overridable in tests. */
@@ -201,16 +219,73 @@ async function workspaceExecutorFactory(
 }
 
 /**
- * Picks the executor for a run: the per-workspace executor above, wrapped in
- * worktree isolation unless `--isolation none` was asked for.
+ * Whether a run should gate its mutating tasks on the project's configured
+ * validators.
  *
- * The wrapper applies to every worker mode and to `--backend codex` alike —
- * isolation is a property of how tasks share the repository, not of what runs
- * them, and a Codex worker pointed at a task checkout behaves exactly like a
- * native one pointed at it.
+ * `--backend codex` runs its own agentic loop end-to-end and reports one
+ * result per task with no hook to run a separate command suite against; Codex
+ * tasks skip our validators for now, regardless of `--no-validate` or what
+ * `.agent/config.yaml` declares. Otherwise validators run whenever the
+ * project declares at least one and the caller didn't opt out with
+ * `--no-validate`.
+ */
+export function shouldRunValidators(
+  project: AgentProject,
+  backend: BackendName,
+  validate: boolean,
+): boolean {
+  return (
+    backend !== "codex" && validate && project.config.validators.length > 0
+  );
+}
+
+/**
+ * Wraps a per-workspace executor factory in {@link ValidatingExecutor} when
+ * {@link shouldRunValidators} says the run wants it; otherwise returns `base`
+ * unchanged.
+ *
+ * Composed *before* worktree isolation is applied (see
+ * {@link defaultExecutorFactory}) so that whichever path built `base` still
+ * receives the task's own workspace path — worktree or plain `cwd` alike —
+ * and validators run against the exact checkout the isolation layer is about
+ * to decide whether to merge.
+ */
+function withValidation(
+  base: WorkspaceExecutorFactory,
+  args: ExecutorFactoryArgs,
+): WorkspaceExecutorFactory {
+  if (!shouldRunValidators(args.project, args.backend, args.validate)) {
+    return base;
+  }
+  const validators = args.project.config.validators;
+  return (workspacePath) =>
+    new ValidatingExecutor({
+      inner: base(workspacePath),
+      validators,
+      workspacePath,
+      events: args.events,
+      runId: args.runId,
+    });
+}
+
+/**
+ * Picks the executor for a run: the per-workspace executor above, optionally
+ * gated on the project's validators, wrapped in worktree isolation unless
+ * `--isolation none` was asked for.
+ *
+ * The isolation wrapper applies to every worker mode and to `--backend codex`
+ * alike — isolation is a property of how tasks share the repository, not of
+ * what runs them, and a Codex worker pointed at a task checkout behaves
+ * exactly like a native one pointed at it. Validation, by contrast, is
+ * composed *inside* isolation (see {@link withValidation}): it has to run
+ * against the task's own checkout before that checkout is merged back, so it
+ * wraps the per-workspace factory rather than the whole thing.
  */
 export const defaultExecutorFactory: ExecutorFactory = async (args) => {
-  const createExecutor = await workspaceExecutorFactory(args);
+  const base =
+    args.baseExecutorFactory ?? (await workspaceExecutorFactory(args));
+  const createExecutor = withValidation(base, args);
+
   if (args.isolation === "none") return createExecutor(args.workspacePath);
 
   return new WorktreeIsolatedExecutor({
@@ -342,6 +417,8 @@ export async function runOrchestrate(
       ? undefined
       : options.timeoutSeconds * 1000;
 
+  const validate = options.validate ?? true;
+
   let executor: WorkerExecutor;
   try {
     executor = await (deps.executorFactory ?? defaultExecutorFactory)({
@@ -353,6 +430,7 @@ export async function runOrchestrate(
       workerMode: options.workerMode,
       backend: options.backend,
       isolation,
+      validate,
       ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       ...(options.maxIterations === undefined
         ? {}
@@ -374,6 +452,12 @@ export async function runOrchestrate(
     output.log(
       `Run ${runId} — ${prepared.plan.tasks.length} tasks, up to ${prepared.policy.maxConcurrency} at a time`,
     );
+    if (shouldRunValidators(prepared.project, options.backend, validate)) {
+      const names = prepared.project.config.validators
+        .map((validator) => validator.name)
+        .join(", ");
+      output.log(`validators: ${names}`);
+    }
   }
 
   try {

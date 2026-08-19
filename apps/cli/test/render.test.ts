@@ -317,6 +317,110 @@ describe("TextRenderer / worktree.* events", () => {
   });
 });
 
+describe("TextRenderer / validation.* events", () => {
+  function validationEvent(
+    type: string,
+    data: unknown,
+    taskId = "T01",
+  ): AgentEvent {
+    return { id: "evt-1", runId: "run-1", timestamp: 0, type, taskId, data };
+  }
+
+  it("announces a validator starting, dimmed", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      validationEvent("validation.started", {
+        name: "typecheck",
+        command: "npm run typecheck",
+      }),
+    );
+    expect(stream.lines).toEqual(["⚙ T01 validator typecheck…"]);
+  });
+
+  it("marks a passing validator with its duration", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      validationEvent("validation.completed", {
+        name: "typecheck",
+        passed: true,
+        exitCode: 0,
+        durationMs: 1234,
+      }),
+    );
+    expect(stream.lines).toEqual(["  ✓ typecheck (1.2s)"]);
+  });
+
+  it("marks a failing validator with its exit code and duration", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      validationEvent("validation.completed", {
+        name: "typecheck",
+        passed: false,
+        exitCode: 1,
+        durationMs: 3400,
+      }),
+    );
+    expect(stream.lines).toEqual(["  ✗ typecheck (exit 1, 3.4s)"]);
+  });
+
+  it("reports an unknown exit code when the process was killed by a signal", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      validationEvent("validation.completed", {
+        name: "test",
+        passed: false,
+        exitCode: null,
+        durationMs: 600000,
+      }),
+    );
+    expect(stream.lines).toEqual(["  ✗ test (exit unknown, 600.0s)"]);
+  });
+});
+
+describe("TextRenderer / task.low_confidence events", () => {
+  function lowConfidenceEvent(data: unknown, taskId = "T01"): AgentEvent {
+    return {
+      id: "evt-1",
+      runId: "run-1",
+      timestamp: 0,
+      type: "task.low_confidence",
+      taskId,
+      data,
+    };
+  }
+
+  it("reports a low-confidence result that will be redone", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      lowConfidenceEvent({
+        agent: "implementer",
+        confidence: 0.3,
+        threshold: 0.6,
+        rule: "low-conf",
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "↻ T01 low confidence 0.30 < 0.60 — redoing",
+    ]);
+  });
+
+  it("reports a low-confidence result accepted once attempts are exhausted", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      lowConfidenceEvent({
+        agent: "implementer",
+        confidence: 0.3,
+        threshold: 0.6,
+        rule: "low-conf",
+        accepted: true,
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "↻ T01 low confidence 0.30 < 0.60 — accepted (attempts exhausted)",
+    ]);
+  });
+});
+
 describe("TextRenderer#result / CodexRunResult", () => {
   it("shows the summary but no exit-code line on a clean success", () => {
     const { renderer: r, stream } = renderer();

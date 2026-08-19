@@ -75,11 +75,24 @@ Acceptance: two workers can safely modify independent areas in parallel.
 
 ## M5 — Validation, review, retry, escalation
 
-- [ ] test/typecheck/lint validators
-- [ ] mandatory policy-driven review
-- [ ] retry rules
-- [ ] model escalation rules
-- [ ] blocking review verdicts
+- [x] test/typecheck/lint validators (`.agent/config.yaml` `validation:` list;
+      `runValidators`/`ValidatingExecutor` run them inside the task's own
+      worktree before merge-back, tail-capped output, per-validator timeout;
+      CLI wiring: composed into `orchestrate`'s executor chain for native
+      backends, `--no-validate`, run-header note, skipped under `--backend
+      codex`)
+- [x] mandatory policy-driven review (policy `review:` rules injected onto
+      matching tasks during plan rewrite; `ReviewVerdictTool` forces a
+      structured decision)
+- [x] retry rules (`defaultMaxAttempts`/per-task attempt budget in the
+      deterministic scheduler; a failed or rejected attempt re-dispatches
+      until attempts are exhausted)
+- [x] model escalation rules (policy `escalation:` reroutes a task to another
+      agent after N failures or a confidence-below threshold; `task.escalated`
+      / `task.low_confidence` events)
+- [x] blocking review verdicts (`applyReviewVerdict`: a rejected or
+      never-submitted verdict becomes a `failed` TaskResult, which fails the
+      task's dependents and the run the same way any other failure does)
 
 Acceptance: a risky task cannot complete without required review, and failed workers escalate deterministically.
 
