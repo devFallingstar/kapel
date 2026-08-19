@@ -98,6 +98,7 @@ export class CodingAgentRuntime {
 export * from "@agent/orchestration";
 export * from "@agent/policy";
 export * from "./backends/index.js";
+export * from "./chat.js";
 export * from "./loop.js";
 export * from "./permissions.js";
 export * from "./platform/index.js";

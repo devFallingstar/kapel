@@ -121,6 +121,50 @@ function elisionMarker(originalLength: number): string {
   return `${ELISION_PREFIX}${originalLength} chars]`;
 }
 
+/** Content used for a tool result the loop never got to execute. */
+const CANCELLED_TOOL_RESULT = "[cancelled before execution]";
+
+/**
+ * Appends synthetic error results for any tool call the loop abandoned.
+ *
+ * The loop can unwind mid tool-batch (abort/timeout while a tool is running),
+ * leaving an assistant `toolCalls` turn whose later calls never got a `tool`
+ * message. That is harmless for a one-shot run — the array is discarded — but
+ * a retained chat history must stay replayable: providers reject a request
+ * whose assistant tool-call turn has unanswered calls. Emits no events: this
+ * is history hygiene, not an execution.
+ */
+function sealUnansweredToolCalls(messages: ModelMessage[]): void {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message === undefined) continue;
+    // Skip the results that were already recorded for the pending turn.
+    if (message.role === "tool") continue;
+    if (message.role !== "assistant") return;
+
+    const calls = message.toolCalls ?? [];
+    if (calls.length === 0) return;
+
+    const answered = new Set<string>();
+    for (let j = i + 1; j < messages.length; j += 1) {
+      const result = messages[j];
+      if (result?.role !== "tool") continue;
+      if (result.toolCallId !== undefined) answered.add(result.toolCallId);
+    }
+
+    for (const call of calls) {
+      if (answered.has(call.id)) continue;
+      messages.push({
+        role: "tool",
+        toolCallId: call.id,
+        isError: true,
+        content: CANCELLED_TOOL_RESULT,
+      });
+    }
+    return;
+  }
+}
+
 function buildUserContent(input: AgentRunInput): string {
   const context = input.context ?? [];
   if (context.length === 0) return input.instruction;
@@ -132,18 +176,40 @@ function buildUserContent(input: AgentRunInput): string {
 }
 
 /**
- * The M1 single-agent tool-call loop: stream a model turn, run any requested
- * tools (subject to the permission engine), feed the results back, repeat.
+ * The per-run machinery behind the tool-call loop: streaming a model turn,
+ * dispatching tools through the permission engine, compaction, usage
+ * forwarding, events, abort/timeout composition and result shaping.
+ *
+ * Split out of {@link AgentLoop} so a stateful chat session can drive the very
+ * same engine over a retained conversation. {@link drive} is deliberately
+ * history-agnostic: it takes whatever messages it is given and runs them to
+ * completion, mutating the array in place as the conversation grows.
+ *
+ * @internal Not part of the supported surface; use {@link AgentLoop} or
+ * `AgentChatSession`.
  */
-export class AgentLoop {
+export class AgentLoopEngine {
   readonly #options: AgentLoopOptions;
 
   constructor(options: AgentLoopOptions) {
     this.#options = options;
   }
 
-  async run(
-    input: AgentRunInput,
+  /** The fresh-conversation seed: the agent's system prompt plus the user turn. */
+  seed(input: AgentRunInput): ModelMessage[] {
+    return [
+      { role: "system", content: this.#options.agent.systemPrompt },
+      { role: "user", content: buildUserContent(input) },
+    ];
+  }
+
+  /**
+   * Drives `messages` until the model stops requesting tools, the iteration
+   * budget runs out, or the run aborts/fails. Appends every assistant turn and
+   * tool result to the array it was given.
+   */
+  async drive(
+    messages: ModelMessage[],
     context: AgentLoopRunContext,
   ): Promise<AgentLoopResult> {
     const { agent, tools } = this.#options;
@@ -173,16 +239,11 @@ export class AgentLoop {
       ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
     };
 
-    const messages: ModelMessage[] = [
-      { role: "system", content: agent.systemPrompt },
-      { role: "user", content: buildUserContent(input) },
-    ];
-
     let iterations = 0;
     let toolCalls = 0;
     let lastNonEmptyText = "";
 
-    await this.#emit(context, "loop.started", {
+    await this.emit(context, "loop.started", {
       agent: agent.name,
       model: agent.model.id,
       maxIterations,
@@ -215,7 +276,7 @@ export class AgentLoop {
           ...(turn.calls.length === 0 ? {} : { toolCalls: turn.calls }),
         });
 
-        await this.#emit(context, "model.turn.completed", {
+        await this.emit(context, "model.turn.completed", {
           ...(turn.text === "" ? {} : { text: turn.text }),
           toolCallCount: turn.calls.length,
           ...(turn.finishReason === undefined
@@ -256,6 +317,9 @@ export class AgentLoop {
         toolCalls,
       });
     } catch (error) {
+      // Whatever we abandoned mid-batch must not stay unanswered in history.
+      sealUnansweredToolCalls(messages);
+
       if (error instanceof LoopAbortedError || signal.aborted) {
         const timedOut =
           timeoutSignal?.aborted === true ||
@@ -389,7 +453,7 @@ export class AgentLoop {
     }
 
     if (elided > 0) {
-      await this.#emit(context, "context.compacted", {
+      await this.emit(context, "context.compacted", {
         elided,
         savedChars,
         messages: messages.length,
@@ -404,14 +468,14 @@ export class AgentLoop {
     context: AgentLoopRunContext,
     signal: AbortSignal,
   ): Promise<ModelMessage> {
-    await this.#emit(context, "tool.execution.started", {
+    await this.emit(context, "tool.execution.started", {
       tool: call.name,
       input: call.input,
     });
 
     const tool = toolsByName.get(call.name);
     if (tool === undefined) {
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false,
       });
@@ -431,7 +495,7 @@ export class AgentLoop {
 
     if (!verdict.allowed) {
       const reason = verdict.reason ?? "denied by policy";
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false,
         denied: true,
@@ -449,7 +513,7 @@ export class AgentLoop {
         Promise.resolve(tool.execute(call.input, toolContext)),
         signal,
       );
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: true,
       });
@@ -460,7 +524,7 @@ export class AgentLoop {
       };
     } catch (error) {
       if (error instanceof LoopAbortedError) throw error;
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false,
       });
@@ -477,7 +541,7 @@ export class AgentLoop {
     context: AgentLoopRunContext,
     result: AgentLoopResult,
   ): Promise<AgentLoopResult> {
-    await this.#emit(context, "loop.completed", {
+    await this.emit(context, "loop.completed", {
       status: result.status,
       iterations: result.iterations,
       toolCalls: result.toolCalls,
@@ -485,7 +549,13 @@ export class AgentLoop {
     return result;
   }
 
-  async #emit(
+  /**
+   * Best-effort event emission on the configured sink. Public so a session
+   * wrapping this engine can emit its own turn events on the same sink.
+   *
+   * @internal
+   */
+  async emit(
     context: AgentLoopRunContext,
     type: string,
     data: unknown,
@@ -507,5 +577,27 @@ export class AgentLoop {
     } catch {
       // Event emission is best-effort and must never fail a run.
     }
+  }
+}
+
+/**
+ * The M1 single-agent tool-call loop: stream a model turn, run any requested
+ * tools (subject to the permission engine), feed the results back, repeat.
+ *
+ * One-shot: every {@link run} starts a fresh conversation. For a stateful,
+ * multi-turn conversation over the same machinery, see `AgentChatSession`.
+ */
+export class AgentLoop {
+  readonly #engine: AgentLoopEngine;
+
+  constructor(options: AgentLoopOptions) {
+    this.#engine = new AgentLoopEngine(options);
+  }
+
+  async run(
+    input: AgentRunInput,
+    context: AgentLoopRunContext,
+  ): Promise<AgentLoopResult> {
+    return await this.#engine.drive(this.#engine.seed(input), context);
   }
 }
