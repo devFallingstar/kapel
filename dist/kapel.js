@@ -38,7 +38,7 @@ function finishTuiState(state, outcome) {
 }
 function reduceTuiEvent(state, event2) {
   const base = adoptEnvelope(state, event2);
-  const data = isRecord7(event2.data) ? event2.data : {};
+  const data = isRecord9(event2.data) ? event2.data : {};
   const tasks = reduceTasks(base.tasks, event2, data);
   const line = formatEventLine(event2);
   const log = line === void 0 ? base.log : appendLog(base.log, line);
@@ -47,7 +47,7 @@ function reduceTuiEvent(state, event2) {
   return { ...base, tasks, log };
 }
 function formatEventLine(event2) {
-  const data = isRecord7(event2.data) ? event2.data : {};
+  const data = isRecord9(event2.data) ? event2.data : {};
   if (event2.type.startsWith("codex."))
     return formatCodexLine(data);
   const taskId = taskIdOf2(event2, data);
@@ -71,7 +71,7 @@ function formatEventLine(event2) {
       return `\u25B6 ${taskId} \u2192 ${agent} (attempt ${num2(data.attempt) ?? 1})`;
     }
     case "task.completed": {
-      const result = isRecord7(data.result) ? data.result : {};
+      const result = isRecord9(data.result) ? data.result : {};
       const glyph2 = result.status === "success" ? "\u2714" : "\u2716";
       const suffix = data.final === false ? " (retrying)" : "";
       return `${glyph2} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
@@ -148,7 +148,7 @@ function reduceTasks(tasks, event2, data) {
         break;
       }
       case "task.completed": {
-        const result = isRecord7(data.result) ? data.result : {};
+        const result = isRecord9(data.result) ? data.result : {};
         const summary = str2(result.summary);
         if (summary !== void 0)
           draft.summary = firstLine3(summary);
@@ -240,7 +240,7 @@ function appendLog(log, line) {
   const next = [...log, line];
   return next.length <= MAX_LOG_LINES ? next : next.slice(next.length - MAX_LOG_LINES);
 }
-function isRecord7(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null;
 }
 function str2(value) {
@@ -300,9 +300,9 @@ function formatCodexLine(data) {
   }
 }
 function codexItem(data) {
-  if (isRecord7(data.item))
+  if (isRecord9(data.item))
     return data.item;
-  if (isRecord7(data.msg) && isRecord7(data.msg.item))
+  if (isRecord9(data.msg) && isRecord9(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -315,7 +315,7 @@ function codexMessageText2(item) {
     return str2(content);
   if (!Array.isArray(content))
     return void 0;
-  const joined = content.map((part) => typeof part === "string" ? part : isRecord7(part) ? str2(part.text) ?? "" : "").join("");
+  const joined = content.map((part) => typeof part === "string" ? part : isRecord9(part) ? str2(part.text) ?? "" : "").join("");
   return str2(joined);
 }
 function codexCommandText2(item) {
@@ -336,10 +336,10 @@ function codexFileText(item) {
   for (const change of changes) {
     if (typeof change === "string")
       paths.push(change);
-    else if (isRecord7(change)) {
-      const path14 = str2(change.path) ?? str2(change.file);
-      if (path14 !== void 0)
-        paths.push(path14);
+    else if (isRecord9(change)) {
+      const path15 = str2(change.path) ?? str2(change.file);
+      if (path15 !== void 0)
+        paths.push(path15);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -453,7 +453,7 @@ function startOrchestrationTui(init) {
     patchConsole: false,
     exitOnCtrlC: false
   });
-  const paint = () => {
+  const paint2 = () => {
     if (unmounted)
       return;
     instance.rerender(createElement(OrchestrationApp, { state, now: clock() }));
@@ -469,11 +469,11 @@ function startOrchestrationTui(init) {
       return;
     pending = setTimeout(() => {
       pending = void 0;
-      paint();
+      paint2();
     }, RENDER_INTERVAL_MS);
     unref(pending);
   };
-  const tick = setInterval(paint, TICK_INTERVAL_MS);
+  const tick = setInterval(paint2, TICK_INTERVAL_MS);
   unref(tick);
   const sink = {
     emit(event2) {
@@ -493,7 +493,7 @@ function startOrchestrationTui(init) {
       try {
         state = finishTuiState(state, outcome);
         clearPending();
-        paint();
+        paint2();
       } catch {
       }
     },
@@ -502,7 +502,7 @@ function startOrchestrationTui(init) {
         return;
       clearPending();
       clearInterval(tick);
-      paint();
+      paint2();
       unmounted = true;
       const exited = instance.waitUntilExit();
       instance.unmount();
@@ -547,7 +547,7 @@ var init_dist = __esm({
 });
 
 // apps/cli/dist/index.js
-import path13 from "node:path";
+import path14 from "node:path";
 import { Command } from "commander";
 
 // apps/cli/dist/backend.js
@@ -2016,11 +2016,20 @@ ${formatIssues(lastIssues)}`}`,
 // packages/orchestration/dist/router.js
 var PolicyRouter = class {
   route(task, policy) {
+    return this.decide(task, policy).agent;
+  }
+  decide(task, policy) {
     const candidates = policy.routing.filter((rule) => ruleMatches2(rule, task));
     const hard = candidates.filter((rule) => rule.strength === "hard");
     const pool = hard.length > 0 ? hard : candidates;
     const best = [...pool].sort(byWeightThenId)[0];
-    return best?.agent ?? task.suggestedAgent ?? policy.orchestrator;
+    if (best !== void 0) {
+      return { agent: best.agent, rule: best.id, reason: "rule" };
+    }
+    if (task.suggestedAgent !== void 0) {
+      return { agent: task.suggestedAgent, reason: "suggestedAgent" };
+    }
+    return { agent: policy.orchestrator, reason: "orchestrator" };
   }
 };
 function ruleMatches2(rule, task) {
@@ -2116,7 +2125,16 @@ var DeterministicScheduler = class {
   async #attempt(runId, task, graph, policy, signal) {
     const previousAgent = task.assignedAgent;
     const escalation = this.#escalationFor(task, policy);
-    const agent = escalation === void 0 ? this.router.route(task.spec, policy) : escalation.toAgent;
+    let agent;
+    let routing;
+    if (escalation === void 0) {
+      const decision = this.#route(task.spec, policy);
+      agent = decision.agent;
+      routing = decision.rule === void 0 ? { reason: decision.reason } : { rule: decision.rule, reason: decision.reason };
+    } else {
+      agent = escalation.toAgent;
+      routing = { rule: escalation.id, reason: "escalation" };
+    }
     task.assignedAgent = agent;
     task.status = "running";
     task.attempts += 1;
@@ -2129,9 +2147,12 @@ var DeterministicScheduler = class {
         rule: escalation.id
       });
     }
+    const model = this.worker.describeAgent?.(agent)?.model;
     await this.#emit(runId, "task.started", task.spec.id, {
       agent,
-      attempt: task.attempts
+      attempt: task.attempts,
+      ...model === void 0 ? {} : { model },
+      routing
     });
     const context = this.#dependencyContext(graph, task);
     const result = await this.#execute(task, agent, signal, context);
@@ -2188,6 +2209,19 @@ var DeterministicScheduler = class {
       return;
     }
     await this.#cancelDependents(runId, graph, task.spec.id);
+  }
+  /**
+   * The router's decision for a non-escalated attempt, rationale included.
+   * Falls back to a bare `route()` call, with `reason` reported as
+   * `"orchestrator"`, for a router that only implements the required half of
+   * {@link AgentRouter} — the rationale is then genuinely unknown, but that
+   * fallback value keeps it in the same closed set `TaskStartedReason` allows
+   * rather than inventing a new one.
+   */
+  #route(task, policy) {
+    if (this.router.decide !== void 0)
+      return this.router.decide(task, policy);
+    return { agent: this.router.route(task, policy), reason: "orchestrator" };
   }
   /**
    * The results of `task`'s direct dependencies, in dependency-declaration
@@ -2645,8 +2679,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path14 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path14}: ${issue.message}`;
+    const path15 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path15}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -3835,6 +3869,7 @@ function applyEvent(event2, state, emit2) {
 
 // packages/coding-agent/dist/loop.js
 var DEFAULT_MAX_ITERATIONS = 32;
+var MODEL_TEXT_DELTA_EVENT = "model.text.delta";
 var LoopAbortedError = class extends Error {
   constructor() {
     super("agent loop aborted");
@@ -3977,7 +4012,7 @@ var AgentLoopEngine = class {
           ...this.#options.temperature === void 0 ? {} : { temperature: this.#options.temperature },
           ...this.#options.maxOutputTokens === void 0 ? {} : { maxOutputTokens: this.#options.maxOutputTokens }
         };
-        const turn = await this.#runTurn(request, signal);
+        const turn = await this.#runTurn(request, signal, context, iterations);
         if (turn.text.trim() !== "")
           lastNonEmptyText = turn.text;
         messages.push({
@@ -4034,7 +4069,16 @@ var AgentLoopEngine = class {
       });
     }
   }
-  async #runTurn(request, signal) {
+  /**
+   * Streams one model turn, forwarding each text chunk as it arrives.
+   *
+   * The deltas are emitted *in addition to* the turn's accumulated text, which
+   * still lands whole in `model.turn.completed`: a renderer can paint tokens as
+   * they come, while everything that reads the event log after the fact (JSONL
+   * consumers, session persistence) keeps seeing exactly the turn-level event
+   * it always did.
+   */
+  async #runTurn(request, signal, context, iteration) {
     const stream = this.#options.provider.stream(request, signal);
     const iterator = stream[Symbol.asyncIterator]();
     let text2 = "";
@@ -4049,6 +4093,12 @@ var AgentLoopEngine = class {
         switch (event2.type) {
           case "text.delta":
             text2 += event2.text;
+            if (event2.text !== "") {
+              await this.emit(context, MODEL_TEXT_DELTA_EVENT, {
+                text: event2.text,
+                iteration
+              });
+            }
             break;
           case "tool.call":
             calls.push({ id: event2.id, name: event2.name, input: event2.input });
@@ -4080,7 +4130,39 @@ var AgentLoopEngine = class {
   }
   /**
    * Deterministic context compaction, run at the start of every iteration
-   * before the request is built. No-op unless `compaction` was supplied.
+   * before the request is built. No-op unless `compaction` was supplied, and
+   * only once `messages.length` exceeds `maxMessages` — see {@link compactNow}
+   * for a version that skips that threshold check.
+   */
+  async #compact(messages, context) {
+    const options = this.#options.compaction;
+    if (options === void 0)
+      return;
+    const maxMessages = options.maxMessages ?? DEFAULT_COMPACTION_MAX_MESSAGES;
+    if (messages.length <= maxMessages)
+      return;
+    await this.#runCompaction(messages, context, options);
+  }
+  /**
+   * Forces one compaction pass over `messages` right now, ignoring the
+   * `maxMessages` threshold {@link drive}'s automatic pass respects. Backs
+   * the `/compact` slash command: a human asking to compact means "do it
+   * now", not "do it once the conversation happens to be long enough".
+   *
+   * Uses this engine's configured `compaction` tuning (`preserveRecent`,
+   * `minContentChars`) when there is one, and this module's own defaults
+   * otherwise — so calling it does something sensible even on an engine
+   * built with no `compaction` option at all.
+   *
+   * @returns how many tool results were elided and how many characters were
+   * saved, for a caller to render a one-line summary.
+   */
+  async compactNow(messages, context) {
+    return await this.#runCompaction(messages, context, this.#options.compaction ?? {});
+  }
+  /**
+   * The actual elision pass, shared by the automatic (`#compact`) and forced
+   * (`compactNow`) entry points.
    *
    * Walks `messages` from the beginning, skipping the system message, the
    * first user message, the last `preserveRecent` messages, and any tool
@@ -4090,13 +4172,7 @@ var AgentLoopEngine = class {
    * messages are never touched: providers need the tool-call structure
    * intact, and the instruction must stay legible.
    */
-  async #compact(messages, context) {
-    const options = this.#options.compaction;
-    if (options === void 0)
-      return;
-    const maxMessages = options.maxMessages ?? DEFAULT_COMPACTION_MAX_MESSAGES;
-    if (messages.length <= maxMessages)
-      return;
+  async #runCompaction(messages, context, options) {
     const preserveRecent = options.preserveRecent ?? DEFAULT_COMPACTION_PRESERVE_RECENT;
     const minContentChars = options.minContentChars ?? DEFAULT_COMPACTION_MIN_CONTENT_CHARS;
     const systemIndex = messages.findIndex((m) => m.role === "system");
@@ -4129,6 +4205,7 @@ var AgentLoopEngine = class {
         messages: messages.length
       });
     }
+    return { elided, savedChars };
   }
   async #executeCall(call, toolsByName, toolContext, context, signal) {
     await this.emit(context, "tool.execution.started", {
@@ -4301,20 +4378,110 @@ var AgentChatSession = class _AgentChatSession {
   messages() {
     return this.#messages.map(copyMessage);
   }
+  /**
+   * Forces an immediate compaction pass over the retained history, ignoring
+   * the `maxMessages` threshold a send's automatic pass respects. Backs the
+   * `/compact` slash command.
+   *
+   * Safe to call between sends (nothing is in flight) and on a session with
+   * no history yet — there is simply nothing to elide, and it reports zero.
+   *
+   * @returns how many tool results were elided and how many characters were
+   * saved, for the caller to render a one-line summary.
+   */
+  async compactNow(context) {
+    return await this.#engine.compactNow(this.#messages, context);
+  }
 };
 
 // packages/coding-agent/dist/permissions.js
 var DENIED_BY_POLICY = "denied by policy";
 var NO_PROMPTER_AVAILABLE = "no prompter available in non-interactive mode";
 var DENIED_BY_PROMPTER = "denied by prompter";
+var ALLOWED_FOR_SESSION = "allowed for this session";
+var BASH_TOOL = "bash";
+var SUBCOMMAND = /^[A-Za-z][A-Za-z0-9_:-]*$/;
+var SHELL_OPERATORS = /[;&|<>`$(){}\n\r]/;
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function commandOf(input) {
+  if (!isRecord5(input))
+    return void 0;
+  const command = input.command;
+  return typeof command === "string" ? command : void 0;
+}
+function bashCommandPrefix(command) {
+  const trimmed = command.trim();
+  if (trimmed === "")
+    return void 0;
+  if (SHELL_OPERATORS.test(trimmed))
+    return void 0;
+  const tokens = trimmed.split(/\s+/);
+  const head = tokens[0];
+  if (head === void 0 || head === "" || head.startsWith("-")) {
+    return void 0;
+  }
+  const argument = tokens.slice(1).find((token) => !token.startsWith("-"));
+  if (argument === void 0 || !SUBCOMMAND.test(argument))
+    return head;
+  return `${head} ${argument}`;
+}
+function sessionRuleFor(request) {
+  if (request.tool !== BASH_TOOL) {
+    return { kind: "tool", tool: request.tool };
+  }
+  const command = commandOf(request.input);
+  if (command === void 0)
+    return void 0;
+  const prefix = bashCommandPrefix(command);
+  return prefix === void 0 ? void 0 : { kind: "bash-prefix", prefix };
+}
+function describeSessionRule(rule) {
+  return rule.kind === "tool" ? rule.tool : `${BASH_TOOL} ${rule.prefix} \u2026`;
+}
+var SessionAllowlist = class {
+  #tools = /* @__PURE__ */ new Set();
+  #bashPrefixes = /* @__PURE__ */ new Set();
+  /**
+   * Records the rule for a request. Returns the rule that was added, or
+   * `undefined` when the request could not be generalised — the caller should
+   * treat that as "allowed this once" and say so.
+   */
+  remember(request) {
+    const rule = sessionRuleFor(request);
+    if (rule === void 0)
+      return void 0;
+    if (rule.kind === "tool")
+      this.#tools.add(rule.tool);
+    else
+      this.#bashPrefixes.add(rule.prefix);
+    return rule;
+  }
+  allows(request) {
+    const rule = sessionRuleFor(request);
+    if (rule === void 0)
+      return false;
+    return rule.kind === "tool" ? this.#tools.has(rule.tool) : this.#bashPrefixes.has(rule.prefix);
+  }
+  /** Every remembered rule, described, in insertion order. Tools first. */
+  entries() {
+    return [
+      ...[...this.#tools].map((tool) => describeSessionRule({ kind: "tool", tool })),
+      ...[...this.#bashPrefixes].map((prefix) => describeSessionRule({ kind: "bash-prefix", prefix }))
+    ];
+  }
+};
 var PermissionEngine = class {
   #rules;
   #defaultDecision;
   #prompter;
+  #overlay;
   constructor(rules, options = {}) {
     this.#rules = { ...rules };
     this.#defaultDecision = options.defaultDecision ?? "ask";
     this.#prompter = options.prompter;
+    this.#overlay = options.overlay;
   }
   decisionFor(tool) {
     if (!Object.hasOwn(this.#rules, tool))
@@ -4327,6 +4494,9 @@ var PermissionEngine = class {
       return { allowed: true, decision };
     if (decision === "deny")
       return { allowed: false, decision, reason: DENIED_BY_POLICY };
+    if (this.#overlay?.allows(request) === true) {
+      return { allowed: true, decision, reason: ALLOWED_FOR_SESSION };
+    }
     const prompter = this.#prompter;
     if (prompter === void 0) {
       return { allowed: false, decision, reason: NO_PROMPTER_AVAILABLE };
@@ -4352,8 +4522,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path14 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path14}: ${issue.message}`;
+    const path15 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path15}: ${issue.message}`;
   });
 }
 
@@ -5435,6 +5605,10 @@ var ValidatingExecutor = class {
   constructor(options) {
     this.#options = options;
   }
+  /** A pass-through decorator: whatever the inner executor knows, it knows too. */
+  describeAgent(agent) {
+    return this.#options.inner.describeAgent?.(agent);
+  }
   async execute(task, agent, signal, context) {
     const result = await this.#options.inner.execute(task, agent, signal, context);
     if (result.status !== "success")
@@ -5665,9 +5839,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path14 = record.slice(3);
-    if (path14 !== "")
-      paths.add(path14);
+    const path15 = record.slice(3);
+    if (path15 !== "")
+      paths.add(path15);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -5763,6 +5937,24 @@ var AgentLoopWorkerExecutor = class {
   #options;
   constructor(options) {
     this.#options = options;
+  }
+  /**
+   * The model `agent`'s `.agent/agents/<name>.md` front matter points at,
+   * resolved the same way {@link execute} resolves it. `undefined` for an
+   * unknown agent or an unresolvable model alias — both are reported as task
+   * failures once the task actually runs, so this is silent about them rather
+   * than throwing ahead of that.
+   */
+  describeAgent(agent) {
+    const projectAgent = this.#options.project.agent(agent);
+    if (projectAgent === void 0)
+      return void 0;
+    try {
+      const resolved = this.#options.resolveModel(projectAgent.modelAlias);
+      return { model: resolved.model.id };
+    } catch {
+      return void 0;
+    }
   }
   async execute(task, agent, signal, context) {
     const taskId = task.spec.id;
@@ -5966,8 +6158,11 @@ async function serveWorkerRequest(io, handler, options = {}) {
   }
   const sink = {
     emit(event2) {
-      if (emitEvents)
-        write(io.stdout, { type: "event", event: event2 });
+      if (!emitEvents)
+        return;
+      if (event2.type === MODEL_TEXT_DELTA_EVENT)
+        return;
+      write(io.stdout, { type: "event", event: event2 });
     }
   };
   try {
@@ -6281,20 +6476,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path14;
+  let path15;
   let branch;
   const flush = () => {
-    if (path14 !== void 0) {
-      entries.push({ path: path14, branch });
+    if (path15 !== void 0) {
+      entries.push({ path: path15, branch });
     }
-    path14 = void 0;
+    path15 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path14 = value.slice("worktree ".length);
+      path15 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -6302,11 +6497,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path14) {
+async function realPathOrSelf(path15) {
   try {
-    return await realpath(path14);
+    return await realpath(path15);
   } catch {
-    return resolve2(path14);
+    return resolve2(path15);
   }
 }
 function isUnder(parent, child) {
@@ -6345,16 +6540,16 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path14 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path15 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path14, branch, signal);
-    await mkdir3(dirname2(path14), { recursive: true });
-    await runGit2(["worktree", "add", path14, "-b", branch, baseCommit], {
+    await this.#removeLeftovers(path15, branch, signal);
+    await mkdir3(dirname2(path15), { recursive: true });
+    await runGit2(["worktree", "add", path15, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
       signal
     });
-    return { path: path14, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    return { path: path15, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -6602,13 +6797,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path14, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path14], {
+  async #removeLeftovers(path15, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path15], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path14, { recursive: true, force: true });
+    await rm(path15, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -6629,11 +6824,11 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path14 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path14.startsWith(ignored)) {
+      const path15 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path15.startsWith(ignored)) {
         continue;
       }
-      paths.push(path14);
+      paths.push(path15);
     }
     return paths;
   }
@@ -6692,6 +6887,14 @@ var WorktreeIsolatedExecutor = class {
   constructor(options) {
     this.#options = options;
     this.#manager = options.manager ?? new TaskWorktreeManager({ repoRoot: options.repoRoot });
+  }
+  /**
+   * Delegates to a throwaway inner executor rooted at `repoRoot` — cheap,
+   * since building one is just constructing an object, and what an agent's
+   * model is does not depend on which worktree it eventually runs in.
+   */
+  describeAgent(agent) {
+    return this.#options.createExecutor(this.#options.repoRoot).describeAgent?.(agent);
   }
   async execute(task, agent, signal, context) {
     const taskId = task.spec.id;
@@ -7421,7 +7624,7 @@ async function loadDotEnvFile(workspaceRoot, target = process.env) {
 
 // apps/cli/dist/plan.js
 import { readFile as readFile9 } from "node:fs/promises";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // apps/cli/dist/project-models.js
 var ASSUMED_CAPABILITIES = {
@@ -7463,7 +7666,74 @@ async function createProjectModelResolver(project, env) {
 }
 
 // apps/cli/dist/run.js
+import path4 from "node:path";
+
+// apps/cli/dist/instructions.js
+import { readFileSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
 import path3 from "node:path";
+var MAX_INSTRUCTIONS_BYTES = 32 * 1024;
+var TRUNCATION_MARKER2 = "[instructions truncated]";
+var PREAMBLE = "Project instructions (from AGENTS.md files):";
+function abbreviateHome(absPath, home) {
+  if (absPath === home)
+    return "~";
+  const prefix = home.endsWith(path3.sep) ? home : `${home}${path3.sep}`;
+  if (!absPath.startsWith(prefix))
+    return absPath;
+  return `~${path3.sep}${absPath.slice(prefix.length)}`;
+}
+function sourcesFor(workspacePath, env) {
+  const configPath = path3.join(kapelConfigDir(env), "AGENTS.md");
+  const projectPath = path3.join(workspacePath, "AGENTS.md");
+  const agentPath = path3.join(workspacePath, ".agent", "AGENTS.md");
+  return [
+    { absPath: configPath, display: abbreviateHome(configPath, homedir2()) },
+    {
+      absPath: projectPath,
+      display: path3.relative(workspacePath, projectPath)
+    },
+    { absPath: agentPath, display: path3.relative(workspacePath, agentPath) }
+  ];
+}
+function capSize(text2) {
+  if (Buffer.byteLength(text2, "utf8") <= MAX_INSTRUCTIONS_BYTES)
+    return text2;
+  const markerLine = `
+${TRUNCATION_MARKER2}`;
+  const budget = Math.max(0, MAX_INSTRUCTIONS_BYTES - Buffer.byteLength(markerLine, "utf8"));
+  const truncated = Buffer.from(text2, "utf8").subarray(0, budget).toString("utf8");
+  return `${truncated}${markerLine}`;
+}
+function loadInstructions(workspacePath, env) {
+  const blocks = [];
+  const sources = [];
+  for (const source of sourcesFor(workspacePath, env)) {
+    let raw;
+    try {
+      raw = readFileSync(source.absPath, "utf8");
+    } catch {
+      continue;
+    }
+    const trimmed = raw.trim();
+    if (trimmed === "")
+      continue;
+    sources.push(source.display);
+    blocks.push(`# From ${source.display}
+
+${trimmed}`);
+  }
+  return { text: capSize(blocks.join("\n\n")), sources };
+}
+function composeSystemPrompt(base, instructions) {
+  if (instructions.text === "")
+    return base;
+  return `${base}
+
+${PREAMBLE}
+
+${instructions.text}`;
+}
 
 // apps/cli/dist/permissions.js
 var DEFAULT_PERMISSIONS = {
@@ -7478,9 +7748,27 @@ var DEFAULT_PERMISSIONS = {
 
 // apps/cli/dist/prompter.js
 import * as readline2 from "node:readline";
+
+// apps/cli/dist/preview.js
 var PREVIEW_MAX = 120;
-function createPromptState() {
-  return { active: false };
+var PREVIEW_MAX_LINES = 40;
+var DIFF_CONTEXT = 3;
+var LCS_MAX_LINES = 300;
+var WRITE_PREVIEW_LINES = 20;
+var RED = "31";
+var GREEN = "32";
+var DIM = "2";
+function ansi2(code, text2, enabled) {
+  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
+}
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringField(input, key) {
+  if (!isRecord6(input))
+    return void 0;
+  const value = input[key];
+  return typeof value === "string" ? value : void 0;
 }
 function previewInput(input) {
   let text2;
@@ -7493,6 +7781,164 @@ function previewInput(input) {
     return text2;
   return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
 }
+function lcsDiff(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const width = m + 1;
+  const dp = new Array((n + 1) * width).fill(0);
+  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ marker: " ", text: a[i] ?? "" });
+      i += 1;
+      j += 1;
+    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
+      out.push({ marker: "-", text: a[i] ?? "" });
+      i += 1;
+    } else {
+      out.push({ marker: "+", text: b[j] ?? "" });
+      j += 1;
+    }
+  }
+  for (; i < n; i += 1)
+    out.push({ marker: "-", text: a[i] ?? "" });
+  for (; j < m; j += 1)
+    out.push({ marker: "+", text: b[j] ?? "" });
+  return out;
+}
+function diffLines(oldText, newText) {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head])
+    head += 1;
+  let tail4 = 0;
+  while (tail4 < a.length - head && tail4 < b.length - head && a[a.length - 1 - tail4] === b[b.length - 1 - tail4]) {
+    tail4 += 1;
+  }
+  const midA = a.slice(head, a.length - tail4);
+  const midB = b.slice(head, b.length - tail4);
+  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
+    ...midA.map((text2) => ({ marker: "-", text: text2 })),
+    ...midB.map((text2) => ({ marker: "+", text: text2 }))
+  ] : lcsDiff(midA, midB);
+  return [
+    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
+    ...middle,
+    ...a.slice(a.length - tail4).map((text2) => ({ marker: " ", text: text2 }))
+  ];
+}
+function paint(line, color) {
+  const text2 = `  ${line.marker} ${line.text}`;
+  if (line.marker === "-")
+    return ansi2(RED, text2, color);
+  if (line.marker === "+")
+    return ansi2(GREEN, text2, color);
+  return text2;
+}
+function moreTail(count, color) {
+  return ansi2(DIM, `  \u2026 (+${count} more)`, color);
+}
+function capLines(lines, color) {
+  if (lines.length <= PREVIEW_MAX_LINES)
+    return [...lines];
+  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
+  return [...kept, moreTail(lines.length - kept.length, color)];
+}
+function renderDiff(lines, options = {}) {
+  const color = options.color === true;
+  const keep = lines.map((line) => line.marker !== " ");
+  lines.forEach((line, index2) => {
+    if (line.marker === " ")
+      return;
+    const from = Math.max(0, index2 - DIFF_CONTEXT);
+    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
+    for (let near = from; near <= to; near += 1)
+      keep[near] = true;
+  });
+  const out = [];
+  let elided = false;
+  lines.forEach((line, index2) => {
+    if (keep[index2] === true) {
+      out.push(paint(line, color));
+      elided = false;
+      return;
+    }
+    if (!elided) {
+      out.push(ansi2(DIM, "  \u22EE", color));
+      elided = true;
+    }
+  });
+  return capLines(out, color);
+}
+function previewBash(input, options = {}) {
+  const command = stringField(input, "command");
+  if (command === void 0)
+    return void 0;
+  const lines = command.split("\n").map((line) => `  ${line}`);
+  return capLines(lines, options.color === true).join("\n");
+}
+function previewEdit(input, options = {}) {
+  const path15 = stringField(input, "path");
+  const oldText = stringField(input, "oldText");
+  const newText = stringField(input, "newText");
+  if (path15 === void 0 || oldText === void 0 || newText === void 0) {
+    return void 0;
+  }
+  const replaceAll = isRecord6(input) && input.replaceAll === true ? " (all occurrences)" : "";
+  const header = ansi2(DIM, `  ${path15}${replaceAll}`, options.color === true);
+  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
+}
+function previewWrite(input, options = {}) {
+  const path15 = stringField(input, "path");
+  const content = stringField(input, "content");
+  if (path15 === void 0 || content === void 0)
+    return void 0;
+  const color = options.color === true;
+  const lines = content.split("\n");
+  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
+  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
+  if (lines.length > shown.length) {
+    body.push(moreTail(lines.length - shown.length, color));
+  }
+  const header = ansi2(DIM, `  ${path15} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
+  return [header, ...body].join("\n");
+}
+function formatToolPreview(tool, input, options = {}) {
+  switch (tool) {
+    case "bash":
+      return previewBash(input, options);
+    case "edit_file":
+      return previewEdit(input, options);
+    case "write_file":
+      return previewWrite(input, options);
+    default:
+      return void 0;
+  }
+}
+
+// apps/cli/dist/prompter.js
+var ERASE_LINE = "\x1B[2K\r";
+function createPromptState() {
+  return { active: false };
+}
+function parsePermissionAnswer(answer) {
+  if (typeof answer !== "string")
+    return "deny";
+  const normalized = answer.trim().toLowerCase();
+  if (normalized === "y" || normalized === "yes")
+    return "once";
+  if (normalized === "a" || normalized === "always")
+    return "always";
+  return "deny";
+}
 function createPrompter(options) {
   if (options.yes) {
     return { ask: async () => true };
@@ -7504,29 +7950,61 @@ function createPrompter(options) {
   const output = options.output ?? process.stdout;
   const state = options.state;
   const ask2 = options.ask;
+  const allowlist = options.allowlist;
+  const color = options.color ?? output.isTTY === true;
   return {
     ask: async (request) => {
       state.active = true;
       try {
-        return ask2 === void 0 ? await askOnce(request, input, output) : await askVia(request, ask2);
+        const prompt = formatPermissionPrompt(request, { color });
+        const lines = previewBlockLines(request, prompt, {
+          color,
+          offerAlways: allowlist !== void 0
+        });
+        if (color)
+          output.write(ERASE_LINE);
+        if (lines.length > 0)
+          output.write(`${lines.join("\n")}
+`);
+        const raw = ask2 === void 0 ? await askOnce(prompt.query, input, output) : await ask2(prompt.query);
+        const answer = parsePermissionAnswer(raw);
+        if (answer === "deny")
+          return false;
+        if (answer === "always" && allowlist !== void 0) {
+          const rule = allowlist.remember(request);
+          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
+`);
+        }
+        return true;
       } finally {
         state.active = false;
       }
     }
   };
 }
-function formatPermissionQuery(request) {
-  const preview = previewInput(request.input);
-  return `allow ${request.tool}? ${preview} [y/N] `;
+function dim(text2, enabled) {
+  return enabled ? `\x1B[2m${text2}\x1B[0m` : text2;
 }
-async function askVia(request, ask2) {
-  const answer = await ask2(formatPermissionQuery(request));
-  if (typeof answer !== "string")
-    return false;
-  const normalized = answer.trim().toLowerCase();
-  return normalized === "y" || normalized === "yes";
+function previewBlockLines(request, prompt, options) {
+  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
+  if (!options.offerAlways)
+    return lines;
+  const rule = sessionRuleFor(request);
+  if (rule === void 0)
+    return lines;
+  return [
+    ...lines,
+    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
+  ];
 }
-function askOnce(request, input, output) {
+function formatPermissionPrompt(request, options = {}) {
+  const block = formatToolPreview(request.tool, request.input, {
+    ...options.color === void 0 ? {} : { color: options.color }
+  });
+  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] ` : `allow ${request.tool}? [y/n/a] `;
+  return { block, query };
+}
+function askOnce(query, input, output) {
   const rl = readline2.createInterface({ input, output, terminal: true });
   return new Promise((resolve5) => {
     let settled = false;
@@ -7537,16 +8015,123 @@ function askOnce(request, input, output) {
       rl.close();
       resolve5(value);
     };
-    rl.on("SIGINT", () => finish(false));
-    rl.question(formatPermissionQuery(request), (answer) => {
-      const normalized = answer.trim().toLowerCase();
-      finish(normalized === "y" || normalized === "yes");
-    });
+    rl.on("SIGINT", () => finish(void 0));
+    rl.question(query, (answer) => finish(answer));
   });
 }
 
+// apps/cli/dist/status-line.js
+var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+var TICK_MS = 120;
+var ERASE = "\r\x1B[2K";
+var DEFAULT_COLUMNS = 80;
+function defaultTicker(tick) {
+  const timer = setInterval(tick, TICK_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+function formatTokenCount(tokens) {
+  if (tokens < 1e3)
+    return String(Math.round(tokens));
+  return `${(tokens / 1e3).toFixed(1)}k`;
+}
+function formatStatus(label, elapsedMs2, tokens) {
+  const seconds = Math.max(0, Math.floor(elapsedMs2 / 1e3));
+  const parts = [`${label} ${seconds}s`];
+  if (tokens !== void 0 && tokens > 0) {
+    parts.push(`${formatTokenCount(tokens)} tokens`);
+  }
+  return parts.join(" \xB7 ");
+}
+var StatusLine = class {
+  #output;
+  #enabled;
+  #now;
+  #tokens;
+  #suspended;
+  #ticker;
+  #cancel;
+  #label = "";
+  #startedAt = 0;
+  #frame = 0;
+  #painted = false;
+  constructor(options = {}) {
+    this.#output = options.output ?? process.stdout;
+    this.#enabled = options.tty ?? this.#output.isTTY === true;
+    this.#now = options.now ?? (() => Date.now());
+    this.#tokens = options.tokens;
+    this.#suspended = options.suspended ?? (() => false);
+    this.#ticker = options.ticker ?? defaultTicker;
+  }
+  /** Whether this line will ever paint anything — false off a TTY. */
+  get enabled() {
+    return this.#enabled;
+  }
+  /** Whether a status is currently being kept up to date. */
+  get running() {
+    return this.#cancel !== void 0;
+  }
+  /**
+   * Starts the status, or relabels a running one.
+   *
+   * The elapsed clock runs from the *start*, not from each relabel: it is the
+   * age of the current wait, and a wait that changes phase (model → tool) is a
+   * new wait, so {@link stop} then `start` is how the caller resets it.
+   */
+  start(label) {
+    if (!this.#enabled)
+      return;
+    this.#label = label;
+    if (this.#cancel === void 0) {
+      this.#startedAt = this.#now();
+      this.#frame = 0;
+      this.#cancel = this.#ticker(() => {
+        this.#frame += 1;
+        this.#paint();
+      });
+    }
+    this.#paint();
+  }
+  /**
+   * Erases the painted line but keeps the status running: the next tick (or
+   * {@link refresh}) puts it back. This is what the renderer calls before
+   * writing real output.
+   */
+  erase() {
+    if (!this.#painted)
+      return;
+    this.#painted = false;
+    this.#output.write(ERASE);
+  }
+  /** Repaints immediately, if a status is running. */
+  refresh() {
+    this.#paint();
+  }
+  /** Ends the status: no more repainting, and nothing left on screen. */
+  stop() {
+    const cancel = this.#cancel;
+    this.#cancel = void 0;
+    cancel?.();
+    this.erase();
+  }
+  #paint() {
+    if (!this.#enabled || this.#cancel === void 0)
+      return;
+    if (this.#suspended()) {
+      this.erase();
+      return;
+    }
+    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
+    const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
+    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
+    const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
+    this.#output.write(`${ERASE}\x1B[2m${text2}\x1B[0m`);
+    this.#painted = true;
+  }
+};
+
 // apps/cli/dist/render.js
-function isRecord5(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null;
 }
 function isDelegatedResult(result) {
@@ -7562,9 +8147,9 @@ function firstNonEmptyString(...values) {
   return void 0;
 }
 function codexItemFrom(data) {
-  if (isRecord5(data.item))
+  if (isRecord7(data.item))
     return data.item;
-  if (isRecord5(data.msg) && isRecord5(data.msg.item))
+  if (isRecord7(data.msg) && isRecord7(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -7580,7 +8165,7 @@ function codexMessageText(item) {
     for (const part of content) {
       if (typeof part === "string")
         parts.push(part);
-      else if (isRecord5(part) && typeof part.text === "string") {
+      else if (isRecord7(part) && typeof part.text === "string") {
         parts.push(part.text);
       }
     }
@@ -7612,7 +8197,7 @@ function codexFileChangeText(item) {
     for (const change of changes) {
       if (typeof change === "string")
         paths.push(change);
-      else if (isRecord5(change)) {
+      else if (isRecord7(change)) {
         const p = firstNonEmptyString(change.path, change.file);
         if (p !== void 0)
           paths.push(p);
@@ -7632,13 +8217,30 @@ function taskIdOf(event2, data) {
 function stringOrUndefined(value) {
   return typeof value === "string" && value !== "" ? value : void 0;
 }
+function routingLabel(routing) {
+  if (!isRecord7(routing))
+    return void 0;
+  const rule = stringOrUndefined(routing.rule);
+  switch (routing.reason) {
+    case "rule":
+      return rule === void 0 ? "rule" : `rule: ${rule}`;
+    case "escalation":
+      return rule === void 0 ? "escalation" : `escalation: ${rule}`;
+    case "suggestedAgent":
+      return "suggested";
+    case "orchestrator":
+      return "default";
+    default:
+      return void 0;
+  }
+}
 function firstLine(text2) {
   if (typeof text2 !== "string")
     return "(no summary)";
   const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
   return line === void 0 ? "(no summary)" : truncate3(line, 120);
 }
-function ansi2(code, text2, enabled) {
+function ansi3(code, text2, enabled) {
   return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
 }
 var EXIT_LABEL = {
@@ -7646,51 +8248,158 @@ var EXIT_LABEL = {
   partial: "partial",
   failed: "failed"
 };
+var THINKING_LABEL = "thinking";
 var TextRenderer = class {
   #output;
   #color;
-  /** Text deltas of the Claude Code block currently streaming; see `#emitClaudeCode`. */
+  #status;
+  /** A streamed line is open — text was written with no newline after it. */
+  #streaming = false;
+  /** Deltas were streamed for the model turn now in flight. */
+  #streamed = false;
+  /** A turn this renderer is showing progress for is in flight. */
+  #inTurn = false;
+  /**
+   * Text of the Claude Code block currently streaming, for the one case that
+   * cannot be streamed to the screen: a delegated *task* inside an
+   * orchestration run, whose output shares the terminal with other tasks.
+   */
   #claudeText = "";
-  constructor(output = process.stdout) {
+  constructor(output = process.stdout, options = {}) {
     this.#output = output;
     this.#color = "isTTY" in output && output.isTTY === true;
+    this.#status = options.status ?? new StatusLine({
+      output,
+      ...options.tokens === void 0 ? {} : { tokens: options.tokens },
+      ...options.suspended === void 0 ? {} : { suspended: options.suspended }
+    });
   }
+  /**
+   * Writes one line of output, taking the screen back from the status line and
+   * from any partially streamed text first.
+   */
   #write(line) {
+    this.#endStream();
+    this.#status.erase();
     this.#output.write(`${line}
 `);
+    this.#status.refresh();
+  }
+  /**
+   * Writes one line of caller-owned output (the REPL's own notices) through
+   * the same discipline, and ends any status the turn left running.
+   *
+   * The interactive shell prints its per-turn lines itself rather than through
+   * an event; routing them here is what keeps them from landing on top of a
+   * spinner.
+   */
+  line(text2) {
+    this.#endTurn();
+    this.#write(text2);
+  }
+  /** Appends streamed assistant text, with no line terminator of its own. */
+  #stream(text2) {
+    if (text2 === "")
+      return;
+    this.#status.stop();
+    this.#output.write(text2);
+    this.#streaming = true;
+    this.#streamed = true;
+  }
+  /** Terminates an open streamed line, if there is one. */
+  #endStream() {
+    if (!this.#streaming)
+      return;
+    this.#streaming = false;
+    this.#output.write("\n");
+  }
+  /** A turn started: from here on there is something to show progress for. */
+  #beginTurn() {
+    this.#inTurn = true;
+    this.#streamed = false;
+    this.#status.start(THINKING_LABEL);
+  }
+  /**
+   * Relabels the status, but only while a turn is actually in flight — which
+   * is never the case for an orchestration run, whose turns all carry a task
+   * id and so never call {@link #beginTurn}.
+   */
+  #waiting(label) {
+    if (!this.#inTurn)
+      return;
+    this.#status.start(label);
+  }
+  /** A turn ended (or output took over): nothing is pending on screen. */
+  #endTurn() {
+    this.#inTurn = false;
+    this.#endStream();
+    this.#status.stop();
   }
   #dim(text2) {
-    return ansi2("2", text2, this.#color);
+    return ansi3("2", text2, this.#color);
   }
   #bold(text2) {
-    return ansi2("1", text2, this.#color);
+    return ansi3("1", text2, this.#color);
   }
   emit(event2) {
-    const data = isRecord5(event2.data) ? event2.data : {};
+    const data = isRecord7(event2.data) ? event2.data : {};
+    const single = event2.taskId === void 0;
     if (event2.type.startsWith(CODEX_PREFIX)) {
       this.#emitCodex(data);
       return;
     }
     if (event2.type.startsWith(CLAUDE_CODE_PREFIX)) {
-      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data);
+      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data, single);
       return;
     }
     switch (event2.type) {
+      case "chat.turn.started":
+      case "loop.started": {
+        if (single)
+          this.#beginTurn();
+        break;
+      }
+      case "chat.turn.completed":
+      case "loop.completed": {
+        if (single)
+          this.#endTurn();
+        break;
+      }
+      case MODEL_TEXT_DELTA_EVENT: {
+        if (!single)
+          break;
+        if (typeof data.text === "string")
+          this.#stream(data.text);
+        break;
+      }
       case "model.turn.completed": {
         const text2 = typeof data.text === "string" ? data.text : "";
-        if (text2 !== "")
+        if (this.#streamed) {
+          this.#endStream();
+          this.#streamed = false;
+        } else if (text2 !== "") {
           this.#write(text2);
+        }
+        this.#waiting(THINKING_LABEL);
         break;
       }
       case "tool.execution.started": {
         const tool = typeof data.tool === "string" ? data.tool : "?";
         this.#write(`${this.#dim("\u2192")} ${tool} ${this.#dim(previewInput(data.input))}`);
+        this.#waiting(tool);
         break;
       }
       case "tool.execution.completed": {
         const ok = data.ok === true;
         const denied = data.denied === true;
         this.#write(ok ? "  \u2713" : `  \u2717 (${denied ? "denied" : "error"})`);
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      case "context.compacted": {
+        const elided = typeof data.elided === "number" ? data.elided : 0;
+        const savedChars = typeof data.savedChars === "number" ? data.savedChars : 0;
+        this.#write(this.#dim(`\u2248 context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`));
         break;
       }
       case "task.started":
@@ -7724,11 +8433,15 @@ var TextRenderer = class {
       case "task.started": {
         const agent = stringOrUndefined(data.agent) ?? "?";
         const attempt = typeof data.attempt === "number" ? data.attempt : 1;
-        this.#write(`\u25B6 ${taskId} \u2192 ${agent} (attempt ${attempt})`);
+        const model = stringOrUndefined(data.model);
+        const modelSuffix = model === void 0 ? "" : ` [${model}]`;
+        const routing = routingLabel(data.routing);
+        const parens = routing === void 0 ? `attempt ${attempt}` : `${routing}, attempt ${attempt}`;
+        this.#write(`\u25B6 ${taskId} \u2192 ${agent}${modelSuffix} (${parens})`);
         break;
       }
       case "task.completed": {
-        const result = isRecord5(data.result) ? data.result : {};
+        const result = isRecord7(data.result) ? data.result : {};
         const ok = result.status === "success";
         const retrying = data.final === false;
         const suffix = retrying ? this.#dim(" (retrying)") : "";
@@ -7867,36 +8580,44 @@ var TextRenderer = class {
    * Renders a normalized `claude-code.*` event.
    *
    * The payload is a raw Claude API streaming line, so the two things worth
-   * showing are pulled out of it by hand: the assistant's own text, buffered
-   * per content block rather than written a delta at a time (this renderer is
-   * line-oriented — a partial word is not a line), and the name of each tool
+   * showing are pulled out of it by hand: the assistant's own text, streamed a
+   * delta at a time exactly like the native loop's (buffered to the end of the
+   * block only when the events belong to one task among several, where partial
+   * lines from different tasks would interleave), and the name of each tool
    * as it starts, which is what makes a long turn legible. Everything else —
    * `message_start`, usage rollups, the synthetic `completed` marker, and any
    * event type this wrapper does not model yet — stays quiet, exactly as the
    * native renderer does for unknown types.
    */
-  #emitClaudeCode(kind, data) {
-    const event2 = isRecord5(data.event) ? data.event : data;
+  #emitClaudeCode(kind, data, single) {
+    const event2 = isRecord7(data.event) ? data.event : data;
     switch (kind) {
       case "tool_use": {
         const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
         this.#write(`${this.#dim("\u2192")} claude: ${name}`);
+        this.#waiting(name);
         break;
       }
       case "content_block_delta": {
-        const delta = isRecord5(event2.delta) ? event2.delta : void 0;
+        const delta = isRecord7(event2.delta) ? event2.delta : void 0;
         if (delta?.type !== "text_delta")
           break;
-        if (typeof delta.text === "string")
+        if (typeof delta.text !== "string")
+          break;
+        if (single)
+          this.#stream(delta.text);
+        else
           this.#claudeText += delta.text;
         break;
       }
       case "content_block_stop":
       case "message_stop": {
-        const text2 = this.#claudeText.trim();
+        this.#endStream();
+        const buffered = this.#claudeText.trim();
         this.#claudeText = "";
-        if (text2 !== "")
-          this.#write(text2);
+        if (buffered !== "")
+          this.#write(buffered);
+        this.#waiting(THINKING_LABEL);
         break;
       }
       default:
@@ -7904,6 +8625,7 @@ var TextRenderer = class {
     }
   }
   result(result, usage) {
+    this.#endTurn();
     this.#write("");
     this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
     this.#write(result.summary);
@@ -7955,6 +8677,20 @@ var JsonRenderer = class {
 };
 
 // apps/cli/dist/run.js
+var DEFAULT_COMPACTION = {};
+function agentLoopOptions(args) {
+  return {
+    agent: args.agent,
+    provider: args.provider,
+    tools: builtinTools(),
+    permissions: args.permissions,
+    usage: args.usage,
+    events: args.events,
+    maxIterations: args.maxIterations,
+    ...args.timeoutMs === void 0 ? {} : { timeoutMs: args.timeoutMs },
+    compaction: DEFAULT_COMPACTION
+  };
+}
 function defaultSystemPrompt(workspaceRoot) {
   return [
     `You are a coding agent operating in the repository at ${workspaceRoot}.`,
@@ -7992,7 +8728,7 @@ async function resolveModelAndProvider(env, alias) {
   }
 }
 async function runObjective(objective, options) {
-  const workspacePath = path3.resolve(options.cwd);
+  const workspacePath = path4.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
   const resolved = await resolveModelAndProvider(process.env, alias);
@@ -8001,23 +8737,34 @@ async function runObjective(objective, options) {
     return 1;
   }
   const { model, provider } = resolved;
-  const renderer = options.json ? new JsonRenderer() : new TextRenderer();
   const promptState = createPromptState();
+  const sessionAllowlist = new SessionAllowlist();
+  const usage = new UsageTracker();
+  const renderer = options.json ? new JsonRenderer() : new TextRenderer(process.stdout, {
+    tokens: () => {
+      const totals = usage.totals().usage;
+      return totals.inputTokens + totals.outputTokens;
+    },
+    // A permission question owns the screen while it waits for an answer.
+    suspended: () => promptState.active
+  });
   const prompter = createPrompter({
     yes: options.yes,
     interactive: process.stdin.isTTY === true && !options.json,
-    state: promptState
+    state: promptState,
+    allowlist: sessionAllowlist
   });
   const permissions = new PermissionEngine(DEFAULT_PERMISSIONS, {
     defaultDecision: "ask",
+    overlay: sessionAllowlist,
     ...prompter === void 0 ? {} : { prompter }
   });
-  const usage = new UsageTracker();
+  const instructions = loadInstructions(workspacePath, process.env);
   const agent = {
     name: "agent",
     role: "worker",
     model,
-    systemPrompt: options.system ?? defaultSystemPrompt(workspacePath),
+    systemPrompt: options.system ?? composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
     tools: builtinTools().map((tool) => tool.name),
     permissions: DEFAULT_PERMISSIONS
   };
@@ -8029,16 +8776,15 @@ async function runObjective(objective, options) {
   };
   process.on("SIGINT", onSigint);
   try {
-    const loop = new AgentLoop({
+    const loop = new AgentLoop(agentLoopOptions({
       agent,
       provider,
-      tools: builtinTools(),
       permissions,
       usage,
       events: renderer,
       maxIterations: options.maxIterations,
       ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
-    });
+    }));
     const result = await loop.run({ instruction: objective }, {
       runId: crypto.randomUUID(),
       workspacePath,
@@ -8115,7 +8861,7 @@ async function resolvePlannerModel(project, policy, options, output) {
 async function preparePlan(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const { json } = options;
-  const workspacePath = path4.resolve(options.cwd);
+  const workspacePath = path5.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   let project;
   try {
@@ -8136,7 +8882,7 @@ async function preparePlan(objective, options, deps = {}) {
   if (markdown === void 0 || markdown.trim() === "") {
     return fail(output, json, "No orchestration policy found \u2014 .agent/orchestration.md is missing or empty");
   }
-  const lockPath = path4.join(project.root, LOCK_FILE_NAME);
+  const lockPath = path5.join(project.root, LOCK_FILE_NAME);
   const status = checkLock(markdown, await readOptionalFile(lockPath));
   if (!status.fresh) {
     if (status.reason === "missing") {
@@ -8257,7 +9003,7 @@ async function runPlan(objective, options, deps = {}) {
 
 // apps/cli/dist/sessions.js
 import { existsSync } from "node:fs";
-import path5 from "node:path";
+import path6 from "node:path";
 
 // packages/session/dist/schema.js
 import { sql } from "drizzle-orm";
@@ -8778,15 +9524,17 @@ function fanOutSink(...sinks) {
 function storeSink(store) {
   return {
     emit(event2) {
+      if (event2.type === MODEL_TEXT_DELTA_EVENT)
+        return void 0;
       return store.appendEvent(event2).then(() => void 0, () => void 0);
     }
   };
 }
 function sessionDbPathFor(workspacePath) {
-  return defaultSessionDbPath(path5.join(path5.resolve(workspacePath), ".agent"));
+  return defaultSessionDbPath(path6.join(path6.resolve(workspacePath), ".agent"));
 }
 async function openRunStore(workspacePath) {
-  const agentDir = await findAgentDir(path5.resolve(workspacePath));
+  const agentDir = await findAgentDir(path6.resolve(workspacePath));
   if (agentDir === void 0)
     return void 0;
   try {
@@ -8834,7 +9582,7 @@ function isoTime(epochMs) {
 }
 
 // apps/cli/dist/explain-cmd.js
-function isRecord6(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null;
 }
 function str(value) {
@@ -8849,29 +9597,14 @@ function firstLine2(text2) {
   const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
   return line === void 0 ? "(no summary)" : line;
 }
-function ruleMatches3(rule, task) {
-  const matches2 = (expected, actual) => {
-    if (expected.length === 0)
-      return true;
-    const values = typeof actual === "string" ? [actual] : actual;
-    return expected.some((value) => values.includes(value));
-  };
-  return matches2(rule.taskTypes, task.type) && matches2(rule.riskCategories, task.risk.categories) && matches2(rule.complexity, task.complexity);
-}
-function winningRule(task, policy) {
-  const candidates = (policy.routing ?? []).filter((rule) => ruleMatches3(rule, task));
-  const hard = candidates.filter((rule) => rule.strength === "hard");
-  const pool = hard.length > 0 ? hard : candidates;
-  return [...pool].sort((a, b) => a.weight !== b.weight ? b.weight - a.weight : a.id < b.id ? -1 : a.id > b.id ? 1 : 0)[0];
-}
 function explainRoute(task, policy) {
-  const agent = new PolicyRouter().route(task, policy);
-  const rule = winningRule(task, policy);
-  if (rule !== void 0)
-    return { agent, rule: rule.id };
+  const decision = new PolicyRouter().decide(task, policy);
+  if (decision.rule !== void 0) {
+    return { agent: decision.agent, rule: decision.rule };
+  }
   return {
-    agent,
-    fallback: task.suggestedAgent === void 0 ? "orchestrator" : "suggestedAgent"
+    agent: decision.agent,
+    fallback: decision.reason === "suggestedAgent" ? "suggestedAgent" : "orchestrator"
   };
 }
 function routeSentence(route) {
@@ -8881,7 +9614,7 @@ function routeSentence(route) {
   return route.fallback === "suggestedAgent" ? `routed to ${route.agent} \u2014 no routing rule matched, so the plan's suggestedAgent was used` : `routed to ${route.agent} \u2014 no routing rule matched and the task suggested no agent, so it fell back to the policy's orchestrator`;
 }
 function digestEvent(event2) {
-  const data = isRecord6(event2.data) ? event2.data : {};
+  const data = isRecord8(event2.data) ? event2.data : {};
   switch (event2.type) {
     case "task.held": {
       const blocker = str(data.conflictsWith);
@@ -8912,7 +9645,7 @@ function digestEvent(event2) {
       return files.length === 0 ? `not merged \u2014 ${str(data.reason) ?? "unknown reason"}` : `not merged \u2014 conflicts in ${files.join(", ")}`;
     }
     case "task.completed": {
-      const result = isRecord6(data.result) ? data.result : {};
+      const result = isRecord8(data.result) ? data.result : {};
       const status = str(result.status) ?? "?";
       const retrying = data.final === false ? " (retrying)" : "";
       return `completed \u2014 ${status}: ${firstLine2(result.summary)}${retrying}`;
@@ -9007,7 +9740,7 @@ async function runExplainCommand(taskId, options, deps = {}) {
 
 // apps/cli/dist/init.js
 import { cp, readFile as readFile10, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
-import path6 from "node:path";
+import path7 from "node:path";
 import { fileURLToPath } from "node:url";
 var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
 var MAX_WALK_LEVELS = 6;
@@ -9067,10 +9800,10 @@ async function pathExists(candidate) {
 async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   let dir = startDir;
   for (let level = 0; level <= maxLevels; level += 1) {
-    const candidate = path6.join(dir, ...TEMPLATE_RELATIVE);
+    const candidate = path7.join(dir, ...TEMPLATE_RELATIVE);
     if (await pathExists(candidate))
       return candidate;
-    const parent = path6.dirname(dir);
+    const parent = path7.dirname(dir);
     if (parent === dir)
       break;
     dir = parent;
@@ -9078,7 +9811,7 @@ async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   throw new Error(`Could not find ${TEMPLATE_RELATIVE.join("/")} by walking up from ${startDir} (searched ${maxLevels} levels up). Is this CLI running from within the multi-model-orchestration-agent repo?`);
 }
 async function runInit(options) {
-  const entryDir = path6.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
+  const entryDir = path7.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
   let templateDir;
   try {
     templateDir = await locateTemplate(entryDir);
@@ -9086,7 +9819,7 @@ async function runInit(options) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const target = path6.join(options.cwd, ".agent");
+  const target = path7.join(options.cwd, ".agent");
   const exists = await pathExists(target);
   if (exists && options.force !== true) {
     console.error(`${target} already exists. Re-run with --force to overwrite it.`);
@@ -9099,7 +9832,7 @@ async function runInit(options) {
   console.log(`  (from ${templateDir})`);
   const config = options.config;
   if (config !== void 0) {
-    const configPath = path6.join(target, "config.yaml");
+    const configPath = path7.join(target, "config.yaml");
     try {
       const template = await readFile10(configPath, "utf8");
       await writeFile4(configPath, seedModelsInto(template, config), "utf8");
@@ -9112,7 +9845,7 @@ async function runInit(options) {
 
 // apps/cli/dist/interactive.js
 import { mkdir as mkdir5 } from "node:fs/promises";
-import path8 from "node:path";
+import path9 from "node:path";
 import * as readline4 from "node:readline";
 
 // apps/cli/dist/delegated-chat.js
@@ -9178,11 +9911,11 @@ function createDelegatedChatSession(options) {
 
 // apps/cli/dist/history.js
 import { mkdir as mkdir4, readFile as readFile11, writeFile as writeFile5 } from "node:fs/promises";
-import path7 from "node:path";
+import path8 from "node:path";
 var HISTORY_LIMIT = 1e3;
 var TRIM_THRESHOLD = HISTORY_LIMIT * 2;
 function historyFilePath(env) {
-  return path7.join(kapelConfigDir(env), "history");
+  return path8.join(kapelConfigDir(env), "history");
 }
 async function loadHistory(env) {
   let raw;
@@ -9204,7 +9937,7 @@ function createHistoryAppender(env) {
   async function ensureDir() {
     if (dirEnsured)
       return;
-    await mkdir4(path7.dirname(filePath), { recursive: true });
+    await mkdir4(path8.dirname(filePath), { recursive: true });
     dirEnsured = true;
   }
   async function currentLineCount() {
@@ -9759,7 +10492,7 @@ async function runOrchestrate(objective, options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.4.0";
+var CLI_VERSION = "0.5.0";
 var SHORT_ID = 8;
 var SESSIONS_LIMIT = 20;
 function shortId(id) {
@@ -9770,7 +10503,13 @@ function toChatLike(session) {
     return session;
   return {
     send: (instruction, context) => session.send(instruction, context),
-    toModelMessages: () => session.messages()
+    toModelMessages: () => session.messages(),
+    ...session.compactNow === void 0 ? {} : {
+      compactNow: (context) => (
+        // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+        session.compactNow(context)
+      )
+    }
   };
 }
 function availableSessionsHint(records) {
@@ -9908,6 +10647,11 @@ var SLASH_COMMANDS = [
   },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
   {
+    name: "compact",
+    usage: "/compact",
+    help: "compact the conversation history now"
+  },
+  {
     name: "orchestrate",
     usage: "/orchestrate <objective>",
     help: "run the multi-agent pipeline on an objective"
@@ -9929,6 +10673,11 @@ function bannerModel(backend, modelAlias) {
 function approvalsLine(backend) {
   const cli = backend === "codex" ? "Codex" : "Claude Code";
   return `approvals are enforced by the ${cli} CLI \u2014 kapel does not prompt here`;
+}
+function instructionsBannerLine(sources) {
+  if (sources.length === 0)
+    return void 0;
+  return `instructions: ${sources.join(", ")}`;
 }
 async function createInteractiveController(deps) {
   const newId = deps.newId ?? (() => crypto.randomUUID());
@@ -10169,6 +10918,19 @@ async function createInteractiveController(deps) {
     emit2(`${changes.join(", ")} \u2014 future turns use it.`);
     return drain("config-changed");
   };
+  const slashCompact = async () => {
+    if (chat.compactNow === void 0) {
+      const cli = backend === "codex" ? "Codex" : "Claude Code";
+      emit2(`/compact is not supported with the ${cli} backend.`);
+      return drain();
+    }
+    const result = await chat.compactNow({
+      runId: sessionId,
+      workspacePath: deps.workspacePath
+    });
+    emit2(result.elided === 0 ? "nothing to compact." : `compacted: elided ${result.elided} tool result${result.elided === 1 ? "" : "s"}, saved ~${result.savedChars} chars`);
+    return drain();
+  };
   const slashOrchestrate = async (objective) => {
     if (deps.orchestrate === void 0) {
       emit2("/orchestrate is not available here.");
@@ -10211,6 +10973,8 @@ async function createInteractiveController(deps) {
       case "usage":
         emit2(usageTotalsLine(deps.usage.totals()));
         return drain();
+      case "compact":
+        return await slashCompact();
       case "orchestrate":
         return await slashOrchestrate(argument);
       default:
@@ -10243,7 +11007,7 @@ async function createInteractiveController(deps) {
   };
 }
 async function openChatStore(workspacePath) {
-  const agentDir = path8.join(workspacePath, ".agent");
+  const agentDir = path9.join(workspacePath, ".agent");
   try {
     await mkdir5(agentDir, { recursive: true });
     return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
@@ -10300,7 +11064,7 @@ function pipedLineSource() {
     close: () => rl.close()
   };
 }
-function dim(text2, color) {
+function dim2(text2, color) {
   return color ? `\x1B[2m${text2}\x1B[0m` : text2;
 }
 async function startDelegatedOrNative(backend, alias) {
@@ -10331,8 +11095,9 @@ async function runInteractive(options) {
     console.error('--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".');
     return 1;
   }
-  const workspacePath = path8.resolve(options.cwd);
+  const workspacePath = path9.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
+  const instructions = loadInstructions(workspacePath, process.env);
   const backend = resolveBackendSetting(options.backend, process.env, options.config).value;
   const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config);
   const alias = modelSetting.value;
@@ -10354,8 +11119,19 @@ async function runInteractive(options) {
       return 1;
     }
     const interactiveTty = process.stdin.isTTY === true;
-    const renderer = new TextRenderer();
     const promptState = createPromptState();
+    const sessionAllowlist = new SessionAllowlist();
+    const nativeUsage = new UsageTracker();
+    const delegatedUsage = new DelegatedUsage();
+    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
+    const renderer = new TextRenderer(process.stdout, {
+      tokens: () => {
+        const totals = usage.totals().usage;
+        return totals.inputTokens + totals.outputTokens;
+      },
+      // A permission question owns the screen while it waits for an answer.
+      suspended: () => promptState.active
+    });
     const activeTurn = {
       current: void 0
     };
@@ -10371,11 +11147,9 @@ async function runInteractive(options) {
       yes: options.yes,
       interactive: interactiveTty,
       state: promptState,
+      allowlist: sessionAllowlist,
       ...inputManager === void 0 ? {} : { ask: (query) => inputManager.question(query) }
     });
-    const nativeUsage = new UsageTracker();
-    const delegatedUsage = new DelegatedUsage();
-    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
     const delegatedModelFor = (aliasForBuild) => aliasForBuild === chatAlias ? delegatedModel2 : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
     const delegatedSession = (target, args) => {
       const forwardedModel = delegatedModelFor(args.modelAlias);
@@ -10409,23 +11183,23 @@ async function runInteractive(options) {
         name: "agent",
         role: "worker",
         model: args.model,
-        systemPrompt: options.system ?? defaultSystemPrompt(workspacePath),
+        systemPrompt: options.system ?? composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
         tools: builtinTools().map((tool) => tool.name),
         permissions: DEFAULT_PERMISSIONS
       };
-      return AgentChatSession.restore({
+      return AgentChatSession.restore(agentLoopOptions({
         agent,
         provider: args.provider,
-        tools: builtinTools(),
         permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
           defaultDecision: "ask",
+          overlay: sessionAllowlist,
           ...prompter === void 0 ? {} : { prompter }
         }),
         usage: nativeUsage,
         events: renderer,
         maxIterations: options.maxIterations,
         ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
-      }, args.messages);
+      }), args.messages);
     };
     const createSession = (args) => args.backend === "native" ? nativeSession(args) : delegatedSession(args.backend, args);
     const wizardTty = interactiveTty && process.stdout.isTTY === true && !options.json;
@@ -10433,8 +11207,11 @@ async function runInteractive(options) {
       workspacePath,
       ...store === void 0 ? {} : { store },
       createSession,
+      // Through the renderer rather than straight to the console: the REPL's
+      // own lines land while a turn's status line may still be on screen, and
+      // only the renderer knows how to take the cursor back from it.
       write: (line) => {
-        console.log(line);
+        renderer.line(line);
       },
       backend,
       modelAlias: chatAlias,
@@ -10460,9 +11237,12 @@ async function runInteractive(options) {
     const color = process.stdout.isTTY === true;
     for (const line of controller.banner(workspacePath))
       console.log(line);
+    const instructionsLine = instructionsBannerLine(instructions.sources);
+    if (instructionsLine !== void 0)
+      console.log(dim2(instructionsLine, color));
     if (started.start.persisted) {
       const label = started.start.title === "" ? shortId(started.start.sessionId) : started.start.title;
-      console.log(dim(`resumed ${label} (${started.start.messages.length} messages)`, color));
+      console.log(dim2(`resumed ${label} (${started.start.messages.length} messages)`, color));
     }
     const lineSource = inputManager === void 0 ? pipedLineSource() : inputManagerLineSource(inputManager);
     try {
@@ -10470,7 +11250,7 @@ async function runInteractive(options) {
         controller,
         lines: lineSource,
         promptState,
-        promptText: dim("kapel> ", color),
+        promptText: dim2("kapel> ", color),
         color,
         activeTurn
       });
@@ -10501,7 +11281,7 @@ async function replLoop(args) {
         return 0;
       }
       armed = true;
-      console.log(dim("(/exit to quit, Ctrl-C again to force)", color));
+      console.log(dim2("(/exit to quit, Ctrl-C again to force)", color));
       continue;
     }
     armed = false;
@@ -10545,7 +11325,7 @@ function orchestrateOptionsFor(options, alias) {
 
 // apps/cli/dist/policy.js
 import { readFile as readFile12, writeFile as writeFile6 } from "node:fs/promises";
-import path9 from "node:path";
+import path10 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
@@ -10610,7 +11390,7 @@ async function loadProjectForPolicy(workspacePath, output, json) {
 }
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path9.resolve(options.cwd);
+  const workspacePath = path10.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
@@ -10666,7 +11446,7 @@ async function runPolicyCompile(options, deps = {}) {
   }
   const lock = createLockfile({ markdown, result, model: model.id });
   const serialized = serializeLockfile(lock);
-  const lockPath = path9.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path10.join(project.root, LOCK_FILE_NAME2);
   await writeFile6(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
@@ -10692,13 +11472,13 @@ async function runPolicyCompile(options, deps = {}) {
 }
 async function runPolicyCheck(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path9.resolve(options.cwd);
+  const workspacePath = path10.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path9.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path10.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   if (!status.fresh) {
@@ -10742,13 +11522,13 @@ async function runPolicyCheck(options, deps = {}) {
 }
 async function runPolicyExplain(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path9.resolve(options.cwd);
+  const workspacePath = path10.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path9.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path10.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   let lock;
@@ -10793,7 +11573,7 @@ async function runPolicyExplain(options, deps = {}) {
 
 // apps/cli/dist/resume-cmd.js
 import { readFile as readFile13 } from "node:fs/promises";
-import path10 from "node:path";
+import path11 from "node:path";
 var LOCK_FILE_NAME3 = "orchestration.lock.json";
 async function readOptionalFile3(filePath) {
   try {
@@ -10818,7 +11598,7 @@ function stableJson(value) {
 }
 async function policyDriftWarning(project, snapshot) {
   const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile3(path10.join(project.root, LOCK_FILE_NAME3));
+  const raw = await readOptionalFile3(path11.join(project.root, LOCK_FILE_NAME3));
   const status = checkLock(markdown, raw);
   const tail4 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
   if (!status.fresh) {
@@ -10849,7 +11629,7 @@ async function rebuildGraph(store, runId, plan, completed) {
 }
 async function runResume(runId, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
-  const workspacePath = path10.resolve(options.cwd);
+  const workspacePath = path11.resolve(options.cwd);
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
   const fail2 = (message) => {
     if (options.json)
@@ -10934,9 +11714,9 @@ async function runResume(runId, options, deps = {}) {
 }
 
 // apps/cli/dist/run-claude-code.js
-import path11 from "node:path";
+import path12 from "node:path";
 async function runClaudeCodeObjective(objective, options) {
-  const workspacePath = path11.resolve(options.cwd);
+  const workspacePath = path12.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await ClaudeCodeBackend.checkAvailability();
   if (!availability.installed) {
@@ -10974,9 +11754,9 @@ async function runClaudeCodeObjective(objective, options) {
 }
 
 // apps/cli/dist/run-codex.js
-import path12 from "node:path";
+import path13 from "node:path";
 async function runCodexObjective(objective, options) {
-  const workspacePath = path12.resolve(options.cwd);
+  const workspacePath = path13.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await CodexBackend.checkAvailability();
   if (!availability.installed) {
@@ -11255,7 +12035,7 @@ program.command("init").description("Create a .agent configuration in the curren
   const cwd = command.optsWithGlobals().cwd;
   const config = await loadKapelConfig();
   process.exitCode = await runInit({
-    cwd: path13.resolve(cwd),
+    cwd: path14.resolve(cwd),
     force: opts.force,
     ...config === void 0 ? {} : { config }
   });
@@ -11273,7 +12053,7 @@ program.command("config").description("Configure which backend and models kapel 
 });
 program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
-  await loadDotEnvFile(path13.resolve(cwd));
+  await loadDotEnvFile(path14.resolve(cwd));
   const entries = await listModels(process.env);
   if (entries.length === 0) {
     console.log("(no models registered)");
