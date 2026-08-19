@@ -36,6 +36,13 @@ interface CreatePrompterOptions {
   readonly state: PromptState;
   readonly input?: NodeJS.ReadableStream;
   readonly output?: NodeJS.WritableStream;
+  /**
+   * When provided, permission questions go through this instead of a
+   * private readline — the interactive REPL passes its `InputManager`'s
+   * `question`, so one interface keeps owning stdin instead of a second
+   * readline opening on top of it.
+   */
+  readonly ask?: (query: string) => Promise<string | undefined | symbol>;
 }
 
 /**
@@ -57,17 +64,41 @@ export function createPrompter(
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const state = options.state;
+  const ask = options.ask;
 
   return {
     ask: async (request: PermissionRequest): Promise<boolean> => {
       state.active = true;
       try {
-        return await askOnce(request, input, output);
+        return ask === undefined
+          ? await askOnce(request, input, output)
+          : await askVia(request, ask);
       } finally {
         state.active = false;
       }
     },
   };
+}
+
+/**
+ * The exact question text shown for a permission request, shared by both
+ * `askOnce`'s private readline and the injected `ask` path so the two can
+ * never drift apart.
+ */
+export function formatPermissionQuery(request: PermissionRequest): string {
+  const preview = previewInput(request.input);
+  return `allow ${request.tool}? ${preview} [y/N] `;
+}
+
+/** "y"/"yes" (case-insensitive, trimmed) is approval; everything else — including a closed stream or a SIGINT symbol — is "no". */
+async function askVia(
+  request: PermissionRequest,
+  ask: (query: string) => Promise<string | undefined | symbol>,
+): Promise<boolean> {
+  const answer = await ask(formatPermissionQuery(request));
+  if (typeof answer !== "string") return false;
+  const normalized = answer.trim().toLowerCase();
+  return normalized === "y" || normalized === "yes";
 }
 
 function askOnce(
@@ -76,7 +107,6 @@ function askOnce(
   output: NodeJS.WritableStream,
 ): Promise<boolean> {
   const rl = readline.createInterface({ input, output, terminal: true });
-  const preview = previewInput(request.input);
 
   return new Promise<boolean>((resolve) => {
     let settled = false;
@@ -88,7 +118,7 @@ function askOnce(
     };
 
     rl.on("SIGINT", () => finish(false));
-    rl.question(`allow ${request.tool}? ${preview} [y/N] `, (answer) => {
+    rl.question(formatPermissionQuery(request), (answer) => {
       const normalized = answer.trim().toLowerCase();
       finish(normalized === "y" || normalized === "yes");
     });
