@@ -20,6 +20,7 @@ Useful commands and flags:
 
 - `agent init` — copy the default `.agent/` configuration template into the current repo
 - `agent models` — list available model aliases and their credential status
+- `agent plan "<objective>"` / `agent orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
 - `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI
@@ -62,6 +63,41 @@ agent --backend codex "fix the failing test"
 - `agent policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM.
 
 All three accept `--cwd` and `--json`.
+
+### Orchestrate
+
+`agent "<objective>"` runs one model in one loop. `agent orchestrate "<objective>"` runs the full M3 pipeline instead: the objective is **planned** into a task DAG, the plan is **rewritten by your compiled policy** (unknown agents dropped, mandated reviews injected, unrunnable plans rejected), and the resulting tasks are **routed to different workers and executed in parallel** by the deterministic scheduler.
+
+```bash
+agent policy compile                        # once, and after every orchestration.md edit
+agent plan "add a health endpoint"          # preview the task graph — no work is done
+agent orchestrate "add a health endpoint"   # plan, then execute it
+```
+
+Both commands require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `agent policy compile`. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, the CLI falls back to the normal default model and says so).
+
+`agent plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `agent orchestrate --dry-run` prints exactly the same thing.
+
+During a run, task lifecycle lines are interleaved with the workers' own output:
+
+```text
+▶ T01 → explorer (attempt 1)
+▶ T02 → coder (attempt 1)
+✔ T02 — Added the /healthz route.
+↑ T03 rerouted coder → lead
+⊘ T04 (dependency-failed)
+```
+
+The run ends with a per-task status table and token/cost totals, and exits `0` only if every task completed.
+
+Execution options:
+
+- `--worker-mode in-process` (default) — every task runs in this process through the native agent loop, using the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
+- `--worker-mode child` — each task runs in a separate `agent worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
+- `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
+- `--timeout <seconds>` applies **per task**, not to the run as a whole; `--max-iterations <n>` bounds each in-process worker's tool loop. `--json` turns the whole run into JSONL (worker events, task events, then a final `run.summary` line).
+
+`agent worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
 
 ## Project plan
 

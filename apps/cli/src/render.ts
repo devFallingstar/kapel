@@ -99,6 +99,25 @@ function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
 
+/** The task an event belongs to: the envelope field, then the payload, then "?". */
+function taskIdOf(event: AgentEvent, data: Record<string, unknown>): string {
+  return event.taskId ?? stringOrUndefined(data.taskId) ?? "?";
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** The first non-empty line of a task summary, for one-line task reporting. */
+function firstLine(text: unknown): string {
+  if (typeof text !== "string") return "(no summary)";
+  const line = text
+    .split("\n")
+    .map((part) => part.trim())
+    .find((part) => part !== "");
+  return line === undefined ? "(no summary)" : truncate(line, 120);
+}
+
 function ansi(code: string, text: string, enabled: boolean): string {
   return enabled ? `[${code}m${text}[0m` : text;
 }
@@ -157,6 +176,58 @@ export class TextRenderer implements Renderer {
         const ok = data.ok === true;
         const denied = data.denied === true;
         this.#write(ok ? "  ✓" : `  ✗ (${denied ? "denied" : "error"})`);
+        break;
+      }
+      case "task.started":
+      case "task.completed":
+      case "task.escalated":
+      case "task.cancelled":
+        this.#emitTaskLifecycle(event.type, taskIdOf(event, data), data);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Renders the scheduler's `task.*` events — the orchestration run's spine.
+   *
+   * These share the sink with the worker loop's own events, so a task line has
+   * to be identifiable on its own: every one of them leads with the task id.
+   */
+  #emitTaskLifecycle(
+    type: string,
+    taskId: string,
+    data: Record<string, unknown>,
+  ): void {
+    switch (type) {
+      case "task.started": {
+        const agent = stringOrUndefined(data.agent) ?? "?";
+        const attempt = typeof data.attempt === "number" ? data.attempt : 1;
+        this.#write(`▶ ${taskId} → ${agent} (attempt ${attempt})`);
+        break;
+      }
+      case "task.completed": {
+        const result = isRecord(data.result) ? data.result : {};
+        const ok = result.status === "success";
+        // `final: false` means the scheduler is going to retry this task, so
+        // the failure being reported is not the task's verdict yet.
+        const retrying = data.final === false;
+        const suffix = retrying ? this.#dim(" (retrying)") : "";
+        this.#write(
+          `${ok ? "✔" : "✖"} ${taskId} — ${firstLine(result.summary)}${suffix}`,
+        );
+        break;
+      }
+      case "task.escalated": {
+        const from = stringOrUndefined(data.from) ?? "(unassigned)";
+        const to = stringOrUndefined(data.to) ?? "?";
+        this.#write(`↑ ${taskId} rerouted ${from} → ${to}`);
+        break;
+      }
+      case "task.cancelled": {
+        const reason = stringOrUndefined(data.reason) ?? "cancelled";
+        this.#write(`⊘ ${taskId} (${reason})`);
         break;
       }
       default:

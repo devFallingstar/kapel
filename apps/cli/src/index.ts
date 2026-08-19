@@ -14,6 +14,14 @@ import { loadDotEnvFile } from "./env.js";
 import { runInit } from "./init.js";
 import { listModels } from "./models.js";
 import {
+  DEFAULT_WORKER_MODE,
+  type OrchestrateCommandOptions,
+  runOrchestrate,
+  validateWorkerMode,
+  WORKER_MODES,
+} from "./orchestrate.js";
+import { type PlanCommandOptions, runPlan } from "./plan.js";
+import {
   type PolicyCommandOptions,
   runPolicyCheck,
   runPolicyCompile,
@@ -21,6 +29,7 @@ import {
 } from "./policy.js";
 import { runObjective } from "./run.js";
 import { runCodexObjective } from "./run-codex.js";
+import { runWorkerCommand } from "./worker-cmd.js";
 
 interface RawRunOpts {
   readonly cwd: string;
@@ -204,6 +213,109 @@ program
       "backend codex — uses the OpenAI Codex CLI with its own ChatGPT OAuth " +
         '(run: agent --backend codex "...")',
     );
+  });
+
+function planOptions(command: Command): PlanCommandOptions {
+  const raw = command.optsWithGlobals() as RawRunOpts;
+  return {
+    cwd: raw.cwd,
+    json: raw.json,
+    ...(raw.model === undefined ? {} : { model: raw.model }),
+  };
+}
+
+interface RawOrchestrateOpts {
+  readonly workerMode: string;
+  readonly dryRun: boolean;
+}
+
+function orchestrateOptions(
+  command: Command,
+  opts: RawOrchestrateOpts,
+): OrchestrateCommandOptions {
+  const raw = command.optsWithGlobals() as RawRunOpts;
+  const timeoutSeconds =
+    raw.timeout === undefined
+      ? undefined
+      : parsePositive(raw.timeout, "--timeout", false);
+  const maxIterations = parsePositive(
+    raw.maxIterations,
+    "--max-iterations",
+    true,
+  );
+
+  return {
+    ...planOptions(command),
+    dryRun: opts.dryRun,
+    workerMode: validateWorkerMode(opts.workerMode),
+    backend: validateBackendName(raw.backend),
+    maxIterations,
+    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+  };
+}
+
+async function objectiveCommand(
+  parts: readonly string[],
+  usage: string,
+  run: (objective: string) => Promise<number>,
+): Promise<void> {
+  const objective = parts.join(" ").trim();
+  if (objective === "") {
+    console.error(usage);
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    process.exitCode = await run(objective);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
+program
+  .command("plan")
+  .description(
+    "Plan an objective into a task graph and print it, without executing anything",
+  )
+  .argument("<objective...>", "the objective to plan")
+  .action(async (objective: string[], _opts: unknown, command: Command) => {
+    await objectiveCommand(
+      objective,
+      'Usage: agent plan "<objective>"',
+      (text) => runPlan(text, planOptions(command)),
+    );
+  });
+
+program
+  .command("orchestrate")
+  .description(
+    "Plan an objective and execute the resulting task graph across routed workers",
+  )
+  .argument("<objective...>", "the objective to orchestrate")
+  .option(
+    "--worker-mode <mode>",
+    `where workers run: ${WORKER_MODES.join(" | ")}`,
+    DEFAULT_WORKER_MODE,
+  )
+  .option("--dry-run", "plan only — same output as `agent plan`", false)
+  .action(
+    async (objective: string[], opts: RawOrchestrateOpts, command: Command) => {
+      await objectiveCommand(
+        objective,
+        'Usage: agent orchestrate "<objective>"',
+        (text) => runOrchestrate(text, orchestrateOptions(command, opts)),
+      );
+    },
+  );
+
+program
+  .command("worker")
+  .description(
+    "Run one orchestration task from a protocol request on stdin (used by --worker-mode child)",
+  )
+  .action(async () => {
+    process.exitCode = await runWorkerCommand();
   });
 
 function policyOptions(command: Command): PolicyCommandOptions {

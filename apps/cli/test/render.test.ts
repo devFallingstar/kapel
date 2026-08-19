@@ -170,6 +170,78 @@ describe("TextRenderer / codex.* events", () => {
   });
 });
 
+describe("TextRenderer / task.* lifecycle events", () => {
+  function taskEvent(type: string, data: unknown, taskId = "T01"): AgentEvent {
+    return { id: "evt-1", runId: "run-1", timestamp: 0, type, taskId, data };
+  }
+
+  it("announces a started task with its agent and attempt", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(taskEvent("task.started", { agent: "coder", attempt: 1 }));
+    expect(stream.lines).toEqual(["▶ T01 → coder (attempt 1)"]);
+  });
+
+  it("marks a successful task with ✔ and its summary's first line", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.completed", {
+        agent: "coder",
+        final: true,
+        result: { status: "success", summary: "Added the endpoint.\nDetails." },
+      }),
+    );
+    expect(stream.lines).toEqual(["✔ T01 — Added the endpoint."]);
+  });
+
+  it("marks a failed task with ✖ and flags a non-final attempt as retrying", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.completed", {
+        agent: "coder",
+        final: false,
+        result: { status: "failed", summary: "Build broke" },
+      }),
+    );
+    expect(stream.lines).toEqual(["✖ T01 — Build broke (retrying)"]);
+  });
+
+  it("renders a summary-less result without inventing text", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(taskEvent("task.completed", { result: { status: "failed" } }));
+    expect(stream.lines).toEqual(["✖ T01 — (no summary)"]);
+  });
+
+  it("shows an escalation as a reroute between agents", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent("task.escalated", {
+        from: "coder",
+        to: "lead",
+        rule: "esc-retry",
+      }),
+    );
+    expect(stream.lines).toEqual(["↑ T01 rerouted coder → lead"]);
+  });
+
+  it("shows a cancellation with its reason", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      taskEvent(
+        "task.cancelled",
+        { reason: "dependency-failed", dependency: "T02" },
+        "T03",
+      ),
+    );
+    expect(stream.lines).toEqual(["⊘ T03 (dependency-failed)"]);
+  });
+
+  it("still renders worker loop events flowing through the same sink", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(taskEvent("model.turn.completed", { text: "thinking out loud" }));
+    expect(stream.lines).toEqual(["thinking out loud"]);
+  });
+});
+
 describe("TextRenderer#result / CodexRunResult", () => {
   it("shows the summary but no exit-code line on a clean success", () => {
     const { renderer: r, stream } = renderer();

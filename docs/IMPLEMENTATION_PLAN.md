@@ -41,12 +41,19 @@ Acceptance: changing only natural-language policy changes the validated runtime 
 
 ## M3 — Planner + multi-agent
 
-- [ ] structured ExecutionPlan planner
-- [ ] policy rewrite/validation of proposed plans
-- [ ] model/agent router
-- [ ] child-process worker executor
-- [ ] normalized TaskResult
-- [ ] dependency-aware parallel scheduling
+- [x] structured ExecutionPlan planner (forced emit_plan tool call with
+      validation-issue retries)
+- [x] policy rewrite/validation of proposed plans (review-task injection,
+      unknown-agent handling, issue reporting)
+- [x] model/agent router (task type/risk/complexity matching, hard-first,
+      deterministic tie-break)
+- [x] child-process worker executor (JSONL protocol via `agent worker`;
+      in-process and codex executors as alternatives)
+- [x] normalized TaskResult (workspace change inspection)
+- [x] dependency-aware parallel scheduling (rolling concurrency, retry,
+      escalation rules, transitive cancellation)
+- [x] CLI wiring: `agent plan` preview and `agent orchestrate`
+      (`--worker-mode in-process|child`, `--backend codex`)
 
 Acceptance: orchestrator delegates independent tasks to different configured workers.
 
