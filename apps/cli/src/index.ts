@@ -45,7 +45,7 @@ import {
   runPolicyExplain,
 } from "./policy.js";
 import { type ResumeCommandOptions, runResume } from "./resume-cmd.js";
-import { runObjective } from "./run.js";
+import { objectiveWithPipedStdin, runObjective } from "./run.js";
 import { runClaudeCodeObjective } from "./run-claude-code.js";
 import { runCodexObjective } from "./run-codex.js";
 import { DEFAULT_RUNS_LIMIT, runRunsCommand } from "./runs-cmd.js";
@@ -239,6 +239,10 @@ async function runAndExit(
   }
 
   try {
+    const objectiveWithStdin = await objectiveWithPipedStdin(
+      objective,
+      process.stdin,
+    );
     const config = await runtimeConfig(raw);
     const backend = resolveBackendSetting(
       raw.backend,
@@ -247,19 +251,22 @@ async function runAndExit(
     ).value;
     if (backend === "codex") {
       process.exitCode = await runCodexObjective(
-        objective,
+        objectiveWithStdin,
         toCodexRunOptions(raw, config),
       );
       return;
     }
     if (backend === "claude-code") {
       process.exitCode = await runClaudeCodeObjective(
-        objective,
+        objectiveWithStdin,
         toClaudeCodeRunOptions(raw, config),
       );
       return;
     }
-    process.exitCode = await runObjective(objective, toRunOptions(raw, config));
+    process.exitCode = await runObjective(
+      objectiveWithStdin,
+      toRunOptions(raw, config),
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
