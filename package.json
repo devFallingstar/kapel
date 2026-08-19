@@ -26,7 +26,7 @@
     "codex"
   ],
   "bin": {
-    "kapel": "./dist/kapel.js"
+    "kapel": "dist/kapel.js"
   },
   "files": [
     "dist/kapel.js",
