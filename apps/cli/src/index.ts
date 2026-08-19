@@ -50,6 +50,11 @@ import { objectiveWithPipedStdin, runObjective } from "./run.js";
 import { runClaudeCodeObjective } from "./run-claude-code.js";
 import { runCodexObjective } from "./run-codex.js";
 import { DEFAULT_RUNS_LIMIT, runRunsCommand } from "./runs-cmd.js";
+import {
+  DEFAULT_SESSIONS_LIST_LIMIT,
+  runSessionsForkCommand,
+  runSessionsListCommand,
+} from "./sessions.js";
 import { runWorkerCommand } from "./worker-cmd.js";
 
 interface RawRunOpts {
@@ -644,6 +649,52 @@ program
       process.exitCode = 1;
     }
   });
+
+const sessionsCommand = program
+  .command("sessions")
+  .description("List interactive chat sessions recorded in this workspace")
+  .option(
+    "--limit <n>",
+    "how many sessions to list",
+    String(DEFAULT_SESSIONS_LIST_LIMIT),
+  )
+  .action(async (opts: { limit: string }, command: Command) => {
+    const raw = command.optsWithGlobals() as RawRunOpts;
+    try {
+      process.exitCode = await runSessionsListCommand({
+        cwd: raw.cwd,
+        json: raw.json,
+        limit: parsePositive(opts.limit, "--limit", true),
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+sessionsCommand
+  .command("fork")
+  .description(
+    "Copy a chat session's transcript into a new, independent session",
+  )
+  .argument("<session>", "the session to fork (id, id prefix, or name)")
+  .option("--name <name>", "name for the new session")
+  .action(
+    async (session: string, opts: { name?: string }, command: Command) => {
+      const raw = command.optsWithGlobals() as RawRunOpts;
+      try {
+        process.exitCode = await runSessionsForkCommand({
+          cwd: raw.cwd,
+          json: raw.json,
+          session,
+          ...(opts.name === undefined ? {} : { name: opts.name }),
+        });
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+      }
+    },
+  );
 
 program
   .command("explain")

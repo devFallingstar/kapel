@@ -3,8 +3,17 @@ import path from "node:path";
 import type { RuntimeTask } from "@agent/coding-agent";
 import { findAgentDir, MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
-import type { RunStatus } from "@agent/session";
-import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
+import type { ChatSessionRecord, RunStatus } from "@agent/session";
+import {
+  defaultSessionDbPath,
+  resolveChatSessionReference,
+  SqliteSessionStore,
+} from "@agent/session";
+import {
+  consoleOutput,
+  formatTable,
+  type OrchestrationOutput,
+} from "./plan.js";
 
 /**
  * Fans one event stream out to several sinks.
@@ -168,4 +177,175 @@ export function closeRunStore(store: SqliteSessionStore | undefined): void {
 /** ISO-8601 rendering of an epoch-millisecond timestamp, for stored records. */
 export function isoTime(epochMs: number): string {
   return new Date(epochMs).toISOString();
+}
+
+// --- `kapel sessions` / `kapel sessions fork` -------------------------------
+
+/** How many characters of a session id identify it in `kapel sessions` output. */
+const SHORT_ID = 8;
+
+function shortSessionId(id: string): string {
+  return id.slice(0, SHORT_ID);
+}
+
+/** How many sessions `kapel sessions` lists when `--limit` is not given. */
+export const DEFAULT_SESSIONS_LIST_LIMIT = 20;
+
+export interface SessionsListCommandOptions {
+  readonly cwd: string;
+  readonly json: boolean;
+  /** Defaults to {@link DEFAULT_SESSIONS_LIST_LIMIT}. */
+  readonly limit?: number;
+}
+
+export interface SessionsCommandDeps {
+  readonly output?: OrchestrationOutput;
+}
+
+function sessionRow(
+  record: ChatSessionRecord,
+  showName: boolean,
+): readonly string[] {
+  const base = [shortSessionId(record.id)];
+  if (showName) base.push(record.name ?? "");
+  base.push(
+    isoTime(record.updatedAt),
+    String(record.messageCount),
+    record.title === "" ? "(untitled)" : record.title,
+  );
+  return base;
+}
+
+/**
+ * Implements `kapel sessions`: this workspace's interactive chat sessions,
+ * newest-touched first — the `kapel runs` of the chat half of `sessions.db`.
+ *
+ * A workspace with no session database is not an error — it just has not
+ * recorded a chat session yet (or every `kapel chat` here used `--no-save`) —
+ * so the empty listing says that instead of failing.
+ */
+export async function runSessionsListCommand(
+  options: SessionsListCommandOptions,
+  deps: SessionsCommandDeps = {},
+): Promise<number> {
+  const output = deps.output ?? consoleOutput;
+  const store = openExistingRunStore(options.cwd);
+
+  if (store === undefined) {
+    if (options.json) output.log(JSON.stringify([]));
+    else {
+      output.log(
+        `No chat sessions recorded yet — nothing at ${sessionDbPathFor(options.cwd)}.`,
+      );
+    }
+    return 0;
+  }
+
+  try {
+    const records = await store.listChatSessions(path.resolve(options.cwd), {
+      limit: options.limit ?? DEFAULT_SESSIONS_LIST_LIMIT,
+    });
+
+    if (options.json) {
+      output.log(
+        JSON.stringify(
+          records.map((record) => ({
+            id: record.id,
+            ...(record.name === undefined ? {} : { name: record.name }),
+            title: record.title,
+            ...(record.modelAlias === undefined
+              ? {}
+              : { modelAlias: record.modelAlias }),
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt,
+            messageCount: record.messageCount,
+          })),
+        ),
+      );
+      return 0;
+    }
+
+    if (records.length === 0) {
+      output.log("No chat sessions recorded yet.");
+      return 0;
+    }
+
+    const showName = records.some((record) => record.name !== undefined);
+    const headers = showName
+      ? ["ID", "NAME", "UPDATED", "MSGS", "TITLE"]
+      : ["ID", "UPDATED", "MSGS", "TITLE"];
+    for (const line of formatTable(
+      headers,
+      records.map((record) => sessionRow(record, showName)),
+    )) {
+      output.log(line);
+    }
+    return 0;
+  } finally {
+    closeRunStore(store);
+  }
+}
+
+export interface SessionsForkCommandOptions {
+  readonly cwd: string;
+  readonly json: boolean;
+  /** The session to fork, as typed by the user: an id, an id prefix, or a name. */
+  readonly session: string;
+  /** Label for the new session; omit to leave it unnamed. */
+  readonly name?: string;
+}
+
+/**
+ * Implements `kapel sessions fork <id|name> [--name <name>]`: resolves
+ * `options.session` the same way `--session` does (id, then id prefix, then
+ * exact name — see `resolveChatSessionReference`) and copies it into a new,
+ * independent session via `SqliteSessionStore#forkChatSession`.
+ */
+export async function runSessionsForkCommand(
+  options: SessionsForkCommandOptions,
+  deps: SessionsCommandDeps = {},
+): Promise<number> {
+  const output = deps.output ?? consoleOutput;
+  const store = openExistingRunStore(options.cwd);
+
+  if (store === undefined) {
+    output.error(
+      `No chat sessions recorded yet — nothing at ${sessionDbPathFor(options.cwd)}.`,
+    );
+    return 1;
+  }
+
+  try {
+    const records = await store.listChatSessions(path.resolve(options.cwd));
+    const resolved = resolveChatSessionReference(records, options.session, {
+      onNote: (note) => output.error(note),
+    });
+    if ("error" in resolved) {
+      output.error(resolved.error);
+      return 1;
+    }
+
+    const newId = await store.forkChatSession(
+      resolved.record.id,
+      options.name === undefined ? {} : { name: options.name },
+    );
+
+    if (options.json) {
+      output.log(
+        JSON.stringify({
+          id: newId,
+          forkedFrom: resolved.record.id,
+          ...(options.name === undefined ? {} : { name: options.name }),
+        }),
+      );
+    } else {
+      const label = options.name === undefined ? "" : ` "${options.name}"`;
+      output.log(
+        `Forked ${shortSessionId(resolved.record.id)} → ${shortSessionId(newId)}${label}`,
+      );
+    }
+    return 0;
+  } finally {
+    closeRunStore(store);
+  }
 }

@@ -96,6 +96,15 @@ export const chatSessions = sqliteTable(
     id: text("id").primaryKey(),
     workspacePath: text("workspace_path").notNull(),
     title: text("title").notNull(),
+    /**
+     * User-given label, set via `/name` or `--name`, distinct from `title`
+     * (which is auto-derived from the first message). Nullable, and added
+     * after the table's original release: `BOOTSTRAP_DDL` below only creates
+     * it for a brand new database, so a v0.5.0 database (created before this
+     * column existed) needs the `ALTER TABLE` migration `SqliteSessionStore`
+     * runs on open — see `ensureChatSessionsNameColumn` in `sqlite.ts`.
+     */
+    name: text("name"),
     modelAlias: text("model_alias"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
@@ -104,6 +113,7 @@ export const chatSessions = sqliteTable(
   (table) => [
     index("chat_sessions_workspace_path_idx").on(table.workspacePath),
     index("chat_sessions_updated_at_idx").on(table.updatedAt),
+    index("chat_sessions_name_idx").on(table.name),
   ],
 );
 
@@ -171,6 +181,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   id TEXT PRIMARY KEY,
   workspace_path TEXT NOT NULL,
   title TEXT NOT NULL,
+  name TEXT,
   model_alias TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
