@@ -1,1 +1,1 @@
-v0.6.0 release retry — fix history test teardown race (ENOTEMPTY)
+v0.7.0 release — delegated backends end to end: per-agent model routing on Codex and Claude Code workers, keyless planning and policy compilation through the CLI backends, ungated model choices with run-time access hints, three worker tiers (complex/middle/low)

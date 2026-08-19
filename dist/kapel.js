@@ -550,1242 +550,6 @@ var init_dist = __esm({
 import path18 from "node:path";
 import { Command } from "commander";
 
-// apps/cli/dist/backend.js
-var BACKEND_NAMES = ["native", "codex", "claude-code"];
-var DEFAULT_BACKEND = "native";
-function isBackendName(value) {
-  return BACKEND_NAMES.includes(value);
-}
-function isDelegatedBackend(backend) {
-  return backend === "codex" || backend === "claude-code";
-}
-function validateBackendName(raw) {
-  if (isBackendName(raw))
-    return raw;
-  throw new Error(`Invalid --backend value "${raw}": expected one of ${BACKEND_NAMES.join(", ")}.`);
-}
-var SANDBOX_MODES = [
-  "read-only",
-  "workspace-write",
-  "danger-full-access"
-];
-var DEFAULT_SANDBOX_MODE = "workspace-write";
-function isSandboxMode(value) {
-  return SANDBOX_MODES.includes(value);
-}
-function validateSandboxMode(raw) {
-  if (isSandboxMode(raw))
-    return raw;
-  throw new Error(`Invalid --sandbox value "${raw}": expected one of ${SANDBOX_MODES.join(", ")}.`);
-}
-function fullAutoForSandbox(sandbox) {
-  return sandbox !== "read-only";
-}
-function codexInstallGuidance(availability) {
-  const lines = [
-    "The Codex CLI is not installed.",
-    "Install it with `npm install -g @openai/codex`, then authenticate with `codex login`."
-  ];
-  if (availability.detail !== void 0 && availability.detail !== "") {
-    lines.push(availability.detail);
-  }
-  return lines.join("\n");
-}
-function codexLoginGuidance(availability) {
-  const lines = [
-    "The Codex CLI is installed but you are not logged in.",
-    "Run `codex login` to authenticate with your ChatGPT account \u2014 no OpenAI API key needed."
-  ];
-  if (availability.detail !== void 0 && availability.detail !== "") {
-    lines.push(availability.detail);
-  }
-  return lines.join("\n");
-}
-function claudeCodeInstallGuidance(availability) {
-  const lines = [
-    "The Claude Code CLI is not installed.",
-    "Install it with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription."
-  ];
-  if (availability.detail !== void 0 && availability.detail !== "") {
-    lines.push(availability.detail);
-  }
-  return lines.join("\n");
-}
-function claudeCodeLoginGuidance(availability) {
-  const lines = [
-    "The Claude Code CLI is installed but you are not logged in.",
-    "Run `claude` once and log in with your Claude subscription \u2014 no Anthropic API key needed."
-  ];
-  if (availability.detail !== void 0 && availability.detail !== "") {
-    lines.push(availability.detail);
-  }
-  return lines.join("\n");
-}
-
-// apps/cli/dist/config.js
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import path from "node:path";
-
-// packages/ai/dist/catalog.js
-var FULL_CAPABILITIES = {
-  tools: true,
-  reasoning: true,
-  vision: true,
-  structuredOutput: true
-};
-function claude(id, inputPerMTok, outputPerMTok, contextWindow, maxOutputTokens) {
-  return {
-    provider: "anthropic",
-    id,
-    contextWindow,
-    maxOutputTokens,
-    capabilities: FULL_CAPABILITIES,
-    pricing: {
-      inputPerMTok,
-      outputPerMTok,
-      cachedInputPerMTok: Number((inputPerMTok * 0.1).toFixed(4))
-    }
-  };
-}
-var MILLION = 1e6;
-var K128 = 128e3;
-function defaultModelCatalog() {
-  return {
-    // --- Anthropic -------------------------------------------------------
-    "claude-fable-5": claude("claude-fable-5", 10, 50, MILLION, K128),
-    "claude-opus-5": claude("claude-opus-5", 5, 25, MILLION, K128),
-    "claude-opus-4-8": claude("claude-opus-4-8", 5, 25, MILLION, K128),
-    "claude-opus-4-7": claude("claude-opus-4-7", 5, 25, MILLION, K128),
-    "claude-opus-4-6": claude("claude-opus-4-6", 5, 25, MILLION, K128),
-    // Sonnet 5 has promotional pricing of $2/$10 per MTok through 2026-08-31;
-    // the standard rate below is what applies afterwards.
-    "claude-sonnet-5": claude("claude-sonnet-5", 3, 15, MILLION, K128),
-    "claude-sonnet-4-6": claude("claude-sonnet-4-6", 3, 15, MILLION, K128),
-    "claude-haiku-4-5": claude("claude-haiku-4-5", 1, 5, 2e5, 64e3),
-    // --- OpenAI ----------------------------------------------------------
-    // No pricing shipped: OpenAI rates are not verified here. Override
-    // `pricing` on these entries to get non-zero cost accounting.
-    "gpt-5.1": {
-      provider: "openai",
-      id: "gpt-5.1",
-      capabilities: FULL_CAPABILITIES
-    },
-    "gpt-5-mini": {
-      provider: "openai",
-      id: "gpt-5-mini",
-      capabilities: FULL_CAPABILITIES
-    }
-  };
-}
-
-// packages/ai/dist/image.js
-function matchesMagic(bytes, offset, magic) {
-  if (bytes.length < offset + magic.length)
-    return false;
-  for (let i = 0; i < magic.length; i++) {
-    if (bytes[offset + i] !== magic[i])
-      return false;
-  }
-  return true;
-}
-var PNG_MAGIC = [137, 80, 78, 71, 13, 10, 26, 10];
-var JPEG_MAGIC = [255, 216, 255];
-var GIF87_MAGIC = [71, 73, 70, 56, 55, 97];
-var GIF89_MAGIC = [71, 73, 70, 56, 57, 97];
-var RIFF_MAGIC = [82, 73, 70, 70];
-var WEBP_MAGIC = [87, 69, 66, 80];
-function sniffImageMediaType(bytes) {
-  if (matchesMagic(bytes, 0, PNG_MAGIC))
-    return "image/png";
-  if (matchesMagic(bytes, 0, JPEG_MAGIC))
-    return "image/jpeg";
-  if (matchesMagic(bytes, 0, GIF87_MAGIC) || matchesMagic(bytes, 0, GIF89_MAGIC)) {
-    return "image/gif";
-  }
-  if (matchesMagic(bytes, 0, RIFF_MAGIC) && matchesMagic(bytes, 8, WEBP_MAGIC)) {
-    return "image/webp";
-  }
-  return void 0;
-}
-var EXTENSION_MEDIA_TYPES = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp"
-};
-function mediaTypeFromExtension(filePath) {
-  const match = /\.[^./\\]+$/.exec(filePath);
-  const ext = match?.[0]?.toLowerCase();
-  return ext === void 0 ? void 0 : EXTENSION_MEDIA_TYPES[ext];
-}
-function resolveImageMediaType(bytes, filePath) {
-  return sniffImageMediaType(bytes) ?? mediaTypeFromExtension(filePath);
-}
-
-// packages/ai/dist/sse.js
-async function* parseSse(stream, signal) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let eventName;
-  let dataLines = [];
-  const takePending = () => {
-    if (dataLines.length === 0) {
-      eventName = void 0;
-      return void 0;
-    }
-    const message = {
-      event: eventName,
-      data: dataLines.join("\n")
-    };
-    eventName = void 0;
-    dataLines = [];
-    return message;
-  };
-  const consumeLine = (rawLine) => {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-    if (line === "")
-      return takePending();
-    if (line.startsWith(":"))
-      return void 0;
-    const colon = line.indexOf(":");
-    const field = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? "" : line.slice(colon + 1);
-    if (value.startsWith(" "))
-      value = value.slice(1);
-    if (field === "event")
-      eventName = value;
-    else if (field === "data")
-      dataLines.push(value);
-    return void 0;
-  };
-  const onAbort = () => {
-    void reader.cancel().catch(() => void 0);
-  };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    while (true) {
-      if (signal?.aborted)
-        return;
-      const { done, value } = await reader.read();
-      if (signal?.aborted)
-        return;
-      if (done)
-        break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline = buffer.indexOf("\n");
-      while (newline !== -1) {
-        const rawLine = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        const message = consumeLine(rawLine);
-        if (message !== void 0)
-          yield message;
-        newline = buffer.indexOf("\n");
-      }
-    }
-    buffer += decoder.decode();
-    if (buffer !== "") {
-      const message = consumeLine(buffer);
-      if (message !== void 0)
-        yield message;
-      buffer = "";
-    }
-    const trailing = takePending();
-    if (trailing !== void 0)
-      yield trailing;
-  } catch (error) {
-    if (signal?.aborted)
-      return;
-    throw error;
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    try {
-      await reader.cancel();
-    } catch {
-    }
-  }
-}
-
-// packages/ai/dist/providers/errors.js
-var ProviderError = class extends Error {
-  provider;
-  status;
-  body;
-  constructor(init) {
-    super(init.message);
-    this.name = "ProviderError";
-    this.provider = init.provider;
-    this.status = init.status;
-    this.body = init.body;
-  }
-};
-
-// packages/ai/dist/providers/anthropic.js
-var OAUTH_BETA = "oauth-2025-04-20";
-var DEFAULT_BASE_URL = "https://api.anthropic.com";
-var ANTHROPIC_VERSION = "2023-06-01";
-var DEFAULT_MAX_TOKENS = 4096;
-function isRecord(value) {
-  return typeof value === "object" && value !== null;
-}
-function asNumber(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function parseToolInput(raw) {
-  const trimmed = raw.trim();
-  if (trimmed === "")
-    return {};
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return raw;
-  }
-}
-function toWireTool(tool) {
-  return {
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema
-  };
-}
-function toWireToolChoice(choice) {
-  switch (choice.type) {
-    case "auto":
-      return { type: "auto" };
-    case "any":
-      return { type: "any" };
-    case "tool":
-      return { type: "tool", name: choice.name };
-  }
-}
-function mapMessages(messages) {
-  const systemParts = [];
-  const wire = [];
-  for (const message of messages) {
-    switch (message.role) {
-      case "system":
-        if (message.content !== "")
-          systemParts.push(message.content);
-        break;
-      case "user": {
-        const images = message.images ?? [];
-        if (images.length === 0) {
-          wire.push({ role: "user", content: message.content });
-          break;
-        }
-        const blocks = images.map((image) => ({
-          type: "image",
-          source: {
-            type: "base64",
-            media_type: image.mediaType,
-            data: image.base64
-          }
-        }));
-        if (message.content !== "")
-          blocks.push({ type: "text", text: message.content });
-        wire.push({ role: "user", content: blocks });
-        break;
-      }
-      case "tool": {
-        const block = {
-          type: "tool_result",
-          tool_use_id: message.toolCallId ?? "",
-          content: message.content
-        };
-        if (message.isError === true)
-          block.is_error = true;
-        wire.push({ role: "user", content: [block] });
-        break;
-      }
-      case "assistant": {
-        const calls = message.toolCalls ?? [];
-        if (calls.length === 0) {
-          wire.push({ role: "assistant", content: message.content });
-          break;
-        }
-        const blocks = [];
-        if (message.content !== "")
-          blocks.push({ type: "text", text: message.content });
-        for (const call of calls) {
-          blocks.push({
-            type: "tool_use",
-            id: call.id,
-            name: call.name,
-            input: call.input
-          });
-        }
-        wire.push({ role: "assistant", content: blocks });
-        break;
-      }
-    }
-  }
-  return {
-    system: systemParts.length === 0 ? void 0 : systemParts.join("\n\n"),
-    messages: wire
-  };
-}
-var AnthropicProvider = class {
-  id = "anthropic";
-  #credential;
-  #baseUrl;
-  constructor(options) {
-    const { apiKey, authToken } = options;
-    if (apiKey !== void 0 && authToken !== void 0) {
-      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`, not both.");
-    }
-    if (apiKey === void 0 && authToken === void 0) {
-      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`.");
-    }
-    this.#credential = apiKey !== void 0 ? { kind: "api-key", value: apiKey } : { kind: "auth-token", value: authToken };
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
-  }
-  /**
-   * Base request headers plus credential headers: `x-api-key` for an API
-   * key, or `authorization: Bearer <token>` plus the OAuth beta flag for an
-   * auth token (never both `x-api-key` and `authorization` — the API
-   * rejects requests carrying both). The OAuth beta flag is comma-joined
-   * onto `anthropic-beta` rather than overwriting it, in case a future
-   * feature already populated that header for this request.
-   */
-  #headers() {
-    const headers = {
-      "content-type": "application/json",
-      "anthropic-version": ANTHROPIC_VERSION,
-      accept: "text/event-stream"
-    };
-    if (this.#credential.kind === "api-key") {
-      headers["x-api-key"] = this.#credential.value;
-      return headers;
-    }
-    headers.authorization = `Bearer ${this.#credential.value}`;
-    const existingBeta = headers["anthropic-beta"];
-    headers["anthropic-beta"] = existingBeta === void 0 || existingBeta === "" ? OAUTH_BETA : `${existingBeta},${OAUTH_BETA}`;
-    return headers;
-  }
-  supports(model) {
-    return model.provider === "anthropic";
-  }
-  #buildBody(request) {
-    const { system, messages } = mapMessages(request.messages);
-    const body = {
-      model: request.model.id,
-      max_tokens: request.maxOutputTokens ?? request.model.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
-      stream: true,
-      messages
-    };
-    if (system !== void 0)
-      body.system = system;
-    if (request.tools !== void 0 && request.tools.length > 0) {
-      body.tools = request.tools.map(toWireTool);
-    }
-    if (request.toolChoice !== void 0) {
-      body.tool_choice = toWireToolChoice(request.toolChoice);
-    }
-    if (request.temperature !== void 0)
-      body.temperature = request.temperature;
-    return body;
-  }
-  async *stream(request, signal) {
-    const response = await fetch(`${this.#baseUrl}/v1/messages`, {
-      method: "POST",
-      headers: this.#headers(),
-      body: JSON.stringify(this.#buildBody(request)),
-      signal: signal ?? null
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: `Anthropic request failed with status ${response.status}`,
-        body
-      });
-    }
-    if (response.body === null) {
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: "Anthropic response had no body"
-      });
-    }
-    const blocks = /* @__PURE__ */ new Map();
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cachedInputTokens = 0;
-    let finishReason = "end_turn";
-    const readUsage = (usage) => {
-      if (!isRecord(usage))
-        return;
-      if (typeof usage.input_tokens === "number")
-        inputTokens = usage.input_tokens;
-      if (typeof usage.output_tokens === "number")
-        outputTokens = usage.output_tokens;
-      if (typeof usage.cache_read_input_tokens === "number") {
-        cachedInputTokens = usage.cache_read_input_tokens;
-      }
-    };
-    const finalEvents = () => [
-      {
-        type: "usage",
-        inputTokens,
-        outputTokens,
-        ...cachedInputTokens > 0 ? { cachedInputTokens } : {}
-      },
-      { type: "done", finishReason }
-    ];
-    for await (const message of parseSse(response.body, signal)) {
-      if (signal?.aborted)
-        return;
-      let payload;
-      try {
-        payload = JSON.parse(message.data);
-      } catch {
-        continue;
-      }
-      if (!isRecord(payload))
-        continue;
-      const type = typeof payload.type === "string" ? payload.type : message.event ?? "";
-      if (type === "error") {
-        const error = isRecord(payload.error) ? payload.error : void 0;
-        const detail = error !== void 0 && typeof error.message === "string" ? error.message : "Anthropic stream error";
-        throw new ProviderError({
-          provider: this.id,
-          status: response.status,
-          message: detail,
-          body: message.data
-        });
-      }
-      if (type === "message_start") {
-        const wrapped = isRecord(payload.message) ? payload.message : void 0;
-        if (wrapped !== void 0)
-          readUsage(wrapped.usage);
-        continue;
-      }
-      if (type === "content_block_start") {
-        const index2 = asNumber(payload.index);
-        const block = isRecord(payload.content_block) ? payload.content_block : void 0;
-        if (block !== void 0 && block.type === "tool_use") {
-          blocks.set(index2, {
-            id: typeof block.id === "string" ? block.id : "",
-            name: typeof block.name === "string" ? block.name : "",
-            json: ""
-          });
-        }
-        continue;
-      }
-      if (type === "content_block_delta") {
-        const index2 = asNumber(payload.index);
-        const delta = isRecord(payload.delta) ? payload.delta : void 0;
-        if (delta === void 0)
-          continue;
-        if (delta.type === "text_delta" && typeof delta.text === "string") {
-          if (delta.text !== "")
-            yield { type: "text.delta", text: delta.text };
-        } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-          const pendingBlock = blocks.get(index2);
-          if (pendingBlock !== void 0)
-            pendingBlock.json += delta.partial_json;
-        }
-        continue;
-      }
-      if (type === "content_block_stop") {
-        const index2 = asNumber(payload.index);
-        const pendingBlock = blocks.get(index2);
-        if (pendingBlock !== void 0) {
-          blocks.delete(index2);
-          yield {
-            type: "tool.call",
-            id: pendingBlock.id,
-            name: pendingBlock.name,
-            input: parseToolInput(pendingBlock.json)
-          };
-        }
-        continue;
-      }
-      if (type === "message_delta") {
-        const delta = isRecord(payload.delta) ? payload.delta : void 0;
-        if (delta !== void 0 && typeof delta.stop_reason === "string") {
-          finishReason = delta.stop_reason;
-        }
-        readUsage(payload.usage);
-        continue;
-      }
-      if (type === "message_stop") {
-        for (const event2 of finalEvents())
-          yield event2;
-        return;
-      }
-    }
-    if (signal?.aborted)
-      return;
-    for (const event2 of finalEvents())
-      yield event2;
-  }
-};
-
-// packages/ai/dist/providers/openai.js
-var DEFAULT_BASE_URL2 = "https://api.openai.com/v1";
-function isRecord2(value) {
-  return typeof value === "object" && value !== null;
-}
-function asNumber2(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function toWireMessage(message) {
-  switch (message.role) {
-    case "tool":
-      return {
-        role: "tool",
-        content: message.content,
-        tool_call_id: message.toolCallId ?? ""
-      };
-    case "assistant": {
-      const calls = message.toolCalls ?? [];
-      if (calls.length === 0)
-        return { role: "assistant", content: message.content };
-      return {
-        role: "assistant",
-        content: message.content === "" ? null : message.content,
-        tool_calls: calls.map((call) => ({
-          id: call.id,
-          type: "function",
-          function: { name: call.name, arguments: JSON.stringify(call.input) }
-        }))
-      };
-    }
-    case "user": {
-      const images = message.images ?? [];
-      if (images.length === 0)
-        return { role: "user", content: message.content };
-      const blocks = [];
-      if (message.content !== "")
-        blocks.push({ type: "text", text: message.content });
-      for (const image of images) {
-        blocks.push({
-          type: "image_url",
-          image_url: { url: `data:${image.mediaType};base64,${image.base64}` }
-        });
-      }
-      return { role: "user", content: blocks };
-    }
-    default:
-      return { role: message.role, content: message.content };
-  }
-}
-function toWireTool2(tool) {
-  return {
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema
-    }
-  };
-}
-function toWireToolChoice2(choice) {
-  switch (choice.type) {
-    case "auto":
-      return "auto";
-    case "any":
-      return "required";
-    case "tool":
-      return { type: "function", function: { name: choice.name } };
-  }
-}
-function parseArguments(raw) {
-  const trimmed = raw.trim();
-  if (trimmed === "")
-    return {};
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return raw;
-  }
-}
-var OpenAIProvider = class {
-  id = "openai";
-  #apiKey;
-  #baseUrl;
-  constructor(options) {
-    this.#apiKey = options.apiKey;
-    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL2).replace(/\/+$/, "");
-  }
-  supports(model) {
-    return model.provider === "openai" || model.provider === "openai-compatible";
-  }
-  #buildBody(request) {
-    const body = {
-      model: request.model.id,
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: request.messages.map(toWireMessage)
-    };
-    if (request.tools !== void 0 && request.tools.length > 0) {
-      body.tools = request.tools.map(toWireTool2);
-    }
-    if (request.toolChoice !== void 0) {
-      body.tool_choice = toWireToolChoice2(request.toolChoice);
-    }
-    if (request.temperature !== void 0)
-      body.temperature = request.temperature;
-    if (request.maxOutputTokens !== void 0) {
-      body.max_completion_tokens = request.maxOutputTokens;
-    }
-    return body;
-  }
-  async *stream(request, signal) {
-    const response = await fetch(`${this.#baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.#apiKey}`,
-        accept: "text/event-stream"
-      },
-      body: JSON.stringify(this.#buildBody(request)),
-      signal: signal ?? null
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: `OpenAI request failed with status ${response.status}`,
-        body
-      });
-    }
-    if (response.body === null) {
-      throw new ProviderError({
-        provider: this.id,
-        status: response.status,
-        message: "OpenAI response had no body"
-      });
-    }
-    const pending = /* @__PURE__ */ new Map();
-    let finishReason = "stop";
-    let emittedToolCalls = false;
-    const flushToolCalls = () => {
-      if (emittedToolCalls)
-        return [];
-      emittedToolCalls = true;
-      const indexes = [...pending.keys()].sort((a, b) => a - b);
-      const events2 = [];
-      for (const index2 of indexes) {
-        const call = pending.get(index2);
-        if (call === void 0)
-          continue;
-        events2.push({
-          type: "tool.call",
-          id: call.id,
-          name: call.name,
-          input: parseArguments(call.args)
-        });
-      }
-      return events2;
-    };
-    for await (const message of parseSse(response.body, signal)) {
-      if (signal?.aborted)
-        return;
-      if (message.data === "[DONE]")
-        break;
-      let chunk;
-      try {
-        chunk = JSON.parse(message.data);
-      } catch {
-        continue;
-      }
-      if (!isRecord2(chunk))
-        continue;
-      const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-      const choice = choices[0];
-      if (isRecord2(choice)) {
-        const delta = isRecord2(choice.delta) ? choice.delta : void 0;
-        if (delta !== void 0 && typeof delta.content === "string" && delta.content !== "") {
-          yield { type: "text.delta", text: delta.content };
-        }
-        if (delta !== void 0 && Array.isArray(delta.tool_calls)) {
-          for (const entry of delta.tool_calls) {
-            if (!isRecord2(entry))
-              continue;
-            const index2 = typeof entry.index === "number" ? entry.index : 0;
-            let call = pending.get(index2);
-            if (call === void 0) {
-              call = { id: "", name: "", args: "" };
-              pending.set(index2, call);
-            }
-            if (typeof entry.id === "string")
-              call.id = entry.id;
-            const fn = isRecord2(entry.function) ? entry.function : void 0;
-            if (fn !== void 0) {
-              if (typeof fn.name === "string")
-                call.name = fn.name;
-              if (typeof fn.arguments === "string")
-                call.args += fn.arguments;
-            }
-          }
-        }
-        if (typeof choice.finish_reason === "string") {
-          finishReason = choice.finish_reason;
-          for (const event2 of flushToolCalls())
-            yield event2;
-        }
-      }
-      if (isRecord2(chunk.usage)) {
-        const usage = chunk.usage;
-        const details = isRecord2(usage.prompt_tokens_details) ? usage.prompt_tokens_details : void 0;
-        const cached = details === void 0 ? 0 : asNumber2(details.cached_tokens);
-        yield {
-          type: "usage",
-          inputTokens: asNumber2(usage.prompt_tokens),
-          outputTokens: asNumber2(usage.completion_tokens),
-          ...cached > 0 ? { cachedInputTokens: cached } : {}
-        };
-      }
-    }
-    if (signal?.aborted)
-      return;
-    for (const event2 of flushToolCalls())
-      yield event2;
-    yield { type: "done", finishReason };
-  }
-};
-
-// packages/ai/dist/registry.js
-var StaticModelRegistry = class {
-  #models;
-  #providers;
-  constructor(models, providers) {
-    this.#models = models;
-    this.#providers = providers;
-  }
-  get(alias) {
-    const model = this.#models[alias];
-    if (model === void 0) {
-      const known = Object.keys(this.#models).sort().join(", ");
-      throw new Error(`Unknown model alias "${alias}". Known aliases: ${known === "" ? "(none registered)" : known}`);
-    }
-    return model;
-  }
-  providerFor(model) {
-    const provider = this.#providers.find((candidate) => candidate.supports(model));
-    if (provider === void 0) {
-      const known = this.#providers.map((candidate) => candidate.id).join(", ");
-      throw new Error(`No provider supports model "${model.provider}/${model.id}". Registered providers: ${known === "" ? "(none registered)" : known}`);
-    }
-    return provider;
-  }
-  aliases() {
-    return Object.keys(this.#models);
-  }
-};
-
-// packages/ai/dist/usage.js
-var UNATTRIBUTED = "(unattributed)";
-var PER_MILLION = 1e6;
-var CELL_SEPARATOR = "\0";
-function newBucket() {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedInputTokens: 0,
-    hasCached: false,
-    costUsd: 0
-  };
-}
-function usageCostUsd(pricing, usage) {
-  if (pricing === void 0)
-    return 0;
-  const cached = usage.cachedInputTokens ?? 0;
-  const cachedRate = pricing.cachedInputPerMTok ?? pricing.inputPerMTok;
-  const total = usage.inputTokens * pricing.inputPerMTok + usage.outputTokens * pricing.outputPerMTok + cached * cachedRate;
-  return total / PER_MILLION;
-}
-function toUsage(bucket) {
-  return {
-    inputTokens: bucket.inputTokens,
-    outputTokens: bucket.outputTokens,
-    ...bucket.hasCached ? { cachedInputTokens: bucket.cachedInputTokens } : {}
-  };
-}
-function addInto(target, usage, cost) {
-  target.inputTokens += usage.inputTokens;
-  target.outputTokens += usage.outputTokens;
-  target.cachedInputTokens += usage.cachedInputTokens ?? 0;
-  target.hasCached = target.hasCached || usage.cachedInputTokens !== void 0;
-  target.costUsd += cost;
-}
-function pricingOf(priced, unpriced) {
-  if (unpriced === 0)
-    return "known";
-  return priced === 0 ? "unknown" : "partial";
-}
-var UsageTracker = class {
-  #byModel = /* @__PURE__ */ new Map();
-  #cells = /* @__PURE__ */ new Map();
-  #total = newBucket();
-  /**
-   * Folds one model turn in.
-   *
-   * `tags` is optional and purely additive: an untagged call still lands in
-   * {@link totals} and {@link byModel} exactly as before, and shows up under
-   * {@link UNATTRIBUTED} in the agent and task breakdowns.
-   */
-  record(model, usage, tags) {
-    const key = `${model.provider}/${model.id}`;
-    let bucket = this.#byModel.get(key);
-    if (bucket === void 0) {
-      bucket = newBucket();
-      this.#byModel.set(key, bucket);
-    }
-    const cost = usageCostUsd(model.pricing, usage);
-    addInto(bucket, usage, cost);
-    addInto(this.#total, usage, cost);
-    const cell = this.#cellFor(model, tags);
-    addInto(cell.bucket, usage, cost);
-    if (model.pricing === void 0)
-      cell.unpriced += 1;
-    else
-      cell.priced += 1;
-  }
-  #cellFor(model, tags) {
-    const attribution = {
-      model: tags?.model ?? model.id,
-      agent: tags?.agent ?? UNATTRIBUTED,
-      task: tags?.taskId ?? UNATTRIBUTED
-    };
-    const key = [attribution.model, attribution.agent, attribution.task].join(CELL_SEPARATOR);
-    let cell = this.#cells.get(key);
-    if (cell === void 0) {
-      cell = { ...attribution, bucket: newBucket(), priced: 0, unpriced: 0 };
-      this.#cells.set(key, cell);
-    }
-    return cell;
-  }
-  totals() {
-    return { usage: toUsage(this.#total), costUsd: this.#total.costUsd };
-  }
-  byModel() {
-    const out = /* @__PURE__ */ new Map();
-    for (const [key, bucket] of this.#byModel) {
-      out.set(key, { usage: toUsage(bucket), costUsd: bucket.costUsd });
-    }
-    return out;
-  }
-  /**
-   * Usage grouped along one attribution axis.
-   *
-   * Every sample lands in exactly one bucket of every dimension, so summing
-   * any breakdown reproduces {@link totals} — that invariant is what makes the
-   * per-model rollup in a run summary trustworthy. Buckets come back in
-   * first-seen order.
-   */
-  totalsBy(dimension) {
-    const out = /* @__PURE__ */ new Map();
-    for (const [key, entry] of this.breakdownBy(dimension)) {
-      out.set(key, { usage: entry.usage, costUsd: entry.costUsd });
-    }
-    return out;
-  }
-  /** {@link totalsBy} plus what each bucket is made of — see {@link UsageBreakdown}. */
-  breakdownBy(dimension) {
-    const groups = /* @__PURE__ */ new Map();
-    for (const cell of this.#cells.values()) {
-      const key = dimension === "model" ? cell.model : dimension === "agent" ? cell.agent : cell.task;
-      let group = groups.get(key);
-      if (group === void 0) {
-        group = {
-          bucket: newBucket(),
-          models: /* @__PURE__ */ new Set(),
-          agents: /* @__PURE__ */ new Set(),
-          tasks: /* @__PURE__ */ new Set(),
-          priced: 0,
-          unpriced: 0
-        };
-        groups.set(key, group);
-      }
-      addInto(group.bucket, toUsage(cell.bucket), cell.bucket.costUsd);
-      group.models.add(cell.model);
-      group.agents.add(cell.agent);
-      group.tasks.add(cell.task);
-      group.priced += cell.priced;
-      group.unpriced += cell.unpriced;
-    }
-    const out = /* @__PURE__ */ new Map();
-    for (const [key, group] of groups) {
-      out.set(key, {
-        key,
-        usage: toUsage(group.bucket),
-        costUsd: group.bucket.costUsd,
-        pricing: pricingOf(group.priced, group.unpriced),
-        models: [...group.models].sort(),
-        agents: [...group.agents].sort(),
-        tasks: [...group.tasks].sort(),
-        samples: group.priced + group.unpriced
-      });
-    }
-    return out;
-  }
-};
-async function* teeUsage(source, model, recorder, tags) {
-  for await (const event2 of source) {
-    if (event2.type === "usage") {
-      recorder.record(model, {
-        inputTokens: event2.inputTokens,
-        outputTokens: event2.outputTokens,
-        ...event2.cachedInputTokens === void 0 ? {} : { cachedInputTokens: event2.cachedInputTokens }
-      }, tags);
-    }
-    yield event2;
-  }
-}
-function usageRecordingProvider(provider, recorder, tags) {
-  return {
-    id: provider.id,
-    supports: (model) => provider.supports(model),
-    stream: (request, signal) => teeUsage(provider.stream(request, signal), request.model, recorder, tags)
-  };
-}
-
-// apps/cli/dist/config.js
-var KAPEL_CONFIG_VERSION = 1;
-var BACKENDS = ["claude-code", "codex", "native"];
-function envValue(env, name) {
-  const value = (env ?? process.env)[name];
-  return value === void 0 || value === "" ? void 0 : value;
-}
-function kapelConfigDir(env) {
-  return envValue(env, "KAPEL_CONFIG_DIR") ?? path.join(homedir(), ".kapel");
-}
-function kapelConfigPath(env) {
-  return path.join(kapelConfigDir(env), "config.json");
-}
-function isBackend(value) {
-  return typeof value === "string" && BACKENDS.includes(value);
-}
-function modelString(value) {
-  return typeof value === "string" && value !== "" ? value : void 0;
-}
-function isRecord3(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function isPermissionDecision(value) {
-  return value === "allow" || value === "ask" || value === "deny";
-}
-function parsePermissionBlock(raw) {
-  if (raw === void 0)
-    return { rules: {}, warnings: [] };
-  if (!isRecord3(raw)) {
-    return {
-      rules: {},
-      warnings: ['"permission" must be an object; ignoring it entirely.']
-    };
-  }
-  const rules = {};
-  const warnings = [];
-  for (const [tool, value] of Object.entries(raw)) {
-    if (isPermissionDecision(value)) {
-      rules[tool] = value;
-      continue;
-    }
-    if (isRecord3(value)) {
-      const patterns = {};
-      for (const [pattern, verdict] of Object.entries(value)) {
-        if (isPermissionDecision(verdict)) {
-          patterns[pattern] = verdict;
-        } else {
-          warnings.push(`permission.${tool}["${pattern}"]: expected "allow" | "ask" | "deny", got ${JSON.stringify(verdict)} \u2014 ignoring.`);
-        }
-      }
-      if (Object.keys(patterns).length > 0) {
-        rules[tool] = patterns;
-      } else {
-        warnings.push(`permission.${tool}: no valid patterns \u2014 ignoring.`);
-      }
-      continue;
-    }
-    warnings.push(`permission.${tool}: expected "allow" | "ask" | "deny" or a pattern map, got ${JSON.stringify(value)} \u2014 ignoring.`);
-  }
-  return { rules, warnings };
-}
-function parseConfig(raw) {
-  const none = { config: void 0, warnings: [] };
-  if (typeof raw !== "object" || raw === null)
-    return none;
-  const record = raw;
-  if (record.version !== KAPEL_CONFIG_VERSION)
-    return none;
-  if (!isBackend(record.backend))
-    return none;
-  const models = record.models;
-  if (typeof models !== "object" || models === null)
-    return none;
-  const modelRecord = models;
-  const orchestrator = modelString(modelRecord.orchestrator);
-  const worker = modelString(modelRecord.worker);
-  const cheap = modelString(modelRecord.cheap);
-  if (orchestrator === void 0 || worker === void 0 || cheap === void 0) {
-    return none;
-  }
-  const { rules: permission, warnings } = parsePermissionBlock(record.permission);
-  const updatedAt = record.updatedAt;
-  return {
-    config: {
-      version: KAPEL_CONFIG_VERSION,
-      backend: record.backend,
-      models: { orchestrator, worker, cheap },
-      updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
-      ...Object.keys(permission).length > 0 ? { permission } : {}
-    },
-    warnings
-  };
-}
-async function loadKapelConfig(env) {
-  let text2;
-  try {
-    text2 = await readFile(kapelConfigPath(env), "utf8");
-  } catch {
-    return void 0;
-  }
-  let parsed;
-  try {
-    parsed = parseConfig(JSON.parse(text2));
-  } catch {
-    return void 0;
-  }
-  if (parsed.warnings.length > 0) {
-    console.error(`warning: ignoring invalid entries in ${kapelConfigPath(env)}'s "permission" block:`);
-    for (const warning of parsed.warnings)
-      console.error(`  - ${warning}`);
-  }
-  return parsed.config;
-}
-async function saveKapelConfig(config, env) {
-  const filePath = kapelConfigPath(env);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const full = {
-    version: KAPEL_CONFIG_VERSION,
-    backend: config.backend,
-    models: {
-      orchestrator: config.models.orchestrator,
-      worker: config.models.worker,
-      cheap: config.models.cheap
-    },
-    updatedAt: config.updatedAt ?? Date.now(),
-    // Hand-edited only (see `KapelConfig.permission`) — carried through
-    // verbatim so a `/config` re-save never silently drops it.
-    ...config.permission === void 0 ? {} : { permission: config.permission }
-  };
-  await writeFile(filePath, `${JSON.stringify(full, null, 2)}
-`, "utf8");
-  try {
-    await chmod(filePath, 384);
-  } catch {
-  }
-  return filePath;
-}
-function backendChoices() {
-  return [
-    {
-      value: "claude-code",
-      label: "Claude Code",
-      hint: "use your Claude Code subscription login \u2014 no API key"
-    },
-    {
-      value: "codex",
-      label: "Codex",
-      hint: "use your ChatGPT login via the OpenAI Codex CLI \u2014 no API key"
-    },
-    {
-      value: "native",
-      label: "API key (Anthropic/OpenAI)",
-      hint: "call model APIs directly with a key or token"
-    }
-  ];
-}
-var CLAUDE_CODE_CHOICES = [
-  { value: "opus", label: "opus", hint: "Claude Opus \u2014 highest capability" },
-  { value: "sonnet", label: "sonnet", hint: "Claude Sonnet \u2014 balanced" },
-  { value: "haiku", label: "haiku", hint: "Claude Haiku \u2014 fastest/cheapest" },
-  {
-    value: "default",
-    label: "default",
-    hint: "whatever your Claude Code account defaults to"
-  }
-];
-var CODEX_CHOICES = [
-  { value: "default", label: "default", hint: "let the Codex CLI choose" },
-  {
-    value: "gpt-5.1-codex",
-    label: "gpt-5.1-codex",
-    hint: "only if your account has it"
-  },
-  { value: "gpt-5.1", label: "gpt-5.1", hint: "only if your account has it" },
-  {
-    value: "gpt-5-mini",
-    label: "gpt-5-mini",
-    hint: "only if your account has it"
-  }
-];
-function nativeChoices() {
-  const catalog = defaultModelCatalog();
-  return Object.keys(catalog).sort().map((alias) => {
-    const definition = catalog[alias];
-    const provider = definition?.provider ?? "unknown";
-    const hint = definition?.pricing === void 0 ? provider : `${provider} \xB7 pricing available`;
-    return { value: alias, label: alias, hint };
-  });
-}
-function choicesForBackend(backend) {
-  if (backend === "claude-code")
-    return CLAUDE_CODE_CHOICES;
-  if (backend === "codex")
-    return CODEX_CHOICES;
-  return nativeChoices();
-}
-function modelChoicesFor(backend, role) {
-  const suggested = defaultModelsFor(backend)[role];
-  return choicesForBackend(backend).map((choice) => {
-    if (choice.value !== suggested)
-      return choice;
-    const hint = choice.hint === void 0 ? "suggested for this role" : `${choice.hint} \xB7 suggested for this role`;
-    return { value: choice.value, label: choice.label, hint };
-  });
-}
-function pickNative(preferred) {
-  const catalog = defaultModelCatalog();
-  const aliases = Object.keys(catalog).sort();
-  if (aliases.includes(preferred))
-    return preferred;
-  const anthropic = aliases.find((alias) => catalog[alias]?.provider === "anthropic");
-  return anthropic ?? aliases[0] ?? preferred;
-}
-function defaultModelsFor(backend) {
-  if (backend === "claude-code") {
-    return { orchestrator: "opus", worker: "sonnet", cheap: "haiku" };
-  }
-  if (backend === "codex") {
-    return { orchestrator: "default", worker: "default", cheap: "default" };
-  }
-  return {
-    orchestrator: pickNative("claude-opus-5"),
-    worker: pickNative("claude-sonnet-5"),
-    cheap: pickNative("claude-haiku-4-5")
-  };
-}
-function backendLabel(backend) {
-  return backendChoices().find((choice) => choice.value === backend)?.label ?? backend;
-}
-function describeConfig(config) {
-  return [
-    `backend: ${backendLabel(config.backend)} (${config.backend})`,
-    `orchestrator model: ${config.models.orchestrator}`,
-    `worker model (normal complexity): ${config.models.worker}`,
-    `worker model (low complexity): ${config.models.cheap}`,
-    `updated: ${new Date(config.updatedAt).toISOString()}`
-  ];
-}
-
 // packages/orchestration/dist/conflicts.js
 var MUTATING_TASK_TYPES = /* @__PURE__ */ new Set([
   "architecture",
@@ -2061,7 +825,7 @@ function riskVocabulary(policy) {
       categories.add(category);
   return [...categories].sort();
 }
-function systemPrompt(policy, knownAgents) {
+function buildPlannerSystemPrompt(policy, knownAgents) {
   const agents = knownAgents.length === 0 ? "(none declared)" : knownAgents.join(", ");
   const categories = riskVocabulary(policy);
   const riskLine = categories.length === 0 ? "The policy names no risk categories; use short lowercase nouns for the areas this work touches." : `The policy routes and reviews on these risk categories: ${categories.join(", ")}. Use exactly these strings when a task touches one of those areas, and only add another category when none of them fits.`;
@@ -2169,7 +933,7 @@ var LlmPlanner = class {
     const messages = [
       {
         role: "system",
-        content: systemPrompt(policy, this.#options.knownAgents)
+        content: buildPlannerSystemPrompt(policy, this.#options.knownAgents)
       },
       { role: "user", content: `Plan this objective:
 
@@ -2641,7 +1405,7 @@ var CompilerOutputSchema = z3.object({
   warnings: z3.array(z3.string()).default([]).describe("Judgement calls and lossy simplifications made while compiling. Empty array if none."),
   ambiguities: z3.array(z3.string()).default([]).describe("Source phrases that could not be mapped cleanly, each quoting the phrase and saying why. Empty array if none.")
 });
-function buildToolInputSchema2() {
+function buildPolicyToolInputSchema() {
   const generated = z3.toJSONSchema(CompilerOutputSchema, {
     io: "input"
   });
@@ -2656,7 +1420,7 @@ function buildToolInputSchema2() {
 var emitPolicyTool = {
   name: EMIT_POLICY_TOOL_NAME,
   description: "Emit the compiled orchestration policy IR, plus any warnings and ambiguities.",
-  inputSchema: buildToolInputSchema2()
+  inputSchema: buildPolicyToolInputSchema()
 };
 var IR_REFERENCE = `IR semantics, field by field:
 - version: always 1.
@@ -2680,7 +1444,7 @@ var IR_REFERENCE = `IR semantics, field by field:
   - id, fromAgent, toAgent.
   - afterFailures: positive integer count of failed attempts that triggers the hand-off.
   - confidenceBelow: 0..1 threshold; the hand-off triggers when confidence drops under it.`;
-function systemPrompt2(knownAgents) {
+function buildPolicyCompilerSystemPrompt(knownAgents) {
   const agents = knownAgents.length === 0 ? "(none declared)" : knownAgents.join(", ");
   return `You are the policy compiler for a multi-agent coding runtime. The user gives you an orchestration policy written in natural language (the contents of .agent/orchestration.md). Convert it into the structured policy IR exactly as written \u2014 you are a translator, not an author.
 
@@ -2714,6 +1478,19 @@ function toIssues2(error) {
 function formatIssues2(issues) {
   return issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n");
 }
+function parsePolicyDraft(input) {
+  const parsed = CompilerOutputSchema.safeParse(input);
+  if (!parsed.success)
+    return { issues: toIssues2(parsed.error) };
+  const policy = PolicySchema.parse(parsed.data.policy);
+  return {
+    result: {
+      policy,
+      warnings: parsed.data.warnings,
+      ambiguities: parsed.data.ambiguities
+    }
+  };
+}
 var LlmPolicyCompiler = class {
   #options;
   constructor(options) {
@@ -2722,7 +1499,10 @@ var LlmPolicyCompiler = class {
   async compile(markdown, signal) {
     const maxAttempts = Math.max(1, this.#options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS2);
     const messages = [
-      { role: "system", content: systemPrompt2(this.#options.knownAgents) },
+      {
+        role: "system",
+        content: buildPolicyCompilerSystemPrompt(this.#options.knownAgents)
+      },
       {
         role: "user",
         content: `Compile this orchestration policy:
@@ -2751,16 +1531,10 @@ ${markdown}`
         });
         continue;
       }
-      const parsed = CompilerOutputSchema.safeParse(call.input);
-      if (parsed.success) {
-        const policy = PolicySchema.parse(parsed.data.policy);
-        return {
-          policy,
-          warnings: parsed.data.warnings,
-          ambiguities: parsed.data.ambiguities
-        };
-      }
-      lastIssues = toIssues2(parsed.error);
+      const outcome = parsePolicyDraft(call.input);
+      if ("result" in outcome)
+        return outcome.result;
+      lastIssues = outcome.issues;
       if (attempt === maxAttempts)
         break;
       messages.push({
@@ -3577,7 +2351,7 @@ var PROBE_TIMEOUT_MS = 5e3;
 var PROBE_MAX_BUFFER = 512 * 1024;
 var INSTALL_HINT = "Install the Claude Code CLI with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription (no API key required).";
 var LOGIN_HINT = "Run `claude` and log in with your Claude subscription (no API key required).";
-function isRecord4(value) {
+function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstString(...values) {
@@ -3746,7 +2520,8 @@ var ClaudeCodeBackend = class {
       return finish(settle("success", finalText(state) ?? "Claude Code completed with no final message.", exitCode));
     }
     const reason = failureReason(state);
-    return finish(settle("failed", `Claude Code exited with code ${String(exitCode)}: ${reason}`, exitCode));
+    const hint = modelAccessHint(this.#options.model);
+    return finish(settle("failed", `Claude Code exited with code ${String(exitCode)}: ${reason}${hint}`, exitCode));
   }
   #buildArgs(prompt) {
     const permissionMode = this.#options.permissionMode ?? DEFAULT_PERMISSION_MODE;
@@ -3812,7 +2587,7 @@ var ClaudeCodeBackend = class {
           pushRawLine(state, trimmed);
           return;
         }
-        if (!isRecord4(parsed)) {
+        if (!isRecord(parsed)) {
           pushRawLine(state, trimmed);
           return;
         }
@@ -3916,8 +2691,13 @@ function failureReason(state) {
     return `stopped with reason "${state.stopReason}"`;
   return "no error details were reported";
 }
+function modelAccessHint(model) {
+  if (model === void 0)
+    return "";
+  return ` (model "${model}" was requested \u2014 your account or plan may not have access to it)`;
+}
 function isFinalResult(line) {
-  return typeof line.result === "string" && !isRecord4(line.event);
+  return typeof line.result === "string" && !isRecord(line.event);
 }
 function applyLine(line, state, emit2) {
   if (isFinalResult(line)) {
@@ -3925,7 +2705,7 @@ function applyLine(line, state, emit2) {
     applyResult(line, state);
     return;
   }
-  const event2 = isRecord4(line.event) ? line.event : line;
+  const event2 = isRecord(line.event) ? line.event : line;
   const kind = firstString(event2.type, line.type) ?? "unknown";
   emit2(`claude-code.${kind}`, line);
   applyStreamEvent(kind, event2, state, emit2);
@@ -3942,7 +2722,7 @@ function applyResult(line, state) {
   if (line.is_error === true) {
     state.errors.push(firstString(line.result, line.subtype) ?? "Claude Code reported an error with no message");
   }
-  const usage = isRecord4(line.usage) ? line.usage : void 0;
+  const usage = isRecord(line.usage) ? line.usage : void 0;
   if (usage !== void 0 && !state.sawUsage) {
     state.sawUsage = true;
     state.inputTokens += toCount(usage.input_tokens) + toCount(usage.cache_read_input_tokens);
@@ -3952,9 +2732,9 @@ function applyResult(line, state) {
 function applyStreamEvent(kind, event2, state, emit2) {
   switch (kind) {
     case "message_start": {
-      const message = isRecord4(event2.message) ? event2.message : void 0;
+      const message = isRecord(event2.message) ? event2.message : void 0;
       const rawUsage = message === void 0 ? void 0 : message.usage;
-      const usage = isRecord4(rawUsage) ? rawUsage : void 0;
+      const usage = isRecord(rawUsage) ? rawUsage : void 0;
       if (usage !== void 0) {
         state.sawUsage = true;
         state.inputTokens += toCount(usage.input_tokens) + toCount(usage.cache_read_input_tokens);
@@ -3967,7 +2747,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "content_block_start": {
-      const block = isRecord4(event2.content_block) ? event2.content_block : void 0;
+      const block = isRecord(event2.content_block) ? event2.content_block : void 0;
       if (block?.type !== "tool_use")
         return;
       const name = firstString(block.name) ?? "unknown";
@@ -3979,7 +2759,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "content_block_delta": {
-      const delta = isRecord4(event2.delta) ? event2.delta : void 0;
+      const delta = isRecord(event2.delta) ? event2.delta : void 0;
       if (delta?.type !== "text_delta")
         return;
       if (typeof delta.text === "string")
@@ -3987,11 +2767,11 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "message_delta": {
-      const delta = isRecord4(event2.delta) ? event2.delta : void 0;
+      const delta = isRecord(event2.delta) ? event2.delta : void 0;
       const stopReason = firstString(delta?.stop_reason);
       if (stopReason !== void 0)
         state.stopReason = stopReason;
-      const usage = isRecord4(event2.usage) ? event2.usage : void 0;
+      const usage = isRecord(event2.usage) ? event2.usage : void 0;
       if (usage !== void 0 && typeof usage.output_tokens === "number") {
         const output = toCount(usage.output_tokens);
         if (output >= state.messageOutputTokens) {
@@ -4003,7 +2783,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "error": {
-      const error = isRecord4(event2.error) ? event2.error : event2;
+      const error = isRecord(event2.error) ? event2.error : event2;
       state.errors.push(firstString(error.message, error.type, event2.message) ?? "Claude Code reported an error with no message");
       return;
     }
@@ -4023,7 +2803,7 @@ var MAX_RAW_LINE_CHARS2 = 500;
 var PROBE_TIMEOUT_MS2 = 5e3;
 var PROBE_MAX_BUFFER2 = 512 * 1024;
 var INSTALL_HINT2 = "Install the Codex CLI with `npm install -g @openai/codex`, then authenticate with `codex login`.";
-function isRecord5(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstString2(...values) {
@@ -4046,7 +2826,7 @@ function extractMessageText(item) {
     for (const part of content) {
       if (typeof part === "string")
         parts.push(part);
-      else if (isRecord5(part) && typeof part.text === "string")
+      else if (isRecord2(part) && typeof part.text === "string")
         parts.push(part.text);
     }
     const joined = parts.join("");
@@ -4199,7 +2979,8 @@ var CodexBackend = class {
       return finish(settle("success", message ?? "Codex completed with no final message.", exitCode));
     }
     const reason = failureReason2(state);
-    return finish(settle("failed", `Codex exited with code ${String(exitCode)}: ${reason}`, exitCode));
+    const hint = modelAccessHint2(this.#options.model);
+    return finish(settle("failed", `Codex exited with code ${String(exitCode)}: ${reason}${hint}`, exitCode));
   }
   #buildArgs(input, workspacePath) {
     const sandbox = this.#options.sandbox ?? DEFAULT_SANDBOX;
@@ -4260,7 +3041,7 @@ var CodexBackend = class {
             state.rawLines.shift();
           return;
         }
-        if (!isRecord5(parsed)) {
+        if (!isRecord2(parsed)) {
           state.rawLines.push(trimmed.slice(0, MAX_RAW_LINE_CHARS2));
           if (state.rawLines.length > MAX_RAW_LINES2)
             state.rawLines.shift();
@@ -4349,11 +3130,16 @@ function failureReason2(state) {
     return state.rawLines.slice(-3).join("\n");
   return "no error details were reported";
 }
+function modelAccessHint2(model) {
+  if (model === void 0)
+    return "";
+  return ` (model "${model}" was requested \u2014 your account or plan may not have access to it)`;
+}
 function applyEvent(event2, state, emit2) {
-  const source = isRecord5(event2.msg) && typeof event2.msg.type === "string" ? event2.msg : event2;
+  const source = isRecord2(event2.msg) && typeof event2.msg.type === "string" ? event2.msg : event2;
   const kind = typeof source.type === "string" ? source.type : "unknown";
   emit2(`codex.${kind}`, event2);
-  const item = isRecord5(source.item) ? source.item : void 0;
+  const item = isRecord2(source.item) ? source.item : void 0;
   if (item !== void 0 && item.type === "agent_message") {
     const text2 = extractMessageText(item);
     if (text2 !== void 0)
@@ -4366,7 +3152,7 @@ function applyEvent(event2, state, emit2) {
   if (kind === "error") {
     state.errors.push(firstString2(source.message, source.error, source.detail) ?? "Codex reported an error with no message");
   }
-  const usage = isRecord5(source.usage) ? source.usage : void 0;
+  const usage = isRecord2(source.usage) ? source.usage : void 0;
   if (usage !== void 0) {
     const inputTokens = toCount2(usage.input_tokens ?? usage.inputTokens);
     const outputTokens = toCount2(usage.output_tokens ?? usage.outputTokens);
@@ -4924,11 +3710,11 @@ var ALLOWED_FOR_SESSION = "allowed for this session";
 var BASH_TOOL = "bash";
 var SUBCOMMAND = /^[A-Za-z][A-Za-z0-9_:-]*$/;
 var SHELL_OPERATORS = /[;&|<>`$(){}\n\r]/;
-function isRecord6(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function commandOf(input) {
-  if (!isRecord6(input))
+  if (!isRecord3(input))
     return void 0;
   const command = input.command;
   return typeof command === "string" ? command : void 0;
@@ -5092,15 +3878,346 @@ var PermissionEngine = class {
   }
 };
 
+// packages/coding-agent/dist/planning/delegated-cli.js
+function recordDelegatedUsage(sink, result) {
+  if (sink === void 0 || result.usage === void 0)
+    return;
+  sink.recorder.record(sink.model, result.usage, sink.tags);
+}
+var defaultBackendFactory = (spec) => spec.backend === "codex" ? new CodexBackend(spec.options) : new ClaudeCodeBackend(spec.options);
+async function runDelegatedPrompt(options, prompt, signal) {
+  const { events: events2, timeoutMs, model, workspacePath, runId } = options;
+  const shared = {
+    ...model === void 0 ? {} : { model },
+    ...events2 === void 0 ? {} : { events: events2 },
+    ...timeoutMs === void 0 ? {} : { timeoutMs }
+  };
+  const spec = options.backend === "codex" ? { backend: "codex", options: { ...shared, sandbox: "read-only" } } : {
+    backend: "claude-code",
+    options: { ...shared, permissionMode: "plan" }
+  };
+  const backend = (options.createBackend ?? defaultBackendFactory)(spec);
+  try {
+    return await backend.run({ instruction: prompt }, {
+      runId,
+      workspacePath,
+      ...signal === void 0 ? {} : { signal }
+    });
+  } catch (error) {
+    return {
+      status: "failed",
+      summary: `The ${options.backend} CLI could not be run: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+function formatIssues3(issues) {
+  return issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n");
+}
+function issuesFromZodError(error) {
+  return error.issues.map((issue) => ({
+    path: issue.path.length === 0 ? "(root)" : issue.path.join("."),
+    message: issue.message
+  }));
+}
+function extractJsonObject(text2) {
+  const trimmed = text2.trim();
+  if (trimmed === "")
+    return void 0;
+  const fenced = /```(?:[a-zA-Z]+)?[ \t]*\r?\n([\s\S]*?)```/.exec(trimmed);
+  const body = fenced?.[1] ?? trimmed;
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start)
+    return void 0;
+  return body.slice(start, end + 1);
+}
+function buildJsonOutputContract(args) {
+  const rules = [
+    `- There is no ${args.toolName} tool here: you are answering through a CLI, so "emit the ${args.subject}" means replying with the ${args.subject} as JSON.`,
+    "- Reply with ONLY a single JSON object matching the schema below. No prose, no explanation, no markdown fences, nothing before or after the object.",
+    "- Do not edit, create or delete any file. Read whatever you need to understand the repository, then answer.",
+    ...args.extraRules ?? []
+  ];
+  return `Output contract:
+${rules.join("\n")}
+
+JSON Schema for the object:
+${args.schema}`;
+}
+function buildRetrySection(rejection, subject) {
+  return `Your previous reply was not a usable ${subject}.
+
+Previous reply:
+${rejection.reply}
+
+Problems with it:
+${formatIssues3(rejection.issues)}
+
+Reply again with a corrected ${subject} that fixes every problem above, as a single JSON object and nothing else.`;
+}
+function stringifyPromptSchema(generated) {
+  const schema = {};
+  for (const [key, value] of Object.entries(generated)) {
+    if (key !== "$schema")
+      schema[key] = value;
+  }
+  return JSON.stringify(schema, null, 2);
+}
+
+// packages/coding-agent/dist/planning/delegated-planner.js
+import { z as z6 } from "zod";
+var DEFAULT_MAX_ATTEMPTS3 = 3;
+var PLAN_JSON_SCHEMA = (() => {
+  const generated = z6.toJSONSchema(ExecutionPlanSchema, {
+    io: "input"
+  });
+  return stringifyPromptSchema({
+    ...generated,
+    required: ["objective", "tasks"]
+  });
+})();
+function toPlannedTask2(draft) {
+  return {
+    id: draft.id,
+    title: draft.title,
+    goal: draft.goal,
+    type: draft.type,
+    complexity: draft.complexity,
+    dependencies: draft.dependencies,
+    ...draft.suggestedAgent === void 0 ? {} : { suggestedAgent: draft.suggestedAgent },
+    affectedAreas: draft.affectedAreas,
+    risk: { level: draft.risk.level, categories: draft.risk.categories }
+  };
+}
+function buildDelegatedPlannerPrompt(args) {
+  const sections = [
+    buildPlannerSystemPrompt(args.policy, args.knownAgents),
+    buildJsonOutputContract({
+      toolName: EMIT_PLAN_TOOL_NAME,
+      subject: "plan",
+      schema: PLAN_JSON_SCHEMA
+    }),
+    `Objective to plan:
+
+${args.objective}`
+  ];
+  const { rejection } = args;
+  if (rejection !== void 0) {
+    sections.push(buildRetrySection(rejection, "plan"));
+  }
+  return sections.join("\n\n");
+}
+var DelegatedPlanner = class {
+  #options;
+  #runId;
+  constructor(options) {
+    this.#options = options;
+    this.#runId = options.runId ?? crypto.randomUUID();
+  }
+  async plan(objective, policy, signal) {
+    const maxAttempts = Math.max(1, this.#options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS3);
+    const { knownAgents } = this.#options;
+    let rejection;
+    let lastIssues;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      signal?.throwIfAborted();
+      const prompt = buildDelegatedPlannerPrompt({
+        objective,
+        policy,
+        knownAgents,
+        ...rejection === void 0 ? {} : { rejection }
+      });
+      const run = await this.#run(prompt, signal);
+      recordDelegatedUsage(this.#options.usage, run);
+      signal?.throwIfAborted();
+      const reply = run.output ?? run.summary;
+      if (run.status === "failed") {
+        lastIssues = [{ path: "(root)", message: run.summary }];
+        rejection = { reply, issues: lastIssues };
+        continue;
+      }
+      const outcome = this.#interpret(reply);
+      if ("plan" in outcome)
+        return outcome.plan;
+      lastIssues = outcome.issues;
+      rejection = { reply, issues: outcome.issues };
+    }
+    throw new PlanError({
+      message: `Failed to plan the objective after ${maxAttempts} attempt(s).${lastIssues === void 0 ? "" : `
+${formatIssues3(lastIssues)}`}`,
+      attempts: maxAttempts,
+      ...lastIssues === void 0 ? {} : { lastIssues }
+    });
+  }
+  /** Parses one reply into a plan, or into the issues that rejected it. */
+  #interpret(reply) {
+    const json = extractJsonObject(reply);
+    if (json === void 0) {
+      return {
+        issues: [
+          {
+            path: "(root)",
+            message: "the reply contained no JSON object; reply with the plan object itself and nothing else"
+          }
+        ]
+      };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(json);
+    } catch (error) {
+      return {
+        issues: [
+          {
+            path: "(root)",
+            message: `the reply is not valid JSON: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+    const validated = ExecutionPlanSchema.safeParse(parsed);
+    if (!validated.success) {
+      return { issues: issuesFromZodError(validated.error) };
+    }
+    const plan = {
+      objective: validated.data.objective,
+      tasks: validated.data.tasks.map(toPlannedTask2)
+    };
+    const issues = validatePlanDraft(plan, this.#options.knownAgents);
+    return issues.length === 0 ? { plan } : { issues };
+  }
+  /** Runs one attempt through the delegating CLI. */
+  async #run(prompt, signal) {
+    const { events: events2, timeoutMs, model, workspacePath, createBackend } = this.#options;
+    return await runDelegatedPrompt({
+      backend: this.#options.backend,
+      workspacePath,
+      runId: this.#runId,
+      ...model === void 0 ? {} : { model },
+      ...events2 === void 0 ? {} : { events: events2 },
+      ...timeoutMs === void 0 ? {} : { timeoutMs },
+      ...createBackend === void 0 ? {} : { createBackend }
+    }, prompt, signal);
+  }
+};
+
+// packages/coding-agent/dist/planning/delegated-policy-compiler.js
+var DEFAULT_MAX_ATTEMPTS4 = 3;
+var POLICY_JSON_SCHEMA = stringifyPromptSchema(buildPolicyToolInputSchema());
+function buildDelegatedPolicyCompilerPrompt(args) {
+  const sections = [
+    buildPolicyCompilerSystemPrompt(args.knownAgents),
+    buildJsonOutputContract({
+      toolName: EMIT_POLICY_TOOL_NAME,
+      subject: "compiled policy",
+      schema: POLICY_JSON_SCHEMA,
+      extraRules: [
+        "- The object has three top-level keys: policy, warnings and ambiguities. Always include all three; warnings and ambiguities are empty arrays when there is nothing to report."
+      ]
+    }),
+    `Compile this orchestration policy:
+
+${args.markdown}`
+  ];
+  const { rejection } = args;
+  if (rejection !== void 0) {
+    sections.push(buildRetrySection(rejection, "policy"));
+  }
+  return sections.join("\n\n");
+}
+var DelegatedPolicyCompiler = class {
+  #options;
+  #runId;
+  constructor(options) {
+    this.#options = options;
+    this.#runId = options.runId ?? crypto.randomUUID();
+  }
+  async compile(markdown, signal) {
+    const maxAttempts = Math.max(1, this.#options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS4);
+    const { knownAgents } = this.#options;
+    let rejection;
+    let lastIssues;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      signal?.throwIfAborted();
+      const prompt = buildDelegatedPolicyCompilerPrompt({
+        markdown,
+        knownAgents,
+        ...rejection === void 0 ? {} : { rejection }
+      });
+      const run = await this.#run(prompt, signal);
+      recordDelegatedUsage(this.#options.usage, run);
+      signal?.throwIfAborted();
+      const reply = run.output ?? run.summary;
+      if (run.status === "failed") {
+        lastIssues = [{ path: "(root)", message: run.summary }];
+        rejection = { reply, issues: lastIssues };
+        continue;
+      }
+      const outcome = this.#interpret(reply);
+      if ("result" in outcome)
+        return outcome.result;
+      lastIssues = outcome.issues;
+      rejection = { reply, issues: outcome.issues };
+    }
+    throw new PolicyCompileError({
+      message: `Failed to compile the orchestration policy after ${maxAttempts} attempt(s).${lastIssues === void 0 ? "" : `
+${formatIssues3(lastIssues)}`}`,
+      attempts: maxAttempts,
+      ...lastIssues === void 0 ? {} : { lastIssues }
+    });
+  }
+  /** Parses one reply into a compile result, or into the issues that rejected it. */
+  #interpret(reply) {
+    const json = extractJsonObject(reply);
+    if (json === void 0) {
+      return {
+        issues: [
+          {
+            path: "(root)",
+            message: "the reply contained no JSON object; reply with the policy object itself and nothing else"
+          }
+        ]
+      };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(json);
+    } catch (error) {
+      return {
+        issues: [
+          {
+            path: "(root)",
+            message: `the reply is not valid JSON: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+    return parsePolicyDraft(parsed);
+  }
+  /** Runs one attempt through the delegating CLI. */
+  async #run(prompt, signal) {
+    const { events: events2, timeoutMs, model, workspacePath, createBackend } = this.#options;
+    return await runDelegatedPrompt({
+      backend: this.#options.backend,
+      workspacePath,
+      runId: this.#runId,
+      ...model === void 0 ? {} : { model },
+      ...events2 === void 0 ? {} : { events: events2 },
+      ...timeoutMs === void 0 ? {} : { timeoutMs },
+      ...createBackend === void 0 ? {} : { createBackend }
+    }, prompt, signal);
+  }
+};
+
 // packages/coding-agent/dist/project/index.js
-import { readFile as readFile4, stat } from "node:fs/promises";
+import { readFile as readFile3, stat } from "node:fs/promises";
 import { join as join3 } from "node:path";
 
 // packages/coding-agent/dist/project/agents.js
-import { readdir, readFile as readFile2 } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { z as z6 } from "zod";
+import { z as z7 } from "zod";
 
 // packages/coding-agent/dist/project/internal.js
 function isNotFound(err) {
@@ -5119,11 +4236,11 @@ var AGENT_ROLES = /* @__PURE__ */ new Set([
   "worker",
   "reviewer"
 ]);
-var AgentFrontMatterSchema = z6.object({
-  name: z6.string().min(1, "must not be empty"),
-  model: z6.string().min(1, "must not be empty"),
-  role: z6.string().min(1, "must not be empty"),
-  tools: z6.array(z6.string()).default([])
+var AgentFrontMatterSchema = z7.object({
+  name: z7.string().min(1, "must not be empty"),
+  model: z7.string().min(1, "must not be empty"),
+  role: z7.string().min(1, "must not be empty"),
+  tools: z7.array(z7.string()).default([])
 }).strict();
 function splitFrontMatter(raw) {
   const lines = raw.replace(/\r\n/g, "\n").split("\n");
@@ -5208,7 +4325,7 @@ async function loadProjectAgents(agentDir) {
   const seenNames = /* @__PURE__ */ new Map();
   for (const entryName of entryNames) {
     const filePath = join(agentsDir, entryName);
-    const raw = await readFile2(filePath, "utf8");
+    const raw = await readFile(filePath, "utf8");
     const result = parseAgentFile(filePath, raw);
     problems.push(...result.problems);
     let isDuplicate = false;
@@ -5228,10 +4345,10 @@ async function loadProjectAgents(agentDir) {
 }
 
 // packages/coding-agent/dist/project/config.js
-import { readFile as readFile3 } from "node:fs/promises";
+import { readFile as readFile2 } from "node:fs/promises";
 import { join as join2 } from "node:path";
 import { parse as parseYaml2 } from "yaml";
-import { z as z7 } from "zod";
+import { z as z8 } from "zod";
 
 // packages/coding-agent/dist/project/types.js
 var DEFAULT_VALIDATOR_TIMEOUT_SECONDS = 600;
@@ -5248,26 +4365,26 @@ ${problems.map((problem) => `  - ${problem}`).join("\n")}`);
 };
 
 // packages/coding-agent/dist/project/config.js
-var ModelRefSchema = z7.object({
-  provider: z7.string().min(1, "must not be empty"),
-  model: z7.string().min(1, "must not be empty")
+var ModelRefSchema = z8.object({
+  provider: z8.string().min(1, "must not be empty"),
+  model: z8.string().min(1, "must not be empty")
 }).strict();
-var ValidatorSchema = z7.object({
-  name: z7.string().min(1, "must not be empty"),
-  command: z7.string().min(1, "must not be empty"),
-  timeoutSeconds: z7.number().int().positive().optional()
+var ValidatorSchema = z8.object({
+  name: z8.string().min(1, "must not be empty"),
+  command: z8.string().min(1, "must not be empty"),
+  timeoutSeconds: z8.number().int().positive().optional()
 }).strict();
-var PermissionDecisionSchema = z7.enum(["allow", "ask", "deny"]);
-var BashPermissionRulesSchema = z7.record(z7.string(), PermissionDecisionSchema);
-var ToolPermissionRuleSchema = z7.union([
+var PermissionDecisionSchema = z8.enum(["allow", "ask", "deny"]);
+var BashPermissionRulesSchema = z8.record(z8.string(), PermissionDecisionSchema);
+var ToolPermissionRuleSchema = z8.union([
   PermissionDecisionSchema,
   BashPermissionRulesSchema
 ]);
-var PermissionSchema = z7.record(z7.string(), ToolPermissionRuleSchema);
-var ConfigFileSchema = z7.object({
-  models: z7.record(z7.string(), ModelRefSchema).optional(),
-  agents: z7.record(z7.string(), z7.string().min(1, "must not be empty")).optional(),
-  validation: z7.array(ValidatorSchema).optional(),
+var PermissionSchema = z8.record(z8.string(), ToolPermissionRuleSchema);
+var ConfigFileSchema = z8.object({
+  models: z8.record(z8.string(), ModelRefSchema).optional(),
+  agents: z8.record(z8.string(), z8.string().min(1, "must not be empty")).optional(),
+  validation: z8.array(ValidatorSchema).optional(),
   permission: PermissionSchema.optional()
 }).strict();
 var EMPTY_CONFIG = {
@@ -5280,7 +4397,7 @@ async function loadProjectConfig(agentDir) {
   const filePath = join2(agentDir, "config.yaml");
   let raw;
   try {
-    raw = await readFile3(filePath, "utf8");
+    raw = await readFile2(filePath, "utf8");
   } catch (err) {
     if (isNotFound(err))
       return EMPTY_CONFIG;
@@ -5331,7 +4448,7 @@ async function findAgentDir(workspaceRoot) {
 }
 async function readOrchestrationMarkdown(agentDir) {
   try {
-    return await readFile4(join3(agentDir, "orchestration.md"), "utf8");
+    return await readFile3(join3(agentDir, "orchestration.md"), "utf8");
   } catch (err) {
     if (isNotFound(err))
       return void 0;
@@ -5388,12 +4505,12 @@ async function loadAgentProject(workspaceRoot) {
 
 // packages/coding-agent/dist/tools/bash.js
 import { spawn as spawn3 } from "node:child_process";
-import { z as z9 } from "zod";
+import { z as z10 } from "zod";
 
 // packages/coding-agent/dist/tools/json-schema.js
-import { z as z8 } from "zod";
+import { z as z9 } from "zod";
 function toInputSchema(schema) {
-  const jsonSchema = z8.toJSONSchema(schema);
+  const jsonSchema = z9.toJSONSchema(schema);
   delete jsonSchema.$schema;
   return jsonSchema;
 }
@@ -5403,9 +4520,9 @@ var DEFAULT_TIMEOUT_MS = 12e4;
 var MAX_TIMEOUT_MS = 6e5;
 var MAX_OUTPUT_CHARS = 1e5;
 var KILL_GRACE_MS3 = 2e3;
-var InputSchema = z9.object({
-  command: z9.string().min(1).describe("Shell command to run in the workspace (bash -lc on POSIX, cmd.exe /c on Windows)."),
-  timeoutMs: z9.number().int().positive().max(MAX_TIMEOUT_MS).optional().describe("Maximum time to allow the command to run, in milliseconds. Defaults to 120000, max 600000.")
+var InputSchema = z10.object({
+  command: z10.string().min(1).describe("Shell command to run in the workspace (bash -lc on POSIX, cmd.exe /c on Windows)."),
+  timeoutMs: z10.number().int().positive().max(MAX_TIMEOUT_MS).optional().describe("Maximum time to allow the command to run, in milliseconds. Defaults to 120000, max 600000.")
 }).strict();
 function capText(text2) {
   if (text2.length <= MAX_OUTPUT_CHARS)
@@ -5495,8 +4612,8 @@ var BashTool = class {
 };
 
 // packages/coding-agent/dist/tools/edit-file.js
-import { readFile as readFile5, writeFile as writeFile2 } from "node:fs/promises";
-import { z as z10 } from "zod";
+import { readFile as readFile4, writeFile } from "node:fs/promises";
+import { z as z11 } from "zod";
 
 // packages/coding-agent/dist/tools/paths.js
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -5520,11 +4637,11 @@ function checkAbort(signal) {
 }
 
 // packages/coding-agent/dist/tools/edit-file.js
-var InputSchema2 = z10.object({
-  path: z10.string().min(1).describe("Workspace-relative path of the file to edit."),
-  oldText: z10.string().min(1).describe("Exact, non-empty text to find in the file."),
-  newText: z10.string().describe("Text to replace `oldText` with. Must differ from oldText."),
-  replaceAll: z10.boolean().optional().describe("If true, replace every occurrence of oldText. If false/omitted, oldText must occur exactly once in the file.")
+var InputSchema2 = z11.object({
+  path: z11.string().min(1).describe("Workspace-relative path of the file to edit."),
+  oldText: z11.string().min(1).describe("Exact, non-empty text to find in the file."),
+  newText: z11.string().describe("Text to replace `oldText` with. Must differ from oldText."),
+  replaceAll: z11.boolean().optional().describe("If true, replace every occurrence of oldText. If false/omitted, oldText must occur exactly once in the file.")
 }).strict();
 var EditFileTool = class {
   name = "edit_file";
@@ -5546,7 +4663,7 @@ var EditFileTool = class {
     checkAbort(context.signal);
     let raw;
     try {
-      raw = await readFile5(target, "utf8");
+      raw = await readFile4(target, "utf8");
     } catch (err) {
       throw new Error(`failed to read file "${input.path}": ${err.message}`);
     }
@@ -5560,7 +4677,7 @@ var EditFileTool = class {
     const replacements = input.replaceAll ? occurrences : 1;
     const newContent = input.replaceAll ? raw.split(input.oldText).join(input.newText) : raw.replace(input.oldText, input.newText);
     checkAbort(context.signal);
-    await writeFile2(target, newContent, "utf8");
+    await writeFile(target, newContent, "utf8");
     return { path: input.path, replacements };
   }
 };
@@ -5568,13 +4685,13 @@ var EditFileTool = class {
 // packages/coding-agent/dist/tools/git-diff.js
 import { execFile as execFile4 } from "node:child_process";
 import { promisify } from "node:util";
-import { z as z11 } from "zod";
+import { z as z12 } from "zod";
 var execFileAsync = promisify(execFile4);
 var MAX_DIFF_CHARS = 2e5;
 var MAX_BUFFER_BYTES = 10 * 1024 * 1024;
-var InputSchema3 = z11.object({
-  staged: z11.boolean().optional().describe("If true, diff the staged (index) changes via `git diff --cached`."),
-  path: z11.string().optional().describe("Optional workspace-relative path to restrict the diff to.")
+var InputSchema3 = z12.object({
+  staged: z12.boolean().optional().describe("If true, diff the staged (index) changes via `git diff --cached`."),
+  path: z12.string().optional().describe("Optional workspace-relative path to restrict the diff to.")
 }).strict();
 var GitDiffTool = class {
   name = "git_diff";
@@ -5627,7 +4744,7 @@ var GitDiffTool = class {
 // packages/coding-agent/dist/tools/glob.js
 import { readdir as readdir2 } from "node:fs/promises";
 import { join as join4 } from "node:path";
-import { z as z12 } from "zod";
+import { z as z13 } from "zod";
 
 // packages/coding-agent/dist/tools/glob-pattern.js
 var REGEXP_SPECIAL = /* @__PURE__ */ new Set([
@@ -5674,9 +4791,9 @@ function globToRegExp(pattern) {
 // packages/coding-agent/dist/tools/glob.js
 var MAX_MATCHES = 2e3;
 var SKIPPED_DIR_NAMES = /* @__PURE__ */ new Set(["node_modules", ".git"]);
-var InputSchema4 = z12.object({
-  pattern: z12.string().min(1).describe("Glob pattern to match, e.g. `src/**/*.ts`. Supports `*`, `**`, and `?`."),
-  cwd: z12.string().optional().describe("Workspace-relative directory to search from. Defaults to the workspace root.")
+var InputSchema4 = z13.object({
+  pattern: z13.string().min(1).describe("Glob pattern to match, e.g. `src/**/*.ts`. Supports `*`, `**`, and `?`."),
+  cwd: z13.string().optional().describe("Workspace-relative directory to search from. Defaults to the workspace root.")
 }).strict();
 function isPathExcluded(name) {
   return name.split("/").some((segment) => SKIPPED_DIR_NAMES.has(segment));
@@ -5763,19 +4880,19 @@ var GlobTool = class {
 };
 
 // packages/coding-agent/dist/tools/grep.js
-import { readdir as readdir3, readFile as readFile6, stat as stat2 } from "node:fs/promises";
+import { readdir as readdir3, readFile as readFile5, stat as stat2 } from "node:fs/promises";
 import { basename as basename2, join as join5 } from "node:path";
-import { z as z13 } from "zod";
+import { z as z14 } from "zod";
 var DEFAULT_MAX_MATCHES = 200;
 var MAX_LINE_CHARS = 500;
 var BINARY_SNIFF_BYTES = 8e3;
 var SKIPPED_DIR_NAMES2 = /* @__PURE__ */ new Set(["node_modules", ".git"]);
-var InputSchema5 = z13.object({
-  pattern: z13.string().min(1).describe("JavaScript regular expression source to search for."),
-  path: z13.string().optional().describe("Workspace-relative file or directory to search. Defaults to the workspace root."),
-  glob: z13.string().optional().describe("Optional glob (e.g. `**/*.ts`) to restrict which files are searched."),
-  ignoreCase: z13.boolean().optional().describe("Case-insensitive matching."),
-  maxMatches: z13.number().int().positive().optional().describe("Maximum number of matches to return. Defaults to 200.")
+var InputSchema5 = z14.object({
+  pattern: z14.string().min(1).describe("JavaScript regular expression source to search for."),
+  path: z14.string().optional().describe("Workspace-relative file or directory to search. Defaults to the workspace root."),
+  glob: z14.string().optional().describe("Optional glob (e.g. `**/*.ts`) to restrict which files are searched."),
+  ignoreCase: z14.boolean().optional().describe("Case-insensitive matching."),
+  maxMatches: z14.number().int().positive().optional().describe("Maximum number of matches to return. Defaults to 200.")
 }).strict();
 function looksBinary(buf) {
   const sniffLen = Math.min(buf.length, BINARY_SNIFF_BYTES);
@@ -5821,7 +4938,7 @@ var GrepTool = class {
       }
       let buf;
       try {
-        buf = await readFile6(absoluteFile);
+        buf = await readFile5(absoluteFile);
       } catch {
         return;
       }
@@ -5882,13 +4999,13 @@ var GrepTool = class {
 };
 
 // packages/coding-agent/dist/tools/read-file.js
-import { readFile as readFile7 } from "node:fs/promises";
-import { z as z14 } from "zod";
+import { readFile as readFile6 } from "node:fs/promises";
+import { z as z15 } from "zod";
 var MAX_CONTENT_CHARS = 2e5;
-var InputSchema6 = z14.object({
-  path: z14.string().min(1).describe("Workspace-relative path of the file to read."),
-  offset: z14.number().int().positive().optional().describe("1-based line number to start reading from. Defaults to the first line."),
-  limit: z14.number().int().positive().optional().describe("Maximum number of lines to return.")
+var InputSchema6 = z15.object({
+  path: z15.string().min(1).describe("Workspace-relative path of the file to read."),
+  offset: z15.number().int().positive().optional().describe("1-based line number to start reading from. Defaults to the first line."),
+  limit: z15.number().int().positive().optional().describe("Maximum number of lines to return.")
 }).strict();
 var ReadFileTool = class {
   name = "read_file";
@@ -5907,7 +5024,7 @@ var ReadFileTool = class {
     checkAbort(context.signal);
     let raw;
     try {
-      raw = await readFile7(target, "utf8");
+      raw = await readFile6(target, "utf8");
     } catch (err) {
       throw new Error(`failed to read file "${input.path}": ${err.message}`);
     }
@@ -5931,12 +5048,12 @@ var ReadFileTool = class {
 };
 
 // packages/coding-agent/dist/tools/write-file.js
-import { mkdir as mkdir2, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
+import { mkdir, stat as stat3, writeFile as writeFile2 } from "node:fs/promises";
 import { dirname } from "node:path";
-import { z as z15 } from "zod";
-var InputSchema7 = z15.object({
-  path: z15.string().min(1).describe("Workspace-relative path of the file to write."),
-  content: z15.string().describe("The full UTF-8 text content to write to the file.")
+import { z as z16 } from "zod";
+var InputSchema7 = z16.object({
+  path: z16.string().min(1).describe("Workspace-relative path of the file to write."),
+  content: z16.string().describe("The full UTF-8 text content to write to the file.")
 }).strict();
 var WriteFileTool = class {
   name = "write_file";
@@ -5960,9 +5077,9 @@ var WriteFileTool = class {
     } catch {
       created = true;
     }
-    await mkdir2(dirname(target), { recursive: true });
+    await mkdir(dirname(target), { recursive: true });
     checkAbort(context.signal);
-    await writeFile3(target, input.content, "utf8");
+    await writeFile2(target, input.content, "utf8");
     const bytesWritten = Buffer.byteLength(input.content, "utf8");
     return { path: input.path, bytesWritten, created };
   }
@@ -6235,19 +5352,19 @@ var ValidatingExecutor = class {
 };
 
 // packages/coding-agent/dist/workers/review.js
-import { z as z16 } from "zod";
+import { z as z17 } from "zod";
 var REVIEW_VERDICT_TOOL_NAME = "submit_review_verdict";
 var REJECTED_CONFIDENCE = 0.9;
 var NO_VERDICT_CONFIDENCE = 0.1;
 var NO_VERDICT_SUMMARY = "review completed without submitting a verdict";
-var IssueSchema = z16.object({
-  severity: z16.enum(["blocking", "advisory"]).describe("`blocking` means the change must not ship as-is; `advisory` is a suggestion."),
-  description: z16.string().min(1).describe("What is wrong, specific enough to act on.")
+var IssueSchema = z17.object({
+  severity: z17.enum(["blocking", "advisory"]).describe("`blocking` means the change must not ship as-is; `advisory` is a suggestion."),
+  description: z17.string().min(1).describe("What is wrong, specific enough to act on.")
 }).strict();
-var InputSchema8 = z16.object({
-  approved: z16.boolean().describe("true only when the change is acceptable as it stands. Any blocking issue means false."),
-  summary: z16.string().min(1).describe("One short paragraph explaining the decision."),
-  issues: z16.array(IssueSchema).default([]).describe("Every problem found, blocking ones first.")
+var InputSchema8 = z17.object({
+  approved: z17.boolean().describe("true only when the change is acceptable as it stands. Any blocking issue means false."),
+  summary: z17.string().min(1).describe("One short paragraph explaining the decision."),
+  issues: z17.array(IssueSchema).default([]).describe("Every problem found, blocking ones first.")
 }).strict();
 var ReviewVerdictTool = class {
   name = REVIEW_VERDICT_TOOL_NAME;
@@ -6400,8 +5517,8 @@ var WORKER_SYSTEM_POSTAMBLE = [
   "constraint to work around, not something to retry. Finish by replying with a",
   "short prose summary of what you changed."
 ].join("\n");
-function buildWorkerSystemPrompt(systemPrompt3) {
-  const base = systemPrompt3.trim();
+function buildWorkerSystemPrompt(systemPrompt) {
+  const base = systemPrompt.trim();
   return base === "" ? WORKER_SYSTEM_POSTAMBLE : `${base}
 
 ${WORKER_SYSTEM_POSTAMBLE}`;
@@ -6618,12 +5735,12 @@ var AgentLoopWorkerExecutor = class {
 import { spawn as spawn5 } from "node:child_process";
 
 // packages/coding-agent/dist/workers/protocol.js
-import { z as z17 } from "zod";
-var PlannedTaskSchema2 = z17.object({
-  id: z17.string(),
-  title: z17.string(),
-  goal: z17.string(),
-  type: z17.enum([
+import { z as z18 } from "zod";
+var PlannedTaskSchema2 = z18.object({
+  id: z18.string(),
+  title: z18.string(),
+  goal: z18.string(),
+  type: z18.enum([
     "exploration",
     "architecture",
     "implementation",
@@ -6631,57 +5748,57 @@ var PlannedTaskSchema2 = z17.object({
     "review",
     "documentation"
   ]),
-  complexity: z17.enum(["trivial", "normal", "complex", "architectural"]),
-  dependencies: z17.array(z17.string()),
-  suggestedAgent: z17.string().optional(),
-  affectedAreas: z17.array(z17.string()),
-  risk: z17.object({
-    level: z17.enum(["low", "medium", "high"]),
-    categories: z17.array(z17.string())
+  complexity: z18.enum(["trivial", "normal", "complex", "architectural"]),
+  dependencies: z18.array(z18.string()),
+  suggestedAgent: z18.string().optional(),
+  affectedAreas: z18.array(z18.string()),
+  risk: z18.object({
+    level: z18.enum(["low", "medium", "high"]),
+    categories: z18.array(z18.string())
   })
 });
-var TaskResultSchema = z17.object({
-  taskId: z17.string(),
-  status: z17.enum(["success", "failed", "partial"]),
-  summary: z17.string(),
-  decisions: z17.array(z17.string()),
-  changedFiles: z17.array(z17.string()),
-  commit: z17.string().optional(),
-  tests: z17.object({
-    passed: z17.number(),
-    failed: z17.number(),
-    commands: z17.array(z17.string())
+var TaskResultSchema = z18.object({
+  taskId: z18.string(),
+  status: z18.enum(["success", "failed", "partial"]),
+  summary: z18.string(),
+  decisions: z18.array(z18.string()),
+  changedFiles: z18.array(z18.string()),
+  commit: z18.string().optional(),
+  tests: z18.object({
+    passed: z18.number(),
+    failed: z18.number(),
+    commands: z18.array(z18.string())
   }),
-  unresolvedIssues: z17.array(z17.string()),
-  confidence: z17.number()
+  unresolvedIssues: z18.array(z18.string()),
+  confidence: z18.number()
 });
-var WorkerRequestSchema = z17.object({
-  type: z17.literal("task"),
+var WorkerRequestSchema = z18.object({
+  type: z18.literal("task"),
   task: PlannedTaskSchema2,
-  agent: z17.string(),
-  runId: z17.string(),
-  workspacePath: z17.string(),
-  timeoutMs: z17.number().optional(),
+  agent: z18.string(),
+  runId: z18.string(),
+  workspacePath: z18.string(),
+  timeoutMs: z18.number().optional(),
   /**
    * Results of the task's direct dependencies, in dependency-declaration order.
    * Optional on purpose: a parent that predates dependency context (or a task
    * with no dependencies) sends a request without it, and that stays valid.
    */
-  dependencyResults: z17.array(TaskResultSchema).optional()
+  dependencyResults: z18.array(TaskResultSchema).optional()
 });
-var WorkerEventLineSchema = z17.object({
-  type: z17.literal("event"),
+var WorkerEventLineSchema = z18.object({
+  type: z18.literal("event"),
   event: AgentEventSchema
 });
-var WorkerResultLineSchema = z17.object({
-  type: z17.literal("result"),
+var WorkerResultLineSchema = z18.object({
+  type: z18.literal("result"),
   result: TaskResultSchema
 });
-var WorkerStdoutLineSchema = z17.discriminatedUnion("type", [
+var WorkerStdoutLineSchema = z18.discriminatedUnion("type", [
   WorkerEventLineSchema,
   WorkerResultLineSchema
 ]);
-function toPlannedTask2(parsed) {
+function toPlannedTask3(parsed) {
   const { suggestedAgent, ...rest } = parsed;
   return {
     ...rest,
@@ -6944,17 +6061,132 @@ var ChildProcessWorkerExecutor = class {
   }
 };
 
+// packages/coding-agent/dist/workers/claude-code-executor.js
+var TEMPLATE_TOOL_TO_CLAUDE_CODE = {
+  read: "Read",
+  write: "Write",
+  edit: "Edit",
+  grep: "Grep",
+  glob: "Glob",
+  bash: "Bash",
+  // Claude Code has no dedicated diff tool; `git diff` is a bash invocation,
+  // scoped to that one command by the `Bash(<prefix>:*)` specifier syntax.
+  "git.diff": "Bash(git diff:*)"
+};
+var TEMPLATE_NAMESPACE_TO_CLAUDE_CODE = {
+  git: "Bash(git:*)"
+};
+function canonicalize2(name) {
+  return name.toLowerCase().replaceAll("_", ".");
+}
+function claudeCodeAllowedTools(patterns) {
+  if (patterns.length === 0)
+    return void 0;
+  const allowed = /* @__PURE__ */ new Set();
+  for (const pattern of patterns) {
+    const trimmed = pattern.trim();
+    if (trimmed === "")
+      continue;
+    const canonical = canonicalize2(trimmed);
+    if (canonical.endsWith(".*")) {
+      const mapped2 = TEMPLATE_NAMESPACE_TO_CLAUDE_CODE[canonical.slice(0, -2)];
+      if (mapped2 !== void 0)
+        allowed.add(mapped2);
+      continue;
+    }
+    const mapped = TEMPLATE_TOOL_TO_CLAUDE_CODE[canonical];
+    if (mapped !== void 0)
+      allowed.add(mapped);
+  }
+  return allowed.size === 0 ? void 0 : [...allowed];
+}
+function createDelegatedToolsResolver(project) {
+  return (agent) => {
+    const projectAgent = project.agent(agent);
+    if (projectAgent === void 0)
+      return void 0;
+    return claudeCodeAllowedTools(projectAgent.tools);
+  };
+}
+var ClaudeCodeWorkerExecutor = class {
+  #options;
+  constructor(options) {
+    this.#options = options;
+  }
+  /**
+   * The model {@link resolveAgentModel} would resolve for `agent`, falling
+   * back to `backendOptions.model` — the same precedence {@link execute}
+   * applies when it builds the {@link ClaudeCodeBackend} for a task, exposed
+   * here so it can be reported before the task actually runs.
+   */
+  #modelFor(agent) {
+    return this.#options.resolveAgentModel?.(agent) ?? this.#options.backendOptions?.model;
+  }
+  /** The `--allowedTools` list for `agent`; see {@link resolveAgentTools}. */
+  #toolsFor(agent) {
+    return this.#options.resolveAgentTools?.(agent) ?? this.#options.backendOptions?.allowedTools;
+  }
+  describeAgent(agent) {
+    const model = this.#modelFor(agent);
+    return model === void 0 ? void 0 : { model };
+  }
+  async execute(task, agent, signal, context) {
+    const taskId = task.spec.id;
+    const { workspacePath, runId } = this.#options;
+    const model = this.#modelFor(agent);
+    const allowedTools = this.#toolsFor(agent);
+    const backend = new ClaudeCodeBackend({
+      ...this.#options.backendOptions,
+      ...model === void 0 ? {} : { model },
+      ...allowedTools === void 0 ? {} : { allowedTools },
+      ...this.#options.events === void 0 ? {} : { events: this.#options.events },
+      ...this.#options.taskTimeoutMs === void 0 ? {} : { timeoutMs: this.#options.taskTimeoutMs }
+    });
+    let run;
+    try {
+      run = await backend.run({ instruction: buildTaskBriefing(task.spec, agent, context) }, {
+        runId,
+        taskId,
+        workspacePath,
+        ...signal === void 0 ? {} : { signal }
+      });
+    } catch (error) {
+      run = {
+        status: "failed",
+        summary: `Claude Code backend crashed: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+    const inspection = await inspectWorkspaceChanges(workspacePath, signal);
+    return normalizeTaskResult({ taskId, loop: run, inspection });
+  }
+};
+
 // packages/coding-agent/dist/workers/codex-executor.js
 var CodexWorkerExecutor = class {
   #options;
   constructor(options) {
     this.#options = options;
   }
+  /**
+   * The model {@link resolveAgentModel} would resolve for `agent`, falling
+   * back to `backendOptions.model` — the same precedence {@link execute}
+   * applies when it builds the {@link CodexBackend} for a task, exposed here
+   * so it can be reported before the task actually runs.
+   */
+  #modelFor(agent) {
+    return this.#options.resolveAgentModel?.(agent) ?? this.#options.backendOptions?.model;
+  }
+  describeAgent(agent) {
+    const model = this.#modelFor(agent);
+    return model === void 0 ? void 0 : { model };
+  }
   async execute(task, agent, signal, context) {
     const taskId = task.spec.id;
     const { workspacePath, runId } = this.#options;
+    const model = this.#modelFor(agent);
     const backend = new CodexBackend({
       ...this.#options.backendOptions,
+      ...model === void 0 ? {} : { model },
       ...this.#options.events === void 0 ? {} : { events: this.#options.events },
       ...this.#options.taskTimeoutMs === void 0 ? {} : { timeoutMs: this.#options.taskTimeoutMs }
     });
@@ -6977,12 +6209,28 @@ var CodexWorkerExecutor = class {
   }
 };
 
+// packages/coding-agent/dist/workers/delegated-model.js
+var DEFAULT_MODEL_SENTINEL = "default";
+function createDelegatedModelResolver(project) {
+  return (agent) => {
+    const projectAgent = project.agent(agent);
+    if (projectAgent === void 0)
+      return void 0;
+    const ref = project.config.models[projectAgent.modelAlias];
+    if (ref === void 0)
+      return void 0;
+    if (ref.model === DEFAULT_MODEL_SENTINEL)
+      return void 0;
+    return ref.model;
+  };
+}
+
 // packages/workspace/dist/index.js
 import { execFile as execFile7 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
 
 // packages/workspace/dist/worktrees.js
-import { mkdir as mkdir3, rm, rmdir } from "node:fs/promises";
+import { mkdir as mkdir2, rm, rmdir } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute as isAbsolute3, join as join6, relative as relative3, resolve as resolve3, sep as sep3 } from "node:path";
 
 // packages/workspace/dist/git.js
@@ -7139,7 +6387,7 @@ var TaskWorktreeManager = class {
     const path19 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
     await this.#removeLeftovers(path19, branch, signal);
-    await mkdir3(dirname2(path19), { recursive: true });
+    await mkdir2(dirname2(path19), { recursive: true });
     await runGit2(["worktree", "add", path19, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
@@ -7639,14 +6887,1323 @@ var WorktreeIsolatedExecutor = class {
   }
 };
 
+// apps/cli/dist/backend.js
+var BACKEND_NAMES = ["native", "codex", "claude-code"];
+var DEFAULT_BACKEND = "native";
+function isBackendName(value) {
+  return BACKEND_NAMES.includes(value);
+}
+function isDelegatedBackend(backend) {
+  return backend === "codex" || backend === "claude-code";
+}
+function validateBackendName(raw) {
+  if (isBackendName(raw))
+    return raw;
+  throw new Error(`Invalid --backend value "${raw}": expected one of ${BACKEND_NAMES.join(", ")}.`);
+}
+var SANDBOX_MODES = [
+  "read-only",
+  "workspace-write",
+  "danger-full-access"
+];
+var DEFAULT_SANDBOX_MODE = "workspace-write";
+function isSandboxMode(value) {
+  return SANDBOX_MODES.includes(value);
+}
+function validateSandboxMode(raw) {
+  if (isSandboxMode(raw))
+    return raw;
+  throw new Error(`Invalid --sandbox value "${raw}": expected one of ${SANDBOX_MODES.join(", ")}.`);
+}
+function fullAutoForSandbox(sandbox) {
+  return sandbox !== "read-only";
+}
+function codexInstallGuidance(availability) {
+  const lines = [
+    "The Codex CLI is not installed.",
+    "Install it with `npm install -g @openai/codex`, then authenticate with `codex login`."
+  ];
+  if (availability.detail !== void 0 && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+function codexLoginGuidance(availability) {
+  const lines = [
+    "The Codex CLI is installed but you are not logged in.",
+    "Run `codex login` to authenticate with your ChatGPT account \u2014 no OpenAI API key needed."
+  ];
+  if (availability.detail !== void 0 && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+function claudeCodeInstallGuidance(availability) {
+  const lines = [
+    "The Claude Code CLI is not installed.",
+    "Install it with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription."
+  ];
+  if (availability.detail !== void 0 && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+function claudeCodeLoginGuidance(availability) {
+  const lines = [
+    "The Claude Code CLI is installed but you are not logged in.",
+    "Run `claude` once and log in with your Claude subscription \u2014 no Anthropic API key needed."
+  ];
+  if (availability.detail !== void 0 && availability.detail !== "") {
+    lines.push(availability.detail);
+  }
+  return lines.join("\n");
+}
+function delegatedModelIdentity(backend, model) {
+  return {
+    provider: backend === "codex" ? "openai" : "anthropic",
+    id: model ?? `<${backend} default>`,
+    capabilities: {
+      tools: false,
+      reasoning: false,
+      vision: false,
+      structuredOutput: false
+    }
+  };
+}
+async function delegatedBackendError(backend) {
+  if (backend === "claude-code") {
+    const availability2 = await ClaudeCodeBackend.checkAvailability();
+    if (!availability2.installed)
+      return claudeCodeInstallGuidance(availability2);
+    if (!availability2.loggedIn)
+      return claudeCodeLoginGuidance(availability2);
+    return void 0;
+  }
+  const availability = await CodexBackend.checkAvailability();
+  if (!availability.installed)
+    return codexInstallGuidance(availability);
+  if (!availability.loggedIn)
+    return codexLoginGuidance(availability);
+  return void 0;
+}
+
+// apps/cli/dist/config.js
+import { chmod, mkdir as mkdir3, readFile as readFile7, writeFile as writeFile3 } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+
+// packages/ai/dist/catalog.js
+var FULL_CAPABILITIES = {
+  tools: true,
+  reasoning: true,
+  vision: true,
+  structuredOutput: true
+};
+function claude(id, inputPerMTok, outputPerMTok, contextWindow, maxOutputTokens) {
+  return {
+    provider: "anthropic",
+    id,
+    contextWindow,
+    maxOutputTokens,
+    capabilities: FULL_CAPABILITIES,
+    pricing: {
+      inputPerMTok,
+      outputPerMTok,
+      cachedInputPerMTok: Number((inputPerMTok * 0.1).toFixed(4))
+    }
+  };
+}
+var MILLION = 1e6;
+var K128 = 128e3;
+function defaultModelCatalog() {
+  return {
+    // --- Anthropic -------------------------------------------------------
+    "claude-fable-5": claude("claude-fable-5", 10, 50, MILLION, K128),
+    "claude-opus-5": claude("claude-opus-5", 5, 25, MILLION, K128),
+    "claude-opus-4-8": claude("claude-opus-4-8", 5, 25, MILLION, K128),
+    "claude-opus-4-7": claude("claude-opus-4-7", 5, 25, MILLION, K128),
+    "claude-opus-4-6": claude("claude-opus-4-6", 5, 25, MILLION, K128),
+    // Sonnet 5 has promotional pricing of $2/$10 per MTok through 2026-08-31;
+    // the standard rate below is what applies afterwards.
+    "claude-sonnet-5": claude("claude-sonnet-5", 3, 15, MILLION, K128),
+    "claude-sonnet-4-6": claude("claude-sonnet-4-6", 3, 15, MILLION, K128),
+    "claude-haiku-4-5": claude("claude-haiku-4-5", 1, 5, 2e5, 64e3),
+    // --- OpenAI ----------------------------------------------------------
+    // No pricing shipped: OpenAI rates are not verified here. Override
+    // `pricing` on these entries to get non-zero cost accounting.
+    "gpt-5.1": {
+      provider: "openai",
+      id: "gpt-5.1",
+      capabilities: FULL_CAPABILITIES
+    },
+    "gpt-5-mini": {
+      provider: "openai",
+      id: "gpt-5-mini",
+      capabilities: FULL_CAPABILITIES
+    }
+  };
+}
+
+// packages/ai/dist/image.js
+function matchesMagic(bytes, offset, magic) {
+  if (bytes.length < offset + magic.length)
+    return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (bytes[offset + i] !== magic[i])
+      return false;
+  }
+  return true;
+}
+var PNG_MAGIC = [137, 80, 78, 71, 13, 10, 26, 10];
+var JPEG_MAGIC = [255, 216, 255];
+var GIF87_MAGIC = [71, 73, 70, 56, 55, 97];
+var GIF89_MAGIC = [71, 73, 70, 56, 57, 97];
+var RIFF_MAGIC = [82, 73, 70, 70];
+var WEBP_MAGIC = [87, 69, 66, 80];
+function sniffImageMediaType(bytes) {
+  if (matchesMagic(bytes, 0, PNG_MAGIC))
+    return "image/png";
+  if (matchesMagic(bytes, 0, JPEG_MAGIC))
+    return "image/jpeg";
+  if (matchesMagic(bytes, 0, GIF87_MAGIC) || matchesMagic(bytes, 0, GIF89_MAGIC)) {
+    return "image/gif";
+  }
+  if (matchesMagic(bytes, 0, RIFF_MAGIC) && matchesMagic(bytes, 8, WEBP_MAGIC)) {
+    return "image/webp";
+  }
+  return void 0;
+}
+var EXTENSION_MEDIA_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+};
+function mediaTypeFromExtension(filePath) {
+  const match = /\.[^./\\]+$/.exec(filePath);
+  const ext = match?.[0]?.toLowerCase();
+  return ext === void 0 ? void 0 : EXTENSION_MEDIA_TYPES[ext];
+}
+function resolveImageMediaType(bytes, filePath) {
+  return sniffImageMediaType(bytes) ?? mediaTypeFromExtension(filePath);
+}
+
+// packages/ai/dist/sse.js
+async function* parseSse(stream, signal) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName;
+  let dataLines = [];
+  const takePending = () => {
+    if (dataLines.length === 0) {
+      eventName = void 0;
+      return void 0;
+    }
+    const message = {
+      event: eventName,
+      data: dataLines.join("\n")
+    };
+    eventName = void 0;
+    dataLines = [];
+    return message;
+  };
+  const consumeLine = (rawLine) => {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line === "")
+      return takePending();
+    if (line.startsWith(":"))
+      return void 0;
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" "))
+      value = value.slice(1);
+    if (field === "event")
+      eventName = value;
+    else if (field === "data")
+      dataLines.push(value);
+    return void 0;
+  };
+  const onAbort = () => {
+    void reader.cancel().catch(() => void 0);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    while (true) {
+      if (signal?.aborted)
+        return;
+      const { done, value } = await reader.read();
+      if (signal?.aborted)
+        return;
+      if (done)
+        break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const rawLine = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const message = consumeLine(rawLine);
+        if (message !== void 0)
+          yield message;
+        newline = buffer.indexOf("\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer !== "") {
+      const message = consumeLine(buffer);
+      if (message !== void 0)
+        yield message;
+      buffer = "";
+    }
+    const trailing = takePending();
+    if (trailing !== void 0)
+      yield trailing;
+  } catch (error) {
+    if (signal?.aborted)
+      return;
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    try {
+      await reader.cancel();
+    } catch {
+    }
+  }
+}
+
+// packages/ai/dist/providers/errors.js
+var ProviderError = class extends Error {
+  provider;
+  status;
+  body;
+  constructor(init) {
+    super(init.message);
+    this.name = "ProviderError";
+    this.provider = init.provider;
+    this.status = init.status;
+    this.body = init.body;
+  }
+};
+
+// packages/ai/dist/providers/anthropic.js
+var OAUTH_BETA = "oauth-2025-04-20";
+var DEFAULT_BASE_URL = "https://api.anthropic.com";
+var ANTHROPIC_VERSION = "2023-06-01";
+var DEFAULT_MAX_TOKENS = 4096;
+function isRecord4(value) {
+  return typeof value === "object" && value !== null;
+}
+function asNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function parseToolInput(raw) {
+  const trimmed = raw.trim();
+  if (trimmed === "")
+    return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return raw;
+  }
+}
+function toWireTool(tool) {
+  return {
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema
+  };
+}
+function toWireToolChoice(choice) {
+  switch (choice.type) {
+    case "auto":
+      return { type: "auto" };
+    case "any":
+      return { type: "any" };
+    case "tool":
+      return { type: "tool", name: choice.name };
+  }
+}
+function mapMessages(messages) {
+  const systemParts = [];
+  const wire = [];
+  for (const message of messages) {
+    switch (message.role) {
+      case "system":
+        if (message.content !== "")
+          systemParts.push(message.content);
+        break;
+      case "user": {
+        const images = message.images ?? [];
+        if (images.length === 0) {
+          wire.push({ role: "user", content: message.content });
+          break;
+        }
+        const blocks = images.map((image) => ({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: image.mediaType,
+            data: image.base64
+          }
+        }));
+        if (message.content !== "")
+          blocks.push({ type: "text", text: message.content });
+        wire.push({ role: "user", content: blocks });
+        break;
+      }
+      case "tool": {
+        const block = {
+          type: "tool_result",
+          tool_use_id: message.toolCallId ?? "",
+          content: message.content
+        };
+        if (message.isError === true)
+          block.is_error = true;
+        wire.push({ role: "user", content: [block] });
+        break;
+      }
+      case "assistant": {
+        const calls = message.toolCalls ?? [];
+        if (calls.length === 0) {
+          wire.push({ role: "assistant", content: message.content });
+          break;
+        }
+        const blocks = [];
+        if (message.content !== "")
+          blocks.push({ type: "text", text: message.content });
+        for (const call of calls) {
+          blocks.push({
+            type: "tool_use",
+            id: call.id,
+            name: call.name,
+            input: call.input
+          });
+        }
+        wire.push({ role: "assistant", content: blocks });
+        break;
+      }
+    }
+  }
+  return {
+    system: systemParts.length === 0 ? void 0 : systemParts.join("\n\n"),
+    messages: wire
+  };
+}
+var AnthropicProvider = class {
+  id = "anthropic";
+  #credential;
+  #baseUrl;
+  constructor(options) {
+    const { apiKey, authToken } = options;
+    if (apiKey !== void 0 && authToken !== void 0) {
+      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`, not both.");
+    }
+    if (apiKey === void 0 && authToken === void 0) {
+      throw new Error("AnthropicProvider: pass either `apiKey` or `authToken`.");
+    }
+    this.#credential = apiKey !== void 0 ? { kind: "api-key", value: apiKey } : { kind: "auth-token", value: authToken };
+    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  }
+  /**
+   * Base request headers plus credential headers: `x-api-key` for an API
+   * key, or `authorization: Bearer <token>` plus the OAuth beta flag for an
+   * auth token (never both `x-api-key` and `authorization` — the API
+   * rejects requests carrying both). The OAuth beta flag is comma-joined
+   * onto `anthropic-beta` rather than overwriting it, in case a future
+   * feature already populated that header for this request.
+   */
+  #headers() {
+    const headers = {
+      "content-type": "application/json",
+      "anthropic-version": ANTHROPIC_VERSION,
+      accept: "text/event-stream"
+    };
+    if (this.#credential.kind === "api-key") {
+      headers["x-api-key"] = this.#credential.value;
+      return headers;
+    }
+    headers.authorization = `Bearer ${this.#credential.value}`;
+    const existingBeta = headers["anthropic-beta"];
+    headers["anthropic-beta"] = existingBeta === void 0 || existingBeta === "" ? OAUTH_BETA : `${existingBeta},${OAUTH_BETA}`;
+    return headers;
+  }
+  supports(model) {
+    return model.provider === "anthropic";
+  }
+  #buildBody(request) {
+    const { system, messages } = mapMessages(request.messages);
+    const body = {
+      model: request.model.id,
+      max_tokens: request.maxOutputTokens ?? request.model.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
+      stream: true,
+      messages
+    };
+    if (system !== void 0)
+      body.system = system;
+    if (request.tools !== void 0 && request.tools.length > 0) {
+      body.tools = request.tools.map(toWireTool);
+    }
+    if (request.toolChoice !== void 0) {
+      body.tool_choice = toWireToolChoice(request.toolChoice);
+    }
+    if (request.temperature !== void 0)
+      body.temperature = request.temperature;
+    return body;
+  }
+  async *stream(request, signal) {
+    const response = await fetch(`${this.#baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: this.#headers(),
+      body: JSON.stringify(this.#buildBody(request)),
+      signal: signal ?? null
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: `Anthropic request failed with status ${response.status}`,
+        body
+      });
+    }
+    if (response.body === null) {
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: "Anthropic response had no body"
+      });
+    }
+    const blocks = /* @__PURE__ */ new Map();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cachedInputTokens = 0;
+    let finishReason = "end_turn";
+    const readUsage = (usage) => {
+      if (!isRecord4(usage))
+        return;
+      if (typeof usage.input_tokens === "number")
+        inputTokens = usage.input_tokens;
+      if (typeof usage.output_tokens === "number")
+        outputTokens = usage.output_tokens;
+      if (typeof usage.cache_read_input_tokens === "number") {
+        cachedInputTokens = usage.cache_read_input_tokens;
+      }
+    };
+    const finalEvents = () => [
+      {
+        type: "usage",
+        inputTokens,
+        outputTokens,
+        ...cachedInputTokens > 0 ? { cachedInputTokens } : {}
+      },
+      { type: "done", finishReason }
+    ];
+    for await (const message of parseSse(response.body, signal)) {
+      if (signal?.aborted)
+        return;
+      let payload;
+      try {
+        payload = JSON.parse(message.data);
+      } catch {
+        continue;
+      }
+      if (!isRecord4(payload))
+        continue;
+      const type = typeof payload.type === "string" ? payload.type : message.event ?? "";
+      if (type === "error") {
+        const error = isRecord4(payload.error) ? payload.error : void 0;
+        const detail = error !== void 0 && typeof error.message === "string" ? error.message : "Anthropic stream error";
+        throw new ProviderError({
+          provider: this.id,
+          status: response.status,
+          message: detail,
+          body: message.data
+        });
+      }
+      if (type === "message_start") {
+        const wrapped = isRecord4(payload.message) ? payload.message : void 0;
+        if (wrapped !== void 0)
+          readUsage(wrapped.usage);
+        continue;
+      }
+      if (type === "content_block_start") {
+        const index2 = asNumber(payload.index);
+        const block = isRecord4(payload.content_block) ? payload.content_block : void 0;
+        if (block !== void 0 && block.type === "tool_use") {
+          blocks.set(index2, {
+            id: typeof block.id === "string" ? block.id : "",
+            name: typeof block.name === "string" ? block.name : "",
+            json: ""
+          });
+        }
+        continue;
+      }
+      if (type === "content_block_delta") {
+        const index2 = asNumber(payload.index);
+        const delta = isRecord4(payload.delta) ? payload.delta : void 0;
+        if (delta === void 0)
+          continue;
+        if (delta.type === "text_delta" && typeof delta.text === "string") {
+          if (delta.text !== "")
+            yield { type: "text.delta", text: delta.text };
+        } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+          const pendingBlock = blocks.get(index2);
+          if (pendingBlock !== void 0)
+            pendingBlock.json += delta.partial_json;
+        }
+        continue;
+      }
+      if (type === "content_block_stop") {
+        const index2 = asNumber(payload.index);
+        const pendingBlock = blocks.get(index2);
+        if (pendingBlock !== void 0) {
+          blocks.delete(index2);
+          yield {
+            type: "tool.call",
+            id: pendingBlock.id,
+            name: pendingBlock.name,
+            input: parseToolInput(pendingBlock.json)
+          };
+        }
+        continue;
+      }
+      if (type === "message_delta") {
+        const delta = isRecord4(payload.delta) ? payload.delta : void 0;
+        if (delta !== void 0 && typeof delta.stop_reason === "string") {
+          finishReason = delta.stop_reason;
+        }
+        readUsage(payload.usage);
+        continue;
+      }
+      if (type === "message_stop") {
+        for (const event2 of finalEvents())
+          yield event2;
+        return;
+      }
+    }
+    if (signal?.aborted)
+      return;
+    for (const event2 of finalEvents())
+      yield event2;
+  }
+};
+
+// packages/ai/dist/providers/openai.js
+var DEFAULT_BASE_URL2 = "https://api.openai.com/v1";
+function isRecord5(value) {
+  return typeof value === "object" && value !== null;
+}
+function asNumber2(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function toWireMessage(message) {
+  switch (message.role) {
+    case "tool":
+      return {
+        role: "tool",
+        content: message.content,
+        tool_call_id: message.toolCallId ?? ""
+      };
+    case "assistant": {
+      const calls = message.toolCalls ?? [];
+      if (calls.length === 0)
+        return { role: "assistant", content: message.content };
+      return {
+        role: "assistant",
+        content: message.content === "" ? null : message.content,
+        tool_calls: calls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(call.input) }
+        }))
+      };
+    }
+    case "user": {
+      const images = message.images ?? [];
+      if (images.length === 0)
+        return { role: "user", content: message.content };
+      const blocks = [];
+      if (message.content !== "")
+        blocks.push({ type: "text", text: message.content });
+      for (const image of images) {
+        blocks.push({
+          type: "image_url",
+          image_url: { url: `data:${image.mediaType};base64,${image.base64}` }
+        });
+      }
+      return { role: "user", content: blocks };
+    }
+    default:
+      return { role: message.role, content: message.content };
+  }
+}
+function toWireTool2(tool) {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema
+    }
+  };
+}
+function toWireToolChoice2(choice) {
+  switch (choice.type) {
+    case "auto":
+      return "auto";
+    case "any":
+      return "required";
+    case "tool":
+      return { type: "function", function: { name: choice.name } };
+  }
+}
+function parseArguments(raw) {
+  const trimmed = raw.trim();
+  if (trimmed === "")
+    return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return raw;
+  }
+}
+var OpenAIProvider = class {
+  id = "openai";
+  #apiKey;
+  #baseUrl;
+  constructor(options) {
+    this.#apiKey = options.apiKey;
+    this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL2).replace(/\/+$/, "");
+  }
+  supports(model) {
+    return model.provider === "openai" || model.provider === "openai-compatible";
+  }
+  #buildBody(request) {
+    const body = {
+      model: request.model.id,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: request.messages.map(toWireMessage)
+    };
+    if (request.tools !== void 0 && request.tools.length > 0) {
+      body.tools = request.tools.map(toWireTool2);
+    }
+    if (request.toolChoice !== void 0) {
+      body.tool_choice = toWireToolChoice2(request.toolChoice);
+    }
+    if (request.temperature !== void 0)
+      body.temperature = request.temperature;
+    if (request.maxOutputTokens !== void 0) {
+      body.max_completion_tokens = request.maxOutputTokens;
+    }
+    return body;
+  }
+  async *stream(request, signal) {
+    const response = await fetch(`${this.#baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.#apiKey}`,
+        accept: "text/event-stream"
+      },
+      body: JSON.stringify(this.#buildBody(request)),
+      signal: signal ?? null
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: `OpenAI request failed with status ${response.status}`,
+        body
+      });
+    }
+    if (response.body === null) {
+      throw new ProviderError({
+        provider: this.id,
+        status: response.status,
+        message: "OpenAI response had no body"
+      });
+    }
+    const pending = /* @__PURE__ */ new Map();
+    let finishReason = "stop";
+    let emittedToolCalls = false;
+    const flushToolCalls = () => {
+      if (emittedToolCalls)
+        return [];
+      emittedToolCalls = true;
+      const indexes = [...pending.keys()].sort((a, b) => a - b);
+      const events2 = [];
+      for (const index2 of indexes) {
+        const call = pending.get(index2);
+        if (call === void 0)
+          continue;
+        events2.push({
+          type: "tool.call",
+          id: call.id,
+          name: call.name,
+          input: parseArguments(call.args)
+        });
+      }
+      return events2;
+    };
+    for await (const message of parseSse(response.body, signal)) {
+      if (signal?.aborted)
+        return;
+      if (message.data === "[DONE]")
+        break;
+      let chunk;
+      try {
+        chunk = JSON.parse(message.data);
+      } catch {
+        continue;
+      }
+      if (!isRecord5(chunk))
+        continue;
+      const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+      const choice = choices[0];
+      if (isRecord5(choice)) {
+        const delta = isRecord5(choice.delta) ? choice.delta : void 0;
+        if (delta !== void 0 && typeof delta.content === "string" && delta.content !== "") {
+          yield { type: "text.delta", text: delta.content };
+        }
+        if (delta !== void 0 && Array.isArray(delta.tool_calls)) {
+          for (const entry of delta.tool_calls) {
+            if (!isRecord5(entry))
+              continue;
+            const index2 = typeof entry.index === "number" ? entry.index : 0;
+            let call = pending.get(index2);
+            if (call === void 0) {
+              call = { id: "", name: "", args: "" };
+              pending.set(index2, call);
+            }
+            if (typeof entry.id === "string")
+              call.id = entry.id;
+            const fn = isRecord5(entry.function) ? entry.function : void 0;
+            if (fn !== void 0) {
+              if (typeof fn.name === "string")
+                call.name = fn.name;
+              if (typeof fn.arguments === "string")
+                call.args += fn.arguments;
+            }
+          }
+        }
+        if (typeof choice.finish_reason === "string") {
+          finishReason = choice.finish_reason;
+          for (const event2 of flushToolCalls())
+            yield event2;
+        }
+      }
+      if (isRecord5(chunk.usage)) {
+        const usage = chunk.usage;
+        const details = isRecord5(usage.prompt_tokens_details) ? usage.prompt_tokens_details : void 0;
+        const cached = details === void 0 ? 0 : asNumber2(details.cached_tokens);
+        yield {
+          type: "usage",
+          inputTokens: asNumber2(usage.prompt_tokens),
+          outputTokens: asNumber2(usage.completion_tokens),
+          ...cached > 0 ? { cachedInputTokens: cached } : {}
+        };
+      }
+    }
+    if (signal?.aborted)
+      return;
+    for (const event2 of flushToolCalls())
+      yield event2;
+    yield { type: "done", finishReason };
+  }
+};
+
+// packages/ai/dist/registry.js
+var StaticModelRegistry = class {
+  #models;
+  #providers;
+  constructor(models, providers) {
+    this.#models = models;
+    this.#providers = providers;
+  }
+  get(alias) {
+    const model = this.#models[alias];
+    if (model === void 0) {
+      const known = Object.keys(this.#models).sort().join(", ");
+      throw new Error(`Unknown model alias "${alias}". Known aliases: ${known === "" ? "(none registered)" : known}`);
+    }
+    return model;
+  }
+  providerFor(model) {
+    const provider = this.#providers.find((candidate) => candidate.supports(model));
+    if (provider === void 0) {
+      const known = this.#providers.map((candidate) => candidate.id).join(", ");
+      throw new Error(`No provider supports model "${model.provider}/${model.id}". Registered providers: ${known === "" ? "(none registered)" : known}`);
+    }
+    return provider;
+  }
+  aliases() {
+    return Object.keys(this.#models);
+  }
+};
+
+// packages/ai/dist/usage.js
+var UNATTRIBUTED = "(unattributed)";
+var PER_MILLION = 1e6;
+var CELL_SEPARATOR = "\0";
+function newBucket() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    hasCached: false,
+    costUsd: 0
+  };
+}
+function usageCostUsd(pricing, usage) {
+  if (pricing === void 0)
+    return 0;
+  const cached = usage.cachedInputTokens ?? 0;
+  const cachedRate = pricing.cachedInputPerMTok ?? pricing.inputPerMTok;
+  const total = usage.inputTokens * pricing.inputPerMTok + usage.outputTokens * pricing.outputPerMTok + cached * cachedRate;
+  return total / PER_MILLION;
+}
+function toUsage(bucket) {
+  return {
+    inputTokens: bucket.inputTokens,
+    outputTokens: bucket.outputTokens,
+    ...bucket.hasCached ? { cachedInputTokens: bucket.cachedInputTokens } : {}
+  };
+}
+function addInto(target, usage, cost) {
+  target.inputTokens += usage.inputTokens;
+  target.outputTokens += usage.outputTokens;
+  target.cachedInputTokens += usage.cachedInputTokens ?? 0;
+  target.hasCached = target.hasCached || usage.cachedInputTokens !== void 0;
+  target.costUsd += cost;
+}
+function pricingOf(priced, unpriced) {
+  if (unpriced === 0)
+    return "known";
+  return priced === 0 ? "unknown" : "partial";
+}
+var UsageTracker = class {
+  #byModel = /* @__PURE__ */ new Map();
+  #cells = /* @__PURE__ */ new Map();
+  #total = newBucket();
+  /**
+   * Folds one model turn in.
+   *
+   * `tags` is optional and purely additive: an untagged call still lands in
+   * {@link totals} and {@link byModel} exactly as before, and shows up under
+   * {@link UNATTRIBUTED} in the agent and task breakdowns.
+   */
+  record(model, usage, tags) {
+    const key = `${model.provider}/${model.id}`;
+    let bucket = this.#byModel.get(key);
+    if (bucket === void 0) {
+      bucket = newBucket();
+      this.#byModel.set(key, bucket);
+    }
+    const cost = usageCostUsd(model.pricing, usage);
+    addInto(bucket, usage, cost);
+    addInto(this.#total, usage, cost);
+    const cell = this.#cellFor(model, tags);
+    addInto(cell.bucket, usage, cost);
+    if (model.pricing === void 0)
+      cell.unpriced += 1;
+    else
+      cell.priced += 1;
+  }
+  #cellFor(model, tags) {
+    const attribution = {
+      model: tags?.model ?? model.id,
+      agent: tags?.agent ?? UNATTRIBUTED,
+      task: tags?.taskId ?? UNATTRIBUTED
+    };
+    const key = [attribution.model, attribution.agent, attribution.task].join(CELL_SEPARATOR);
+    let cell = this.#cells.get(key);
+    if (cell === void 0) {
+      cell = { ...attribution, bucket: newBucket(), priced: 0, unpriced: 0 };
+      this.#cells.set(key, cell);
+    }
+    return cell;
+  }
+  totals() {
+    return { usage: toUsage(this.#total), costUsd: this.#total.costUsd };
+  }
+  byModel() {
+    const out = /* @__PURE__ */ new Map();
+    for (const [key, bucket] of this.#byModel) {
+      out.set(key, { usage: toUsage(bucket), costUsd: bucket.costUsd });
+    }
+    return out;
+  }
+  /**
+   * Usage grouped along one attribution axis.
+   *
+   * Every sample lands in exactly one bucket of every dimension, so summing
+   * any breakdown reproduces {@link totals} — that invariant is what makes the
+   * per-model rollup in a run summary trustworthy. Buckets come back in
+   * first-seen order.
+   */
+  totalsBy(dimension) {
+    const out = /* @__PURE__ */ new Map();
+    for (const [key, entry] of this.breakdownBy(dimension)) {
+      out.set(key, { usage: entry.usage, costUsd: entry.costUsd });
+    }
+    return out;
+  }
+  /** {@link totalsBy} plus what each bucket is made of — see {@link UsageBreakdown}. */
+  breakdownBy(dimension) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const cell of this.#cells.values()) {
+      const key = dimension === "model" ? cell.model : dimension === "agent" ? cell.agent : cell.task;
+      let group = groups.get(key);
+      if (group === void 0) {
+        group = {
+          bucket: newBucket(),
+          models: /* @__PURE__ */ new Set(),
+          agents: /* @__PURE__ */ new Set(),
+          tasks: /* @__PURE__ */ new Set(),
+          priced: 0,
+          unpriced: 0
+        };
+        groups.set(key, group);
+      }
+      addInto(group.bucket, toUsage(cell.bucket), cell.bucket.costUsd);
+      group.models.add(cell.model);
+      group.agents.add(cell.agent);
+      group.tasks.add(cell.task);
+      group.priced += cell.priced;
+      group.unpriced += cell.unpriced;
+    }
+    const out = /* @__PURE__ */ new Map();
+    for (const [key, group] of groups) {
+      out.set(key, {
+        key,
+        usage: toUsage(group.bucket),
+        costUsd: group.bucket.costUsd,
+        pricing: pricingOf(group.priced, group.unpriced),
+        models: [...group.models].sort(),
+        agents: [...group.agents].sort(),
+        tasks: [...group.tasks].sort(),
+        samples: group.priced + group.unpriced
+      });
+    }
+    return out;
+  }
+};
+async function* teeUsage(source, model, recorder, tags) {
+  for await (const event2 of source) {
+    if (event2.type === "usage") {
+      recorder.record(model, {
+        inputTokens: event2.inputTokens,
+        outputTokens: event2.outputTokens,
+        ...event2.cachedInputTokens === void 0 ? {} : { cachedInputTokens: event2.cachedInputTokens }
+      }, tags);
+    }
+    yield event2;
+  }
+}
+function usageRecordingProvider(provider, recorder, tags) {
+  return {
+    id: provider.id,
+    supports: (model) => provider.supports(model),
+    stream: (request, signal) => teeUsage(provider.stream(request, signal), request.model, recorder, tags)
+  };
+}
+
+// apps/cli/dist/config.js
+var KAPEL_CONFIG_VERSION = 2;
+var BACKENDS = ["claude-code", "codex", "native"];
+function envValue(env, name) {
+  const value = (env ?? process.env)[name];
+  return value === void 0 || value === "" ? void 0 : value;
+}
+function kapelConfigDir(env) {
+  return envValue(env, "KAPEL_CONFIG_DIR") ?? path.join(homedir(), ".kapel");
+}
+function kapelConfigPath(env) {
+  return path.join(kapelConfigDir(env), "config.json");
+}
+function isBackend(value) {
+  return typeof value === "string" && BACKENDS.includes(value);
+}
+function modelString(value) {
+  return typeof value === "string" && value !== "" ? value : void 0;
+}
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isPermissionDecision(value) {
+  return value === "allow" || value === "ask" || value === "deny";
+}
+function parsePermissionBlock(raw) {
+  if (raw === void 0)
+    return { rules: {}, warnings: [] };
+  if (!isRecord6(raw)) {
+    return {
+      rules: {},
+      warnings: ['"permission" must be an object; ignoring it entirely.']
+    };
+  }
+  const rules = {};
+  const warnings = [];
+  for (const [tool, value] of Object.entries(raw)) {
+    if (isPermissionDecision(value)) {
+      rules[tool] = value;
+      continue;
+    }
+    if (isRecord6(value)) {
+      const patterns = {};
+      for (const [pattern, verdict] of Object.entries(value)) {
+        if (isPermissionDecision(verdict)) {
+          patterns[pattern] = verdict;
+        } else {
+          warnings.push(`permission.${tool}["${pattern}"]: expected "allow" | "ask" | "deny", got ${JSON.stringify(verdict)} \u2014 ignoring.`);
+        }
+      }
+      if (Object.keys(patterns).length > 0) {
+        rules[tool] = patterns;
+      } else {
+        warnings.push(`permission.${tool}: no valid patterns \u2014 ignoring.`);
+      }
+      continue;
+    }
+    warnings.push(`permission.${tool}: expected "allow" | "ask" | "deny" or a pattern map, got ${JSON.stringify(value)} \u2014 ignoring.`);
+  }
+  return { rules, warnings };
+}
+function migrateV1Models(modelRecord) {
+  const orchestrator = modelString(modelRecord.orchestrator);
+  const worker = modelString(modelRecord.worker);
+  const cheap = modelString(modelRecord.cheap);
+  if (orchestrator === void 0 || worker === void 0 || cheap === void 0) {
+    return void 0;
+  }
+  return { orchestrator, complex: worker, middle: worker, low: cheap };
+}
+function parseV2Models(modelRecord) {
+  const orchestrator = modelString(modelRecord.orchestrator);
+  const complex = modelString(modelRecord.complex);
+  const middle = modelString(modelRecord.middle);
+  const low = modelString(modelRecord.low);
+  if (orchestrator === void 0 || complex === void 0 || middle === void 0 || low === void 0) {
+    return void 0;
+  }
+  return { orchestrator, complex, middle, low };
+}
+function parseConfig(raw) {
+  const none = { config: void 0, warnings: [] };
+  if (typeof raw !== "object" || raw === null)
+    return none;
+  const record = raw;
+  const version = record.version;
+  if (version !== KAPEL_CONFIG_VERSION && version !== 1)
+    return none;
+  if (!isBackend(record.backend))
+    return none;
+  const models = record.models;
+  if (typeof models !== "object" || models === null)
+    return none;
+  const modelRecord = models;
+  const parsed = version === 1 ? migrateV1Models(modelRecord) : parseV2Models(modelRecord);
+  if (parsed === void 0)
+    return none;
+  const { rules: permission, warnings } = parsePermissionBlock(record.permission);
+  const updatedAt = record.updatedAt;
+  return {
+    config: {
+      version: KAPEL_CONFIG_VERSION,
+      backend: record.backend,
+      models: parsed,
+      updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
+      ...Object.keys(permission).length > 0 ? { permission } : {}
+    },
+    warnings
+  };
+}
+async function loadKapelConfig(env) {
+  let text2;
+  try {
+    text2 = await readFile7(kapelConfigPath(env), "utf8");
+  } catch {
+    return void 0;
+  }
+  let parsed;
+  try {
+    parsed = parseConfig(JSON.parse(text2));
+  } catch {
+    return void 0;
+  }
+  if (parsed.warnings.length > 0) {
+    console.error(`warning: ignoring invalid entries in ${kapelConfigPath(env)}'s "permission" block:`);
+    for (const warning of parsed.warnings)
+      console.error(`  - ${warning}`);
+  }
+  return parsed.config;
+}
+async function saveKapelConfig(config, env) {
+  const filePath = kapelConfigPath(env);
+  await mkdir3(path.dirname(filePath), { recursive: true });
+  const full = {
+    version: KAPEL_CONFIG_VERSION,
+    backend: config.backend,
+    models: {
+      orchestrator: config.models.orchestrator,
+      complex: config.models.complex,
+      middle: config.models.middle,
+      low: config.models.low
+    },
+    updatedAt: config.updatedAt ?? Date.now(),
+    // Hand-edited only (see `KapelConfig.permission`) — carried through
+    // verbatim so a `/config` re-save never silently drops it.
+    ...config.permission === void 0 ? {} : { permission: config.permission }
+  };
+  await writeFile3(filePath, `${JSON.stringify(full, null, 2)}
+`, "utf8");
+  try {
+    await chmod(filePath, 384);
+  } catch {
+  }
+  return filePath;
+}
+function backendChoices() {
+  return [
+    {
+      value: "claude-code",
+      label: "Claude Code",
+      hint: "use your Claude Code subscription login \u2014 no API key"
+    },
+    {
+      value: "codex",
+      label: "Codex",
+      hint: "use your ChatGPT login via the OpenAI Codex CLI \u2014 no API key"
+    },
+    {
+      value: "native",
+      label: "API key (Anthropic/OpenAI)",
+      hint: "call model APIs directly with a key or token"
+    }
+  ];
+}
+function catalogIdsForProvider(provider) {
+  const catalog = defaultModelCatalog();
+  return Object.keys(catalog).filter((id) => catalog[id]?.provider === provider).sort();
+}
+function claudeCodeChoices() {
+  const aliases = [
+    { value: "opus", label: "opus", hint: "Claude Opus \u2014 highest capability" },
+    { value: "sonnet", label: "sonnet", hint: "Claude Sonnet \u2014 balanced" },
+    { value: "haiku", label: "haiku", hint: "Claude Haiku \u2014 fastest/cheapest" }
+  ];
+  const fullIds = catalogIdsForProvider("anthropic").map((id) => ({
+    value: id,
+    label: id,
+    hint: "full model id \u2014 errors at run time if your plan lacks it"
+  }));
+  return [
+    ...aliases,
+    ...fullIds,
+    {
+      value: "default",
+      label: "default",
+      hint: "whatever your Claude Code account defaults to"
+    }
+  ];
+}
+function codexChoices() {
+  const runTimeHint = "errors at run time if your plan lacks it";
+  const named = Array.from(/* @__PURE__ */ new Set(["gpt-5.1-codex", ...catalogIdsForProvider("openai")])).sort();
+  return [
+    { value: "default", label: "default", hint: "let the Codex CLI choose" },
+    ...named.map((id) => ({ value: id, label: id, hint: runTimeHint }))
+  ];
+}
+function nativeChoices() {
+  const catalog = defaultModelCatalog();
+  return Object.keys(catalog).sort().map((alias) => {
+    const definition = catalog[alias];
+    const provider = definition?.provider ?? "unknown";
+    const hint = definition?.pricing === void 0 ? provider : `${provider} \xB7 pricing available`;
+    return { value: alias, label: alias, hint };
+  });
+}
+function choicesForBackend(backend) {
+  if (backend === "claude-code")
+    return claudeCodeChoices();
+  if (backend === "codex")
+    return codexChoices();
+  return nativeChoices();
+}
+function modelChoicesFor(backend, role) {
+  const suggested = defaultModelsFor(backend)[role];
+  return choicesForBackend(backend).map((choice) => {
+    if (choice.value !== suggested)
+      return choice;
+    const hint = choice.hint === void 0 ? "suggested for this role" : `${choice.hint} \xB7 suggested for this role`;
+    return { value: choice.value, label: choice.label, hint };
+  });
+}
+function pickNative(preferred) {
+  const catalog = defaultModelCatalog();
+  const aliases = Object.keys(catalog).sort();
+  if (aliases.includes(preferred))
+    return preferred;
+  const anthropic = aliases.find((alias) => catalog[alias]?.provider === "anthropic");
+  return anthropic ?? aliases[0] ?? preferred;
+}
+function defaultModelsFor(backend) {
+  if (backend === "claude-code") {
+    return {
+      orchestrator: "opus",
+      complex: "opus",
+      middle: "sonnet",
+      low: "haiku"
+    };
+  }
+  if (backend === "codex") {
+    return {
+      orchestrator: "default",
+      complex: "default",
+      middle: "default",
+      low: "default"
+    };
+  }
+  return {
+    orchestrator: pickNative("claude-opus-5"),
+    complex: pickNative("claude-opus-5"),
+    middle: pickNative("claude-sonnet-5"),
+    low: pickNative("claude-haiku-4-5")
+  };
+}
+function backendLabel(backend) {
+  return backendChoices().find((choice) => choice.value === backend)?.label ?? backend;
+}
+function describeConfig(config) {
+  return [
+    `backend: ${backendLabel(config.backend)} (${config.backend})`,
+    `orchestrator model: ${config.models.orchestrator}`,
+    `worker model (complex tasks): ${config.models.complex}`,
+    `worker model (everyday tasks): ${config.models.middle}`,
+    `worker model (small tasks): ${config.models.low}`,
+    `updated: ${new Date(config.updatedAt).toISOString()}`
+  ];
+}
+
 // apps/cli/dist/config-wizard.js
 var BACKEND_TITLE = "Which coding backend should kapel use?";
 var ROLE_TITLES = {
   orchestrator: "Main orchestrator model",
-  worker: "Worker model \u2014 normal complexity",
-  cheap: "Worker model \u2014 low complexity / exploration"
+  complex: "Worker model \u2014 most complex coding tasks",
+  middle: "Worker model \u2014 everyday tasks",
+  low: "Worker model \u2014 small, single-function tasks"
 };
-var ROLES = ["orchestrator", "worker", "cheap"];
+var ROLES = [
+  "orchestrator",
+  "complex",
+  "middle",
+  "low"
+];
 var BACKEND_FIX = {
   "claude-code": "fix: npm install -g @anthropic-ai/claude-code, then run `claude` once and log in",
   codex: "fix: npm install -g @openai/codex, then `codex login`",
@@ -7710,8 +8267,9 @@ async function runConfigWizard(deps) {
   const defaults = defaultModelsFor(backend);
   const models = {
     orchestrator: picked.orchestrator ?? defaults.orchestrator,
-    worker: picked.worker ?? defaults.worker,
-    cheap: picked.cheap ?? defaults.cheap
+    complex: picked.complex ?? defaults.complex,
+    middle: picked.middle ?? defaults.middle,
+    low: picked.low ?? defaults.low
   };
   const config = {
     version: KAPEL_CONFIG_VERSION,
@@ -9523,6 +10081,7 @@ var consoleOutput = {
   error: (line) => console.error(line)
 };
 var defaultPlannerFactory = (args) => new LlmPlanner(args);
+var defaultDelegatedPlannerFactory = (args) => new DelegatedPlanner(args);
 var LOCK_FILE_NAME = "orchestration.lock.json";
 function jsonLine(output, value) {
   output.log(JSON.stringify(value));
@@ -9573,6 +10132,11 @@ async function resolvePlannerModel(project, policy, options, output) {
   const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
   return resolveModelAndProvider(process.env, alias);
 }
+function delegatedPlannerModelId(project, policy, options) {
+  if (options.model !== void 0 && options.model !== "")
+    return options.model;
+  return createDelegatedModelResolver(project)(policy.orchestrator);
+}
 async function preparePlan(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const { json } = options;
@@ -9609,13 +10173,37 @@ async function preparePlan(objective, options, deps = {}) {
     return fail(output, json, `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`kapel policy compile\` to recreate it.`, { reason: status.reason });
   }
   const policy = status.lock.policy;
-  const resolved = await resolvePlannerModel(project, policy, options, output);
-  if ("error" in resolved)
-    return fail(output, json, resolved.error);
-  const { model, provider } = resolved;
   const knownAgents = [...project.knownAgentNames()];
-  const plannerFactory = deps.plannerFactory ?? defaultPlannerFactory;
-  const planner = plannerFactory({ provider, model, knownAgents });
+  let planner;
+  let plannerModel;
+  if (isDelegatedBackend(options.backend)) {
+    const backend = options.backend;
+    const modelId = delegatedPlannerModelId(project, policy, options);
+    const factory = deps.delegatedPlannerFactory;
+    if (factory === void 0) {
+      const unavailable = await delegatedBackendError(backend);
+      if (unavailable !== void 0)
+        return fail(output, json, unavailable);
+    }
+    planner = (factory ?? defaultDelegatedPlannerFactory)({
+      backend,
+      workspacePath,
+      knownAgents,
+      ...modelId === void 0 ? {} : { model: modelId }
+    });
+    plannerModel = delegatedModelIdentity(backend, modelId);
+  } else {
+    const resolved = await resolvePlannerModel(project, policy, options, output);
+    if ("error" in resolved)
+      return fail(output, json, resolved.error);
+    const plannerFactory = deps.plannerFactory ?? defaultPlannerFactory;
+    planner = plannerFactory({
+      provider: resolved.provider,
+      model: resolved.model,
+      knownAgents
+    });
+    plannerModel = resolved.model;
+  }
   let planned;
   try {
     planned = await planner.plan(objective, policy);
@@ -9668,7 +10256,7 @@ async function preparePlan(objective, options, deps = {}) {
     injectedReviews: rewrite.injectedReviews,
     notes: rewrite.notes,
     routes,
-    plannerModel: model
+    plannerModel
   };
 }
 function taskRow(task, routes) {
@@ -10794,11 +11382,12 @@ var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
 var MAX_WALK_LEVELS = 6;
 var PROJECT_ROLE_SOURCES = [
   ["lead", "orchestrator"],
-  ["worker", "worker"],
-  ["cheap", "cheap"],
+  ["complex", "complex"],
+  ["worker", "middle"],
+  ["cheap", "low"],
   // The reviewer reads someone else's work and judges it, which is the
   // orchestrator's kind of job rather than a worker's — so it gets the
-  // orchestrator's model rather than a fourth answer nobody was asked for.
+  // orchestrator's model rather than another answer nobody was asked for.
   ["reviewer", "orchestrator"]
 ];
 var ANTHROPIC_MODEL = /^(claude-|opus|sonnet|haiku)/;
@@ -11901,7 +12490,23 @@ function cliEntryPath() {
 async function workspaceExecutorFactory(args) {
   const { runId, events: events2, taskTimeoutMs } = args;
   if (args.backend === "claude-code") {
-    throw new Error('Orchestration does not support --backend claude-code yet. Use --backend codex or --backend native here; `kapel "<objective>"` and `kapel chat` do run on Claude Code.');
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    if (!availability.installed) {
+      throw new Error(claudeCodeInstallGuidance(availability));
+    }
+    if (!availability.loggedIn) {
+      throw new Error(claudeCodeLoginGuidance(availability));
+    }
+    const resolveAgentModel = createDelegatedModelResolver(args.project);
+    const resolveAgentTools = createDelegatedToolsResolver(args.project);
+    return (workspacePath) => new ClaudeCodeWorkerExecutor({
+      workspacePath,
+      runId,
+      events: events2,
+      resolveAgentModel,
+      resolveAgentTools,
+      ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
+    });
   }
   if (args.backend === "codex") {
     const availability = await CodexBackend.checkAvailability();
@@ -11911,10 +12516,12 @@ async function workspaceExecutorFactory(args) {
     if (!availability.loggedIn) {
       throw new Error(codexLoginGuidance(availability));
     }
+    const resolveAgentModel = createDelegatedModelResolver(args.project);
     return (workspacePath) => new CodexWorkerExecutor({
       workspacePath,
       runId,
       events: events2,
+      resolveAgentModel,
       ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
     });
   }
@@ -12165,6 +12772,17 @@ function planningThrough(usage, inner) {
     })
   });
 }
+function delegatedPlanningThrough(usage, inner) {
+  const factory = inner ?? ((args) => new DelegatedPlanner(args));
+  return (args) => factory({
+    ...args,
+    usage: {
+      recorder: usage,
+      model: delegatedModelIdentity(args.backend, args.model),
+      tags: { agent: PLANNER_AGENT }
+    }
+  });
+}
 async function runOrchestrate(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
@@ -12186,7 +12804,8 @@ async function runOrchestrate(objective, options, deps = {}) {
   const usage = new UsageTracker();
   const prepared = await preparePlan(objective, options, {
     ...deps,
-    plannerFactory: planningThrough(usage, deps.plannerFactory)
+    plannerFactory: planningThrough(usage, deps.plannerFactory),
+    delegatedPlannerFactory: delegatedPlanningThrough(usage, deps.delegatedPlannerFactory)
   });
   if ("exitCode" in prepared)
     return prepared.exitCode;
@@ -12233,7 +12852,7 @@ async function runOrchestrate(objective, options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.6.0";
+var CLI_VERSION = "0.7.0";
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
 function shortId2(id) {
@@ -13316,6 +13935,7 @@ var consoleOutput2 = {
 };
 var LOCK_FILE_NAME2 = "orchestration.lock.json";
 var defaultCompilerFactory = (args) => new LlmPolicyCompiler(args);
+var defaultDelegatedCompilerFactory = (args) => new DelegatedPolicyCompiler(args);
 function jsonLine3(output, value) {
   output.log(JSON.stringify(value));
 }
@@ -13377,6 +13997,51 @@ async function loadProjectForPolicy(workspacePath, output, json) {
   }
   return { project, markdown };
 }
+var POLICY_AGENT = "policy";
+async function buildPolicyCompiler(options, deps, context) {
+  const { workspacePath, project, output } = context;
+  const usage = new UsageTracker();
+  const knownAgents = [...project.knownAgentNames()];
+  const fail2 = (error) => {
+    if (options.json)
+      jsonLine3(output, { ok: false, error });
+    else
+      output.error(error);
+    return { exitCode: 1 };
+  };
+  if (isDelegatedBackend(options.backend)) {
+    const backend = options.backend;
+    const modelId = delegatedModelOverride(resolveOrchestratorModel(options.model, process.env, options.config));
+    const factory = deps.delegatedCompilerFactory;
+    if (factory === void 0) {
+      const unavailable = await delegatedBackendError(backend);
+      if (unavailable !== void 0)
+        return fail2(unavailable);
+    }
+    const model = delegatedModelIdentity(backend, modelId);
+    const compiler2 = (factory ?? defaultDelegatedCompilerFactory)({
+      backend,
+      workspacePath,
+      knownAgents,
+      ...modelId === void 0 ? {} : { model: modelId },
+      usage: { recorder: usage, model, tags: { agent: POLICY_AGENT } }
+    });
+    return { compiler: compiler2, model, usage, delegatedTo: backend };
+  }
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
+  const resolved = await resolveModelAndProvider(process.env, alias);
+  if ("error" in resolved)
+    return fail2(resolved.error);
+  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
+  const compiler = compilerFactory({
+    provider: usageRecordingProvider(resolved.provider, usage, {
+      agent: POLICY_AGENT
+    }),
+    model: resolved.model,
+    knownAgents
+  });
+  return { compiler, model: resolved.model, usage };
+}
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
   const workspacePath = path14.resolve(options.cwd);
@@ -13385,24 +14050,14 @@ async function runPolicyCompile(options, deps = {}) {
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved) {
-    if (options.json)
-      jsonLine3(output, { ok: false, error: resolved.error });
-    else
-      output.error(resolved.error);
-    return 1;
-  }
-  const { model, provider } = resolved;
-  const usage = new UsageTracker();
-  const knownAgents = [...project.knownAgentNames()];
-  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-  const compiler = compilerFactory({
-    provider: usageRecordingProvider(provider, usage, { agent: "policy" }),
-    model,
-    knownAgents
+  const built = await buildPolicyCompiler(options, deps, {
+    workspacePath,
+    project,
+    output
   });
+  if ("exitCode" in built)
+    return built.exitCode;
+  const { compiler, model, usage, delegatedTo } = built;
   let result;
   try {
     result = await compiler.compile(markdown);
@@ -13465,12 +14120,16 @@ async function runPolicyCompile(options, deps = {}) {
   output.log(`Compiled policy using ${model.id} (${model.provider})`);
   output.log(`Lock written to ${lockPath}`);
   output.log(`Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`);
-  output.log(policyUsageLine(usage.totals()));
+  output.log(policyUsageLine(usage.totals(), delegatedTo));
   printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
   return 0;
 }
-function policyUsageLine(totals) {
+function policyUsageLine(totals, delegatedTo) {
+  const nothingReported = totals.usage.inputTokens === 0 && totals.usage.outputTokens === 0;
+  if (nothingReported && delegatedTo !== void 0) {
+    return `tokens \u2014 none reported by the ${delegatedTo} CLI`;
+  }
   const line = `tokens \u2014 input: ${totals.usage.inputTokens}, output: ${totals.usage.outputTokens}`;
   return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
 }
@@ -13608,19 +14267,14 @@ async function runPolicyDiff(options, deps = {}) {
       output.error(message);
     return 1;
   }
-  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved) {
-    if (options.json)
-      jsonLine3(output, { ok: false, error: resolved.error });
-    else
-      output.error(resolved.error);
-    return 1;
-  }
-  const { model, provider } = resolved;
-  const knownAgents = [...project.knownAgentNames()];
-  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-  const compiler = compilerFactory({ provider, model, knownAgents });
+  const built = await buildPolicyCompiler(options, deps, {
+    workspacePath,
+    project,
+    output
+  });
+  if ("exitCode" in built)
+    return built.exitCode;
+  const { compiler, usage, delegatedTo } = built;
   let result;
   try {
     result = await compiler.compile(markdown);
@@ -13660,6 +14314,7 @@ async function runPolicyDiff(options, deps = {}) {
     for (const line of formatPolicyDiff(diff))
       output.log(line);
   }
+  output.log(policyUsageLine(usage.totals(), delegatedTo));
   printLocatedList(output, "Warnings", locateIssues(result.warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(result.ambiguities, markdown));
   output.log("");
@@ -13996,7 +14651,7 @@ async function runWorkerCommand(deps = {}) {
         ...request.timeoutMs === void 0 ? {} : { taskTimeoutMs: request.timeoutMs }
       });
       const task = {
-        spec: toPlannedTask2(request.task),
+        spec: toPlannedTask3(request.task),
         status: "running",
         attempts: 1
       };
@@ -14189,6 +14844,10 @@ function planOptions(command, config) {
   return {
     cwd: raw.cwd,
     json: raw.json,
+    // Planning goes through the same backend the run would: under `--backend
+    // codex`/`claude-code` that is what keeps `kapel plan` working with no
+    // API key at all.
+    backend: resolveBackendSetting(raw.backend, process.env, config).value,
     ...raw.model === void 0 ? {} : { model: raw.model },
     ...config === void 0 ? {} : { config }
   };
@@ -14326,15 +14985,22 @@ function policyOptions(command, config) {
     ...config === void 0 ? {} : { config }
   };
 }
+function policyCompileOptions(command, config) {
+  const raw = command.optsWithGlobals();
+  return {
+    ...policyOptions(command, config),
+    backend: resolveBackendSetting(raw.backend, process.env, config).value
+  };
+}
 var POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"];
 var policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain, diff)").argument("[unknownCommand]", "compile | check | explain | diff");
 policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock using an LLM").action(async (_opts, command) => {
   const config = await runtimeConfig(command.optsWithGlobals());
-  process.exitCode = await runPolicyCompile(policyOptions(command, config));
+  process.exitCode = await runPolicyCompile(policyCompileOptions(command, config));
 });
 policyCommand.command("diff").description("Show what would change if the policy lock were recompiled, without writing it").action(async (_opts, command) => {
   const config = await runtimeConfig(command.optsWithGlobals());
-  process.exitCode = await runPolicyDiff(policyOptions(command, config));
+  process.exitCode = await runPolicyDiff(policyCompileOptions(command, config));
 });
 policyCommand.command("check").description("Check that the policy lock is fresh and valid (no LLM calls)").action(async (_opts, command) => {
   process.exitCode = await runPolicyCheck(policyOptions(command, void 0));
