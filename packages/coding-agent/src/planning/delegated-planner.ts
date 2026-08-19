@@ -1,4 +1,4 @@
-import type { AgentRunInput, AgentRunResult } from "@agent/core";
+import type { AgentRunResult } from "@agent/core";
 import type {
   ExecutionPlan,
   PlanIssue,
@@ -14,63 +14,25 @@ import {
 import type { OrchestrationPolicy } from "@agent/policy";
 import type { EventSink } from "@agent/protocol";
 import { z } from "zod";
-import type { ClaudeCodeBackendOptions } from "../backends/claude-code.js";
-import { ClaudeCodeBackend } from "../backends/claude-code.js";
-import type { CodexBackendOptions } from "../backends/codex.js";
-import { CodexBackend } from "../backends/codex.js";
+import type {
+  DelegatedBackendFactory,
+  DelegatedCliName,
+  Rejection,
+} from "./delegated-cli.js";
+import {
+  buildJsonOutputContract,
+  buildRetrySection,
+  extractJsonObject,
+  formatIssues,
+  issuesFromZodError,
+  runDelegatedPrompt,
+  stringifyPromptSchema,
+} from "./delegated-cli.js";
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 
-/** The delegating CLIs a plan can be asked of. */
-export type DelegatedPlannerBackendName = "codex" | "claude-code";
-
-/**
- * The slice of {@link CodexBackend}/{@link ClaudeCodeBackend} the planner
- * uses: one prompt in, one result out. Narrow on purpose, so
- * {@link DelegatedPlannerOptions.createBackend} can substitute a stand-in
- * without reimplementing a whole CLI wrapper.
- */
-export interface DelegatedPlannerBackend {
-  run(
-    input: AgentRunInput,
-    context: {
-      readonly runId: string;
-      readonly workspacePath: string;
-      readonly signal?: AbortSignal;
-    },
-  ): Promise<AgentRunResult>;
-}
-
-/**
- * The fully composed backend options for one planning attempt, handed to
- * {@link DelegatedPlannerOptions.createBackend}.
- *
- * The planner decides the options (read-only sandboxing, model, events,
- * timeout) and the factory only decides which object gets constructed from
- * them — which is what lets a test point the CLI at a fake binary while still
- * exercising the flags this planner chose.
- */
-export type DelegatedBackendSpec =
-  | {
-      readonly backend: "codex";
-      readonly options: CodexBackendOptions;
-    }
-  | {
-      readonly backend: "claude-code";
-      readonly options: ClaudeCodeBackendOptions;
-    };
-
-export type DelegatedBackendFactory = (
-  spec: DelegatedBackendSpec,
-) => DelegatedPlannerBackend;
-
-const defaultBackendFactory: DelegatedBackendFactory = (spec) =>
-  spec.backend === "codex"
-    ? new CodexBackend(spec.options)
-    : new ClaudeCodeBackend(spec.options);
-
 export interface DelegatedPlannerOptions {
-  readonly backend: DelegatedPlannerBackendName;
+  readonly backend: DelegatedCliName;
   /** Directory the CLI runs in; it reads the repository to plan against it. */
   readonly workspacePath: string;
   /** Correlates the CLI's events with the run. Generated when omitted. */
@@ -97,33 +59,20 @@ export interface DelegatedPlannerOptions {
 }
 
 /**
- * The JSON Schema the reply must satisfy, built once: zod's `io: "input"` view minus the
- * `$schema` key, mirroring `buildToolInputSchema` in the native planner. Same
- * schema the `emit_plan` tool advertises, just carried in prose instead of a
- * tool definition.
+ * The JSON Schema the reply must satisfy, built once: zod's `io: "input"`
+ * view minus the `$schema` key, mirroring `buildToolInputSchema` in the
+ * native planner. Same schema the `emit_plan` tool advertises, just carried
+ * in prose instead of a tool definition.
  */
 const PLAN_JSON_SCHEMA: string = (() => {
   const generated = z.toJSONSchema(ExecutionPlanSchema, {
     io: "input",
   }) as Record<string, unknown>;
-  const schema: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(generated)) {
-    if (key !== "$schema") schema[key] = value;
-  }
-  schema.required = ["objective", "tasks"];
-  return JSON.stringify(schema, null, 2);
+  return stringifyPromptSchema({
+    ...generated,
+    required: ["objective", "tasks"],
+  });
 })();
-
-function formatIssues(issues: readonly PlanIssue[]): string {
-  return issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n");
-}
-
-function toIssues(error: z.ZodError): readonly PlanIssue[] {
-  return error.issues.map((issue) => ({
-    path: issue.path.length === 0 ? "(root)" : issue.path.join("."),
-    message: issue.message,
-  }));
-}
 
 type PlanDraft = z.infer<typeof ExecutionPlanSchema>;
 
@@ -143,49 +92,14 @@ function toPlannedTask(draft: PlanDraft["tasks"][number]): PlannedTask {
   };
 }
 
-/** Feedback carried into the next attempt after a rejected reply. */
-interface Rejection {
-  readonly reply: string;
-  readonly issues: readonly PlanIssue[];
-}
-
-/**
- * Recovers the JSON object from a CLI's reply.
- *
- * A CLI answers with whatever its model felt like saying, so the reply is
- * treated as prose that happens to contain JSON rather than as JSON:
- *
- * 1. a fenced block (```json … ```) wins, since a model that fences means the
- *    fence to delimit the answer;
- * 2. otherwise the span from the first `{` to the last `}` — which strips
- *    "Here is the plan:" preambles and trailing commentary alike.
- *
- * Returns `undefined` when there is no brace pair at all; the caller turns
- * that into a validation issue like any other, so a chatty reply costs an
- * attempt instead of crashing the command.
- */
-export function extractJsonObject(text: string): string | undefined {
-  const trimmed = text.trim();
-  if (trimmed === "") return undefined;
-
-  const fenced = /```(?:[a-zA-Z]+)?[ \t]*\r?\n([\s\S]*?)```/.exec(trimmed);
-  const body = fenced?.[1] ?? trimmed;
-
-  const start = body.indexOf("{");
-  const end = body.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return undefined;
-  return body.slice(start, end + 1);
-}
-
 /**
  * Composes the single prompt one planning attempt sends.
  *
  * The planning brief is {@link buildPlannerSystemPrompt}, byte for byte the
  * one the native planner uses — that shared text is what keeps the two paths
  * from drifting into different plans. Everything appended here exists only
- * because there is no tool call to force: the brief's "call `emit_plan`" rule
- * has to be restated as "reply with this JSON object", and the schema the
- * tool definition would have carried has to be spelled out in the prompt.
+ * because there is no tool call to force; see
+ * {@link buildJsonOutputContract}.
  */
 export function buildDelegatedPlannerPrompt(args: {
   readonly objective: string;
@@ -195,29 +109,17 @@ export function buildDelegatedPlannerPrompt(args: {
 }): string {
   const sections = [
     buildPlannerSystemPrompt(args.policy, args.knownAgents),
-    `Output contract:
-- There is no ${EMIT_PLAN_TOOL_NAME} tool here: you are answering through a CLI, so "emit the plan" means replying with the plan as JSON.
-- Reply with ONLY a single JSON object matching the schema below. No prose, no explanation, no markdown fences, nothing before or after the object.
-- Do not edit, create or delete any file. Read whatever you need to understand the repository, then answer.
-
-JSON Schema for the object:
-${PLAN_JSON_SCHEMA}`,
+    buildJsonOutputContract({
+      toolName: EMIT_PLAN_TOOL_NAME,
+      subject: "plan",
+      schema: PLAN_JSON_SCHEMA,
+    }),
     `Objective to plan:\n\n${args.objective}`,
   ];
 
   const { rejection } = args;
   if (rejection !== undefined) {
-    sections.push(
-      `Your previous reply was not a usable plan.
-
-Previous reply:
-${rejection.reply}
-
-Problems with it:
-${formatIssues(rejection.issues)}
-
-Reply again with a corrected plan that fixes every problem above, as a single JSON object and nothing else.`,
-    );
+    sections.push(buildRetrySection(rejection, "plan"));
   }
 
   return sections.join("\n\n");
@@ -244,12 +146,7 @@ Reply again with a corrected plan that fixes every problem above, as a single JS
  * that shared validation is what keeps plan quality comparable rather than
  * "whatever the CLI happened to say".
  *
- * Planning is read-only by construction: Codex runs under `--sandbox
- * read-only` and Claude Code under `--permission-mode plan`. A planner that
- * edits files is a bug — `kapel plan` and `orchestrate --dry-run` promise to
- * touch nothing, and even under a real `orchestrate` the edits belong to the
- * routed workers, in their own task worktrees, not to the step that is still
- * deciding what the tasks are.
+ * Planning is read-only by construction; see {@link runDelegatedPrompt}.
  */
 export class DelegatedPlanner {
   readonly #options: DelegatedPlannerOptions;
@@ -347,7 +244,9 @@ export class DelegatedPlanner {
     }
 
     const validated = ExecutionPlanSchema.safeParse(parsed);
-    if (!validated.success) return { issues: toIssues(validated.error) };
+    if (!validated.success) {
+      return { issues: issuesFromZodError(validated.error) };
+    }
 
     const plan: ExecutionPlan = {
       objective: validated.data.objective,
@@ -359,41 +258,20 @@ export class DelegatedPlanner {
 
   /** Runs one attempt through the delegating CLI. */
   async #run(prompt: string, signal?: AbortSignal): Promise<AgentRunResult> {
-    const { events, timeoutMs, model, workspacePath } = this.#options;
-    const shared = {
-      ...(model === undefined ? {} : { model }),
-      ...(events === undefined ? {} : { events }),
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    };
-    const spec: DelegatedBackendSpec =
-      this.#options.backend === "codex"
-        ? { backend: "codex", options: { ...shared, sandbox: "read-only" } }
-        : {
-            backend: "claude-code",
-            options: { ...shared, permissionMode: "plan" },
-          };
-
-    const backend = (this.#options.createBackend ?? defaultBackendFactory)(
-      spec,
+    const { events, timeoutMs, model, workspacePath, createBackend } =
+      this.#options;
+    return await runDelegatedPrompt(
+      {
+        backend: this.#options.backend,
+        workspacePath,
+        runId: this.#runId,
+        ...(model === undefined ? {} : { model }),
+        ...(events === undefined ? {} : { events }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(createBackend === undefined ? {} : { createBackend }),
+      },
+      prompt,
+      signal,
     );
-    try {
-      return await backend.run(
-        { instruction: prompt },
-        {
-          runId: this.#runId,
-          workspacePath,
-          ...(signal === undefined ? {} : { signal }),
-        },
-      );
-    } catch (error) {
-      // A crash in the wrapper is one failed attempt, not a failed command:
-      // the retry loop above is the only place that decides to give up.
-      return {
-        status: "failed",
-        summary: `The ${this.#options.backend} CLI could not be run: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
   }
 }

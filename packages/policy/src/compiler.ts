@@ -97,8 +97,13 @@ const CompilerOutputSchema = z.object({
  * `$schema` key (providers reject unknown top-level keywords in tool
  * schemas), with the top-level `required` set explicitly so the model always
  * reports `warnings` and `ambiguities` even when they are empty.
+ *
+ * Exported for the same reason {@link buildPolicyCompilerSystemPrompt} is: a
+ * delegating CLI has no tool definition to carry this schema, so it has to
+ * spell it out in the prompt — and it must spell out *this* schema, not a
+ * hand-written approximation of it.
  */
-function buildToolInputSchema(): Record<string, unknown> {
+export function buildPolicyToolInputSchema(): Record<string, unknown> {
   const generated = z.toJSONSchema(CompilerOutputSchema, {
     io: "input",
   }) as Record<string, unknown>;
@@ -115,7 +120,7 @@ export const emitPolicyTool: ToolDefinition = {
   name: EMIT_POLICY_TOOL_NAME,
   description:
     "Emit the compiled orchestration policy IR, plus any warnings and ambiguities.",
-  inputSchema: buildToolInputSchema(),
+  inputSchema: buildPolicyToolInputSchema(),
 };
 
 const IR_REFERENCE = `IR semantics, field by field:
@@ -141,7 +146,20 @@ const IR_REFERENCE = `IR semantics, field by field:
   - afterFailures: positive integer count of failed attempts that triggers the hand-off.
   - confidenceBelow: 0..1 threshold; the hand-off triggers when confidence drops under it.`;
 
-function systemPrompt(knownAgents: readonly string[]): string {
+/**
+ * The compiler brief: everything the model needs to turn `orchestration.md`
+ * into the policy IR.
+ *
+ * Exported because it is not specific to *how* the IR comes back. The native
+ * {@link LlmPolicyCompiler} forces an `emit_policy` tool call; the delegated
+ * compiler in `@agent/coding-agent` asks a coding CLI for the same object as
+ * raw JSON. Both must brief the model identically or the two paths would
+ * quietly compile the same policy differently, so there is one function and
+ * both call it.
+ */
+export function buildPolicyCompilerSystemPrompt(
+  knownAgents: readonly string[],
+): string {
   const agents =
     knownAgents.length === 0 ? "(none declared)" : knownAgents.join(", ");
   return `You are the policy compiler for a multi-agent coding runtime. The user gives you an orchestration policy written in natural language (the contents of .agent/orchestration.md). Convert it into the structured policy IR exactly as written — you are a translator, not an author.
@@ -203,6 +221,35 @@ function formatIssues(issues: readonly PolicyCompileIssue[]): string {
   return issues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n");
 }
 
+/** A validated compiler output, or the issues that rejected the draft. */
+export type PolicyDraftOutcome =
+  | { readonly result: PolicyCompileResult }
+  | { readonly issues: readonly PolicyCompileIssue[] };
+
+/**
+ * Validates one raw compiler output — the `emit_policy` tool input on the
+ * native path, the parsed JSON reply on the delegated one — into the
+ * {@link PolicyCompileResult} the CLI writes to the lockfile.
+ *
+ * Exported so the delegated compiler reuses this check rather than
+ * reimplementing it: the draft schema is the only thing standing between "the
+ * model said something" and a policy lock, and two copies of it would drift.
+ * Everything that survives {@link CompilerOutputSchema} is re-parsed by
+ * `PolicySchema`, which re-applies the IR's real defaults.
+ */
+export function parsePolicyDraft(input: unknown): PolicyDraftOutcome {
+  const parsed = CompilerOutputSchema.safeParse(input);
+  if (!parsed.success) return { issues: toIssues(parsed.error) };
+  const policy: OrchestrationPolicy = PolicySchema.parse(parsed.data.policy);
+  return {
+    result: {
+      policy,
+      warnings: parsed.data.warnings,
+      ambiguities: parsed.data.ambiguities,
+    },
+  };
+}
+
 interface Attempt {
   readonly call: { readonly id: string; readonly input: unknown } | undefined;
   readonly text: string;
@@ -229,7 +276,10 @@ export class LlmPolicyCompiler implements PolicyCompiler {
       this.#options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     );
     const messages: ModelMessage[] = [
-      { role: "system", content: systemPrompt(this.#options.knownAgents) },
+      {
+        role: "system",
+        content: buildPolicyCompilerSystemPrompt(this.#options.knownAgents),
+      },
       {
         role: "user",
         content: `Compile this orchestration policy:\n\n${markdown}`,
@@ -259,19 +309,10 @@ export class LlmPolicyCompiler implements PolicyCompiler {
         continue;
       }
 
-      const parsed = CompilerOutputSchema.safeParse(call.input);
-      if (parsed.success) {
-        const policy: OrchestrationPolicy = PolicySchema.parse(
-          parsed.data.policy,
-        );
-        return {
-          policy,
-          warnings: parsed.data.warnings,
-          ambiguities: parsed.data.ambiguities,
-        };
-      }
+      const outcome = parsePolicyDraft(call.input);
+      if ("result" in outcome) return outcome.result;
 
-      lastIssues = toIssues(parsed.error);
+      lastIssues = outcome.issues;
       if (attempt === maxAttempts) break;
       messages.push({
         role: "assistant",

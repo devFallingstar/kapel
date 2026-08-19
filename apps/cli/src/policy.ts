@@ -10,6 +10,7 @@ import type {
 import {
   checkLock,
   createLockfile,
+  DelegatedPolicyCompiler,
   describePolicy,
   LlmPolicyCompiler,
   loadAgentProject,
@@ -18,8 +19,17 @@ import {
   serializeLockfile,
   validatePolicy,
 } from "@agent/coding-agent";
+import type { BackendName, DelegatedBackendName } from "./backend.js";
+import {
+  delegatedBackendError,
+  delegatedModelIdentity,
+  isDelegatedBackend,
+} from "./backend.js";
 import type { KapelConfig } from "./config.js";
-import { resolveOrchestratorModel } from "./config-runtime.js";
+import {
+  delegatedModelOverride,
+  resolveOrchestratorModel,
+} from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
 import { resolveModelAndProvider } from "./run.js";
 
@@ -54,6 +64,18 @@ export type CompilerFactory = (args: {
 
 const defaultCompilerFactory: CompilerFactory = (args) =>
   new LlmPolicyCompiler(args);
+
+/** Builds the compiler used under a delegating backend. Overridable in tests. */
+export type DelegatedCompilerFactory = (args: {
+  readonly backend: DelegatedBackendName;
+  readonly workspacePath: string;
+  /** `undefined` means "let the CLI pick its own model". */
+  readonly model?: string;
+  readonly knownAgents: readonly string[];
+}) => PolicyCompiler;
+
+const defaultDelegatedCompilerFactory: DelegatedCompilerFactory = (args) =>
+  new DelegatedPolicyCompiler(args);
 
 function jsonLine(output: PolicyOutput, value: unknown): void {
   output.log(JSON.stringify(value));
@@ -133,14 +155,34 @@ async function loadProjectForPolicy(
   return { project, markdown };
 }
 
+/**
+ * `kapel policy compile`, which — unlike `check` and `explain` — talks to a
+ * model and therefore has to know which backend to talk through.
+ */
+export interface PolicyCompileOptions extends PolicyCommandOptions {
+  /**
+   * The resolved backend for this command. A delegated backend compiles
+   * through that CLI instead of a native provider, which is what lets
+   * `kapel policy compile` run with no API key at all.
+   */
+  readonly backend: BackendName;
+}
+
 export interface RunPolicyCompileDeps {
   readonly output?: PolicyOutput;
   readonly compilerFactory?: CompilerFactory;
+  /**
+   * Test-only injection point, mirroring {@link compilerFactory} and
+   * `PreparePlanDeps.delegatedPlannerFactory`. Supplying it also skips the
+   * CLI availability probe: an injected compiler is not going to spawn that
+   * CLI.
+   */
+  readonly delegatedCompilerFactory?: DelegatedCompilerFactory;
 }
 
 /** Implements `kapel policy compile`: LLM-compiles `orchestration.md` and writes the policy lock. */
 export async function runPolicyCompile(
-  options: PolicyCommandOptions,
+  options: PolicyCompileOptions,
   deps: RunPolicyCompileDeps = {},
 ): Promise<number> {
   const output = deps.output ?? consoleOutput;
@@ -155,22 +197,58 @@ export async function runPolicyCompile(
   if ("exitCode" in loaded) return loaded.exitCode;
   const { project, markdown } = loaded;
 
-  const alias = resolveOrchestratorModel(
-    options.model,
-    process.env,
-    options.config,
-  ).value;
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved) {
-    if (options.json) jsonLine(output, { ok: false, error: resolved.error });
-    else output.error(resolved.error);
-    return 1;
-  }
-  const { model, provider } = resolved;
-
   const knownAgents = [...project.knownAgentNames()];
-  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-  const compiler = compilerFactory({ provider, model, knownAgents });
+
+  let compiler: PolicyCompiler;
+  let model: ModelDefinition;
+  if (isDelegatedBackend(options.backend)) {
+    // The whole point of a delegating backend is that the user has a CLI
+    // subscription and no API key, so nothing on this path may touch the
+    // provider registry — not even to name the compiler's model.
+    const backend = options.backend;
+    // `-m/--model` wins verbatim: the flag names a model in *that CLI's*
+    // catalog, so it is forwarded untranslated. Otherwise the orchestrator's
+    // model setting decides, since compiling the policy is the orchestrator's
+    // kind of job; `undefined` lets the CLI pick.
+    const modelId = delegatedModelOverride(
+      resolveOrchestratorModel(options.model, process.env, options.config),
+    );
+    const factory = deps.delegatedCompilerFactory;
+    if (factory === undefined) {
+      const unavailable = await delegatedBackendError(backend);
+      if (unavailable !== undefined) {
+        if (options.json) jsonLine(output, { ok: false, error: unavailable });
+        else output.error(unavailable);
+        return 1;
+      }
+    }
+    compiler = (factory ?? defaultDelegatedCompilerFactory)({
+      backend,
+      workspacePath,
+      knownAgents,
+      ...(modelId === undefined ? {} : { model: modelId }),
+    });
+    model = delegatedModelIdentity(backend, modelId);
+  } else {
+    const alias = resolveOrchestratorModel(
+      options.model,
+      process.env,
+      options.config,
+    ).value;
+    const resolved = await resolveModelAndProvider(process.env, alias);
+    if ("error" in resolved) {
+      if (options.json) jsonLine(output, { ok: false, error: resolved.error });
+      else output.error(resolved.error);
+      return 1;
+    }
+    const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
+    compiler = compilerFactory({
+      provider: resolved.provider,
+      model: resolved.model,
+      knownAgents,
+    });
+    model = resolved.model;
+  }
 
   let result: Awaited<ReturnType<PolicyCompiler["compile"]>>;
   try {

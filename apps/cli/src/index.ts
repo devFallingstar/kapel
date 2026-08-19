@@ -40,6 +40,7 @@ import {
 import { type PlanCommandOptions, runPlan } from "./plan.js";
 import {
   type PolicyCommandOptions,
+  type PolicyCompileOptions,
   runPolicyCheck,
   runPolicyCompile,
   runPolicyExplain,
@@ -664,6 +665,23 @@ function policyOptions(
   };
 }
 
+/**
+ * {@link policyOptions} plus the backend, resolved exactly as `planOptions`
+ * resolves it: compiling the policy is a model conversation, and under
+ * `--backend codex`/`claude-code` it is delegated to that CLI, which is what
+ * keeps `kapel policy compile` working with no API key at all.
+ */
+function policyCompileOptions(
+  command: Command,
+  config: KapelConfig | undefined,
+): PolicyCompileOptions {
+  const raw = command.optsWithGlobals() as RawRunOpts;
+  return {
+    ...policyOptions(command, config),
+    backend: resolveBackendSetting(raw.backend, process.env, config).value,
+  };
+}
+
 const POLICY_SUBCOMMANDS = ["compile", "check", "explain"] as const;
 
 const policyCommand = program
@@ -678,7 +696,9 @@ policyCommand
   )
   .action(async (_opts: unknown, command: Command) => {
     const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
-    process.exitCode = await runPolicyCompile(policyOptions(command, config));
+    process.exitCode = await runPolicyCompile(
+      policyCompileOptions(command, config),
+    );
   });
 
 policyCommand

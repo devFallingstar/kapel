@@ -249,7 +249,7 @@ kapel --backend codex "fix the failing test"
 
 `.agent/orchestration.md` is your routing/concurrency/review/retry/escalation policy, written in plain English. The CLI compiles it to a typed, deterministic IR:
 
-- `kapel policy compile` — uses an LLM (same model/credential resolution as a run; `-m/--model` selects it) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map).
+- `kapel policy compile` — uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map).
 - `kapel policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
 - `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM.
 
@@ -268,6 +268,8 @@ kapel orchestrate "add a health endpoint"   # plan, then execute it
 Both commands require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `kapel policy compile`. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, the CLI falls back to the normal default model and says so).
 
 Under `--backend codex` or `--backend claude-code` the planning conversation is delegated to that CLI too, so **planning needs no API key either** — it runs as one read-only `codex exec --sandbox read-only` / `claude -p --permission-mode plan` call in your workspace, on the orchestrator agent's configured model (or whatever `-m/--model` names, verbatim), and the plan it replies with is validated against the same schema and the same rules as on the native path.
+
+`kapel policy compile` is delegated the same way on those backends — the same single read-only call, the same IR schema, the same warnings and ambiguities in the lock — on whatever model your `orchestrator` setting names (`-m/--model` > `AGENT_MODEL` > `~/.kapel/config.json`), or the CLI's own default when nothing names one, in which case the lock records it as `<codex default>`/`<claude-code default>`. **So the whole pipeline — compile, plan, orchestrate — runs on a Codex or Claude Code subscription with no API key anywhere.**
 
 `kapel plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `kapel orchestrate --dry-run` prints exactly the same thing.
 

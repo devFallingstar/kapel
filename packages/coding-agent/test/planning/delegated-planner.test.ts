@@ -1,21 +1,19 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { PlanError } from "@agent/orchestration";
 import type { OrchestrationPolicy } from "@agent/policy";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ClaudeCodeBackend } from "../../src/backends/claude-code.js";
-import { CodexBackend } from "../../src/backends/codex.js";
-import type { DelegatedBackendFactory } from "../../src/planning/delegated-planner.js";
-import {
-  DelegatedPlanner,
-  extractJsonObject,
-} from "../../src/planning/delegated-planner.js";
+import { DelegatedPlanner } from "../../src/planning/delegated-planner.js";
 import {
   cleanup,
   makeTempDir,
   writeFakeClaude,
-  writeFakeCodex,
 } from "../backends/test-helpers.js";
+import {
+  claudeReply,
+  codexReply,
+  fakeBackendFactory,
+  json,
+  writeScriptedCli,
+} from "./delegated-cli-harness.js";
 
 const POLICY: OrchestrationPolicy = {
   version: 1,
@@ -52,119 +50,6 @@ const UNKNOWN_AGENT_PLAN = {
   ...VALID_PLAN,
   tasks: [{ ...VALID_PLAN.tasks[0], suggestedAgent: "ghost" }],
 };
-
-function json(value: unknown): string {
-  return JSON.stringify(value);
-}
-
-/** The stdout a fake `claude` prints to deliver `reply` as its final text. */
-function claudeReply(reply: string): string {
-  return `${json({ type: "result", subtype: "success", result: reply })}\n`;
-}
-
-/** The stdout a fake `codex` prints to deliver `reply` as its last message. */
-function codexReply(reply: string): string {
-  return `${json({
-    type: "item.completed",
-    item: { type: "agent_message", text: reply },
-  })}\n`;
-}
-
-interface FakeCli {
-  readonly binaryPath: string;
-  /** Argv of the nth (1-based) invocation, NUL-separated on disk. */
-  argv(attempt: number): Promise<string[]>;
-  /** The prompt of the nth invocation: always the trailing argument. */
-  prompt(attempt: number): Promise<string>;
-}
-
-/**
- * Writes a fake CLI that answers with `replies[n - 1]` on its nth invocation
- * (repeating the last one once exhausted) and dumps each invocation's argv.
- */
-async function writeScriptedCli(
-  dir: string,
-  backend: "codex" | "claude-code",
-  replies: readonly string[],
-): Promise<FakeCli> {
-  const counter = join(dir, "count");
-  const replyPaths: string[] = [];
-  for (const [index, reply] of replies.entries()) {
-    const replyPath = join(dir, `reply.${String(index + 1)}`);
-    await writeFile(replyPath, reply, "utf8");
-    replyPaths.push(replyPath);
-  }
-
-  const branches = replyPaths.map(
-    (replyPath, index) =>
-      `if [ "$n" -le ${String(index + 1)} ]; then cat ${replyPath}; exit 0; fi`,
-  );
-  const body = [
-    `n=$(cat ${counter} 2>/dev/null || echo 0)`,
-    "n=$((n+1))",
-    `echo $n > ${counter}`,
-    `printf '%s\\0' "$@" > ${join(dir, "argv.")}$n`,
-    ...branches,
-    `cat ${replyPaths.at(-1) ?? "/dev/null"}`,
-    "exit 0",
-  ].join("\n");
-
-  const write = backend === "codex" ? writeFakeCodex : writeFakeClaude;
-  const binaryPath = await write(
-    dir,
-    { body },
-    backend === "codex" ? "codex" : "claude",
-  );
-
-  const argv = async (attempt: number): Promise<string[]> => {
-    const raw = await readFile(join(dir, `argv.${String(attempt)}`), "utf8");
-    return raw.split("\0").slice(0, -1);
-  };
-  return {
-    binaryPath,
-    argv,
-    prompt: async (attempt) => (await argv(attempt)).at(-1) ?? "",
-  };
-}
-
-/**
- * The planner's own backend options, plus the fake binary. Everything the
- * assertions care about — sandboxing, `--model` — is still chosen by the
- * planner, not by this factory.
- */
-function fakeBackendFactory(binaryPath: string): DelegatedBackendFactory {
-  return (spec) =>
-    spec.backend === "codex"
-      ? new CodexBackend({ ...spec.options, binaryPath })
-      : new ClaudeCodeBackend({ ...spec.options, binaryPath });
-}
-
-describe("extractJsonObject", () => {
-  it("returns a bare object unchanged", () => {
-    expect(extractJsonObject(' {"a":1} ')).toBe('{"a":1}');
-  });
-
-  it("unwraps a fenced block", () => {
-    expect(extractJsonObject('```json\n{"a":1}\n```')).toBe('{"a":1}');
-    expect(extractJsonObject('```\n{"a":1}\n```')).toBe('{"a":1}');
-  });
-
-  it("strips prose around the object", () => {
-    expect(
-      extractJsonObject('Here is the plan:\n{"a":1}\nHope that helps!'),
-    ).toBe('{"a":1}');
-  });
-
-  it("keeps nested braces intact", () => {
-    expect(extractJsonObject('x {"a":{"b":2}} y')).toBe('{"a":{"b":2}}');
-  });
-
-  it("returns undefined when there is no object at all", () => {
-    expect(extractJsonObject("")).toBeUndefined();
-    expect(extractJsonObject("I cannot plan this.")).toBeUndefined();
-    expect(extractJsonObject("}{")).toBeUndefined();
-  });
-});
 
 describe("DelegatedPlanner", () => {
   let dir: string;

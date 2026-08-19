@@ -45,12 +45,16 @@ export type {
   LlmPolicyCompilerOptions,
   PolicyCompileErrorInit,
   PolicyCompileIssue,
+  PolicyDraftOutcome,
 } from "./compiler.js";
 export {
+  buildPolicyCompilerSystemPrompt,
+  buildPolicyToolInputSchema,
   EMIT_POLICY_TOOL_NAME,
   emitPolicyTool,
   LlmPolicyCompiler,
   PolicyCompileError,
+  parsePolicyDraft,
 } from "./compiler.js";
 export { describePolicy } from "./explain.js";
 export type { LockStatus, PolicyLockfile } from "./lockfile.js";

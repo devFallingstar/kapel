@@ -8,7 +8,11 @@ import type {
 } from "@agent/coding-agent";
 import { parseLockfile } from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CompilerFactory, PolicyOutput } from "../src/policy.js";
+import type {
+  CompilerFactory,
+  DelegatedCompilerFactory,
+  PolicyOutput,
+} from "../src/policy.js";
 import {
   runPolicyCheck,
   runPolicyCompile,
@@ -124,7 +128,10 @@ function capture(): {
 
 describe("kapel policy", () => {
   let workspace: string;
-  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+  const originalKeys = {
+    anthropic: process.env.ANTHROPIC_API_KEY,
+    openai: process.env.OPENAI_API_KEY,
+  };
 
   beforeEach(async () => {
     // The native model/provider resolution step runs before the injected
@@ -136,8 +143,11 @@ describe("kapel policy", () => {
   });
 
   afterEach(async () => {
-    if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = originalApiKey;
+    if (originalKeys.anthropic === undefined)
+      delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKeys.anthropic;
+    if (originalKeys.openai === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKeys.openai;
     await cleanupWorkspace(workspace);
   });
 
@@ -151,7 +161,7 @@ describe("kapel policy", () => {
       });
 
       const code = await runPolicyCompile(
-        { cwd: workspace, json: false },
+        { cwd: workspace, json: false, backend: "native" },
         { output, compilerFactory },
       );
 
@@ -183,7 +193,7 @@ describe("kapel policy", () => {
       });
 
       const code = await runPolicyCompile(
-        { cwd: workspace, json: true },
+        { cwd: workspace, json: true, backend: "native" },
         { output, compilerFactory },
       );
 
@@ -206,7 +216,7 @@ describe("kapel policy", () => {
       });
 
       const code = await runPolicyCompile(
-        { cwd: workspace, json: false },
+        { cwd: workspace, json: false, backend: "native" },
         { output, compilerFactory },
       );
 
@@ -222,7 +232,7 @@ describe("kapel policy", () => {
       try {
         const { output, errLines } = capture();
         const code = await runPolicyCompile(
-          { cwd: bare, json: false },
+          { cwd: bare, json: false, backend: "native" },
           { output },
         );
         expect(code).toBe(1);
@@ -231,13 +241,131 @@ describe("kapel policy", () => {
         await rm(bare, { recursive: true, force: true });
       }
     });
+
+    /** Records what the CLI asked the delegated compiler for. */
+    function recordingDelegatedFactory(result: PolicyCompileResult): {
+      factory: DelegatedCompilerFactory;
+      calls: Parameters<DelegatedCompilerFactory>[0][];
+    } {
+      const calls: Parameters<DelegatedCompilerFactory>[0][] = [];
+      return {
+        calls,
+        factory: (args) => {
+          calls.push(args);
+          return { compile: async () => result };
+        },
+      };
+    }
+
+    it("compiles with no credentials at all under a delegating backend", async () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      const { output, lines } = capture();
+      const { factory, calls } = recordingDelegatedFactory({
+        policy: VALID_POLICY,
+        warnings: ["assumed default retry policy"],
+        ambiguities: ['"as needed" review cadence was not mapped'],
+      });
+
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "claude-code" },
+        {
+          output,
+          delegatedCompilerFactory: factory,
+          compilerFactory: () => {
+            throw new Error("the native compiler must not be built here");
+          },
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.backend).toBe("claude-code");
+      expect(calls[0]?.workspacePath).toBe(path.resolve(workspace));
+      // Nothing named a model, so the CLI picks its own.
+      expect(calls[0]?.model).toBeUndefined();
+      expect(calls[0]?.knownAgents).toContain("coder");
+
+      const lockPath = path.join(workspace, ".agent", LOCK_FILE_NAME);
+      const lock = parseLockfile(await readFile(lockPath, "utf8"));
+      expect(lock.policy.orchestrator).toBe("lead");
+      // Warnings and ambiguities survive the delegated compile.
+      expect(lock.warnings).toEqual(["assumed default retry policy"]);
+      expect(lock.ambiguities).toEqual([
+        '"as needed" review cadence was not mapped',
+      ]);
+      // The lockfile's model is informational, so the placeholder is honest.
+      expect(lock.model).toBe("<claude-code default>");
+      expect(lines.join("\n")).toContain(
+        "Compiled policy using <claude-code default> (anthropic)",
+      );
+    });
+
+    it("forwards -m to the delegating CLI verbatim and records it", async () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      const { output, lines } = capture();
+      const { factory, calls } = recordingDelegatedFactory({
+        policy: VALID_POLICY,
+        warnings: [],
+        ambiguities: [],
+      });
+
+      const code = await runPolicyCompile(
+        {
+          cwd: workspace,
+          json: false,
+          backend: "codex",
+          model: "gpt-5-codex",
+        },
+        { output, delegatedCompilerFactory: factory },
+      );
+
+      expect(code).toBe(0);
+      expect(calls[0]?.model).toBe("gpt-5-codex");
+      const lockPath = path.join(workspace, ".agent", LOCK_FILE_NAME);
+      const lock = parseLockfile(await readFile(lockPath, "utf8"));
+      expect(lock.model).toBe("gpt-5-codex");
+      expect(lines.join("\n")).toContain(
+        "Compiled policy using gpt-5-codex (openai)",
+      );
+    });
+
+    it("still uses the native compiler under --backend native", async () => {
+      const { output } = capture();
+      const { factory, calls } = recordingDelegatedFactory({
+        policy: VALID_POLICY,
+        warnings: [],
+        ambiguities: [],
+      });
+
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        {
+          output,
+          delegatedCompilerFactory: factory,
+          compilerFactory: fixedCompilerFactory({
+            policy: VALID_POLICY,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(calls).toHaveLength(0);
+      const lockPath = path.join(workspace, ".agent", LOCK_FILE_NAME);
+      const lock = parseLockfile(await readFile(lockPath, "utf8"));
+      // The native path still records the resolved provider model.
+      expect(lock.model).not.toContain("default>");
+    });
   });
 
   describe("check", () => {
     async function compileFixture(workspacePath: string): Promise<void> {
       const { output } = capture();
       const code = await runPolicyCompile(
-        { cwd: workspacePath, json: false },
+        { cwd: workspacePath, json: false, backend: "native" },
         {
           output,
           compilerFactory: fixedCompilerFactory({
@@ -314,7 +442,7 @@ describe("kapel policy", () => {
     async function compileFixture(workspacePath: string): Promise<void> {
       const { output } = capture();
       const code = await runPolicyCompile(
-        { cwd: workspacePath, json: false },
+        { cwd: workspacePath, json: false, backend: "native" },
         {
           output,
           compilerFactory: fixedCompilerFactory({

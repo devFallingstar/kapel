@@ -1,7 +1,9 @@
+import type { ModelDefinition } from "@agent/ai";
 import type {
   ClaudeCodeAvailability,
   CodexAvailability,
 } from "@agent/coding-agent";
+import { ClaudeCodeBackend, CodexBackend } from "@agent/coding-agent";
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
@@ -171,4 +173,57 @@ export function claudeCodeLoginGuidance(
     lines.push(availability.detail);
   }
   return lines.join("\n");
+}
+
+/**
+ * A `ModelDefinition` that stands for "whatever the delegating CLI runs".
+ *
+ * Display only: commands print who planned or who compiled, and on this path
+ * nobody resolves a real model definition — the CLI owns its own catalog and
+ * account. So the two fields that are actually knowable are filled in
+ * honestly (the CLI's provider, and the model id we asked for, or a visible
+ * placeholder when we asked for nothing), capabilities are left flat, and no
+ * pricing is claimed: we are not billed per token here and inventing rates
+ * would put fictional costs in the usage line.
+ *
+ * The id is also what `kapel policy compile` records as the lockfile's
+ * `model`, which is an informational field (`LockfileSchema` only asks for a
+ * string, and `checkLock` never reads it), so a placeholder there is honest
+ * rather than load-bearing.
+ */
+export function delegatedModelIdentity(
+  backend: DelegatedBackendName,
+  model: string | undefined,
+): ModelDefinition {
+  return {
+    provider: backend === "codex" ? "openai" : "anthropic",
+    id: model ?? `<${backend} default>`,
+    capabilities: {
+      tools: false,
+      reasoning: false,
+      vision: false,
+      structuredOutput: false,
+    },
+  };
+}
+
+/**
+ * Checks that the delegating CLI is actually usable before work is asked of
+ * it. The same probe (and the same guidance text) the worker side runs in
+ * `workspaceExecutorFactory`: a sentence naming the install or login command
+ * beats a spawn failure surfacing three attempts later as "no plan".
+ */
+export async function delegatedBackendError(
+  backend: DelegatedBackendName,
+): Promise<string | undefined> {
+  if (backend === "claude-code") {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    if (!availability.installed) return claudeCodeInstallGuidance(availability);
+    if (!availability.loggedIn) return claudeCodeLoginGuidance(availability);
+    return undefined;
+  }
+  const availability = await CodexBackend.checkAvailability();
+  if (!availability.installed) return codexInstallGuidance(availability);
+  if (!availability.loggedIn) return codexLoginGuidance(availability);
+  return undefined;
 }

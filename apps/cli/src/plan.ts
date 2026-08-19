@@ -10,8 +10,6 @@ import type {
 } from "@agent/coding-agent";
 import {
   applyPolicyToPlan,
-  ClaudeCodeBackend,
-  CodexBackend,
   checkLock,
   createDelegatedModelResolver,
   DelegatedPlanner,
@@ -23,10 +21,8 @@ import {
 } from "@agent/coding-agent";
 import type { BackendName, DelegatedBackendName } from "./backend.js";
 import {
-  claudeCodeInstallGuidance,
-  claudeCodeLoginGuidance,
-  codexInstallGuidance,
-  codexLoginGuidance,
+  delegatedBackendError,
+  delegatedModelIdentity,
   isDelegatedBackend,
 } from "./backend.js";
 import type { KapelConfig } from "./config.js";
@@ -217,54 +213,6 @@ async function resolvePlannerModel(
 }
 
 /**
- * A `ModelDefinition` that stands for "whatever the delegating CLI runs".
- *
- * Display only: `PreparedPlan.plannerModel` exists so `renderPlan` can say
- * who planned, and on this path nobody resolves a real model definition — the CLI owns its own catalog and account. So the
- * two fields that are actually knowable are filled in honestly (the CLI's
- * provider, and the model id we asked for, or a visible placeholder when we
- * asked for nothing), capabilities are left flat, and no pricing is claimed:
- * we are not billed per token here and inventing rates would put fictional
- * costs in the usage line.
- */
-function delegatedPlannerModel(
-  backend: DelegatedBackendName,
-  model: string | undefined,
-): ModelDefinition {
-  return {
-    provider: backend === "codex" ? "openai" : "anthropic",
-    id: model ?? `<${backend} default>`,
-    capabilities: {
-      tools: false,
-      reasoning: false,
-      vision: false,
-      structuredOutput: false,
-    },
-  };
-}
-
-/**
- * Checks that the delegating CLI is actually usable before a plan is asked of
- * it. The same probe (and the same guidance text) the worker side runs in
- * `workspaceExecutorFactory`: a sentence naming the install or login command
- * beats a spawn failure surfacing three attempts later as "no plan".
- */
-async function delegatedBackendError(
-  backend: DelegatedBackendName,
-): Promise<string | undefined> {
-  if (backend === "claude-code") {
-    const availability = await ClaudeCodeBackend.checkAvailability();
-    if (!availability.installed) return claudeCodeInstallGuidance(availability);
-    if (!availability.loggedIn) return claudeCodeLoginGuidance(availability);
-    return undefined;
-  }
-  const availability = await CodexBackend.checkAvailability();
-  if (!availability.installed) return codexInstallGuidance(availability);
-  if (!availability.loggedIn) return codexLoginGuidance(availability);
-  return undefined;
-}
-
-/**
  * The model id handed to a delegating CLI for planning.
  *
  * `-m/--model` wins verbatim — the flag names a model in *that CLI's*
@@ -382,7 +330,7 @@ export async function preparePlan(
       knownAgents,
       ...(modelId === undefined ? {} : { model: modelId }),
     });
-    plannerModel = delegatedPlannerModel(backend, modelId);
+    plannerModel = delegatedModelIdentity(backend, modelId);
   } else {
     const resolved = await resolvePlannerModel(
       project,

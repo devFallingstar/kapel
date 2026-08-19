@@ -1,12 +1,19 @@
 export type {
   DelegatedBackendFactory,
   DelegatedBackendSpec,
-  DelegatedPlannerBackend,
-  DelegatedPlannerBackendName,
-  DelegatedPlannerOptions,
-} from "./delegated-planner.js";
+  DelegatedCliBackend,
+  DelegatedCliName,
+  DelegatedIssue,
+  DelegatedRunOptions,
+} from "./delegated-cli.js";
+export { extractJsonObject, runDelegatedPrompt } from "./delegated-cli.js";
+export type { DelegatedPlannerOptions } from "./delegated-planner.js";
 export {
   buildDelegatedPlannerPrompt,
   DelegatedPlanner,
-  extractJsonObject,
 } from "./delegated-planner.js";
+export type { DelegatedPolicyCompilerOptions } from "./delegated-policy-compiler.js";
+export {
+  buildDelegatedPolicyCompilerPrompt,
+  DelegatedPolicyCompiler,
+} from "./delegated-policy-compiler.js";
