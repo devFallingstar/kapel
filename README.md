@@ -9,18 +9,21 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-git clone -b claude/upload-zip-commit-b8wouv https://github.com/devFallingstar/multi-model-orchestration-agent.git kapel-src
-npm install -g ./kapel-src/release/kapel-0.1.0.tgz
-# the clone can be deleted afterwards
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/claude/upload-zip-commit-b8wouv/release/kapel-0.1.0.tgz
 
 cd /path/to/your/repo
 export ANTHROPIC_API_KEY=...          # see Authentication below for other options
 kapel "fix the failing test"
 ```
 
+Once published to the npm registry this becomes simply `npm install -g kapel`.
+If the tarball URL is unreachable from your network, the equivalent two-step
+form is `git clone -b claude/upload-zip-commit-b8wouv
+https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
+./kapel-src/release/kapel-0.1.0.tgz`.
+
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
-> mishandles workspace monorepos and produces a broken install. Once this
-> package is published to the npm registry it becomes `npm install -g kapel`.
+> mishandles workspace monorepos and produces a broken install.
 
 For development, clone and run `npm install && npm run build`, then use `node apps/cli/dist/index.js` or `npm install -g .` from the repo root.
 

@@ -9,15 +9,16 @@
 
 ## 0. 설치 (Windows cmd / macOS / Linux 공통)
 
-빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다:
+빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-git clone -b claude/upload-zip-commit-b8wouv https://github.com/devFallingstar/multi-model-orchestration-agent.git kapel-src
-npm install -g ./kapel-src/release/kapel-0.1.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/claude/upload-zip-commit-b8wouv/release/kapel-0.1.0.tgz
 kapel --version
 ```
 
-설치 후 `kapel-src` 클론은 삭제해도 됩니다. 제거는
+npm 레지스트리 배포 후에는 `npm install -g kapel` 로 대체됩니다.
+URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
+`npm install -g ./kapel/release/kapel-0.1.0.tgz`. 제거는
 `npm uninstall -g kapel`.
 
 > `npm install -g github:...` 형태는 쓰지 마세요 — npm의 워크스페이스

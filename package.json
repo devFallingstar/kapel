@@ -1,19 +1,44 @@
 {
   "name": "kapel",
   "version": "0.1.0",
-  "description": "Kapel — a multi-model orchestration coding agent for your terminal",
-  "private": true,
+  "description": "Kapel — a multi-model orchestration coding agent for your terminal. The strongest model plans; cheaper or specialized workers execute, under a natural-language policy compiled to a deterministic runtime.",
   "type": "module",
+  "license": "MIT",
+  "author": "devFallingstar",
+  "homepage": "https://github.com/devFallingstar/kapel#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devFallingstar/kapel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/devFallingstar/kapel/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "coding-agent",
+    "orchestration",
+    "multi-model",
+    "llm",
+    "anthropic",
+    "openai",
+    "codex"
+  ],
   "bin": {
     "kapel": "./dist/kapel.js"
   },
   "files": [
     "dist/kapel.js",
     "templates",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "workspaces": [
     "apps/*",
@@ -23,6 +48,7 @@
     "build": "tsc -b",
     "bundle": "node scripts/bundle.mjs",
     "prepare": "node scripts/prepare.mjs",
+    "prepublishOnly": "npm run build && npm run bundle && npm test",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "biome check .",
