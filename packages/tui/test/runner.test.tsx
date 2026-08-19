@@ -1,6 +1,22 @@
 import { EventEmitter } from "node:events";
 import type { AgentEvent } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// ink detects CI at module load (via is-in-ci) and then skips intermediate
+// frames, only painting the final one on unmount — which would empty out
+// every mid-run assertion below when the suite runs on GitHub Actions. Scrub
+// the detection env vars BEFORE ink is imported (vi.hoisted runs ahead of the
+// hoisted imports).
+vi.hoisted(() => {
+  for (const key of Object.keys(process.env)) {
+    if (key === "CI" || key.startsWith("CI_")) delete process.env[key];
+  }
+  delete process.env.CONTINUOUS_INTEGRATION;
+  delete process.env.GITHUB_ACTIONS;
+  delete process.env.BUILD_NUMBER;
+  delete process.env.RUN_ID;
+});
+
 import { startOrchestrationTui } from "../src/runner.js";
 
 const RUN_START = 1_700_000_000_000;
