@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { RuntimeTask } from "@agent/coding-agent";
-import { findAgentDir } from "@agent/coding-agent";
+import { findAgentDir, MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import type { RunStatus } from "@agent/session";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
@@ -44,10 +44,19 @@ export function fanOutSink(
   };
 }
 
-/** An {@link EventSink} that tees events into `store`, swallowing store errors. */
+/**
+ * An {@link EventSink} that tees events into `store`, swallowing store errors.
+ *
+ * Streamed text deltas are the one thing that does not go in: they arrive once
+ * per token-ish chunk, so recording them would add thousands of rows per turn
+ * to a database whose whole purpose is being replayable later — and they carry
+ * nothing that is not already in the turn's own `model.turn.completed` event,
+ * which is what `kapel runs`/`kapel explain` read back.
+ */
 export function storeSink(store: SqliteSessionStore): EventSink {
   return {
     emit(event: AgentEvent): void | Promise<void> {
+      if (event.type === MODEL_TEXT_DELTA_EVENT) return undefined;
       return store.appendEvent(event).then(
         () => undefined,
         () => undefined,

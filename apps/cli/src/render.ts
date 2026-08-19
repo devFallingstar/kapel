@@ -4,8 +4,10 @@ import type {
   ClaudeCodeRunResult,
   CodexRunResult,
 } from "@agent/coding-agent";
+import { MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { previewInput } from "./prompter.js";
+import { StatusLine, type StatusLineStream } from "./status-line.js";
 
 /** How a run can finish: the native loop, or one of the delegating backends. */
 export type CliRunResult =
@@ -161,21 +163,132 @@ const EXIT_LABEL: Record<CliRunResult["status"], string> = {
   failed: "failed",
 };
 
-/** Plain-text human renderer. Uses ANSI dim/bold only when `output` is a TTY. */
+/** The status line's label while the model is producing a turn. */
+const THINKING_LABEL = "thinking";
+
+export interface TextRendererOptions {
+  /**
+   * Cumulative tokens for the conversation so far, shown on the status line.
+   * Absent means no token clause — nothing is invented.
+   */
+  readonly tokens?: () => number | undefined;
+  /**
+   * While this returns `true` the status line stays erased: something else
+   * owns the screen, e.g. a permission question waiting for an answer.
+   */
+  readonly suspended?: () => boolean;
+  /** Replaces the status line entirely. Tests inject a deterministic one. */
+  readonly status?: StatusLine;
+}
+
+/**
+ * Plain-text human renderer. Uses ANSI dim/bold only when `output` is a TTY.
+ *
+ * Assistant text is streamed: `model.text.delta` events are written as they
+ * arrive, without a trailing newline, and the line is terminated when the turn
+ * ends or anything else needs printing. `model.turn.completed` still carries
+ * the whole turn — it is printed only when no delta was streamed for it, which
+ * is what keeps a non-streaming provider (or an event log replayed after the
+ * fact) rendering exactly as before instead of printing the text twice.
+ */
 export class TextRenderer implements Renderer {
   readonly #output: NodeJS.WritableStream;
   readonly #color: boolean;
-  /** Text deltas of the Claude Code block currently streaming; see `#emitClaudeCode`. */
+  readonly #status: StatusLine;
+  /** A streamed line is open — text was written with no newline after it. */
+  #streaming = false;
+  /** Deltas were streamed for the model turn now in flight. */
+  #streamed = false;
+  /** A turn this renderer is showing progress for is in flight. */
+  #inTurn = false;
+  /**
+   * Text of the Claude Code block currently streaming, for the one case that
+   * cannot be streamed to the screen: a delegated *task* inside an
+   * orchestration run, whose output shares the terminal with other tasks.
+   */
   #claudeText = "";
 
-  constructor(output: NodeJS.WritableStream = process.stdout) {
+  constructor(
+    output: NodeJS.WritableStream = process.stdout,
+    options: TextRendererOptions = {},
+  ) {
     this.#output = output;
     this.#color =
       "isTTY" in output && (output as { isTTY?: boolean }).isTTY === true;
+    this.#status =
+      options.status ??
+      new StatusLine({
+        output: output as StatusLineStream,
+        ...(options.tokens === undefined ? {} : { tokens: options.tokens }),
+        ...(options.suspended === undefined
+          ? {}
+          : { suspended: options.suspended }),
+      });
   }
 
+  /**
+   * Writes one line of output, taking the screen back from the status line and
+   * from any partially streamed text first.
+   */
   #write(line: string): void {
+    this.#endStream();
+    this.#status.erase();
     this.#output.write(`${line}\n`);
+    this.#status.refresh();
+  }
+
+  /**
+   * Writes one line of caller-owned output (the REPL's own notices) through
+   * the same discipline, and ends any status the turn left running.
+   *
+   * The interactive shell prints its per-turn lines itself rather than through
+   * an event; routing them here is what keeps them from landing on top of a
+   * spinner.
+   */
+  line(text: string): void {
+    this.#endTurn();
+    this.#write(text);
+  }
+
+  /** Appends streamed assistant text, with no line terminator of its own. */
+  #stream(text: string): void {
+    if (text === "") return;
+    // Text on screen *is* the progress report; a spinner next to it is noise.
+    this.#status.stop();
+    this.#output.write(text);
+    this.#streaming = true;
+    this.#streamed = true;
+  }
+
+  /** Terminates an open streamed line, if there is one. */
+  #endStream(): void {
+    if (!this.#streaming) return;
+    this.#streaming = false;
+    this.#output.write("\n");
+  }
+
+  /** A turn started: from here on there is something to show progress for. */
+  #beginTurn(): void {
+    this.#inTurn = true;
+    this.#streamed = false;
+    this.#status.start(THINKING_LABEL);
+  }
+
+  /**
+   * Relabels the status, but only while a turn is actually in flight — which
+   * is never the case for an orchestration run, whose turns all carry a task
+   * id and so never call {@link #beginTurn}.
+   */
+  #waiting(label: string): void {
+    if (!this.#inTurn) return;
+    this.#status.start(label);
+  }
+
+  /** A turn ended (or output took over): nothing is pending on screen. */
+  #endTurn(): void {
+    this.#inTurn = false;
+    this.#endStream();
+    this.#status.stop();
   }
 
   #dim(text: string): string {
@@ -188,6 +301,10 @@ export class TextRenderer implements Renderer {
 
   emit(event: AgentEvent): void {
     const data = isRecord(event.data) ? event.data : {};
+    // A run with tasks is many conversations at once: their deltas would
+    // interleave into one unreadable line, and one status line cannot speak
+    // for several tasks. Those runs keep the turn-level rendering they had.
+    const single = event.taskId === undefined;
 
     if (event.type.startsWith(CODEX_PREFIX)) {
       this.#emitCodex(data);
@@ -195,14 +312,41 @@ export class TextRenderer implements Renderer {
     }
 
     if (event.type.startsWith(CLAUDE_CODE_PREFIX)) {
-      this.#emitClaudeCode(event.type.slice(CLAUDE_CODE_PREFIX.length), data);
+      this.#emitClaudeCode(
+        event.type.slice(CLAUDE_CODE_PREFIX.length),
+        data,
+        single,
+      );
       return;
     }
 
     switch (event.type) {
+      case "chat.turn.started":
+      case "loop.started": {
+        if (single) this.#beginTurn();
+        break;
+      }
+      case "chat.turn.completed":
+      case "loop.completed": {
+        if (single) this.#endTurn();
+        break;
+      }
+      case MODEL_TEXT_DELTA_EVENT: {
+        if (!single) break;
+        if (typeof data.text === "string") this.#stream(data.text);
+        break;
+      }
       case "model.turn.completed": {
         const text = typeof data.text === "string" ? data.text : "";
-        if (text !== "") this.#write(text);
+        if (this.#streamed) {
+          // Already on screen, a delta at a time: printing it again would
+          // double every word of the turn.
+          this.#endStream();
+          this.#streamed = false;
+        } else if (text !== "") {
+          this.#write(text);
+        }
+        this.#waiting(THINKING_LABEL);
         break;
       }
       case "tool.execution.started": {
@@ -210,12 +354,14 @@ export class TextRenderer implements Renderer {
         this.#write(
           `${this.#dim("→")} ${tool} ${this.#dim(previewInput(data.input))}`,
         );
+        this.#waiting(tool);
         break;
       }
       case "tool.execution.completed": {
         const ok = data.ok === true;
         const denied = data.denied === true;
         this.#write(ok ? "  ✓" : `  ✗ (${denied ? "denied" : "error"})`);
+        this.#waiting(THINKING_LABEL);
         break;
       }
       case "context.compacted": {
@@ -443,15 +589,20 @@ export class TextRenderer implements Renderer {
    * Renders a normalized `claude-code.*` event.
    *
    * The payload is a raw Claude API streaming line, so the two things worth
-   * showing are pulled out of it by hand: the assistant's own text, buffered
-   * per content block rather than written a delta at a time (this renderer is
-   * line-oriented — a partial word is not a line), and the name of each tool
+   * showing are pulled out of it by hand: the assistant's own text, streamed a
+   * delta at a time exactly like the native loop's (buffered to the end of the
+   * block only when the events belong to one task among several, where partial
+   * lines from different tasks would interleave), and the name of each tool
    * as it starts, which is what makes a long turn legible. Everything else —
    * `message_start`, usage rollups, the synthetic `completed` marker, and any
    * event type this wrapper does not model yet — stays quiet, exactly as the
    * native renderer does for unknown types.
    */
-  #emitClaudeCode(kind: string, data: Record<string, unknown>): void {
+  #emitClaudeCode(
+    kind: string,
+    data: Record<string, unknown>,
+    single: boolean,
+  ): void {
     const event = isRecord(data.event) ? data.event : data;
 
     switch (kind) {
@@ -461,19 +612,24 @@ export class TextRenderer implements Renderer {
             ? data.name
             : "tool";
         this.#write(`${this.#dim("→")} claude: ${name}`);
+        this.#waiting(name);
         break;
       }
       case "content_block_delta": {
         const delta = isRecord(event.delta) ? event.delta : undefined;
         if (delta?.type !== "text_delta") break;
-        if (typeof delta.text === "string") this.#claudeText += delta.text;
+        if (typeof delta.text !== "string") break;
+        if (single) this.#stream(delta.text);
+        else this.#claudeText += delta.text;
         break;
       }
       case "content_block_stop":
       case "message_stop": {
-        const text = this.#claudeText.trim();
+        this.#endStream();
+        const buffered = this.#claudeText.trim();
         this.#claudeText = "";
-        if (text !== "") this.#write(text);
+        if (buffered !== "") this.#write(buffered);
+        this.#waiting(THINKING_LABEL);
         break;
       }
       default:
@@ -482,6 +638,7 @@ export class TextRenderer implements Renderer {
   }
 
   result(result: CliRunResult, usage: UsageTotals): void {
+    this.#endTurn();
     this.#write("");
     this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
     this.#write(result.summary);

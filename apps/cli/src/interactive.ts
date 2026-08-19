@@ -1236,8 +1236,24 @@ export async function runInteractive(
     }
 
     const interactiveTty = process.stdin.isTTY === true;
-    const renderer = new TextRenderer();
     const promptState = createPromptState();
+    const nativeUsage = new UsageTracker();
+    const delegatedUsage = new DelegatedUsage();
+    // One usage view over both engines, so `/usage` and the per-turn delta
+    // read the same however the conversation is being run — and keep adding up
+    // across a `/config` that switches from one to the other mid-thread.
+    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
+
+    // The renderer owns everything the turn puts on screen: streamed assistant
+    // text, tool lines, and the status line that fills the silence in between.
+    const renderer = new TextRenderer(process.stdout, {
+      tokens: () => {
+        const totals = usage.totals().usage;
+        return totals.inputTokens + totals.outputTokens;
+      },
+      // A permission question owns the screen while it waits for an answer.
+      suspended: () => promptState.active,
+    });
 
     // The turn currently in flight, if any — a persistent `InputManager`
     // never lets go of raw mode long enough for a mid-turn Ctrl-C to reach
@@ -1266,13 +1282,6 @@ export async function runInteractive(
         ? {}
         : { ask: (query: string) => inputManager.question(query) }),
     });
-    const nativeUsage = new UsageTracker();
-    const delegatedUsage = new DelegatedUsage();
-    // One usage view over both engines, so `/usage` and the per-turn delta
-    // read the same however the conversation is being run — and keep adding up
-    // across a `/config` that switches from one to the other mid-thread.
-    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
-
     /**
      * The model id to hand the delegating CLI for one build.
      *
@@ -1365,8 +1374,11 @@ export async function runInteractive(
       workspacePath,
       ...(store === undefined ? {} : { store }),
       createSession,
+      // Through the renderer rather than straight to the console: the REPL's
+      // own lines land while a turn's status line may still be on screen, and
+      // only the renderer knows how to take the cursor back from it.
       write: (line) => {
-        console.log(line);
+        renderer.line(line);
       },
       backend,
       modelAlias: chatAlias,

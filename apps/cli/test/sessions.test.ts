@@ -101,6 +101,25 @@ describe("storeSink", () => {
       undefined,
     );
   });
+
+  it("keeps streamed text deltas out of the database", async () => {
+    const store = new SqliteSessionStore({ path: ":memory:" });
+    const sink = storeSink(store);
+
+    await sink.emit(event("loop.started"));
+    for (let i = 0; i < 5; i += 1) {
+      await sink.emit(event("model.text.delta", `d${i}`));
+    }
+    await sink.emit(event("model.turn.completed", "e2"));
+
+    // Only the turn-level events are replayable history; the per-token ones
+    // would be thousands of rows saying what those two already say.
+    expect((await store.listEvents("run-1")).map((e) => e.type)).toEqual([
+      "loop.started",
+      "model.turn.completed",
+    ]);
+    store.close();
+  });
 });
 
 describe("runStatusFor", () => {

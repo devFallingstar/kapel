@@ -550,18 +550,20 @@ describe("AgentChatSession — events", () => {
     expect(sink.types()).toEqual([
       "chat.turn.started",
       "loop.started",
+      "model.text.delta",
       "model.turn.completed",
       "loop.completed",
       "chat.turn.completed",
     ]);
 
     await session.send("two", RUN_CONTEXT);
-    expect(sink.types().slice(5)).toEqual([
+    expect(sink.types().slice(6)).toEqual([
       "chat.turn.started",
       "loop.started",
       "model.turn.completed",
       "tool.execution.started",
       "tool.execution.completed",
+      "model.text.delta",
       "model.turn.completed",
       "loop.completed",
       "chat.turn.completed",

@@ -21,6 +21,31 @@ import type { PermissionEngine } from "./permissions.js";
 export const DEFAULT_MAX_ITERATIONS = 32;
 
 /**
+ * The event type carrying one streamed chunk of assistant text, emitted as the
+ * provider produces it — see {@link ModelTextDeltaData}.
+ *
+ * Named as a constant because it is also the one event type observers filter
+ * on by name: it is emitted once per token-ish chunk, so anything that stores
+ * or forwards events (the session database, the worker protocol channel) drops
+ * it rather than keeping thousands of rows/lines per turn. The turn's full
+ * text still arrives once, in `model.turn.completed`.
+ */
+export const MODEL_TEXT_DELTA_EVENT = "model.text.delta";
+
+/**
+ * The `data` payload of a {@link MODEL_TEXT_DELTA_EVENT}.
+ *
+ * `iteration` is the 1-based model turn within the run — the same counter
+ * `loop.completed`'s `iterations` reports — so a consumer can tell one turn's
+ * deltas from the next one's. The run/task the delta belongs to is on the
+ * event envelope, exactly as for every other `model.*` event.
+ */
+export interface ModelTextDeltaData {
+  readonly text: string;
+  readonly iteration: number;
+}
+
+/**
  * Deterministic (non-LLM) context compaction, run at the start of every
  * iteration. Disabled unless this whole options object is supplied.
  */
@@ -267,7 +292,7 @@ export class AgentLoopEngine {
             : { maxOutputTokens: this.#options.maxOutputTokens }),
         };
 
-        const turn = await this.#runTurn(request, signal);
+        const turn = await this.#runTurn(request, signal, context, iterations);
         if (turn.text.trim() !== "") lastNonEmptyText = turn.text;
 
         messages.push({
@@ -347,9 +372,20 @@ export class AgentLoopEngine {
     }
   }
 
+  /**
+   * Streams one model turn, forwarding each text chunk as it arrives.
+   *
+   * The deltas are emitted *in addition to* the turn's accumulated text, which
+   * still lands whole in `model.turn.completed`: a renderer can paint tokens as
+   * they come, while everything that reads the event log after the fact (JSONL
+   * consumers, session persistence) keeps seeing exactly the turn-level event
+   * it always did.
+   */
   async #runTurn(
     request: ModelRequest,
     signal: AbortSignal,
+    context: AgentLoopRunContext,
+    iteration: number,
   ): Promise<ModelTurn> {
     const stream = this.#options.provider.stream(request, signal);
     const iterator = stream[Symbol.asyncIterator]();
@@ -367,6 +403,12 @@ export class AgentLoopEngine {
         switch (event.type) {
           case "text.delta":
             text += event.text;
+            if (event.text !== "") {
+              await this.emit(context, MODEL_TEXT_DELTA_EVENT, {
+                text: event.text,
+                iteration,
+              } satisfies ModelTextDeltaData);
+            }
             break;
           case "tool.call":
             calls.push({ id: event.id, name: event.name, input: event.input });

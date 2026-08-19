@@ -205,6 +205,39 @@ describe("serveWorkerRequest", () => {
     expect(served.lines).toHaveLength(1);
   });
 
+  it("does not forward streamed text deltas to the parent", async () => {
+    const served = await serve(
+      `${JSON.stringify(request())}\n`,
+      async (parsed, events) => {
+        await events.emit({
+          id: "event-1",
+          runId: parsed.runId,
+          timestamp: 1,
+          type: "model.text.delta",
+          taskId: parsed.task.id,
+          data: { text: "Hel", iteration: 1 },
+        });
+        await events.emit({
+          id: "event-2",
+          runId: parsed.runId,
+          timestamp: 2,
+          type: "model.turn.completed",
+          taskId: parsed.task.id,
+          data: { text: "Hello", toolCallCount: 0 },
+        });
+        return makeTaskResult();
+      },
+    );
+
+    // One event line, one result line: the parent renders task lifecycle, not
+    // tokens, so a line per token would be pure channel noise.
+    expect(
+      served.lines.map((line) =>
+        line.type === "event" ? line.event.type : "result",
+      ),
+    ).toEqual(["model.turn.completed", "result"]);
+  });
+
   it("suppresses event lines when events are disabled", async () => {
     const served = await serve(
       `${JSON.stringify(request())}\n`,

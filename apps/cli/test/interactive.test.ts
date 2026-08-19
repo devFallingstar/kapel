@@ -11,6 +11,7 @@ import type {
   UsageTotals,
 } from "@agent/ai";
 import type { ChatTurnResult } from "@agent/coding-agent";
+import type { AgentEvent, EventSink } from "@agent/protocol";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InputManager } from "../src/input.js";
@@ -37,6 +38,7 @@ import {
   usageDeltaLine,
   usageTotalsLine,
 } from "../src/interactive.js";
+import { TextRenderer } from "../src/render.js";
 import type { ResolvedModel } from "../src/run.js";
 
 // --- fixtures ---------------------------------------------------------------
@@ -847,5 +849,140 @@ describe("runInteractive", () => {
     expect(
       existsSync(defaultSessionDbPath(path.join(workspace, ".agent"))),
     ).toBe(true);
+  });
+});
+
+describe("interactive REPL / streamed turn output", () => {
+  /** The terminal `runInteractive` writes to: one stream, everything in order. */
+  class Screen {
+    readonly chunks: string[] = [];
+    readonly isTTY = false;
+
+    write(chunk: string): boolean {
+      this.chunks.push(chunk);
+      return true;
+    }
+
+    asStream(): NodeJS.WritableStream {
+      return this as unknown as NodeJS.WritableStream;
+    }
+
+    get lines(): string[] {
+      return this.chunks
+        .join("")
+        .split("\n")
+        .filter((line) => line !== "");
+    }
+  }
+
+  /**
+   * A session that drives the renderer the way the real one does: the loop's
+   * events go to the sink, and only the turn's *result* comes back to the
+   * controller. This is exactly `runInteractive`'s wiring — events to the
+   * `TextRenderer`, the controller's own lines through `renderer.line` — with
+   * the provider replaced by a script.
+   */
+  class StreamingSession implements InteractiveSession {
+    readonly #messages: ModelMessage[] = [];
+    readonly #sink: EventSink;
+    readonly #chunks: readonly string[];
+    readonly #onSend: (() => void) | undefined;
+
+    constructor(
+      sink: EventSink,
+      chunks: readonly string[],
+      onSend?: () => void,
+    ) {
+      this.#sink = sink;
+      this.#chunks = chunks;
+      this.#onSend = onSend;
+    }
+
+    async send(instruction: string): Promise<ChatTurnResult> {
+      this.#onSend?.();
+      const text = this.#chunks.join("");
+      const event = (type: string, data: unknown): AgentEvent => ({
+        id: `evt-${type}`,
+        runId: "run-1",
+        timestamp: 0,
+        type,
+        data,
+      });
+
+      await this.#sink.emit(event("chat.turn.started", { turn: 1 }));
+      await this.#sink.emit(event("loop.started", { agent: "agent" }));
+      for (const chunk of this.#chunks) {
+        await this.#sink.emit(
+          event("model.text.delta", { text: chunk, iteration: 1 }),
+        );
+      }
+      await this.#sink.emit(
+        event("model.turn.completed", { text, toolCallCount: 0 }),
+      );
+      await this.#sink.emit(event("loop.completed", { status: "success" }));
+      await this.#sink.emit(
+        event("chat.turn.completed", { turn: 1, status: "success" }),
+      );
+
+      this.#messages.push({ role: "user", content: instruction });
+      this.#messages.push({ role: "assistant", content: text });
+      return {
+        status: "success",
+        summary: text,
+        iterations: 1,
+        toolCalls: 0,
+      };
+    }
+
+    messages(): readonly ModelMessage[] {
+      return this.#messages.slice();
+    }
+  }
+
+  it("streams the assistant text and only then prints the turn's own lines", async () => {
+    const screen = new Screen();
+    const renderer = new TextRenderer(screen.asStream());
+    const usage = new FakeUsage();
+
+    const harnessed = await harness({
+      store: undefined,
+      createSession: () =>
+        new StreamingSession(renderer, ["Hello, ", "world", "."], () => {
+          usage.inputTokens = 12;
+          usage.outputTokens = 4;
+        }),
+      write: (line) => {
+        renderer.line(line);
+      },
+      usage,
+    });
+
+    const result = await harnessed.controller.handleLine("hi");
+
+    // The reply arrived a chunk at a time...
+    expect(screen.chunks.slice(0, 3)).toEqual(["Hello, ", "world", "."]);
+    // ...on its own line, with the REPL's usage line under it rather than
+    // glued to the end of it.
+    expect(screen.lines).toEqual(["Hello, world.", "tokens +12 in, +4 out"]);
+    expect(result.output).toEqual(["tokens +12 in, +4 out"]);
+  });
+
+  it("puts no control characters on a non-TTY screen", async () => {
+    const screen = new Screen();
+    const renderer = new TextRenderer(screen.asStream());
+    const harnessed = await harness({
+      store: undefined,
+      createSession: () => new StreamingSession(renderer, ["ok"]),
+      write: (line) => {
+        renderer.line(line);
+      },
+    });
+
+    await harnessed.controller.handleLine("hi");
+
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: that is the assertion.
+    expect(/[\u0000-\u0008\u000b-\u001f]/.test(screen.chunks.join(""))).toBe(
+      false,
+    );
   });
 });

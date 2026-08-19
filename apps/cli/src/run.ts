@@ -156,11 +156,20 @@ export async function runObjective(
   }
   const { model, provider } = resolved;
 
+  const promptState = createPromptState();
+  const usage = new UsageTracker();
+
   const renderer: Renderer = options.json
     ? new JsonRenderer()
-    : new TextRenderer();
+    : new TextRenderer(process.stdout, {
+        tokens: () => {
+          const totals = usage.totals().usage;
+          return totals.inputTokens + totals.outputTokens;
+        },
+        // A permission question owns the screen while it waits for an answer.
+        suspended: () => promptState.active,
+      });
 
-  const promptState = createPromptState();
   const prompter = createPrompter({
     yes: options.yes,
     interactive: process.stdin.isTTY === true && !options.json,
@@ -171,8 +180,6 @@ export async function runObjective(
     defaultDecision: "ask",
     ...(prompter === undefined ? {} : { prompter }),
   });
-
-  const usage = new UsageTracker();
   const instructions = loadInstructions(workspacePath, process.env);
 
   const agent: AgentDefinition = {

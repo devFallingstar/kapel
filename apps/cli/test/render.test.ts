@@ -3,6 +3,7 @@ import type { AgentLoopResult, CodexRunResult } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
 import { JsonRenderer, TextRenderer } from "../src/render.js";
+import { StatusLine } from "../src/status-line.js";
 
 /** Minimal fake `NodeJS.WritableStream` that just captures every write. */
 class CapturingStream {
@@ -71,7 +72,7 @@ describe("TextRenderer / claude-code.* events", () => {
     return { id: "evt-1", runId: "run-1", timestamp: 0, type, data };
   }
 
-  it("buffers streamed text and writes it once the block ends", () => {
+  it("streams text as it arrives and terminates the line when the block ends", () => {
     const { renderer: r, stream } = renderer();
     for (const text of ["Fixed ", "the ", "test."]) {
       r.emit(
@@ -84,10 +85,46 @@ describe("TextRenderer / claude-code.* events", () => {
         }),
       );
     }
-    expect(stream.lines).toEqual([]);
+    // Every chunk is on screen the moment it arrives — not held to the end of
+    // the block — and nothing has terminated the line yet.
+    expect(stream.chunks).toEqual(["Fixed ", "the ", "test."]);
 
     r.emit(
       claudeEvent("claude-code.content_block_stop", {
+        type: "stream_event",
+        event: { type: "content_block_stop" },
+      }),
+    );
+    expect(stream.chunks.at(-1)).toBe("\n");
+    expect(stream.lines).toEqual(["Fixed the test."]);
+  });
+
+  it("buffers a delegated task's text to the end of the block", () => {
+    const { renderer: r, stream } = renderer();
+    const taskEvent = (type: string, data: unknown): AgentEvent => ({
+      id: "evt-1",
+      runId: "run-1",
+      taskId: "T01",
+      timestamp: 0,
+      type,
+      data,
+    });
+    for (const text of ["Fixed ", "the ", "test."]) {
+      r.emit(
+        taskEvent("claude-code.content_block_delta", {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text },
+          },
+        }),
+      );
+    }
+    // One task among several cannot own a partial line on a shared terminal.
+    expect(stream.lines).toEqual([]);
+
+    r.emit(
+      taskEvent("claude-code.content_block_stop", {
         type: "stream_event",
         event: { type: "content_block_stop" },
       }),
@@ -670,5 +707,244 @@ describe("JsonRenderer / task.started model and routing", () => {
     r.emit(event);
 
     expect(JSON.parse(chunks.join(""))).toEqual(event);
+  });
+});
+
+/** Erase-the-line sequence the status line writes; see `status-line.ts`. */
+const ERASE_SEQ = "\r\u001b[2K";
+const DIM = "\u001b[2m";
+const RESET = "\u001b[0m";
+
+// --- P0-2: streamed turn text and the status line ---------------------------
+
+/** A capturing stream that claims to be a terminal, so the status line arms. */
+class TtyStream extends CapturingStream {
+  override readonly isTTY = true;
+  readonly columns = 80;
+}
+
+/** Anything a pipe must never see: `\r`, `\b`, ESC and friends. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the assertion.
+const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f]/;
+
+function loopEvent(
+  type: string,
+  data: unknown = {},
+  taskId?: string,
+): AgentEvent {
+  return {
+    id: `evt-${type}`,
+    runId: "run-1",
+    timestamp: 0,
+    type,
+    ...(taskId === undefined ? {} : { taskId }),
+    data,
+  };
+}
+
+function delta(text: string, taskId?: string): AgentEvent {
+  return loopEvent("model.text.delta", { text, iteration: 1 }, taskId);
+}
+
+/** A renderer over a fake TTY, with a status line that only paints on demand. */
+function ttyRenderer(options: { tokens?: () => number } = {}): {
+  renderer: TextRenderer;
+  stream: TtyStream;
+  clock: { ms: number };
+} {
+  const stream = new TtyStream();
+  const clock = { ms: 0 };
+  const status = new StatusLine({
+    output: stream as unknown as NodeJS.WritableStream & { isTTY?: boolean },
+    tty: true,
+    now: () => clock.ms,
+    // No timer at all: every paint in these tests is one the renderer asked
+    // for, which is what makes the byte sequence assertable.
+    ticker: () => () => undefined,
+    ...(options.tokens === undefined ? {} : { tokens: options.tokens }),
+  });
+  return {
+    renderer: new TextRenderer(stream as unknown as NodeJS.WritableStream, {
+      status,
+    }),
+    stream,
+    clock,
+  };
+}
+
+describe("TextRenderer / streamed model text", () => {
+  it("writes each delta as it arrives, with no line of its own", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(delta("Hel"));
+    r.emit(delta("lo, "));
+    r.emit(delta("world."));
+    expect(stream.chunks).toEqual(["Hel", "lo, ", "world."]);
+  });
+
+  it("does not reprint the turn's text once it has been streamed", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(delta("Hello, "));
+    r.emit(delta("world."));
+    r.emit(
+      loopEvent("model.turn.completed", {
+        text: "Hello, world.",
+        toolCallCount: 0,
+        finishReason: "stop",
+      }),
+    );
+    r.emit(loopEvent("loop.completed", { status: "success" }));
+
+    expect(stream.chunks.join("")).toBe("Hello, world.\n");
+    expect(stream.lines).toEqual(["Hello, world."]);
+  });
+
+  it("prints the whole turn when nothing was streamed for it", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(
+      loopEvent("model.turn.completed", {
+        text: "A non-streaming provider said this.",
+        toolCallCount: 0,
+      }),
+    );
+    expect(stream.lines).toEqual(["A non-streaming provider said this."]);
+  });
+
+  it("streams each turn independently: a second turn still falls back", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(delta("streamed"));
+    r.emit(loopEvent("model.turn.completed", { text: "streamed" }));
+    r.emit(loopEvent("model.turn.completed", { text: "not streamed" }));
+    expect(stream.lines).toEqual(["streamed", "not streamed"]);
+  });
+
+  it("terminates the streamed line before a tool line is printed", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(delta("Let me look."));
+    r.emit(
+      loopEvent("tool.execution.started", {
+        tool: "bash",
+        input: { command: "ls" },
+      }),
+    );
+    r.emit(loopEvent("tool.execution.completed", { tool: "bash", ok: true }));
+
+    expect(stream.lines).toEqual([
+      "Let me look.",
+      '\u2192 bash {"command":"ls"}',
+      "  \u2713",
+    ]);
+  });
+
+  it("ignores a delta belonging to a task, and still prints that turn whole", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(delta("partial ", "T01"));
+    r.emit(loopEvent("model.turn.completed", { text: "partial text" }, "T01"));
+    expect(stream.lines).toEqual(["partial text"]);
+  });
+
+  it("leaks no control characters into a non-TTY stream", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(delta("thinking out loud"));
+    r.emit(loopEvent("model.turn.completed", { text: "thinking out loud" }));
+    r.emit(
+      loopEvent("tool.execution.started", { tool: "bash", input: { a: 1 } }),
+    );
+    r.emit(loopEvent("tool.execution.completed", { tool: "bash", ok: true }));
+    r.emit(loopEvent("loop.completed", { status: "success" }));
+
+    const text = stream.chunks.join("");
+    expect(CONTROL_CHARS.test(text)).toBe(false);
+    expect(text).not.toContain("\r");
+  });
+
+  it("ends a streamed line before the REPL's own output lands", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(delta("Done."));
+    r.line("tokens +12 in, +3 out");
+    expect(stream.lines).toEqual(["Done.", "tokens +12 in, +3 out"]);
+  });
+});
+
+describe("TextRenderer / status line", () => {
+  it("shows a spinner, the elapsed seconds and the token count on a TTY", () => {
+    const { renderer: r, stream, clock } = ttyRenderer({ tokens: () => 1234 });
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    clock.ms = 3000;
+    r.emit(loopEvent("tool.execution.completed", { tool: "bash", ok: true }));
+
+    const painted = stream.chunks.filter((chunk) => chunk.includes("thinking"));
+    expect(painted.length).toBeGreaterThan(0);
+    expect(painted.at(-1)).toContain("thinking 3s");
+    expect(painted.at(-1)).toContain("1.2k tokens");
+  });
+
+  it("names the tool it is waiting on", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(
+      loopEvent("tool.execution.started", { tool: "bash", input: { a: 1 } }),
+    );
+    expect(stream.chunks.at(-1)).toContain("bash 0s");
+  });
+
+  it("erases the status line immediately before real output", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(
+      loopEvent("tool.execution.started", { tool: "bash", input: { a: 1 } }),
+    );
+
+    const text = stream.chunks.join("");
+    // The erase sequence is the last thing written before the tool line.
+    expect(text).toContain(`${ERASE_SEQ}${DIM}\u2192${RESET} bash`);
+  });
+
+  it("stops the status line while text is streaming", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(delta("Hello"));
+    expect(stream.chunks.at(-1)).toBe("Hello");
+    expect(stream.chunks.at(-2)).toBe(ERASE_SEQ);
+  });
+
+  it("leaves nothing on screen once the turn ends", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.emit(loopEvent("loop.started", { agent: "agent" }));
+    r.emit(loopEvent("loop.completed", { status: "success" }));
+    expect(stream.chunks.at(-1)).toBe(ERASE_SEQ);
+  });
+
+  it("never arms off a TTY", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(loopEvent("chat.turn.started", { turn: 1 }));
+    r.emit(loopEvent("chat.turn.completed", { turn: 1, status: "success" }));
+    expect(stream.chunks).toEqual([]);
+  });
+});
+
+describe("JsonRenderer / model.text.delta", () => {
+  it("passes deltas through as their own JSONL lines, unchanged", () => {
+    const stream = new CapturingStream();
+    const r = new JsonRenderer(stream as unknown as NodeJS.WritableStream);
+
+    const event = delta("Hel");
+    r.emit(event);
+    r.emit(
+      loopEvent("model.turn.completed", { text: "Hello", toolCallCount: 0 }),
+    );
+
+    const lines = stream.chunks
+      .join("")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as unknown);
+    expect(lines[0]).toEqual(event);
+    expect(lines[1]).toMatchObject({
+      type: "model.turn.completed",
+      data: { text: "Hello", toolCallCount: 0 },
+    });
   });
 });

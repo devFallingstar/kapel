@@ -61,6 +61,8 @@ kapel> /exit
 
 Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
 
+The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
+
 The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Typing `/` and pressing Tab completes the slash command.
 
 Commands available at the prompt:
@@ -113,7 +115,7 @@ Useful commands and flags:
 - `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
-- `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only)
+- `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only). Assistant text arrives twice over: as `model.text.delta` lines while it streams, and once whole in the turn's `model.turn.completed` line — a consumer that only knows the latter can ignore the deltas and read exactly what it always did
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
 - `--backend <native|codex|claude-code>` — execution backend (default `native`, or `AGENT_BACKEND`, or your stored config); see [Codex backend](#codex-backend) and [Claude Code backend](#claude-code-backend)
 - `--sandbox <read-only|workspace-write|danger-full-access>` — Codex sandbox mode (default `workspace-write`)

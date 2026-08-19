@@ -618,6 +618,136 @@ describe("AgentLoop — cancellation and timeout", () => {
   });
 });
 
+describe("AgentLoop — streamed text deltas", () => {
+  it("emits one model.text.delta per streamed chunk, in order", async () => {
+    const sink = new RecordingSink();
+    const provider = new ScriptedProvider([text("Hel", "lo, ", "world.")]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [],
+      permissions: allowAll(),
+      events: sink,
+    });
+
+    await loop.run({ instruction: "go" }, RUN_CONTEXT);
+
+    const deltas = sink.events.filter(
+      (event) => event.type === "model.text.delta",
+    );
+    expect(deltas.map((event) => event.data)).toEqual([
+      { text: "Hel", iteration: 1 },
+      { text: "lo, ", iteration: 1 },
+      { text: "world.", iteration: 1 },
+    ]);
+    for (const event of deltas) {
+      expect(event.runId).toBe("run-1");
+      expect(event.taskId).toBe("task-1");
+    }
+  });
+
+  it("leaves model.turn.completed carrying the whole turn, unchanged", async () => {
+    const sink = new RecordingSink();
+    const provider = new ScriptedProvider([text("Hel", "lo, ", "world.")]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [],
+      permissions: allowAll(),
+      events: sink,
+    });
+
+    const result = await loop.run({ instruction: "go" }, RUN_CONTEXT);
+
+    const completed = sink.events.filter(
+      (event) => event.type === "model.turn.completed",
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.data).toEqual({
+      text: "Hello, world.",
+      toolCallCount: 0,
+      finishReason: "stop",
+    });
+    expect(result.output).toBe("Hello, world.");
+  });
+
+  it("numbers the deltas by the model turn they belong to", async () => {
+    const sink = new RecordingSink();
+    const echo = makeTool("echo", async () => "ok");
+    const provider = new ScriptedProvider([
+      toolTurn("call-1", "echo", {}),
+      text("Done."),
+    ]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [echo],
+      permissions: allowAll(),
+      events: sink,
+    });
+
+    await loop.run({ instruction: "go" }, RUN_CONTEXT);
+
+    expect(
+      sink.events
+        .filter((event) => event.type === "model.text.delta")
+        .map((event) => event.data),
+    ).toEqual([{ text: "Done.", iteration: 2 }]);
+  });
+
+  it("emits no delta at all for a provider that streams no text", async () => {
+    const sink = new RecordingSink();
+    const provider = new ScriptedProvider([
+      [{ type: "done", finishReason: "stop" }],
+    ]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [],
+      permissions: allowAll(),
+      events: sink,
+    });
+
+    await loop.run({ instruction: "go" }, RUN_CONTEXT);
+
+    expect(sink.types()).toEqual([
+      "loop.started",
+      "model.turn.completed",
+      "loop.completed",
+    ]);
+    expect(sink.events[1]?.data).toEqual({
+      toolCallCount: 0,
+      finishReason: "stop",
+    });
+  });
+
+  it("says nothing for an empty chunk", async () => {
+    const sink = new RecordingSink();
+    const provider = new ScriptedProvider([
+      [
+        { type: "text.delta", text: "" },
+        { type: "text.delta", text: "hi" },
+        { type: "done", finishReason: "stop" },
+      ],
+    ]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [],
+      permissions: allowAll(),
+      events: sink,
+    });
+
+    await loop.run({ instruction: "go" }, RUN_CONTEXT);
+
+    expect(
+      sink.events
+        .filter((event) => event.type === "model.text.delta")
+        .map((event) => event.data),
+    ).toEqual([{ text: "hi", iteration: 1 }]);
+  });
+});
+
 describe("AgentLoop — events", () => {
   it("emits lifecycle events in order", async () => {
     const sink = new RecordingSink();
@@ -641,6 +771,7 @@ describe("AgentLoop — events", () => {
       "model.turn.completed",
       "tool.execution.started",
       "tool.execution.completed",
+      "model.text.delta",
       "model.turn.completed",
       "loop.completed",
     ]);
@@ -662,12 +793,13 @@ describe("AgentLoop — events", () => {
     });
     expect(sink.events[2]?.data).toEqual({ tool: "echo", input: { value: 1 } });
     expect(sink.events[3]?.data).toEqual({ tool: "echo", ok: true });
-    expect(sink.events[4]?.data).toEqual({
+    expect(sink.events[4]?.data).toEqual({ text: "Finished.", iteration: 2 });
+    expect(sink.events[5]?.data).toEqual({
       text: "Finished.",
       toolCallCount: 0,
       finishReason: "stop",
     });
-    expect(sink.events[5]?.data).toEqual({
+    expect(sink.events[6]?.data).toEqual({
       status: result.status,
       iterations: 2,
       toolCalls: 1,

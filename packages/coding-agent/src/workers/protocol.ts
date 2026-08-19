@@ -6,6 +6,7 @@ import type {
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { AgentEventSchema } from "@agent/protocol";
 import { z } from "zod";
+import { MODEL_TEXT_DELTA_EVENT } from "../loop.js";
 
 /**
  * The wire protocol between a parent orchestrator and a child worker process.
@@ -245,7 +246,14 @@ export async function serveWorkerRequest(
 
   const sink: EventSink = {
     emit(event) {
-      if (emitEvents) write(io.stdout, { type: "event", event });
+      if (!emitEvents) return;
+      // Streamed text deltas are a live-display concern for a conversation
+      // someone is watching. A subprocess worker's parent has no per-token
+      // screen for this task — it renders task lifecycle lines — so forwarding
+      // one protocol line per token would flood the channel for nothing. The
+      // turn's full text still crosses in `model.turn.completed`.
+      if (event.type === MODEL_TEXT_DELTA_EVENT) return;
+      write(io.stdout, { type: "event", event });
     },
   };
 
