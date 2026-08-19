@@ -21,6 +21,23 @@ alias agent="node $(pwd)/apps/cli/dist/index.js"
 
 빠른 자체 점검: `npm test` → 774개 테스트가 통과해야 합니다.
 
+### Windows (cmd) 사용자
+
+`alias`는 cmd에서 동작하지 않습니다. 대신 저장소 루트에서 한 번 실행하세요:
+
+```cmd
+npm link -w @agent/cli
+```
+
+이후 아무 디렉토리에서나 `agent ...`를 쓸 수 있습니다(제거:
+`npm unlink -g @agent/cli`). 임시로 쓰려면
+`doskey agent=node C:\경로\apps\cli\dist\index.js $*` 도 가능합니다.
+
+**제한**: `bash` 도구와 `validation:` 검증기는 `bash`를 스폰하므로 PATH에
+bash가 필요합니다(Git for Windows 설치 후 cmd에서 `bash -c "echo ok"` 로
+확인). 파일 읽기/수정/검색 도구와 worktree 격리는 Windows 네이티브로
+동작합니다. 가장 매끄러운 경험은 WSL 또는 Git Bash 터미널입니다.
+
 ## 1. 인증 준비 (하나 이상)
 
 | 경로 | 방법 | 확인 |
