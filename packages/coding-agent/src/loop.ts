@@ -10,6 +10,7 @@ import type {
 } from "@agent/ai";
 import type {
   AgentDefinition,
+  AgentImageAttachment,
   AgentRunInput,
   AgentRunResult,
   Tool,
@@ -222,9 +223,17 @@ export class AgentLoopEngine {
 
   /** The fresh-conversation seed: the agent's system prompt plus the user turn. */
   seed(input: AgentRunInput): ModelMessage[] {
+    const images: readonly AgentImageAttachment[] = input.images ?? [];
     return [
       { role: "system", content: this.#options.agent.systemPrompt },
-      { role: "user", content: buildUserContent(input) },
+      {
+        role: "user",
+        content: buildUserContent(input),
+        // `AgentImageAttachment` is a superset of `ImagePart` (it also
+        // carries the source `path` delegated backends want), so it rides
+        // straight through onto the wire message unchanged.
+        ...(images.length > 0 ? { images } : {}),
+      },
     ];
   }
 

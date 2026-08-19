@@ -317,6 +317,23 @@ export class ClaudeCodeBackend {
       );
     }
 
+    // P1-9: `claude -p` (headless print mode) has no documented flag for
+    // attaching an image — unlike Codex's `exec -i <path>`, there is nothing
+    // to translate this into. Rather than silently dropping the image or
+    // stuffing it into the text prompt as something the model can't actually
+    // see, fail clearly before spawning anything.
+    if ((input.images?.length ?? 0) > 0) {
+      return finish(
+        settle(
+          "failed",
+          "Claude Code's headless -p mode has no documented flag for attaching " +
+            "images, so kapel cannot send them through this backend. Use " +
+            "`--backend codex` or the native backend to attach images.",
+          null,
+        ),
+      );
+    }
+
     // On Windows the npm-installed Claude Code CLI is a `claude.cmd` shim,
     // which a bare-name spawn cannot execute — retry the platform's candidate
     // names on ENOENT. A spawn error fires before any output is consumed, so

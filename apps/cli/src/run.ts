@@ -13,7 +13,7 @@ import {
   PermissionEngine,
   SessionAllowlist,
 } from "@agent/coding-agent";
-import type { AgentDefinition } from "@agent/core";
+import type { AgentDefinition, AgentImageAttachment } from "@agent/core";
 import type { EventSink } from "@agent/protocol";
 import type { KapelConfig } from "./config.js";
 import { resolveOrchestratorModel } from "./config-runtime.js";
@@ -133,6 +133,8 @@ export interface RunObjectiveOptions {
   readonly system?: string;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
+  /** `-i/--image` attachments, already validated and read; see `images.ts` (P1-9). */
+  readonly images?: readonly AgentImageAttachment[];
 }
 
 /**
@@ -336,7 +338,12 @@ export async function runObjective(
     );
 
     const result = await loop.run(
-      { instruction: objective },
+      {
+        instruction: objective,
+        ...(options.images !== undefined && options.images.length > 0
+          ? { images: options.images }
+          : {}),
+      },
       {
         runId: crypto.randomUUID(),
         workspacePath,

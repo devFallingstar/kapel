@@ -210,6 +210,46 @@ describe("OpenAIProvider", () => {
     });
   });
 
+  it("serializes image parts as data: image_url blocks, text first", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    const request: ModelRequest = {
+      model: openaiModel,
+      messages: [
+        {
+          role: "user",
+          content: "what is in this screenshot?",
+          images: [{ mediaType: "image/png", base64: "cG5nLWJ5dGVz" }],
+        },
+      ],
+    };
+    await drain(provider().stream(request));
+
+    const body = requestBody(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is in this screenshot?" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,cG5nLWJ5dGVz" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("sends a plain string user message when there are no images (unchanged behavior)", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    await drain(provider().stream(simpleRequest));
+    const body = requestBody(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(body.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
   it("maps every tool_choice variant, and omits tool_choice when unset", async () => {
     const cases: readonly (readonly [ToolChoice, unknown])[] = [
       [{ type: "auto" }, "auto"],

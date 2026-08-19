@@ -26,7 +26,7 @@ interface WireToolCall {
 
 interface WireMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
-  readonly content: string | null;
+  readonly content: string | null | readonly Record<string, unknown>[];
   readonly tool_calls?: readonly WireToolCall[];
   readonly tool_call_id?: string;
 }
@@ -66,6 +66,23 @@ function toWireMessage(message: ModelMessage): WireMessage {
           function: { name: call.name, arguments: JSON.stringify(call.input) },
         })),
       };
+    }
+    case "user": {
+      const images = message.images ?? [];
+      if (images.length === 0)
+        return { role: "user", content: message.content };
+      // Chat Completions has no dedicated image block: an attached image is
+      // a `data:` URL nested inside an `image_url` part, text last.
+      const blocks: Record<string, unknown>[] = [];
+      if (message.content !== "")
+        blocks.push({ type: "text", text: message.content });
+      for (const image of images) {
+        blocks.push({
+          type: "image_url",
+          image_url: { url: `data:${image.mediaType};base64,${image.base64}` },
+        });
+      }
+      return { role: "user", content: blocks };
     }
     default:
       return { role: message.role, content: message.content };

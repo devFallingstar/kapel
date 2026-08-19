@@ -37,9 +37,38 @@ export interface ToolCall {
   readonly input: unknown;
 }
 
+/**
+ * Image formats a provider's vision input accepts (P1-9's `-i/--image`). Both
+ * Anthropic's Messages API and OpenAI's Chat Completions accept exactly this
+ * set as base64-encoded content.
+ */
+export type ImageMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp";
+
+/**
+ * One image attached to a user turn, ready to serialize as a provider
+ * content block. `base64` carries the raw encoded bytes with no `data:` URL
+ * prefix — each provider's request builder adds whatever wrapper its own
+ * wire format wants.
+ */
+export interface ImagePart {
+  readonly mediaType: ImageMediaType;
+  readonly base64: string;
+}
+
 export interface ModelMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
   readonly content: string;
+  /**
+   * Set on `role: "user"` messages that attach images (P1-9). A provider
+   * that cannot express `ModelMessage.images` at all should not claim
+   * {@link ModelCapabilities.vision}; providers in this package that do
+   * claim it serialize this into their own image content block shape.
+   */
+  readonly images?: readonly ImagePart[];
   /** Set on `role: "tool"` messages: the id of the call this result answers. */
   readonly toolCallId?: string;
   /** Set on `role: "assistant"` messages that requested tool calls. */
@@ -131,6 +160,12 @@ export interface UsageRecorder {
 }
 
 export { defaultModelCatalog } from "./catalog.js";
+export {
+  mediaTypeFromExtension,
+  resolveImageMediaType,
+  SUPPORTED_IMAGE_MEDIA_TYPES,
+  sniffImageMediaType,
+} from "./image.js";
 export type { AnthropicProviderOptions } from "./providers/anthropic.js";
 export { AnthropicProvider } from "./providers/anthropic.js";
 export type { ProviderErrorInit } from "./providers/errors.js";

@@ -142,7 +142,29 @@ kapel                     # 목적을 인자로 주지 않으면 대화형 모�
 뜨면 대화로 버그 수정을 지시합니다. 이 프롬프트는 입력 편집기입니다:
 줄 끝에 `\`를 붙이면(또는 여러 줄을 한 번에 붙여넣으면) 계속 입력할 수 있고
 빈 줄로 끝냅니다; ↑/↓로 이전 입력을 다시 불러올 수 있고 이는 `~/.kapel/history`에
-세션을 넘어 저장됩니다; `/`를 입력하고 Tab을 누르면 슬래시 명령어가 자동완성됩니다.
+세션을 넘어 저장됩니다; Tab은 커서 아래 있는 것을 완성합니다 — `/` 명령 이름,
+고정된 인자 목록을 가진 명령의 인자(`/model ` 뒤에서 내장 모델 별칭),
+그리고 `@` 파일 멘션.
+
+**`@` 파일 멘션 (P1-3)**을 먼저 확인합니다. `@`에 이어 경로 일부를 입력하고
+Tab을 누르면 경로 전체에 대한 퍼지 매칭으로 완성됩니다 — `@clisrc` → `apps/cli/src/…`,
+`@calc` → `calc.test.js`. 후보가 하나면 그대로 채워지고, 여럿이면 공통 접두사까지
+채운 뒤 Tab을 한 번 더 누르면 목록이 표시됩니다. 후보는 git 저장소에서는
+`git ls-files --cached --others --exclude-standard`(추적 파일 + `.gitignore`에
+걸리지 않은 미추적 파일), 그 밖에서는 깊이 4까지의 디렉터리 탐색이며
+`node_modules`/`.git`/`dist`는 건너뜁니다. 결과는 몇 초간 캐시되므로 Tab을
+연타해도 매번 git을 띄우지 않습니다.
+
+```text
+kapel> @calc      ← Tab → "@calc.test.js"로 완성
+kapel> @calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘.
+```
+
+**기대 동작**: 멘션은 메시지에 그대로 남고, 전송 시점에 실재하는 파일만 모아
+`[mentioned files: calc.test.js]` 한 줄이 메시지 끝에 덧붙습니다 — 파일 **내용은
+붙지 않습니다**(에이전트가 `read_file`로 직접 읽습니다). 존재하지 않는 경로,
+이메일 주소(`me@example.com`), 작업 디렉터리 밖을 가리키는 경로(`@../x`)는
+무시되어 아무것도 덧붙지 않습니다.
 
 ```text
 kapel> calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘.
@@ -253,6 +275,52 @@ kapel
 규칙을 따릅니다. `.agent/AGENTS.md`(kapel 전용 규칙)와 `~/.kapel/AGENTS.md`
 (`$KAPEL_CONFIG_DIR` 우선, 머신/사용자 전역 규칙)도 같은 방식으로 합쳐지며,
 존재하는 파일만 배너에 나열됩니다 — 아무 파일도 없으면 그 줄 자체가 생략됩니다.
+
+## 2.6. 시나리오 A-2 — 이미지 첨부 (P1-9)
+
+```bash
+cd /tmp/agent-fixture
+# 아무 스크린샷/다이어그램 PNG나 JPEG를 하나 준비해서 경로를 넣습니다.
+kapel -i ./screenshot.png "이 화면에서 뭐가 문제인지 설명해줘"
+kapel -i ./before.png -i ./after.png "두 이미지의 차이를 요약해줘"
+```
+
+**기대 동작(네이티브, 기본 백엔드)**: 이미지가 첨부된 요청이 그대로 모델에
+전송되고, 화면 내용을 반영한 답변이 돌아옵니다. `--json`으로 실행해도 동일
+(이미지 바이트 자체는 이벤트 스트림에 노출되지 않습니다).
+
+다음으로 제한을 확인합니다:
+
+```bash
+kapel -i ./a.png -i ./b.png -i ./c.png -i ./d.png -i ./e.png "..."   # 5장 → 에러
+kapel -i ./does-not-exist.png "..."                                    # 없는 파일 → 에러
+```
+
+**기대 동작**: 둘 다 아무것도 실행하지 않고 종료 코드 1과 함께 사람이 읽을 수
+있는 에러 메시지를 즉시 출력합니다 — 각각 "최대 4장" 및 "파일을 찾을 수 없음"
+취지의 메시지. 5 MiB를 넘는 파일, 합계 20 MiB를 넘는 여러 파일도 같은 방식으로
+즉시 거부됩니다.
+
+Codex 백엔드로도 확인합니다:
+
+```bash
+kapel --backend codex -i ./screenshot.png "이 화면에서 뭐가 문제인지 설명해줘"
+```
+
+**기대 동작**: `codex exec`에 `-i <path>`가 붙어 스폰됩니다 — Codex CLI가 실제로
+이 플래그를 지원하는지는 kapel 쪽 코드/테스트로는 검증되지 않았으므로, 이
+시나리오에서 Codex가 이미지를 실제로 인식하는지 직접 확인해 주세요(모르는
+플래그로 거부한다면 이슈로 기록).
+
+마지막으로 Claude Code 백엔드는 의도적으로 미지원입니다:
+
+```bash
+kapel --backend claude-code -i ./screenshot.png "이 화면에서 뭐가 문제인지 설명해줘"
+```
+
+**기대 동작**: `claude` 프로세스를 아예 스폰하지 않고, "Claude Code's headless
+-p mode has no documented flag for attaching images…" 취지의 메시지와 함께
+종료 코드 1로 즉시 끝납니다.
 
 ## 3. 시나리오 B — Codex 백엔드 (OpenAI OAuth)
 

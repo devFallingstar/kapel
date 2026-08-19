@@ -42,7 +42,7 @@ $ kapel
 kapel v0.5.0  claude-sonnet-5  session 0f3c9a2b
 /path/to/your/repo
 type /help for commands, /exit to quit
-\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands
+\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files
 
 kapel> calc.test.js is failing — find out why and fix it
 → read_file {"path":"calc.test.js"}
@@ -67,7 +67,22 @@ Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; an
 
 The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
 
-The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Typing `/` and pressing Tab completes the slash command.
+The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Tab completes what is under the cursor: a `/` command name, the argument of a command that has a fixed vocabulary (`/model ` offers the built-in aliases), or an `@` file mention.
+
+**`@` mentions a file.** Type `@` and part of a path, then Tab: the match is fuzzy over the whole path, so `@clisrc` finds `apps/cli/src/…` and `@input.ts` finds it wherever it lives. A unique winner is filled in; several share whatever prefix they have in common, and pressing Tab again lists them. The candidates are the workspace's files as `git ls-files --cached --others --exclude-standard` reports them — tracked files plus untracked ones your `.gitignore` does not exclude — cached for a few seconds so holding Tab down does not spawn a process per keystroke. Outside a git repo the list comes from a bounded walk instead (four levels deep, `node_modules`/`.git`/`dist` skipped).
+
+The mention stays plain text in your message. When the message is sent, every `@` token that names a real file inside the workspace is collected into one extra line:
+
+```text
+kapel> why is @apps/cli/src/input.ts holding stdin the whole time?
+
+  …sent as…
+  why is @apps/cli/src/input.ts holding stdin the whole time?
+
+  [mentioned files: apps/cli/src/input.ts]
+```
+
+The file's *contents* are never pasted in — the agent has `read_file` and decides for itself how much of the file it needs, which keeps the context window for the conversation instead of for bytes nobody asked for. A token that names nothing (`@here`, an email address, a path outside the directory you opened `kapel` in) is left alone and reported to nobody.
 
 Commands available at the prompt:
 
@@ -129,6 +144,23 @@ cat error.log | kapel "explain this failure"
 
 Piping nothing (`< /dev/null`, or a command that produces no output) leaves the objective untouched — same as not piping at all. This composes with every flag above (`--json`, `-y`, `--backend`, `-m`, …), since the piped text only ever changes the objective/prompt text. Piping with **no** objective given is a different, unchanged feature — lines piped in drive the interactive prompt instead (see [Interactive mode](#interactive-mode)).
 
+**Attach images with `-i/--image <path>`** (repeatable, up to 4 per run, 5 MiB per file, 20 MiB combined):
+
+```bash
+kapel -i screenshot.png "why does this dialog render off-screen?"
+kapel -i before.png -i after.png "what changed between these two?"
+```
+
+PNG, JPEG, GIF and WEBP are recognized from the file's actual bytes, not its extension — a `.png` that is really a renamed JPEG is still sent correctly as JPEG. Support depends on the backend:
+
+| Backend | Support |
+|---|---|
+| native (default) | Sent as image content blocks alongside the objective, in the same request as the rest of the turn. |
+| `--backend codex` | Forwarded as repeated `codex exec -i <path>` flags. This has only been exercised against a fake CLI in kapel's own tests, not the real Codex binary — treat it as unverified until you've tried it. |
+| `--backend claude-code` | Not supported: `claude -p` (headless mode) has no documented flag for attaching an image, so kapel fails the run immediately with a clear message rather than silently dropping the attachment or stuffing it into the text prompt. |
+
+Interactive mode (`kapel chat`) does not accept `-i/--image` yet.
+
 Useful commands and flags:
 
 - `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id>`, `--no-save`
@@ -139,6 +171,7 @@ Useful commands and flags:
 - `kapel sessions` / `kapel sessions fork <id|name> [--name <name>]` — list and branch interactive chat sessions; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
+- `-i, --image <path>` — attach an image (repeatable, up to 4, 5 MiB each); native and codex backends only, see above
 - `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only). Assistant text arrives twice over: as `model.text.delta` lines while it streams, and once whole in the turn's `model.turn.completed` line — a consumer that only knows the latter can ignore the deltas and read exactly what it always did
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
 - `--backend <native|codex|claude-code>` — execution backend (default `native`, or `AGENT_BACKEND`, or your stored config); see [Codex backend](#codex-backend) and [Claude Code backend](#claude-code-backend)
@@ -272,7 +305,10 @@ are stateless instead — `codex exec --json` does not report a resumable id —
 so each Codex turn carries the recent transcript with it.
 
 Orchestration (`kapel orchestrate`) does not support `--backend claude-code`
-yet and says so; use `--backend codex` or the native loop there.
+yet and says so; use `--backend codex` or the native loop there. Neither does
+`-i/--image`: `claude -p` has no image flag, so a run with attachments fails
+immediately with a clear message rather than sending the objective without
+them — see [One-shot mode](#one-shot-mode).
 
 ### Authentication
 

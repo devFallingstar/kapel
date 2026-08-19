@@ -99,9 +99,28 @@ function mapMessages(messages: readonly ModelMessage[]): MappedMessages {
       case "system":
         if (message.content !== "") systemParts.push(message.content);
         break;
-      case "user":
-        wire.push({ role: "user", content: message.content });
+      case "user": {
+        const images = message.images ?? [];
+        if (images.length === 0) {
+          wire.push({ role: "user", content: message.content });
+          break;
+        }
+        // Images first, text last — Anthropic's own examples order a user
+        // turn's content blocks this way, and it is the order their docs
+        // recommend for multi-image turns.
+        const blocks: Record<string, unknown>[] = images.map((image) => ({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: image.mediaType,
+            data: image.base64,
+          },
+        }));
+        if (message.content !== "")
+          blocks.push({ type: "text", text: message.content });
+        wire.push({ role: "user", content: blocks });
         break;
+      }
       case "tool": {
         const block: Record<string, unknown> = {
           type: "tool_result",

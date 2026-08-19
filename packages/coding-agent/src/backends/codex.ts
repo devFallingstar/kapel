@@ -1,5 +1,9 @@
 import { execFile, spawn } from "node:child_process";
-import type { AgentRunInput, AgentRunResult } from "@agent/core";
+import type {
+  AgentImageAttachment,
+  AgentRunInput,
+  AgentRunResult,
+} from "@agent/core";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import {
   detachedSpawnOptions,
@@ -215,7 +219,7 @@ export class CodexBackend {
   ): Promise<CodexRunResult> {
     const binary = this.#options.binaryPath ?? DEFAULT_BINARY;
     const timeoutMs = this.#options.timeoutMs;
-    const args = this.#buildArgs(buildPrompt(input), context.workspacePath);
+    const args = this.#buildArgs(input, context.workspacePath);
 
     const signals: AbortSignal[] = [];
     if (context.signal !== undefined) signals.push(context.signal);
@@ -380,7 +384,7 @@ export class CodexBackend {
     );
   }
 
-  #buildArgs(prompt: string, workspacePath: string): string[] {
+  #buildArgs(input: AgentRunInput, workspacePath: string): string[] {
     const sandbox = this.#options.sandbox ?? DEFAULT_SANDBOX;
     const fullAuto = this.#options.fullAuto ?? true;
 
@@ -391,11 +395,20 @@ export class CodexBackend {
     const model = this.#options.model;
     if (model !== undefined) args.push("-m", model);
 
+    // Codex's `exec` subcommand documents repeatable `-i/--image <path>`
+    // flags for attaching images to the prompt (P1-9); each attachment was
+    // already validated (existence, size, recognized format) by the CLI
+    // before this backend ever sees it. This has not been exercised against
+    // a real Codex binary — only against the fake CLI in this package's
+    // tests — so treat it as untested-against-the-real-CLI until confirmed.
+    const images: readonly AgentImageAttachment[] = input.images ?? [];
+    for (const image of images) args.push("-i", image.path);
+
     const extra = this.#options.extraArgs;
     if (extra !== undefined) args.push(...extra);
 
     // The prompt is always the trailing positional argument.
-    args.push(prompt);
+    args.push(buildPrompt(input));
     return args;
   }
 

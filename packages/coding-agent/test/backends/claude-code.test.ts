@@ -438,6 +438,31 @@ describe("ClaudeCodeBackend.run", () => {
     expect(isGone(pid)).toBe(true);
   }, 20_000);
 
+  it("fails immediately with a clear message when images are attached, without spawning (P1-9)", async () => {
+    // A binary that would hang if actually spawned — proves the guard fires
+    // before any process starts.
+    const binaryPath = await writeFakeClaude(dir, { sleepSeconds: 30 });
+    const backend = new ClaudeCodeBackend({ binaryPath });
+
+    const started = Date.now();
+    const result = await backend.run(
+      {
+        instruction: "what is in this screenshot?",
+        images: [
+          { mediaType: "image/png", base64: "cG5n", path: "/tmp/a.png" },
+        ],
+      },
+      context(workspace),
+    );
+
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("headless -p mode");
+    expect(result.summary).toContain("codex");
+    expect(result.events).toBe(0);
+    expect(result.exitCode).toBeNull();
+  });
+
   it("returns immediately when the signal is already aborted", async () => {
     const binaryPath = await writeFakeClaude(dir, { sleepSeconds: 30 });
     const backend = new ClaudeCodeBackend({ binaryPath });

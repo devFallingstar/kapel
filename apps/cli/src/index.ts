@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import type { AgentImageAttachment } from "@agent/core";
 import { Command } from "commander";
 import type { BackendName } from "./backend.js";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
 import { runExplainCommand } from "./explain-cmd.js";
+import { resolveImageAttachments } from "./images.js";
 import { runInit } from "./init.js";
 import {
   CLI_VERSION,
@@ -70,6 +72,8 @@ interface RawRunOpts {
   readonly sandbox: string;
   /** `--no-setup`: commander sets this false when the flag is passed. */
   readonly setup?: boolean;
+  /** Raw `-i/--image` paths, in the order given; see `toResolvedImages` (P1-9). */
+  readonly image: readonly string[];
 }
 
 /**
@@ -104,9 +108,16 @@ function parsePositive(raw: string, flag: string, integer: boolean): number {
   return value;
 }
 
+/** Accumulates repeated `-i/--image <path>` flags into an ordered list. */
+function collectImage(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
 function toRunOptions(
   raw: RawRunOpts,
   config: KapelConfig | undefined,
+  images: readonly AgentImageAttachment[],
 ): Parameters<typeof runObjective>[1] {
   const maxIterations = parsePositive(
     raw.maxIterations,
@@ -127,6 +138,7 @@ function toRunOptions(
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
     ...(raw.system === undefined ? {} : { system: raw.system }),
     ...(config === undefined ? {} : { config }),
+    ...(images.length === 0 ? {} : { images }),
   };
 }
 
@@ -143,6 +155,7 @@ function delegatedModel(
 function toCodexRunOptions(
   raw: RawRunOpts,
   config: KapelConfig | undefined,
+  images: readonly AgentImageAttachment[],
 ): Parameters<typeof runCodexObjective>[1] {
   const timeoutSeconds =
     raw.timeout === undefined
@@ -158,6 +171,7 @@ function toCodexRunOptions(
     fullAuto: fullAutoForSandbox(sandbox),
     ...(model === undefined ? {} : { model }),
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    ...(images.length === 0 ? {} : { images }),
   };
 }
 
@@ -171,6 +185,7 @@ interface RawChatOpts {
 function toClaudeCodeRunOptions(
   raw: RawRunOpts,
   config: KapelConfig | undefined,
+  images: readonly AgentImageAttachment[],
 ): Parameters<typeof runClaudeCodeObjective>[1] {
   const timeoutSeconds =
     raw.timeout === undefined
@@ -183,6 +198,7 @@ function toClaudeCodeRunOptions(
     json: raw.json,
     ...(model === undefined ? {} : { model }),
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    ...(images.length === 0 ? {} : { images }),
   };
 }
 
@@ -249,6 +265,20 @@ async function runAndExit(
       objective,
       process.stdin,
     );
+
+    // Resolved once regardless of backend: codex forwards the original
+    // paths as `-i <path>` flags, the native path sends the same base64
+    // bytes read here, and claude-code fails fast on whatever comes through
+    // (see `ClaudeCodeBackend.run`) — either way the file only needs to be
+    // read and validated once.
+    const resolvedImages = await resolveImageAttachments(raw.image, raw.cwd);
+    if (!resolvedImages.ok) {
+      console.error(resolvedImages.error);
+      process.exitCode = 1;
+      return;
+    }
+    const images = resolvedImages.images;
+
     const config = await runtimeConfig(raw);
     const backend = resolveBackendSetting(
       raw.backend,
@@ -258,20 +288,20 @@ async function runAndExit(
     if (backend === "codex") {
       process.exitCode = await runCodexObjective(
         objectiveWithStdin,
-        toCodexRunOptions(raw, config),
+        toCodexRunOptions(raw, config, images),
       );
       return;
     }
     if (backend === "claude-code") {
       process.exitCode = await runClaudeCodeObjective(
         objectiveWithStdin,
-        toClaudeCodeRunOptions(raw, config),
+        toClaudeCodeRunOptions(raw, config, images),
       );
       return;
     }
     process.exitCode = await runObjective(
       objectiveWithStdin,
-      toRunOptions(raw, config),
+      toRunOptions(raw, config, images),
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -310,6 +340,13 @@ program
     "--sandbox <mode>",
     `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`,
     DEFAULT_SANDBOX_MODE,
+  )
+  .option(
+    "-i, --image <path>",
+    "attach an image (PNG/JPEG/GIF/WEBP; repeatable, up to 4, 5 MiB each) " +
+      "— supported by the native and codex backends, not claude-code",
+    collectImage,
+    [] as string[],
   )
   .option(
     "--no-setup",
