@@ -82,11 +82,22 @@ Commands available at the prompt:
 | `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
 | `/usage` | tokens and cost so far |
 | `/compact` | compact the conversation history now (native backend only) |
+| `/undo` | put the files back the way they were before the last prompt |
 | `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
 
 Anything else you type is a message to the agent.
 
 On the native backend, a long conversation compacts itself automatically once it passes 60 messages — old tool results get elided (kept ones are marked, nothing is dropped from the transcript), leaving one dim `≈ context compacted: …` line — so it keeps going instead of eventually blowing the model's context window. `/compact` does the same thing on demand, useful right before a turn you want as much context budget for as possible. Under `--backend codex` or `--backend claude-code` the external CLI manages its own context, so `/compact` there just says it isn't supported.
+
+**`/undo` — a checkpoint before every prompt.** The interactive agent writes straight to your files, with no worktree between you and it, so kapel takes a snapshot of the working tree just before each message is sent (slash commands change nothing, so they take none) and `/undo` restores the newest one: `↩ restored 3 files to before "fix the tests" (2 min ago)`. The snapshot is a git tree object built against a *temporary* index — your index, your worktree and your stash list are never touched — which means it covers untracked files too, not only the ones `git stash` would see. Restoring diffs that snapshot against the tree as it is now and reverses the difference: files the turn changed are rewritten, files it created are deleted, files it deleted come back.
+
+Read the fine print before you rely on it:
+
+- **git only.** Outside a git repository nothing is captured and `/undo` says so — full-directory copies of an arbitrary working directory are not a trade kapel is willing to make on your behalf.
+- **It reverts the file, not the author.** Everything that changed since the checkpoint goes back, whoever changed it — the agent's `edit_file`, a `bash` command it ran, your own editor in another window, a build that wrote into the tree. If a turn ran that long, look before you undo.
+- **Scope.** The snapshot covers the whole repository the working directory belongs to, minus anything `.gitignore` excludes (`node_modules/`, build output, `.env`) and minus `.agent/`, which holds kapel's own session database and task worktrees. Those are never captured and never restored.
+- **One-way, and only for this process.** There is no `/redo`: an undone checkpoint is popped. The last 20 checkpoints of a session are kept, in memory only — quitting kapel forgets them. The commit objects behind them stay in the repository unreferenced (`git show <hash>` still works if you noted one down) until git's own garbage collection eventually prunes them.
+- **Refusals.** `/undo` will not run while a merge, rebase, cherry-pick, revert or bisect is half-finished; finish or abort that first. The checkpoint stays put in the meantime.
 
 **Sessions are per directory and survive restarts.** Every conversation is recorded in `.agent/sessions.db` beside the repo (the directory is created on first use — no `kapel init` needed), titled from your first message. Pick one back up with:
 
@@ -125,6 +136,7 @@ Useful commands and flags:
 - `kapel models` — list available model aliases and their credential status
 - `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
 - `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
+- `kapel sessions` / `kapel sessions fork <id|name> [--name <name>]` — list and branch interactive chat sessions; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only). Assistant text arrives twice over: as `model.text.delta` lines while it streams, and once whole in the turn's `model.turn.completed` line — a consumer that only knows the latter can ignore the deltas and read exactly what it always did
@@ -177,6 +189,47 @@ explicit CLI flag  >  environment variable  >  ~/.kapel/config.json  >  built-in
 config when you have one (`lead` and `reviewer` from the orchestrator model,
 `worker` and `cheap` from the two worker models), and copies the template
 unchanged when you don't.
+
+### Permissions
+
+Without `-y`, `write_file`/`edit_file`/`bash` ask on the terminal (`[y/n/a]` —
+"a" remembers the answer for the rest of that run only, never written
+anywhere). A `permission` block, hand-edited into either config file, changes
+what asks and what doesn't — opencode's syntax, unchanged:
+
+```jsonc
+// ~/.kapel/config.json
+{
+  "version": 1, "backend": "…", "models": { "…": "…" },
+  "permission": {
+    "edit_file": "allow",
+    "bash": { "*": "ask", "git *": "allow", "rm *": "deny" }
+  }
+}
+```
+
+```yaml
+# .agent/config.yaml — same shape, applies to this project only
+permission:
+  edit_file: allow
+  bash:
+    "*": ask
+    "git *": allow
+    "rm *": deny
+```
+
+Each tool's value is `"allow" | "ask" | "deny"`, except `bash`, whose value is
+a map of command patterns to verdicts: `"*"` is the catch-all, `"git *"`
+matches any `git` subcommand, `"git log *"` matches only `git log`, and a bare
+`"git"` matches only `git` with no subcommand at all — the most specific
+pattern that matches wins, and an explicit `"deny"` always wins a tie.
+
+Precedence: built-in defaults, then `~/.kapel/config.json`, then
+`.agent/config.yaml` — each layer only needs to mention what it wants to
+change. A `"deny"` from any of these three cannot be talked around by
+answering "a" at the prompt; it never reaches the prompt at all. There is no
+`/config` UI for this yet — edit the file, restart the run. Neither file needs
+a `permission` block; both work exactly as before without one.
 
 ### Project instructions (AGENTS.md)
 
@@ -340,7 +393,15 @@ kapel resume 0f3c…             # finish the tasks that never succeeded
 - **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
 - **`kapel resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `kapel orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
 
-Interactive conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `kapel runs` reads the orchestration runs above. See [Interactive mode](#interactive-mode).
+Interactive conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `kapel runs` reads the orchestration runs above. See [Interactive mode](#interactive-mode). Outside the REPL, `kapel sessions` lists them the same way `kapel runs` lists orchestration runs, and `kapel sessions fork <id|name> [--name <name>]` copies one — its title, model and whole transcript so far — into a brand new session that then evolves independently of the one it was forked from:
+
+```bash
+kapel sessions                                # this workspace's chat sessions, newest-touched first
+kapel sessions fork 0f3c…                     # copy a conversation into a new, unnamed session
+kapel sessions fork 0f3c… --name "plan b"     # …and name the copy
+```
+
+`kapel sessions` shows a `NAME` column once any listed session has one; a session picks up a name by being forked with `--name`, or from `/name` at the prompt once that lands (see the roadmap). `kapel sessions fork`'s `<id|name>` argument resolves in this order: an exact id, then a unique id prefix, then an exact name — if two sessions share a name the most recently touched one is used and a note is printed to stderr. `--json` on either command emits the same fields as an array/object instead of a table/line.
 
 `--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 

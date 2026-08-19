@@ -95,6 +95,29 @@ echo "" | kapel         # 파이프(비-TTY) — 마법사 없이 도움말만 �
 전역 설정에서 채워집니다(`lead`/`reviewer` ← 오케스트레이터 모델,
 `worker`·`cheap` ← 워커 모델 2종). 설정이 없으면 템플릿 그대로 복사됩니다.
 
+## 1.6. 시나리오 A-1 — 권한 규칙 설정 파일 (P1-5)
+
+`-y` 없이 실행하면 `write_file`/`edit_file`/`bash`가 매번 물어봅니다. 방금 만든
+`$KAPEL_CONFIG_DIR/config.json`에 `permission` 블록을 직접 추가해서 특정
+명령만 자동 허용/차단되는지 확인하세요:
+
+```bash
+# config.json의 최상위에 아래를 추가 (backend/models와 같은 레벨)
+#   "permission": {
+#     "edit_file": "allow",
+#     "bash": { "*": "ask", "git *": "allow", "rm *": "deny" }
+#   }
+kapel "git status를 실행해줘"       # git * → allow, 프롬프트 없이 바로 실행
+kapel "테스트 파일을 하나 수정해줘"  # edit_file → allow, 프롬프트 없이 바로 편집
+kapel "rm -rf 빌드 폴더를 지워줘"    # rm * → deny, 프롬프트 자체가 뜨지 않고 거부됨
+```
+
+`.agent/config.yaml`에도 같은 모양의 `permission:` 블록을 쓸 수 있고, 저장소
+쪽이 머신 설정보다 우선합니다. 두 파일 어디에도 `permission`이 없으면 이전과
+동일하게 동작합니다(기본값: 읽기 전용 도구만 자동 허용). 오타 등으로
+`permission` 블록 일부가 잘못돼도 전체 설정이 깨지지 않고, 잘못된 항목만
+무시된 채 `warning: …`이 stderr에 한 번 출력됩니다.
+
 ## 2. 시나리오 A — 대화형 에이전트 (M1)
 
 테스트용 저장소를 하나 만들고 (Windows cmd에서는 파일 생성을 메모장 등으로 대체) 그 안에서 실행합니다:
@@ -142,6 +165,7 @@ kapel> sub 함수도 추가하고 테스트도 같이 만들어줘
 kapel> /usage        # 누적 토큰·비용
 kapel> /compact      # 지금 바로 컨텍스트 압축 ("compacted: elided … / nothing to compact.")
 kapel> /sessions     # 이 디렉터리의 대화 목록 (id, 마지막 갱신, 메시지 수, 제목)
+kapel> /undo         # 직전 프롬프트 이전 상태로 작업 트리 복구
 kapel> /exit
 ```
 
@@ -150,6 +174,31 @@ kapel> /exit
 `≈ context compacted: …` 한 줄이 뜨며 대화는 끊기지 않고 계속됩니다. `--backend
 codex`/`--backend claude-code`에서는 외부 CLI가 자기 컨텍스트를 관리하므로
 `/compact`는 "not supported with the … backend" 한 줄만 출력합니다.
+
+**체크포인트와 `/undo`**를 확인합니다. 대화형 세션은 격리 없이 실제 파일을 고치므로,
+kapel은 **매 프롬프트 직전에** 작업 트리를 스냅샷합니다(슬래시 명령은 파일을 바꾸지
+않으므로 스냅샷하지 않습니다). 위에서 `calc.js`가 수정된 직후 `/undo`를 눌러 보세요:
+
+```text
+kapel> /undo
+↩ restored 1 file to before "calc.test.js가 실패하는 원인을 …" (2 min ago)
+  every edit since then is gone, including ones made by shell commands or other programs — undo is one-way
+```
+
+`git diff`로 되돌아갔는지 확인할 수 있습니다(`add(a, b) { return a - b; }`로 복귀).
+스냅샷은 **임시 인덱스**에 만든 git tree 오브젝트라 인덱스·작업 트리·`git stash list`를
+전혀 건드리지 않으며(`git stash list`가 비어 있는지 확인해 보세요), `git stash`가 못 보는
+**추적되지 않는 파일까지** 포함합니다 — 에이전트가 새로 만든 파일은 `/undo`로 삭제되고,
+지운 파일은 되살아납니다. 확인해 볼 경계 조건:
+
+- 되돌릴 게 없을 때: `nothing to undo — no checkpoint has been taken in this session yet.`
+- git 저장소가 아닌 디렉터리(`mkdir /tmp/plain && cd /tmp/plain && kapel`):
+  스냅샷을 아예 만들지 않고 `/undo`가 `needs a git repository … Run \`git init\`` 안내.
+- 머지/리베이스 진행 중(`git merge` 충돌 상태): `/undo is unavailable while a merge is
+  in progress …`로 거부하고 체크포인트는 그대로 유지.
+- `.gitignore` 대상과 `.agent/`는 스냅샷·복구 양쪽에서 제외됩니다(세션 DB가 되돌려지지
+  않습니다). 되돌리기는 한 방향이며 `/redo`는 없습니다. 체크포인트는 세션당 최근 20개,
+  메모리에만 남고 프로세스가 끝나면 사라집니다.
 
 이어서 **재개**를 확인합니다 — 대화는 `.agent/sessions.db`에 저장되므로
 프로세스를 껐다 켜도 이어집니다:
@@ -162,7 +211,7 @@ kapel chat --continue     # 방금 그 대화를 그대로 이어받음 ("resume
 확인할 수 있습니다. 프롬프트에서 `/new`(새 대화), `/resume <id>`(전환),
 `/model <alias>`(이후 턴부터 모델 교체), `/config`(설정 마법사를 다시 돌려
 백엔드·모델을 이 대화에 바로 적용 — 대화 내용은 유지됨), `/compact`(지금 바로
-컨텍스트 압축), `/help`도 함께 눌러 보세요. `/config`는 터미널에서만 동작하며,
+컨텍스트 압축), `/undo`(직전 프롬프트 이전으로 파일 복구), `/help`도 함께 눌러 보세요. `/config`는 터미널에서만 동작하며,
 파이프로 실행 중이면 `/config needs a terminal —` 안내가 나옵니다.
 
 추가 확인: 턴 진행 중 Ctrl-C(해당 턴만 취소, 대화는 유지), 프롬프트에서 Ctrl-C
@@ -320,6 +369,23 @@ kapel resume <runId>            # (실패한 런이 있을 때) 미완료 태스
 런은 `kapel runs`로 확인합니다. 대화형 프롬프트에서
 `/orchestrate "<objective>"`로 위 파이프라인을 바로 돌릴 수도 있습니다
 (정책 lock이 최신이어야 하며, 실패해도 대화는 유지됩니다).
+
+REPL 밖에서 대화 목록을 보거나 복제하려면:
+
+```bash
+kapel sessions                              # 이 워크스페이스의 대화 목록, 최근 갱신 순
+kapel sessions fork <id>                    # 그 대화의 전체 이력을 새 세션으로 복제
+kapel sessions fork <id> --name "실험 브랜치"  # …이름을 붙여서 복제
+```
+
+**기대 동작**: `kapel sessions`는 시나리오 A에서 만든 대화가 `ID`/`UPDATED`/
+`MSGS`/`TITLE` 표로 보입니다(이름이 붙은 세션이 하나라도 있으면 `NAME` 열이
+추가됩니다). `kapel sessions fork <id>`는 `Forked <id> → <newId>` 한 줄을
+출력하고, 이후 `kapel sessions`에 복제본이 별도 행으로 나타나며 원본과
+독립적으로 이어집니다 — 복제본에 `kapel chat --session <newId>`로 들어가
+메시지를 보내도 원본 대화(`<id>`)의 메시지 수는 그대로입니다. `<id>` 자리에는
+전체 id, 짧은 접두사, 세션 이름(위에서 `--name`으로 붙인 것) 중 아무거나
+써도 됩니다; 접두사가 여러 세션에 걸치면 오류로 더 긴 접두사를 요구합니다.
 
 ## 6. 검증 게이트 (M5)
 

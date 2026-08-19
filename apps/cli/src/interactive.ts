@@ -40,6 +40,8 @@ import {
   codexLoginGuidance,
   isDelegatedBackend,
 } from "./backend.js";
+import type { CheckpointStore } from "./checkpoint.js";
+import { createCheckpointStore, undoLines } from "./checkpoint.js";
 import type { KapelConfig } from "./config.js";
 import {
   checkBackendAvailability,
@@ -67,7 +69,11 @@ import {
   DEFAULT_WORKER_MODE,
   runOrchestrate,
 } from "./orchestrate.js";
-import { DEFAULT_PERMISSIONS } from "./permissions.js";
+import {
+  DEFAULT_PERMISSIONS,
+  loadRepoPermissionRules,
+  resolvePermissionRules,
+} from "./permissions.js";
 import { formatTable } from "./plan.js";
 import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
@@ -499,6 +505,12 @@ export interface InteractiveControllerDeps {
    * run it on, and `/config` says so instead.
    */
   readonly configure?: () => Promise<KapelConfig | undefined>;
+  /**
+   * Working-tree checkpoints for `/undo`. Absent means the feature is off and
+   * `/undo` says so — which is what a caller with no filesystem to snapshot
+   * (the tests) gets by simply not passing one.
+   */
+  readonly checkpoints?: CheckpointStore;
   readonly newId?: () => string;
   readonly now?: () => number;
 }
@@ -552,6 +564,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     name: "compact",
     usage: "/compact",
     help: "compact the conversation history now",
+  },
+  {
+    name: "undo",
+    usage: "/undo",
+    help: "restore the files to before the last prompt",
   },
   {
     name: "orchestrate",
@@ -730,6 +747,14 @@ export async function createInteractiveController(
     text: string,
     signal?: AbortSignal,
   ): Promise<DispatchResult> => {
+    // The checkpoint is taken here rather than in `handleLine` because this is
+    // the one place a line is known to be about to start a turn: a slash
+    // command changes no files and would only push the real work off the end
+    // of a 20-deep stack. It covers the delegated backends too — an external
+    // CLI edits the same working tree kapel is standing in.
+    const checkpointWarning = await deps.checkpoints?.capture(text);
+    if (checkpointWarning !== undefined) emit(checkpointWarning);
+
     if (title === "") {
       title = chatTitleFrom(text);
       titleDirty = true;
@@ -973,6 +998,23 @@ export async function createInteractiveController(
     return drain();
   };
 
+  /**
+   * `/undo` — put the working tree back the way it was before the last prompt.
+   *
+   * One-way by design: the checkpoint that was just restored is popped and
+   * there is no `/redo`. Redo would mean keeping a snapshot of the state the
+   * user just asked to throw away and then re-applying it over whatever they
+   * did next, which is a merge, not an undo.
+   */
+  const slashUndo = async (): Promise<DispatchResult> => {
+    if (deps.checkpoints === undefined) {
+      emit("/undo is not available here.");
+      return drain();
+    }
+    for (const line of undoLines(await deps.checkpoints.undo())) emit(line);
+    return drain();
+  };
+
   const slashOrchestrate = async (
     objective: string,
   ): Promise<DispatchResult> => {
@@ -1031,6 +1073,8 @@ export async function createInteractiveController(
         return drain();
       case "compact":
         return await slashCompact();
+      case "undo":
+        return await slashUndo();
       case "orchestrate":
         return await slashOrchestrate(argument);
       default:
@@ -1250,6 +1294,15 @@ export async function runInteractive(
   const workspacePath = path.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
+  // P1-5: same permission-rule merge as one-shot runs (run.ts) — defaults <
+  // machine config < repo config; a config deny is checked before the
+  // session allowlist overlay, so it can never be masked by an 'a' answer.
+  const repoPermission = await loadRepoPermissionRules(workspacePath);
+  const permissionRules = resolvePermissionRules(
+    DEFAULT_PERMISSIONS,
+    options.config?.permission,
+    repoPermission,
+  );
 
   // `.env` is loaded first so a workspace-local `AGENT_BACKEND`/`AGENT_MODEL`
   // takes part in the precedence chain exactly like a shell variable.
@@ -1434,7 +1487,7 @@ export async function runInteractive(
         agentLoopOptions({
           agent,
           provider: args.provider,
-          permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
+          permissions: new PermissionEngine(permissionRules, {
             defaultDecision: "ask",
             overlay: sessionAllowlist,
             ...(prompter === undefined ? {} : { prompter }),
@@ -1474,6 +1527,9 @@ export async function runInteractive(
       ...(startup.provider === undefined ? {} : { provider: startup.provider }),
       start: started.start,
       usage,
+      // One store for the whole REPL: the checkpoints outlive `/new`,
+      // `/resume` and `/model`, because the working tree does too.
+      checkpoints: createCheckpointStore({ workspacePath }),
       orchestrate: (objective) =>
         runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
       ...(wizardTty
