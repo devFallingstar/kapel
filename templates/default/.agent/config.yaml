@@ -17,3 +17,15 @@ agents:
   defaultWorker: coder
   explorer: explorer
   reviewer: reviewer
+
+# Commands that gate a mutating task's success. Each one runs through
+# `bash -lc` in the task's own workspace after the worker finishes; if any of
+# them fails, the task is reported as failed and its dependents are cancelled.
+# Uncomment and adapt to this repository's actual commands.
+#
+# validation:
+#   - name: typecheck
+#     command: npm run typecheck
+#     timeoutSeconds: 300   # optional, defaults to 600
+#   - name: test
+#     command: npm test

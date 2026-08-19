@@ -54,6 +54,18 @@ export {
   WorkerStdoutLineSchema,
 } from "./protocol.js";
 export type {
+  ReviewIssue,
+  ReviewVerdict,
+  ReviewVerdictInput,
+  ReviewVerdictOutput,
+} from "./review.js";
+export {
+  applyReviewVerdict,
+  NO_VERDICT_SUMMARY,
+  REVIEW_VERDICT_TOOL_NAME,
+  ReviewVerdictTool,
+} from "./review.js";
+export type {
   WorkspaceExecutorFactory,
   WorktreeIsolatedExecutorOptions,
 } from "./worktree-executor.js";

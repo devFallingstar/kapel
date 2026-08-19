@@ -15,8 +15,12 @@ export type {
   AgentProjectConfig,
   ProjectAgent,
   ProjectModelRef,
+  ProjectValidator,
 } from "./types.js";
-export { ProjectConfigError } from "./types.js";
+export {
+  DEFAULT_VALIDATOR_TIMEOUT_SECONDS,
+  ProjectConfigError,
+} from "./types.js";
 
 /** Returns `<workspaceRoot>/.agent` when it exists and is a directory, else `undefined`. */
 export async function findAgentDir(

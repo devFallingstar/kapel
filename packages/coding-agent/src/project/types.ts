@@ -19,11 +19,38 @@ export interface ProjectAgent {
   readonly sourcePath: string;
 }
 
+/**
+ * Timeout applied to a validator that does not declare one.
+ *
+ * Ten minutes is deliberately generous: a validator is a whole `npm test` or
+ * `tsc -b` on a cold cache, and killing a slow-but-working suite would report a
+ * failure the repository does not have.
+ */
+export const DEFAULT_VALIDATOR_TIMEOUT_SECONDS = 600;
+
+/**
+ * One entry of the `validation:` list in config.yaml — a command that decides
+ * whether a mutating task's work is acceptable.
+ *
+ * `timeoutSeconds` is optional in the file; {@link loadProjectConfig} fills it
+ * in with {@link DEFAULT_VALIDATOR_TIMEOUT_SECONDS}, so a validator that comes
+ * out of a loaded config always carries an explicit budget. It stays optional on
+ * the type so callers can build one by hand without repeating the default.
+ */
+export interface ProjectValidator {
+  readonly name: string;
+  /** Run through `bash -lc` in the task's workspace. */
+  readonly command: string;
+  readonly timeoutSeconds?: number;
+}
+
 /** The parsed contents of `.agent/config.yaml`. */
 export interface AgentProjectConfig {
   readonly models: Readonly<Record<string, ProjectModelRef>>;
   /** The `agents` map: role-slot name -> agent name. */
   readonly agentSlots: Readonly<Record<string, string>>;
+  /** The `validation` list, in file order. Empty when the key is absent. */
+  readonly validators: readonly ProjectValidator[];
 }
 
 /** A fully loaded and cross-validated `.agent/` project configuration. */

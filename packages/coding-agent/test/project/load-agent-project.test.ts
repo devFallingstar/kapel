@@ -78,7 +78,11 @@ describe("loadAgentProject - structural cases", () => {
       await mkdir(join(workspacePath, ".agent"));
       const project = await loadAgentProject(workspacePath);
       expect(project).toBeDefined();
-      expect(project?.config).toEqual({ models: {}, agentSlots: {} });
+      expect(project?.config).toEqual({
+        models: {},
+        agentSlots: {},
+        validators: [],
+      });
       expect(project?.agents).toEqual([]);
       expect(project?.orchestrationMarkdown).toBeUndefined();
       expect(project?.knownAgentNames()).toEqual(new Set());

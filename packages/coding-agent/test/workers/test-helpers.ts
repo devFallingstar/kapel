@@ -146,7 +146,11 @@ export function makeProjectAgent(
 /** Minimal in-memory {@link AgentProject} for executor tests. */
 export function makeProject(agents: readonly ProjectAgent[]): AgentProject {
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
-  const config: AgentProjectConfig = { models: {}, agentSlots: {} };
+  const config: AgentProjectConfig = {
+    models: {},
+    agentSlots: {},
+    validators: [],
+  };
   return {
     root: "/virtual/.agent",
     config,

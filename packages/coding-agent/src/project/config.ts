@@ -3,13 +3,28 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { formatZodIssues, isNotFound } from "./internal.js";
-import type { AgentProjectConfig, ProjectModelRef } from "./types.js";
-import { ProjectConfigError } from "./types.js";
+import type {
+  AgentProjectConfig,
+  ProjectModelRef,
+  ProjectValidator,
+} from "./types.js";
+import {
+  DEFAULT_VALIDATOR_TIMEOUT_SECONDS,
+  ProjectConfigError,
+} from "./types.js";
 
 const ModelRefSchema = z
   .object({
     provider: z.string().min(1, "must not be empty"),
     model: z.string().min(1, "must not be empty"),
+  })
+  .strict();
+
+const ValidatorSchema = z
+  .object({
+    name: z.string().min(1, "must not be empty"),
+    command: z.string().min(1, "must not be empty"),
+    timeoutSeconds: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -19,15 +34,20 @@ const ConfigFileSchema = z
     agents: z
       .record(z.string(), z.string().min(1, "must not be empty"))
       .optional(),
+    validation: z.array(ValidatorSchema).optional(),
   })
   .strict();
 
-const EMPTY_CONFIG: AgentProjectConfig = { models: {}, agentSlots: {} };
+const EMPTY_CONFIG: AgentProjectConfig = {
+  models: {},
+  agentSlots: {},
+  validators: [],
+};
 
 /**
  * Loads `<agentDir>/config.yaml`. A missing file yields the empty config
- * (`{ models: {}, agentSlots: {} }`); malformed YAML or a shape mismatch
- * throws {@link ProjectConfigError} with every problem found.
+ * (`{ models: {}, agentSlots: {}, validators: [] }`); malformed YAML or a shape
+ * mismatch throws {@link ProjectConfigError} with every problem found.
  */
 export async function loadProjectConfig(
   agentDir: string,
@@ -63,8 +83,20 @@ export async function loadProjectConfig(
     models[alias] = { provider: ref.provider, model: ref.model };
   }
 
+  // The default is resolved here rather than at run time so that everything
+  // downstream — the runner, the reporting, a future `agent config` dump —
+  // agrees on how long a validator is allowed to take.
+  const validators: ProjectValidator[] = (result.data.validation ?? []).map(
+    (entry) => ({
+      name: entry.name,
+      command: entry.command,
+      timeoutSeconds: entry.timeoutSeconds ?? DEFAULT_VALIDATOR_TIMEOUT_SECONDS,
+    }),
+  );
+
   return {
     models,
     agentSlots: { ...(result.data.agents ?? {}) },
+    validators,
   };
 }

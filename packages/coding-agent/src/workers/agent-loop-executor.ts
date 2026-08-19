@@ -18,6 +18,11 @@ import {
   type NormalizableRun,
   normalizeTaskResult,
 } from "./normalize.js";
+import {
+  applyReviewVerdict,
+  REVIEW_VERDICT_TOOL_NAME,
+  ReviewVerdictTool,
+} from "./review.js";
 
 /**
  * Default tool policy for headless workers.
@@ -186,9 +191,24 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
       );
     }
 
-    const permissions =
+    const configuredPermissions =
       this.#options.permissionOverrides ?? DEFAULT_WORKER_PERMISSIONS;
-    const tools = selectToolsForAgent(builtinTools(), projectAgent.tools);
+    const selected = selectToolsForAgent(builtinTools(), projectAgent.tools);
+
+    // A review task gets one extra tool on top of whatever its agent file
+    // grants: the way it reports its decision. It is injected rather than
+    // configured because it is part of the task contract, not of the agent —
+    // the same reviewer agent has nothing to submit on a non-review task — and
+    // it is force-allowed for the same reason: a reviewer that cannot reach its
+    // own verdict tool would fail every review it is asked to run.
+    const isReview = task.spec.type === "review";
+    const verdictTool = isReview ? new ReviewVerdictTool() : undefined;
+    const tools =
+      verdictTool === undefined ? selected : [...selected, verdictTool];
+    const permissions: Readonly<Record<string, PermissionDecision>> =
+      verdictTool === undefined
+        ? configuredPermissions
+        : { ...configuredPermissions, [REVIEW_VERDICT_TOOL_NAME]: "allow" };
 
     const definition: AgentDefinition = {
       name: projectAgent.name,
@@ -244,6 +264,14 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
     }
 
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
-    return normalizeTaskResult({ taskId, loop: run, inspection });
+    const result = normalizeTaskResult({ taskId, loop: run, inspection });
+
+    // The verdict, not the prose, decides a review. A rejection becomes a
+    // `failed` result, which is what makes the review blocking: the scheduler
+    // cancels the dependents of a failed task and the run exits non-zero, so a
+    // risky task cannot complete past a review that turned it down.
+    return verdictTool === undefined
+      ? result
+      : applyReviewVerdict(result, verdictTool.verdict());
   }
 }

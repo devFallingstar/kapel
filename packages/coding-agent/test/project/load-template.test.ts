@@ -56,6 +56,10 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
         model: "gpt-5.1",
       });
 
+      // The template documents `validation:` as comments only, so the shipped
+      // default still configures no validators.
+      expect(project.config.validators).toEqual([]);
+
       expect(project.orchestrationMarkdown).toBeDefined();
       expect(project.orchestrationMarkdown).toContain("Orchestration Policy");
       expect(project.orchestrationMarkdown).toContain(

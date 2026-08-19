@@ -3,6 +3,7 @@ import type {
   TaskResult,
   WorkerExecutionContext,
 } from "@agent/orchestration";
+import { REVIEW_VERDICT_TOOL_NAME } from "./review.js";
 
 /** How much of a dependency's summary is quoted into the briefing. */
 const MAX_DEPENDENCY_SUMMARY_CHARS = 400;
@@ -43,6 +44,34 @@ function dependencySection(results: readonly TaskResult[]): string[] {
   }
 
   return lines;
+}
+
+/**
+ * The extra instructions a `review` task carries.
+ *
+ * A review is only worth running if it can block, and it can only block if it
+ * produces something the runtime can read. Prose cannot be acted on, so the
+ * briefing states the contract bluntly: inspect, then call the verdict tool.
+ * The executor treats a missing verdict as a failure, which is the other half
+ * of the same contract — saying so here keeps that from looking arbitrary.
+ */
+function reviewSection(): string[] {
+  return [
+    "",
+    "## Review task — a verdict is required",
+    "",
+    "You are reviewing work that other tasks produced, not writing code yourself.",
+    "Inspect the results of the tasks you depend on and the files they changed:",
+    "read those files, and use a diff against the base to see exactly what moved.",
+    "",
+    `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
+    "  - `approved: true` only when the change is acceptable as it stands;",
+    "  - `approved: false` whenever you found anything that must be fixed first;",
+    "  - list every problem in `issues`, marking each `blocking` or `advisory`.",
+    "",
+    "A blocking issue means the verdict is not approved. Finishing without calling",
+    `\`${REVIEW_VERDICT_TOOL_NAME}\` fails this task — an undecided review does not pass.`,
+  ];
 }
 
 /**
@@ -92,6 +121,10 @@ export function buildTaskBriefing(
   const dependencyResults = context?.dependencyResults ?? [];
   if (dependencyResults.length > 0) {
     lines.push(...dependencySection(dependencyResults));
+  }
+
+  if (task.type === "review") {
+    lines.push(...reviewSection());
   }
 
   return lines.join("\n");
