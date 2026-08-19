@@ -241,8 +241,10 @@ kapel> /exit
 (Codex 백엔드는 재개 가능한 id를 보고하지 않으므로 매 턴 최근 대화를 함께
 보내는 무상태 방식으로 동작합니다.)
 
-참고: 오케스트레이션(`kapel orchestrate`)은 아직 `--backend claude-code`를
-지원하지 않으며, 실행하면 그렇게 안내하고 종료합니다.
+참고: 오케스트레이션(`kapel orchestrate --backend claude-code`)도 이제
+지원됩니다. 태스크마다 해당 태스크의 워크스페이스(기본값인 워크트리)에서
+`claude -p`를 하나씩 띄우고, 에이전트가 선언한 모델과 `tools:` 목록
+(`--allowedTools`로 전달)을 그대로 사용합니다.
 
 ## 4. 시나리오 C — 멀티 에이전트 오케스트레이션 (M2–M6)
 

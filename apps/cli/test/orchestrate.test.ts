@@ -329,15 +329,29 @@ describe("defaultExecutorFactory / validation", () => {
     expect(result.tests.commands).toEqual([]);
   });
 
-  it("says --backend claude-code is not supported here rather than running natively", async () => {
-    await expect(
-      defaultExecutorFactory(
-        factoryArgs({
-          project: projectWithValidators([]),
-          backend: "claude-code",
-        }),
-      ),
-    ).rejects.toThrow(/does not support --backend claude-code/);
+  it("still wraps the base executor under --backend claude-code", async () => {
+    const inner = new CountingExecutor();
+    const validators: ProjectValidator[] = [
+      { name: "typecheck", command: "true" },
+    ];
+
+    // `baseExecutorFactory` short-circuits the real Claude Code availability
+    // probe `defaultExecutorFactory` would otherwise run.
+    const executor = await defaultExecutorFactory(
+      factoryArgs({
+        project: projectWithValidators(validators),
+        backend: "claude-code",
+        baseExecutorFactory: () => inner,
+      }),
+    );
+
+    expect(executor).toBeInstanceOf(ValidatingExecutor);
+
+    const result = await executor.execute(mutatingTask("T01"), "coder");
+    expect(inner.calls).toBe(1);
+    // Unlike codex, a Claude Code task is gated on the project's validators:
+    // they run in the task workspace once the CLI subprocess has exited.
+    expect(result.tests.commands).toEqual(["true"]);
   });
 });
 

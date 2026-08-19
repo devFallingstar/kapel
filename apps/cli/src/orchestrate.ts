@@ -15,9 +15,12 @@ import type {
 import {
   AgentLoopWorkerExecutor,
   ChildProcessWorkerExecutor,
+  ClaudeCodeBackend,
+  ClaudeCodeWorkerExecutor,
   CodexBackend,
   CodexWorkerExecutor,
   createDelegatedModelResolver,
+  createDelegatedToolsResolver,
   DeterministicScheduler,
   PolicyRouter,
   TaskGraph,
@@ -28,7 +31,12 @@ import type { EventSink } from "@agent/protocol";
 import type { SqliteSessionStore } from "@agent/session";
 import type { TuiController, TuiInit } from "@agent/tui";
 import type { BackendName } from "./backend.js";
-import { codexInstallGuidance, codexLoginGuidance } from "./backend.js";
+import {
+  claudeCodeInstallGuidance,
+  claudeCodeLoginGuidance,
+  codexInstallGuidance,
+  codexLoginGuidance,
+} from "./backend.js";
 import type {
   OrchestrationOutput,
   PlanCommandOptions,
@@ -177,13 +185,15 @@ export function cliEntryPath(): string {
 /**
  * Builds the "run a task in *this* directory" factory for a run.
  *
- * Everything expensive or fallible — the Codex availability probe, the model
- * resolver — happens once, here; the returned function only has to point an
- * executor at a workspace, which is what makes it usable per task worktree.
+ * Everything expensive or fallible — the delegated CLI's availability probe,
+ * the model and tool resolvers — happens once, here; the returned function
+ * only has to point an executor at a workspace, which is what makes it usable
+ * per task worktree.
  *
- * Codex outranks the worker mode: `--backend codex` means "let Codex do the
- * work", and Codex is already its own process, so there is no in-process
- * variant of it to choose between.
+ * A delegated backend outranks the worker mode: `--backend codex` and
+ * `--backend claude-code` both mean "let that CLI do the work", and each is
+ * already its own process, so there is no in-process variant of them to
+ * choose between.
  */
 async function workspaceExecutorFactory(
   args: ExecutorFactoryArgs,
@@ -191,12 +201,26 @@ async function workspaceExecutorFactory(
   const { runId, events, taskTimeoutMs } = args;
 
   if (args.backend === "claude-code") {
-    // There is no Claude Code worker executor yet: the orchestrator would
-    // silently fall through to the native loop, which needs an API key the
-    // whole point of this backend is not to need. Say so instead.
-    throw new Error(
-      'Orchestration does not support --backend claude-code yet. Use --backend codex or --backend native here; `kapel "<objective>"` and `kapel chat` do run on Claude Code.',
-    );
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    if (!availability.installed) {
+      throw new Error(claudeCodeInstallGuidance(availability));
+    }
+    if (!availability.loggedIn) {
+      throw new Error(claudeCodeLoginGuidance(availability));
+    }
+    // Both resolvers read the project once, here, so every task worktree gets
+    // the same answers without re-parsing `.agent/` per task.
+    const resolveAgentModel = createDelegatedModelResolver(args.project);
+    const resolveAgentTools = createDelegatedToolsResolver(args.project);
+    return (workspacePath) =>
+      new ClaudeCodeWorkerExecutor({
+        workspacePath,
+        runId,
+        events,
+        resolveAgentModel,
+        resolveAgentTools,
+        ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+      });
   }
 
   if (args.backend === "codex") {
@@ -257,9 +281,20 @@ async function workspaceExecutorFactory(
  * `--backend codex` runs its own agentic loop end-to-end and reports one
  * result per task with no hook to run a separate command suite against; Codex
  * tasks skip our validators for now, regardless of `--no-validate` or what
- * `.agent/config.yaml` declares. Otherwise validators run whenever the
- * project declares at least one and the caller didn't opt out with
- * `--no-validate`.
+ * `.agent/config.yaml` declares.
+ *
+ * `--backend claude-code` is deliberately *not* given the same carve-out,
+ * delegated though it equally is. A validator never needed a hook inside the
+ * agent loop to begin with: {@link ValidatingExecutor} spawns the project's
+ * commands in the task's own workspace after the worker returns, which for a
+ * delegated backend is simply after the CLI subprocess has exited and left
+ * its edits on disk — the same moment, and the same checkout, as on the
+ * native loop. So a Claude Code task is gated on `npm test` exactly like a
+ * native one, and the Codex exclusion above stays scoped to Codex rather
+ * than growing into a rule about external CLIs.
+ *
+ * Otherwise validators run whenever the project declares at least one and
+ * the caller didn't opt out with `--no-validate`.
  */
 export function shouldRunValidators(
   project: AgentProject,

@@ -15,6 +15,12 @@ export {
 } from "./briefing.js";
 export type { ChildProcessWorkerExecutorOptions } from "./child-process-executor.js";
 export { ChildProcessWorkerExecutor } from "./child-process-executor.js";
+export type { ClaudeCodeWorkerExecutorOptions } from "./claude-code-executor.js";
+export {
+  ClaudeCodeWorkerExecutor,
+  claudeCodeAllowedTools,
+  createDelegatedToolsResolver,
+} from "./claude-code-executor.js";
 export type { CodexWorkerExecutorOptions } from "./codex-executor.js";
 export { CodexWorkerExecutor } from "./codex-executor.js";
 export { createDelegatedModelResolver } from "./delegated-model.js";

@@ -210,8 +210,14 @@ transcript once on the first turn and continues by id from there. Codex chats
 are stateless instead — `codex exec --json` does not report a resumable id —
 so each Codex turn carries the recent transcript with it.
 
-Orchestration (`kapel orchestrate`) does not support `--backend claude-code`
-yet and says so; use `--backend codex` or the native loop there.
+**Orchestration runs on it too.** `kapel orchestrate --backend claude-code`
+spawns one `claude -p` per task, in that task's own workspace (its worktree,
+under the default `--isolation worktree`), on the model the routed agent
+declares in `.agent/agents/*.md`. Unlike Codex, Claude Code can be scoped per
+run, so each agent's `tools:` list is translated into `--allowedTools` —
+a reviewer really does run without `Write` and `Edit`. Approvals stay Claude
+Code's own (`acceptEdits`), and the project's `validation:` commands gate
+mutating tasks here just as they do on the native loop.
 
 ### Authentication
 
@@ -281,7 +287,8 @@ Execution options:
 
 - `--worker-mode in-process` (default) — every task runs in this process through the native agent loop, using the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
 - `--worker-mode child` — each task runs in a separate `kapel worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
-- `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)). `--backend claude-code` is not supported here yet.
+- `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
+- `--backend claude-code` — delegate every task to the Claude Code CLI instead (see [Claude Code backend](#claude-code-backend)): one `claude -p` per task in that task's workspace, on the agent's configured model, with the agent's `tools:` list passed through as `--allowedTools`. Claude Code enforces its own approvals (`acceptEdits`), and validators still run.
 - `--isolation worktree` (default) / `--isolation none` — see [Worktree isolation](#worktree-isolation) below.
 - `--tui` — replace the streaming event lines with a live dashboard (task table, worker log, elapsed time). Text mode only: combining it with `--json` is an error, since the dashboard owns the terminal. The final status table and token totals are printed as usual once it comes down.
 - `--no-save` — don't record this run in `.agent/sessions.db`; see [Sessions](#sessions).
