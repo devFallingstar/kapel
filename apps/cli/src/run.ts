@@ -20,7 +20,11 @@ import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
 import { composeSystemPrompt, loadInstructions } from "./instructions.js";
 import { buildRegistry, credentialHintForProvider } from "./models.js";
-import { DEFAULT_PERMISSIONS } from "./permissions.js";
+import {
+  DEFAULT_PERMISSIONS,
+  loadRepoPermissionRules,
+  resolvePermissionRules,
+} from "./permissions.js";
 import { createPrompter, createPromptState } from "./prompter.js";
 import { JsonRenderer, type Renderer, TextRenderer } from "./render.js";
 
@@ -280,7 +284,16 @@ export async function runObjective(
     allowlist: sessionAllowlist,
   });
 
-  const permissions = new PermissionEngine(DEFAULT_PERMISSIONS, {
+  // P1-5: DEFAULT_PERMISSIONS < ~/.kapel/config.json's `permission` block <
+  // .agent/config.yaml's — see `resolvePermissionRules` for the merge and
+  // why a config `deny` still can't be masked by `sessionAllowlist` below.
+  const repoPermission = await loadRepoPermissionRules(workspacePath);
+  const permissionRules = resolvePermissionRules(
+    DEFAULT_PERMISSIONS,
+    options.config?.permission,
+    repoPermission,
+  );
+  const permissions = new PermissionEngine(permissionRules, {
     defaultDecision: "ask",
     overlay: sessionAllowlist,
     ...(prompter === undefined ? {} : { prompter }),

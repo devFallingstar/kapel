@@ -2,6 +2,9 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { loadProjectAgents } from "./agents.js";
 import { loadProjectConfig } from "./config.js";
+
+export { loadProjectConfig } from "./config.js";
+
 import { isNotFound } from "./internal.js";
 import type {
   AgentProject,

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ALLOWED_FOR_SESSION,
+  type BashPermissionRules,
   bashCommandPrefix,
   DENIED_BY_POLICY,
   DENIED_BY_PROMPTER,
   describeSessionRule,
+  matchBashPermission,
   NO_PROMPTER_AVAILABLE,
   PermissionEngine,
   type PermissionPrompter,
@@ -379,5 +381,205 @@ describe("PermissionEngine with a session overlay", () => {
       allowed: true,
       decision: "allow",
     });
+  });
+});
+
+// --- P1-5: bash permission patterns --------------------------------------
+
+describe("matchBashPermission", () => {
+  const patterns: BashPermissionRules = {
+    "*": "ask",
+    "git *": "allow",
+    "git log *": "deny",
+    rm: "deny",
+  };
+
+  const cases: ReadonlyArray<
+    [command: string, decision: "allow" | "ask" | "deny", pattern: string]
+  > = [
+    // "*" is the tool default: anything not matched more specifically.
+    ["npm test", "ask", "*"],
+    // "git *" — a head-only pattern — matches any git subcommand ...
+    ["git status", "allow", "git *"],
+    ["git commit -m x", "allow", "git *"],
+    // ... including bare "git" with no subcommand at all.
+    ["git", "allow", "git *"],
+    // "git log *" is an exact 2-token prefix match, more specific than
+    // "git *", so it outranks it for exactly "git log ...".
+    ["git log --oneline", "deny", "git log *"],
+    ["git log", "deny", "git log *"],
+    // A bare, non-wildcard pattern ("rm") is an exact match against the
+    // *derived* prefix, not the literal command string — "rm -rf build/"
+    // derives to "rm" (see `bashCommandPrefix`, "build/" isn't
+    // subcommand-shaped), so it matches "rm" too, same as bare "rm".
+    ["rm", "deny", "rm"],
+    ["rm -rf build/", "deny", "rm"],
+  ];
+
+  for (const [command, decision, pattern] of cases) {
+    it(`${JSON.stringify(command)} -> ${pattern} (${decision})`, () => {
+      expect(matchBashPermission(patterns, command)).toEqual({
+        pattern,
+        decision,
+      });
+    });
+  }
+
+  it("a bare pattern does not match a command with a real subcommand", () => {
+    // "rm log" derives to "rm log" (a word with no "." or "/" reads as a
+    // subcommand), which the bare "rm" pattern — an exact match — does not
+    // cover; only the tool default answers it.
+    expect(matchBashPermission(patterns, "rm log")).toEqual({
+      pattern: "*",
+      decision: "ask",
+    });
+  });
+
+  it("longest exact prefix wins over a shorter one", () => {
+    const rules: BashPermissionRules = {
+      npm: "deny",
+      "npm test": "allow",
+    };
+    expect(matchBashPermission(rules, "npm test --run x")).toEqual({
+      pattern: "npm test",
+      decision: "allow",
+    });
+  });
+
+  it("deny beats allow at equal specificity, regardless of key order", () => {
+    // "git log" and "git log *" both parse to the same two-token exact
+    // prefix and so tie in specificity — the only way two *different*
+    // pattern keys in one map can both match the same command.
+    const denyFirst: BashPermissionRules = {
+      "git log *": "deny",
+      "git log": "allow",
+    };
+    const allowFirst: BashPermissionRules = {
+      "git log": "allow",
+      "git log *": "deny",
+    };
+    expect(matchBashPermission(denyFirst, "git log --oneline")).toEqual({
+      pattern: "git log *",
+      decision: "deny",
+    });
+    expect(matchBashPermission(allowFirst, "git log --oneline")).toEqual({
+      pattern: "git log *",
+      decision: "deny",
+    });
+  });
+
+  it("a compound command matches only the tool-default '*' pattern", () => {
+    expect(
+      matchBashPermission(
+        { "*": "ask", "git *": "allow" },
+        "git log && rm -rf .",
+      ),
+    ).toEqual({ pattern: "*", decision: "ask" });
+  });
+
+  it("returns undefined when nothing matches and there is no '*' entry", () => {
+    expect(
+      matchBashPermission({ "git *": "allow" }, "npm test"),
+    ).toBeUndefined();
+    expect(
+      matchBashPermission({ "git *": "allow" }, "git log && ls"),
+    ).toBeUndefined();
+  });
+
+  it("treats a missing command the same as one with no derivable prefix", () => {
+    expect(matchBashPermission({ "*": "deny" }, undefined)).toEqual({
+      pattern: "*",
+      decision: "deny",
+    });
+    expect(
+      matchBashPermission({ "git *": "allow" }, undefined),
+    ).toBeUndefined();
+  });
+});
+
+describe("PermissionEngine with a bash pattern map", () => {
+  it("resolves the matching pattern's verdict without a prompter", async () => {
+    const prompter = new RecordingPrompter(false);
+    const engine = new PermissionEngine(
+      { bash: { "*": "ask", "git *": "allow", "rm *": "deny" } },
+      { prompter },
+    );
+
+    await expect(engine.authorize(bash("git status"))).resolves.toEqual({
+      allowed: true,
+      decision: "allow",
+    });
+    await expect(engine.authorize(bash("rm -rf build/"))).resolves.toEqual({
+      allowed: false,
+      decision: "deny",
+      reason: DENIED_BY_POLICY,
+    });
+    expect(prompter.seen).toHaveLength(0);
+  });
+
+  it("falls through to the prompter for an 'ask'-matched command", async () => {
+    const prompter = new RecordingPrompter(true);
+    const engine = new PermissionEngine(
+      { bash: { "*": "ask", "git *": "allow" } },
+      { prompter },
+    );
+
+    const result = await engine.authorize(bash("npm publish"));
+    expect(result).toEqual({ allowed: true, decision: "ask" });
+    expect(prompter.seen).toHaveLength(1);
+  });
+
+  it("a pattern-map deny can never be masked by the session allowlist", async () => {
+    const overlay = new SessionAllowlist();
+    overlay.remember(bash("rm -rf build/"));
+    const prompter = new RecordingPrompter(true);
+    const engine = new PermissionEngine(
+      { bash: { "*": "ask", "rm *": "deny" } },
+      { prompter, overlay },
+    );
+
+    const result = await engine.authorize(bash("rm -rf build/"));
+    expect(result).toEqual({
+      allowed: false,
+      decision: "deny",
+      reason: DENIED_BY_POLICY,
+    });
+    expect(prompter.seen).toHaveLength(0);
+  });
+
+  it("the session overlay still helps an 'ask'-matched command through", async () => {
+    const overlay = new SessionAllowlist();
+    const prompter = new RecordingPrompter(true);
+    const engine = new PermissionEngine(
+      { bash: { "*": "ask", "git *": "allow" } },
+      { prompter, overlay },
+    );
+
+    await engine.authorize(bash("npm test --run foo"));
+    expect(prompter.seen).toHaveLength(1);
+    overlay.remember(bash("npm test --run foo"));
+
+    const second = await engine.authorize(bash("npm test --run bar"));
+    expect(second).toEqual({
+      allowed: true,
+      decision: "ask",
+      reason: ALLOWED_FOR_SESSION,
+    });
+    expect(prompter.seen).toHaveLength(1);
+  });
+
+  it("decisionFor without a command only sees the '*' entry", () => {
+    const engine = new PermissionEngine({
+      bash: { "*": "deny", "git *": "allow" },
+    });
+    expect(engine.decisionFor("bash")).toBe("deny");
+  });
+
+  it("decisionFor falls back to the engine default when the map has no '*' entry", () => {
+    const engine = new PermissionEngine(
+      { bash: { "git *": "allow" } },
+      { defaultDecision: "deny" },
+    );
+    expect(engine.decisionFor("bash")).toBe("deny");
   });
 });
