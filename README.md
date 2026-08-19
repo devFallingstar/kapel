@@ -1,4 +1,4 @@
-# Orchestration Agent
+# Kapel
 
 An orchestration-first open-source coding agent runtime.
 
@@ -6,22 +6,30 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 
 ## Quickstart
 
-Like other terminal coding agents, `agent` runs inside the repository you want it to work on:
+Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install && npm run build
+git clone -b claude/upload-zip-commit-b8wouv https://github.com/devFallingstar/multi-model-orchestration-agent.git kapel-src
+npm install -g ./kapel-src/release/kapel-0.1.0.tgz
+# the clone can be deleted afterwards
 
 cd /path/to/your/repo
 export ANTHROPIC_API_KEY=...          # see Authentication below for other options
-node /path/to/orchestration-agent/apps/cli/dist/index.js "fix the failing test"
+kapel "fix the failing test"
 ```
+
+> Do not use `npm install -g github:...` — npm's git-dependency preparation
+> mishandles workspace monorepos and produces a broken install. Once this
+> package is published to the npm registry it becomes `npm install -g kapel`.
+
+For development, clone and run `npm install && npm run build`, then use `node apps/cli/dist/index.js` or `npm install -g .` from the repo root.
 
 Useful commands and flags:
 
-- `agent init` — copy the default `.agent/` configuration template into the current repo
-- `agent models` — list available model aliases and their credential status
-- `agent plan "<objective>"` / `agent orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
-- `agent runs` / `agent explain <taskId>` / `agent resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
+- `kapel init` — copy the default `.agent/` configuration template into the current repo
+- `kapel models` — list available model aliases and their credential status
+- `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
+- `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI
@@ -37,7 +45,7 @@ Any of these can also go in a `.env` file in the workspace instead of the shell 
 
 1. `ANTHROPIC_API_KEY` — a standard API key.
 2. `ANTHROPIC_AUTH_TOKEN` — a pre-issued bearer token, e.g. from an org that fronts Anthropic with its own auth.
-3. An OAuth profile from the Anthropic CLI — run `ant auth login` once, and `agent` picks up a short-lived access token from it automatically. No env var needed.
+3. An OAuth profile from the Anthropic CLI — run `ant auth login` once, and `kapel` picks up a short-lived access token from it automatically. No env var needed.
 
 `ANTHROPIC_BASE_URL` overrides the API endpoint (for gateways/proxies) under any of the three.
 
@@ -50,34 +58,34 @@ Want OpenAI models without an `OPENAI_API_KEY`? Pass `--backend codex` (or set `
 ```bash
 npm install -g @openai/codex
 codex login          # ChatGPT OAuth — no API key
-agent --backend codex "fix the failing test"
+kapel --backend codex "fix the failing test"
 ```
 
-`agent` never handles OpenAI credentials itself on this path — it just spawns `codex exec --json` in the workspace and lets Codex authenticate and run its own agent loop. `-m/--model` is forwarded to Codex only when you pass it explicitly; otherwise Codex picks its own default. `--sandbox <read-only|workspace-write|danger-full-access>` (default `workspace-write`) controls how much Codex is allowed to touch — anything other than `read-only` runs `--full-auto` so it doesn't stall on approval prompts. `--max-iterations` and the native permission prompts don't apply here; Codex enforces its own approvals via the sandbox mode.
+`kapel` never handles OpenAI credentials itself on this path — it just spawns `codex exec --json` in the workspace and lets Codex authenticate and run its own agent loop. `-m/--model` is forwarded to Codex only when you pass it explicitly; otherwise Codex picks its own default. `--sandbox <read-only|workspace-write|danger-full-access>` (default `workspace-write`) controls how much Codex is allowed to touch — anything other than `read-only` runs `--full-auto` so it doesn't stall on approval prompts. `--max-iterations` and the native permission prompts don't apply here; Codex enforces its own approvals via the sandbox mode.
 
 ### Policy
 
 `.agent/orchestration.md` is your routing/concurrency/review/retry/escalation policy, written in plain English. The CLI compiles it to a typed, deterministic IR:
 
-- `agent policy compile` — uses an LLM (same model/credential resolution as a run; `-m/--model` selects it) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map).
-- `agent policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
-- `agent policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM.
+- `kapel policy compile` — uses an LLM (same model/credential resolution as a run; `-m/--model` selects it) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map).
+- `kapel policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
+- `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM.
 
 All three accept `--cwd` and `--json`.
 
 ### Orchestrate
 
-`agent "<objective>"` runs one model in one loop. `agent orchestrate "<objective>"` runs the full M3 pipeline instead: the objective is **planned** into a task DAG, the plan is **rewritten by your compiled policy** (unknown agents dropped, mandated reviews injected, unrunnable plans rejected), and the resulting tasks are **routed to different workers and executed in parallel** by the deterministic scheduler.
+`kapel "<objective>"` runs one model in one loop. `kapel orchestrate "<objective>"` runs the full M3 pipeline instead: the objective is **planned** into a task DAG, the plan is **rewritten by your compiled policy** (unknown agents dropped, mandated reviews injected, unrunnable plans rejected), and the resulting tasks are **routed to different workers and executed in parallel** by the deterministic scheduler.
 
 ```bash
-agent policy compile                        # once, and after every orchestration.md edit
-agent plan "add a health endpoint"          # preview the task graph — no work is done
-agent orchestrate "add a health endpoint"   # plan, then execute it
+kapel policy compile                        # once, and after every orchestration.md edit
+kapel plan "add a health endpoint"          # preview the task graph — no work is done
+kapel orchestrate "add a health endpoint"   # plan, then execute it
 ```
 
-Both commands require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `agent policy compile`. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, the CLI falls back to the normal default model and says so).
+Both commands require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `kapel policy compile`. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, the CLI falls back to the normal default model and says so).
 
-`agent plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `agent orchestrate --dry-run` prints exactly the same thing.
+`kapel plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `kapel orchestrate --dry-run` prints exactly the same thing.
 
 During a run, task lifecycle lines are interleaved with the workers' own output:
 
@@ -96,7 +104,7 @@ The run ends with a per-task status table and token/cost totals, and exits `0` o
 Execution options:
 
 - `--worker-mode in-process` (default) — every task runs in this process through the native agent loop, using the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
-- `--worker-mode child` — each task runs in a separate `agent worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
+- `--worker-mode child` — each task runs in a separate `kapel worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
 - `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
 - `--isolation worktree` (default) / `--isolation none` — see [Worktree isolation](#worktree-isolation) below.
 - `--tui` — replace the streaming event lines with a live dashboard (task table, worker log, elapsed time). Text mode only: combining it with `--json` is an error, since the dashboard owns the terminal. The final status table and token totals are printed as usual once it comes down.
@@ -114,7 +122,7 @@ This applies to every worker mode and to `--backend codex` alike; isolation is a
 - **Failed tasks keep their evidence.** A task that fails after making edits still has them committed on its branch, which is kept for inspection; nothing is merged.
 - `--isolation none` opts out entirely: every task runs directly in the workspace, exactly as before. Use it when the workspace is not a git repository, or when you want a single shared tree.
 
-Worktree isolation needs the workspace to be a git repository with at least one commit; if it isn't, `agent orchestrate` says so and exits before planning work, suggesting `--isolation none`. Should a run be killed mid-flight, leftover checkouts and `agent-task/*` branches can be cleaned up with `git worktree prune` plus `git branch -D`.
+Worktree isolation needs the workspace to be a git repository with at least one commit; if it isn't, `kapel orchestrate` says so and exits before planning work, suggesting `--isolation none`. Should a run be killed mid-flight, leftover checkouts and `agent-task/*` branches can be cleaned up with `git worktree prune` plus `git branch -D`.
 
 #### Validation and review
 
@@ -132,22 +140,22 @@ Each command runs via `bash -lc` **inside the task's own worktree, before it is 
 
 #### Sessions
 
-Every `agent orchestrate` run records itself in a SQLite database at **`.agent/sessions.db`**: the objective, the policy snapshot it executed under, the post-rewrite plan, every event it emitted, and a rolling per-task summary. The run id is printed as the run starts (`Run 0f3c… — 3 tasks, up to 4 at a time`) — that is what the three commands below take.
+Every `kapel orchestrate` run records itself in a SQLite database at **`.agent/sessions.db`**: the objective, the policy snapshot it executed under, the post-rewrite plan, every event it emitted, and a rolling per-task summary. The run id is printed as the run starts (`Run 0f3c… — 3 tasks, up to 4 at a time`) — that is what the three commands below take.
 
 ```bash
-agent runs                     # what has been run here, newest first
-agent explain T03              # why T03 ran where it ran, and what happened to it
-agent explain T03 --run 0f3c…  # …in a specific run (default: the most recent)
-agent resume 0f3c…             # finish the tasks that never succeeded
+kapel runs                     # what has been run here, newest first
+kapel explain T03              # why T03 ran where it ran, and what happened to it
+kapel explain T03 --run 0f3c…  # …in a specific run (default: the most recent)
+kapel resume 0f3c…             # finish the tasks that never succeeded
 ```
 
-- **`agent runs`** lists id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` emits the same as an array. A workspace with no database yet just says so.
-- **`agent explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
-- **`agent resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `agent orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
+- **`kapel runs`** lists id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` emits the same as an array. A workspace with no database yet just says so.
+- **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
+- **`kapel resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `kapel orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
 
 `--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 
-`agent worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
+`kapel worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
 
 ## Project plan
 
