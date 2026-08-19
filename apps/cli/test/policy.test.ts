@@ -12,6 +12,7 @@ import type { CompilerFactory, PolicyOutput } from "../src/policy.js";
 import {
   runPolicyCheck,
   runPolicyCompile,
+  runPolicyDiff,
   runPolicyExplain,
 } from "../src/policy.js";
 
@@ -172,6 +173,56 @@ describe("kapel policy", () => {
       expect(text).toContain("assumed default retry policy");
       expect(text).toContain("Ambiguities:");
       expect(text).toContain('"as needed" review cadence was not mapped');
+    });
+
+    it("annotates a warning/ambiguity with its orchestration.md line when the quoted phrase resolves", async () => {
+      // templates/default/.agent/orchestration.md line 5 quotes verbatim here.
+      const { output, lines } = capture();
+      const compilerFactory = fixedCompilerFactory({
+        policy: VALID_POLICY,
+        warnings: [
+          'assumed default cadence for "inexpensive read-only repository exploration"',
+        ],
+        ambiguities: ['"as needed" review cadence was not mapped'],
+      });
+
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false },
+        { output, compilerFactory },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("[orchestration.md:5]");
+      // The ambiguity's quoted phrase is not present anywhere in the
+      // template source, so it must carry no location — never a wrong one.
+      const ambiguityLine = lines.find((line) =>
+        line.includes('"as needed" review cadence was not mapped'),
+      );
+      expect(ambiguityLine).not.toContain("orchestration.md");
+    });
+
+    it("reports warningLocations/ambiguityLocations as a parallel array in --json mode", async () => {
+      const { output, lines } = capture();
+      const compilerFactory = fixedCompilerFactory({
+        policy: VALID_POLICY,
+        warnings: [
+          'assumed default cadence for "inexpensive read-only repository exploration"',
+        ],
+        ambiguities: ['"as needed" review cadence was not mapped'],
+      });
+
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: true },
+        { output, compilerFactory },
+      );
+
+      expect(code).toBe(0);
+      const parsed = JSON.parse(lines[0] ?? "{}");
+      expect(parsed.warningLocations).toEqual([
+        { file: "orchestration.md", line: 5 },
+      ]);
+      expect(parsed.ambiguityLocations).toEqual([null]);
     });
 
     it("emits one JSON object on success in --json mode", async () => {
@@ -370,6 +421,167 @@ describe("kapel policy", () => {
       } finally {
         await rm(bare, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe("diff", () => {
+    async function compileFixture(
+      workspacePath: string,
+      policy: OrchestrationPolicy = VALID_POLICY,
+    ): Promise<void> {
+      const { output } = capture();
+      const code = await runPolicyCompile(
+        { cwd: workspacePath, json: false },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+      expect(code).toBe(0);
+    }
+
+    it("fails with compile-first guidance when no lock exists", async () => {
+      const { output, errLines } = capture();
+      const code = await runPolicyDiff(
+        { cwd: workspace, json: false },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: VALID_POLICY,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+      expect(code).toBe(1);
+      expect(errLines.join("\n")).toContain("kapel policy compile");
+    });
+
+    it("reports 'No changes.' when the recompiled policy matches the lock", async () => {
+      await compileFixture(workspace);
+      const { output, lines } = capture();
+
+      const code = await runPolicyDiff(
+        { cwd: workspace, json: false },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: VALID_POLICY,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("No changes from the locked policy.");
+    });
+
+    it("shows an added routing rule and a field-level change together", async () => {
+      await compileFixture(workspace);
+
+      const recompiled: OrchestrationPolicy = {
+        ...VALID_POLICY,
+        maxConcurrency: 8,
+        routing: [
+          {
+            ...VALID_POLICY.routing[0],
+            agent: "reviewer",
+          } as OrchestrationPolicy["routing"][number],
+          {
+            id: "route-explorer",
+            taskTypes: ["exploration"],
+            riskCategories: [],
+            complexity: [],
+            agent: "explorer",
+            strength: "preference",
+            weight: 1,
+          },
+        ],
+      };
+
+      const { output, lines } = capture();
+      const code = await runPolicyDiff(
+        { cwd: workspace, json: false },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: recompiled,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("Policy diff (locked -> recompiled):");
+      expect(text).toContain("Defaults:");
+      expect(text).toContain("maxConcurrency: 4 -> 8");
+      expect(text).toContain("Routing rules:");
+      expect(text).toContain("~ route-coder:");
+      expect(text).toContain("agent: coder -> reviewer");
+      expect(text).toContain("+ route-explorer:");
+      expect(text).toContain("Run `kapel policy compile` to update the lock.");
+    });
+
+    it("emits {ok, unchanged, defaults, routing, review, escalation} in --json mode", async () => {
+      await compileFixture(workspace);
+
+      const recompiled: OrchestrationPolicy = {
+        ...VALID_POLICY,
+        review: [],
+      };
+
+      const { output, lines } = capture();
+      const code = await runPolicyDiff(
+        { cwd: workspace, json: true },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: recompiled,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines).toHaveLength(1);
+      const parsed = JSON.parse(lines[0] ?? "{}");
+      expect(parsed.ok).toBe(true);
+      expect(parsed.unchanged).toBe(false);
+      expect(parsed.routing).toEqual([]);
+      expect(parsed.review).toHaveLength(1);
+      expect(parsed.review[0].kind).toBe("removed");
+      expect(parsed.review[0].id).toBe("review-sensitive");
+    });
+
+    it("does not write or otherwise modify the existing lock", async () => {
+      await compileFixture(workspace);
+      const lockPath = path.join(workspace, ".agent", LOCK_FILE_NAME);
+      const before = await readFile(lockPath, "utf8");
+
+      const { output } = capture();
+      await runPolicyDiff(
+        { cwd: workspace, json: false },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: { ...VALID_POLICY, maxConcurrency: 9 },
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      const after = await readFile(lockPath, "utf8");
+      expect(after).toBe(before);
     });
   });
 });

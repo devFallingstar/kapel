@@ -110,6 +110,14 @@ kapel -y "fix the failing test"        # no permission prompts
 
 `kapel exec "<objective>"` is the same thing spelled out.
 
+**Piped stdin becomes context**, not a second conversation: when stdin isn't a terminal and you also give an objective, whatever is piped in is read to the end (capped at 1 MiB, truncated with a `[stdin truncated]` marker past that) and appended after the objective, separated by a `--- piped input ---` line:
+
+```bash
+cat error.log | kapel "explain this failure"
+```
+
+Piping nothing (`< /dev/null`, or a command that produces no output) leaves the objective untouched — same as not piping at all. This composes with every flag above (`--json`, `-y`, `--backend`, `-m`, …), since the piped text only ever changes the objective/prompt text. Piping with **no** objective given is a different, unchanged feature — lines piped in drive the interactive prompt instead (see [Interactive mode](#interactive-mode)).
+
 Useful commands and flags:
 
 - `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id>`, `--no-save`
@@ -243,11 +251,12 @@ kapel --backend codex "fix the failing test"
 
 `.agent/orchestration.md` is your routing/concurrency/review/retry/escalation policy, written in plain English. The CLI compiles it to a typed, deterministic IR:
 
-- `kapel policy compile` — uses an LLM (same model/credential resolution as a run; `-m/--model` selects it) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map).
+- `kapel policy compile` — uses an LLM (same model/credential resolution as a run; `-m/--model` selects it) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map). Each warning/ambiguity that quotes a source phrase is annotated with the `orchestration.md:12` line (or `:12-13` when the phrase wraps lines) it was found at — best-effort: a phrase the compiler paraphrased instead of quoting carries no location, never a wrong one. `--json` adds parallel `warningLocations`/`ambiguityLocations` arrays (`null` where unresolved).
 - `kapel policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
-- `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM.
+- `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM. Same line-annotated warnings/ambiguities as `compile`.
+- `kapel policy diff` — recompiles `orchestration.md` (one LLM call, same resolution as `compile`) and diffs the result against the current lock **without writing it**, so you can review a change before committing to it: routing/review/escalation rules added, removed, or changed field-by-field (matched by each rule's own `id`, not its position — reordering a policy's rules between compiles is not a change), plus any changed defaults (`orchestrator`, `maxConcurrency`, `parallelizeIndependentTasks`, `defaultMaxAttempts`). `--json` emits `{ok, unchanged, defaults, routing, review, escalation, warnings, ambiguities}`.
 
-All three accept `--cwd` and `--json`.
+All four accept `--cwd` and `--json`.
 
 ### Orchestrate
 
@@ -262,6 +271,8 @@ kapel orchestrate "add a health endpoint"   # plan, then execute it
 Both commands require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `kapel policy compile`. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, the CLI falls back to the normal default model and says so).
 
 `kapel plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `kapel orchestrate --dry-run` prints exactly the same thing.
+
+`kapel plan --why [taskId]` additionally prints the routing rationale — the same `PolicyRouter.decide` the scheduler itself runs at execution time — for one task, or every task when no id is given: which rule matched (its match criteria, strength and weight) or, with no matching rule, whether it fell back to the task's `suggestedAgent` or the policy's orchestrator, plus the model alias the picked agent is configured with. `--json` adds a `why` array of `{taskId, title, type, complexity, agent, modelAlias?, reason, rule?}` alongside the usual plan output.
 
 During a run, task lifecycle lines are interleaved with the workers' own output:
 

@@ -243,4 +243,105 @@ describe("agent plan", () => {
     expect(errLines.join("\n")).toContain('orchestrator agent "ghost"');
     expect(lines.join("\n")).toContain("Planner: claude-sonnet-5 (anthropic)");
   });
+
+  describe("--why", () => {
+    it("explains one task's routing rule, agent and model", async () => {
+      await writeLock(workspace, ROUTING_POLICY);
+      const { output, lines } = capture();
+
+      const code = await runPlan(
+        "add a health endpoint",
+        { cwd: workspace, json: false, why: "T02" },
+        { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      // The plan table is still shown for context, plus the rationale.
+      expect(text).toContain("ID   TYPE");
+      expect(text).toContain("Routing rationale:");
+      expect(text).toContain("T02 (implementation, normal) -> coder [worker]");
+      expect(text).toContain("rule route-impl");
+      // Only the requested task is explained.
+      expect(text).not.toContain("T01 (exploration");
+      expect(text).not.toContain("T03 (testing");
+    });
+
+    it("explains every task when no id is given", async () => {
+      await writeLock(workspace, ROUTING_POLICY);
+      const { output, lines } = capture();
+
+      const code = await runPlan(
+        "add a health endpoint",
+        { cwd: workspace, json: false, why: true },
+        { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("T01 (exploration, normal) -> explorer [cheap]");
+      expect(text).toContain("T02 (implementation, normal) -> coder [worker]");
+      expect(text).toContain("T03 (testing, normal) -> reviewer [reviewer]");
+    });
+
+    it("falls back to the orchestrator with a plain-English reason when no rule matches", async () => {
+      const plan: ExecutionPlan = {
+        objective: "rotate the signing key",
+        tasks: [
+          task("T01", { type: "documentation" }), // no rule targets "documentation"
+        ],
+      };
+      await writeLock(workspace, ROUTING_POLICY);
+      const { output, lines } = capture();
+
+      const code = await runPlan(
+        "rotate the signing key",
+        { cwd: workspace, json: false, why: true },
+        { output, plannerFactory: fixedPlannerFactory(plan) },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("-> lead");
+      expect(text).toContain("fell back to the policy's orchestrator");
+    });
+
+    it("emits a `why` array alongside the usual plan JSON", async () => {
+      await writeLock(workspace, ROUTING_POLICY);
+      const { output, lines } = capture();
+
+      const code = await runPlan(
+        "add a health endpoint",
+        { cwd: workspace, json: true, why: "T02" },
+        { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
+      );
+
+      expect(code).toBe(0);
+      expect(lines).toHaveLength(1);
+      const parsed = JSON.parse(lines[0] ?? "{}");
+      expect(parsed.plan.tasks).toHaveLength(3);
+      expect(parsed.why).toHaveLength(1);
+      expect(parsed.why[0].taskId).toBe("T02");
+      expect(parsed.why[0].agent).toBe("coder");
+      expect(parsed.why[0].modelAlias).toBe("worker");
+      expect(parsed.why[0].reason).toBe("rule");
+      expect(parsed.why[0].rule.id).toBe("route-impl");
+    });
+
+    it("fails with a helpful message when the task id doesn't exist", async () => {
+      await writeLock(workspace, ROUTING_POLICY);
+      const { output, errLines } = capture();
+
+      const code = await runPlan(
+        "add a health endpoint",
+        { cwd: workspace, json: false, why: "T99" },
+        { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
+      );
+
+      expect(code).toBe(1);
+      const text = errLines.join("\n");
+      expect(text).toContain("T99");
+      expect(text).toContain("T01");
+    });
+  });
 });

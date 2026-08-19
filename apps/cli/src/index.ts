@@ -42,6 +42,7 @@ import {
   type PolicyCommandOptions,
   runPolicyCheck,
   runPolicyCompile,
+  runPolicyDiff,
   runPolicyExplain,
 } from "./policy.js";
 import { type ResumeCommandOptions, runResume } from "./resume-cmd.js";
@@ -555,14 +556,34 @@ program
     "Plan an objective into a task graph and print it, without executing anything",
   )
   .argument("<objective...>", "the objective to plan")
-  .action(async (objective: string[], _opts: unknown, command: Command) => {
-    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
-    await objectiveCommand(
-      objective,
-      'Usage: kapel plan "<objective>"',
-      (text) => runPlan(text, planOptions(command, config)),
-    );
-  });
+  .option(
+    "--why [taskId]",
+    "print routing rationale for one task, or every task if no id is given",
+  )
+  .action(
+    async (
+      objective: string[],
+      opts: { why?: string | boolean },
+      command: Command,
+    ) => {
+      const config = await runtimeConfig(
+        command.optsWithGlobals() as RawRunOpts,
+      );
+      await objectiveCommand(
+        objective,
+        'Usage: kapel plan "<objective>"',
+        (text) =>
+          runPlan(text, {
+            ...planOptions(command, config),
+            ...(typeof opts.why === "string"
+              ? { why: opts.why }
+              : opts.why === true
+                ? { why: true }
+                : {}),
+          }),
+      );
+    },
+  );
 
 withExecutionOptions(
   program
@@ -667,12 +688,12 @@ function policyOptions(
   };
 }
 
-const POLICY_SUBCOMMANDS = ["compile", "check", "explain"] as const;
+const POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"] as const;
 
 const policyCommand = program
   .command("policy")
-  .description("Manage orchestration policies (compile, check, explain)")
-  .argument("[unknownCommand]", "compile | check | explain");
+  .description("Manage orchestration policies (compile, check, explain, diff)")
+  .argument("[unknownCommand]", "compile | check | explain | diff");
 
 policyCommand
   .command("compile")
@@ -682,6 +703,16 @@ policyCommand
   .action(async (_opts: unknown, command: Command) => {
     const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
     process.exitCode = await runPolicyCompile(policyOptions(command, config));
+  });
+
+policyCommand
+  .command("diff")
+  .description(
+    "Show what would change if the policy lock were recompiled, without writing it",
+  )
+  .action(async (_opts: unknown, command: Command) => {
+    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
+    process.exitCode = await runPolicyDiff(policyOptions(command, config));
   });
 
 policyCommand
@@ -702,7 +733,7 @@ policyCommand
 
 policyCommand.action((unknownCommand: string | undefined) => {
   // Reached only when `policy` is run with no subcommand, or with a first
-  // token that doesn't match `compile` | `check` | `explain` (commander
+  // token that doesn't match `compile` | `check` | `explain` | `diff` (commander
   // dispatches recognized subcommands to their own `.action()` above
   // without ever reaching this one).
   if (unknownCommand === undefined) {

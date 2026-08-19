@@ -7,6 +7,8 @@ import type {
   OrchestrationPolicy,
   PlannedTask,
   Planner,
+  RoutingReason,
+  RoutingRule,
 } from "@agent/coding-agent";
 import {
   applyPolicyToPlan,
@@ -41,6 +43,13 @@ export interface PlanCommandOptions {
   readonly json: boolean;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
+  /**
+   * `kapel plan --why [taskId]`: after planning, print the routing rationale
+   * instead of executing anything. `true` means "no id was given" (explain
+   * every task); a string is the one task id requested. `undefined` (the
+   * default) leaves `kapel plan`'s normal output alone.
+   */
+  readonly why?: string | true;
 }
 
 /** Builds the planner used by `kapel plan`/`kapel orchestrate`. Overridable in tests. */
@@ -377,9 +386,95 @@ export function renderPlan(
   }
 }
 
+/**
+ * Why {@link PolicyRouter} would route one task — the body of `kapel plan
+ * --why`. Re-derived straight from `PolicyRouter.decide` (the same decision
+ * the scheduler itself makes) rather than reimplemented, so this can never
+ * disagree with what actually routes the task at execution time.
+ */
+export interface TaskRouteExplanation {
+  readonly taskId: string;
+  readonly title: string;
+  readonly type: string;
+  readonly complexity: string;
+  readonly agent: string;
+  /** The model alias the target agent is configured with, when it's a known project agent. */
+  readonly modelAlias?: string;
+  readonly reason: RoutingReason;
+  /** The routing rule that decided it, set only when `reason` is `"rule"`. */
+  readonly rule?: RoutingRule;
+}
+
+function explainTaskRoute(
+  task: PlannedTask,
+  policy: OrchestrationPolicy,
+  project: AgentProject,
+): TaskRouteExplanation {
+  const decision = new PolicyRouter().decide(task, policy);
+  const rule =
+    decision.rule === undefined
+      ? undefined
+      : policy.routing.find((candidate) => candidate.id === decision.rule);
+  const modelAlias = project.agent(decision.agent)?.modelAlias;
+
+  return {
+    taskId: task.id,
+    title: task.title,
+    type: task.type,
+    complexity: task.complexity,
+    agent: decision.agent,
+    reason: decision.reason,
+    ...(modelAlias === undefined ? {} : { modelAlias }),
+    ...(rule === undefined ? {} : { rule }),
+  };
+}
+
+/** One sentence explaining why {@link explainTaskRoute} picked what it picked. */
+function routeReasonSentence(explanation: TaskRouteExplanation): string {
+  if (explanation.rule !== undefined) {
+    const rule = explanation.rule;
+    const criteria: string[] = [];
+    if (rule.taskTypes.length > 0)
+      criteria.push(`taskTypes=${rule.taskTypes.join(",")}`);
+    if (rule.riskCategories.length > 0) {
+      criteria.push(`riskCategories=${rule.riskCategories.join(",")}`);
+    }
+    if (rule.complexity.length > 0)
+      criteria.push(`complexity=${rule.complexity.join(",")}`);
+    const on = criteria.length === 0 ? "any task" : criteria.join(", ");
+    return `rule ${rule.id} (${rule.strength}, weight ${rule.weight}) matched on ${on}`;
+  }
+  if (explanation.reason === "suggestedAgent") {
+    return "no routing rule matched — used the plan's suggestedAgent";
+  }
+  return "no routing rule matched and no suggestedAgent — fell back to the policy's orchestrator";
+}
+
+/** Prints the `--why` section: one routing rationale line per task, `kapel plan` shows below the table. */
+function renderWhy(
+  explanations: readonly TaskRouteExplanation[],
+  output: OrchestrationOutput,
+): void {
+  output.log("Routing rationale:");
+  for (const explanation of explanations) {
+    const modelSuffix =
+      explanation.modelAlias === undefined
+        ? ""
+        : ` [${explanation.modelAlias}]`;
+    output.log(
+      `${explanation.taskId} (${explanation.type}, ${explanation.complexity}) -> ${explanation.agent}${modelSuffix}`,
+    );
+    output.log(`    ${routeReasonSentence(explanation)}`);
+  }
+}
+
 export type RunPlanDeps = PreparePlanDeps;
 
-/** Implements `kapel plan`: preview the task graph without executing anything. */
+/**
+ * Implements `kapel plan`: preview the task graph without executing
+ * anything. `options.why` additionally prints the routing rationale for one
+ * task (or every task, with no id) — see {@link explainTaskRoute}.
+ */
 export async function runPlan(
   objective: string,
   options: PlanCommandOptions,
@@ -388,6 +483,41 @@ export async function runPlan(
   const output = deps.output ?? consoleOutput;
   const prepared = await preparePlan(objective, options, deps);
   if ("exitCode" in prepared) return prepared.exitCode;
-  renderPlan(prepared, output, options.json);
+
+  if (options.why === undefined) {
+    renderPlan(prepared, output, options.json);
+    return 0;
+  }
+
+  const tasks =
+    options.why === true
+      ? prepared.plan.tasks
+      : prepared.plan.tasks.filter((task) => task.id === options.why);
+  if (tasks.length === 0) {
+    const known = prepared.plan.tasks.map((task) => task.id).join(", ");
+    return fail(
+      output,
+      options.json,
+      `No task ${options.why} in this plan.${known === "" ? "" : ` Known tasks: ${known}.`}`,
+    ).exitCode;
+  }
+  const explanations = tasks.map((task) =>
+    explainTaskRoute(task, prepared.policy, prepared.project),
+  );
+
+  if (options.json) {
+    jsonLine(output, {
+      plan: prepared.plan,
+      injectedReviews: prepared.injectedReviews,
+      notes: prepared.notes,
+      routes: prepared.routes,
+      why: explanations,
+    });
+    return 0;
+  }
+
+  renderPlan(prepared, output, false);
+  output.log("");
+  renderWhy(explanations, output);
   return 0;
 }

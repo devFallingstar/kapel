@@ -177,6 +177,22 @@ kapel "calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.tes
 추가 확인: `-y`(프롬프트 생략), `--json`(JSONL 스트림 — 대화형에서는 지원하지
 않고 안내 후 종료 코드 1), Ctrl-C(중단), `--timeout 30`.
 
+**파이프 입력 + objective 병합** 확인 — stdin이 터미널이 아니고 objective도
+있으면, 파이프로 들어온 내용이 objective 뒤에 `--- piped input ---` 구분선과
+함께 붙습니다:
+
+```bash
+cat calc.test.js | kapel "이 파일에서 버그를 찾아 고쳐줘"
+echo -n "" | kapel "fix the failing test"   # 0바이트 파이프 → objective 단독과 동일
+```
+
+**기대 동작**: 첫 명령은 `calc.test.js`의 내용이 프롬프트에 포함된 채로 실행됨
+(모델이 굳이 `read_file`을 부르지 않고도 파일 내용을 이미 알고 있음). 둘째
+명령은 파이프가 없을 때와 동일하게 동작 — objective만으로 실행됨. `-y`,
+`--json`, `-m`/`--backend` 등 다른 플래그와 조합해도 동일하게 동작합니다.
+objective 없이 파이프만 하는 경우(`echo "hi" | kapel`)는 이 병합과 무관한
+기존 기능 그대로입니다 — 대화형 REPL이 파이프 라인을 입력으로 소비.
+
 **`AGENTS.md` 로딩** 확인 — 같은 저장소에 프로젝트 지시 파일을 두고 다시 실행합니다:
 
 ```bash
@@ -265,11 +281,18 @@ kapel init                      # .agent/ 템플릿 복사
 
 ```bash
 kapel policy compile            # 자연어 정책 → orchestration.lock.json (LLM 1회 호출)
+                                # warnings/ambiguities에 orchestration.md:N 줄 번호가 붙는지 확인
 kapel policy explain            # 컴파일된 정책 요약 확인
 kapel policy check              # 오프라인 신선도 검사 (CI용)
 
+# orchestration.md를 한 줄 고친 뒤(예: 동시성 숫자 변경), 아직 컴파일하지 않고:
+kapel policy diff                # lock 대비 변경 예정 사항만 미리보기 (lock은 그대로)
+kapel policy compile             # 실제로 lock을 갱신
+
 kapel plan "calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘"
                                 # 태스크 DAG + 라우팅 미리보기 (실행 없음)
+kapel plan --why "calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘"
+                                # 각 태스크가 어느 규칙으로 어느 에이전트/모델에 라우팅되는지 근거 출력
 
 kapel orchestrate "calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘"
                                 # 실제 실행 — worktree 격리 + 병렬 워커

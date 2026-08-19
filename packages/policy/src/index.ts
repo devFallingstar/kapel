@@ -52,6 +52,8 @@ export {
   LlmPolicyCompiler,
   PolicyCompileError,
 } from "./compiler.js";
+export type { PolicyDiff, PolicyFieldChange, RuleDiff } from "./diff.js";
+export { diffPolicies, formatPolicyDiff } from "./diff.js";
 export { describePolicy } from "./explain.js";
 export type { LockStatus, PolicyLockfile } from "./lockfile.js";
 export {
@@ -81,3 +83,11 @@ export {
   RoutingRuleSchema,
   RuleStrengthSchema,
 } from "./schema.js";
+export type { LocatedIssue, SourceLocation } from "./source-span.js";
+export {
+  extractQuotedFragments,
+  formatSourceLocation,
+  locateIssue,
+  locateIssues,
+  locateSourceText,
+} from "./source-span.js";
