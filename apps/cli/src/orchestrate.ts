@@ -1,10 +1,14 @@
+import { execFile } from "node:child_process";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { UsageRecorder, UsageTotals } from "@agent/ai";
 import { UsageTracker } from "@agent/ai";
 import type {
   AgentProject,
   RuntimeTask,
   WorkerExecutor,
+  WorkspaceExecutorFactory,
 } from "@agent/coding-agent";
 import {
   AgentLoopWorkerExecutor,
@@ -14,6 +18,7 @@ import {
   DeterministicScheduler,
   PolicyRouter,
   TaskGraph,
+  WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
 import type { EventSink } from "@agent/protocol";
 import type { BackendName } from "./backend.js";
@@ -42,11 +47,58 @@ export function validateWorkerMode(raw: string): WorkerMode {
   );
 }
 
+/** How a mutating task's writes are kept apart from every other task's. */
+export const ISOLATION_MODES = ["worktree", "none"] as const;
+export type IsolationMode = (typeof ISOLATION_MODES)[number];
+
+/**
+ * Isolation is on by default: parallel workers editing one checkout is the
+ * failure mode a per-task worktree exists to prevent, so opting out has to be
+ * the deliberate choice.
+ */
+export const DEFAULT_ISOLATION: IsolationMode = "worktree";
+
+/** Validates an `--isolation` value; throws a friendly, printable error otherwise. */
+export function validateIsolation(raw: string): IsolationMode {
+  if ((ISOLATION_MODES as readonly string[]).includes(raw))
+    return raw as IsolationMode;
+  throw new Error(
+    `Invalid --isolation value "${raw}": expected one of ${ISOLATION_MODES.join(", ")}.`,
+  );
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Why worktree isolation cannot be used in `workspacePath`, or `undefined` when
+ * it can.
+ *
+ * `git rev-parse HEAD` answers both halves of the precondition in one cheap
+ * call: it fails outside a repository and in a repository with no commits, and
+ * a task worktree needs a commit to branch from. Failing here beats failing
+ * per task once the model has already been paid for a plan.
+ */
+export async function worktreeIsolationError(
+  workspacePath: string,
+): Promise<string | undefined> {
+  try {
+    await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
+    return undefined;
+  } catch {
+    return (
+      `--isolation worktree needs ${workspacePath} to be a git repository with at least one commit, ` +
+      "and `git rev-parse HEAD` failed there. Commit something first, or re-run with --isolation none."
+    );
+  }
+}
+
 export interface OrchestrateCommandOptions extends PlanCommandOptions {
   /** Stop after planning and print exactly what `agent plan` would. */
   readonly dryRun: boolean;
   readonly workerMode: WorkerMode;
   readonly backend: BackendName;
+  /** Defaults to {@link DEFAULT_ISOLATION} when the caller omits it. */
+  readonly isolation?: IsolationMode;
   /** Applied per task, not to the run as a whole. */
   readonly timeoutSeconds?: number;
   readonly maxIterations?: number;
@@ -61,6 +113,7 @@ export interface ExecutorFactoryArgs {
   readonly usage: UsageRecorder;
   readonly workerMode: WorkerMode;
   readonly backend: BackendName;
+  readonly isolation: IsolationMode;
   readonly taskTimeoutMs?: number;
   readonly maxIterations?: number;
 }
@@ -83,14 +136,20 @@ export function cliEntryPath(): string {
 }
 
 /**
- * Picks the executor for a run.
+ * Builds the "run a task in *this* directory" factory for a run.
+ *
+ * Everything expensive or fallible — the Codex availability probe, the model
+ * resolver — happens once, here; the returned function only has to point an
+ * executor at a workspace, which is what makes it usable per task worktree.
  *
  * Codex outranks the worker mode: `--backend codex` means "let Codex do the
  * work", and Codex is already its own process, so there is no in-process
  * variant of it to choose between.
  */
-export const defaultExecutorFactory: ExecutorFactory = async (args) => {
-  const { workspacePath, runId, events, taskTimeoutMs } = args;
+async function workspaceExecutorFactory(
+  args: ExecutorFactoryArgs,
+): Promise<WorkspaceExecutorFactory> {
+  const { runId, events, taskTimeoutMs } = args;
 
   if (args.backend === "codex") {
     const availability = await CodexBackend.checkAvailability();
@@ -100,41 +159,65 @@ export const defaultExecutorFactory: ExecutorFactory = async (args) => {
     if (!availability.loggedIn) {
       throw new Error(codexLoginGuidance(availability));
     }
-    return new CodexWorkerExecutor({
-      workspacePath,
-      runId,
-      events,
-      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-    });
+    return (workspacePath) =>
+      new CodexWorkerExecutor({
+        workspacePath,
+        runId,
+        events,
+        ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+      });
   }
 
   if (args.workerMode === "child") {
     // The child inherits `process.env` through the executor's own spawn call,
     // so credentials and `AGENT_*` settings carry over without being restated.
-    return new ChildProcessWorkerExecutor({
-      command: [process.execPath, cliEntryPath(), "worker"],
-      runId,
-      workspacePath,
-      events,
-      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-    });
+    return (workspacePath) =>
+      new ChildProcessWorkerExecutor({
+        command: [process.execPath, cliEntryPath(), "worker"],
+        runId,
+        workspacePath,
+        events,
+        ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+      });
   }
 
   const resolveModel = await createProjectModelResolver(
     args.project,
     process.env,
   );
-  return new AgentLoopWorkerExecutor({
-    project: args.project,
-    resolveModel,
-    workspacePath,
-    runId,
-    events,
-    usage: args.usage,
-    ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-    ...(args.maxIterations === undefined
-      ? {}
-      : { maxIterations: args.maxIterations }),
+  return (workspacePath) =>
+    new AgentLoopWorkerExecutor({
+      project: args.project,
+      resolveModel,
+      workspacePath,
+      runId,
+      events,
+      usage: args.usage,
+      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+      ...(args.maxIterations === undefined
+        ? {}
+        : { maxIterations: args.maxIterations }),
+    });
+}
+
+/**
+ * Picks the executor for a run: the per-workspace executor above, wrapped in
+ * worktree isolation unless `--isolation none` was asked for.
+ *
+ * The wrapper applies to every worker mode and to `--backend codex` alike —
+ * isolation is a property of how tasks share the repository, not of what runs
+ * them, and a Codex worker pointed at a task checkout behaves exactly like a
+ * native one pointed at it.
+ */
+export const defaultExecutorFactory: ExecutorFactory = async (args) => {
+  const createExecutor = await workspaceExecutorFactory(args);
+  if (args.isolation === "none") return createExecutor(args.workspacePath);
+
+  return new WorktreeIsolatedExecutor({
+    repoRoot: args.workspacePath,
+    createExecutor,
+    events: args.events,
+    runId: args.runId,
   });
 };
 
@@ -228,6 +311,19 @@ export async function runOrchestrate(
   deps: RunOrchestrateDeps = {},
 ): Promise<number> {
   const output = deps.output ?? consoleOutput;
+  const isolation = options.isolation ?? DEFAULT_ISOLATION;
+
+  // Checked before planning: a plan costs a model call, and a workspace that
+  // cannot host task worktrees would fail on the first mutating task anyway.
+  // `--dry-run` executes nothing, so it is exempt.
+  if (isolation === "worktree" && !options.dryRun) {
+    const problem = await worktreeIsolationError(resolve(options.cwd));
+    if (problem !== undefined) {
+      if (options.json) jsonLine(output, { ok: false, error: problem });
+      else output.error(problem);
+      return 1;
+    }
+  }
 
   const prepared = await preparePlan(objective, options, deps);
   if ("exitCode" in prepared) return prepared.exitCode;
@@ -256,6 +352,7 @@ export async function runOrchestrate(
       usage,
       workerMode: options.workerMode,
       backend: options.backend,
+      isolation,
       ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       ...(options.maxIterations === undefined
         ? {}

@@ -20,6 +20,7 @@ import {
   makeProject,
   makeProjectAgent,
   makeRuntimeTask,
+  makeTaskResult,
   makeTempDir,
   RecordingSink,
   ScriptedProvider,
@@ -141,6 +142,29 @@ describe("AgentLoopWorkerExecutor", () => {
     expect(user?.content).toContain(
       "Return a short summary of what you changed",
     );
+  });
+
+  it("passes dependency results from the execution context into the briefing", async () => {
+    const provider = new ScriptedProvider([textTurn("done")]);
+    const executor = new AgentLoopWorkerExecutor(
+      options({ resolveModel: () => ({ provider, model: MODEL }) }),
+    );
+
+    await executor.execute(makeRuntimeTask(), "coder", undefined, {
+      dependencyResults: [
+        makeTaskResult({
+          taskId: "T00",
+          summary: "Added the /healthz route.",
+          changedFiles: ["src/server.ts"],
+        }),
+      ],
+    });
+
+    const user = provider.requests[0]?.messages[1];
+    expect(user?.content).toContain("## Results from dependency tasks");
+    expect(user?.content).toContain("### T00 — success");
+    expect(user?.content).toContain("Added the /healthz route.");
+    expect(user?.content).toContain("  - src/server.ts");
   });
 
   it("reports the files the worker changed and the workspace commit", async () => {

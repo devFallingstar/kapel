@@ -3,6 +3,7 @@ import type { AgentDefinition, PermissionDecision, Tool } from "@agent/core";
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/orchestration";
 import type { EventSink } from "@agent/protocol";
@@ -161,6 +162,7 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
     task: RuntimeTask,
     agent: string,
     signal?: AbortSignal,
+    context?: WorkerExecutionContext,
   ): Promise<TaskResult> {
     const taskId = task.spec.id;
     const { project, workspacePath, runId } = this.#options;
@@ -223,7 +225,7 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
     let run: NormalizableRun;
     try {
       run = await loop.run(
-        { instruction: buildTaskBriefing(task.spec, agent) },
+        { instruction: buildTaskBriefing(task.spec, agent, context) },
         {
           runId,
           taskId,

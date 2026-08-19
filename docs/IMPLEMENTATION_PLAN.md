@@ -59,11 +59,17 @@ Acceptance: orchestrator delegates independent tasks to different configured wor
 
 ## M4 — Isolated coding workers
 
-- [ ] per-task Git worktree
-- [ ] affected-area conflict detection
-- [ ] task-local context
-- [ ] commit/diff collection
-- [ ] cleanup/recovery after crashes
+- [x] per-task Git worktree (TaskWorktreeManager + WorktreeIsolatedExecutor;
+      read-only exploration/review tasks run in place; CLI `--isolation`)
+- [x] affected-area conflict detection (scheduler serializes overlapping
+      mutating tasks; merge conflicts surface as partial results with the
+      task branch preserved)
+- [x] task-local context (dependency TaskResults threaded into worker
+      briefings, including over the child-process protocol)
+- [x] commit/diff collection (auto-commit on task branch, changed files +
+      capped diff, merge-back behind a mutex)
+- [x] cleanup/recovery after crashes (worktree/branch pruning via recover;
+      evidence-preserving branch retention on failures)
 
 Acceptance: two workers can safely modify independent areas in parallel.
 

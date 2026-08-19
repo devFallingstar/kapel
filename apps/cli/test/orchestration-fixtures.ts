@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import type {
   ExecutionPlan,
   OrchestrationPolicy,
@@ -30,6 +32,22 @@ export async function makeWorkspace(prefix: string): Promise<string> {
 
 export async function cleanupWorkspace(workspacePath: string): Promise<void> {
   await rm(workspacePath, { recursive: true, force: true });
+}
+
+const execFileAsync = promisify(execFile);
+
+/** Turns a workspace into a git repository with one commit, for isolation tests. */
+export async function initRepo(workspacePath: string): Promise<void> {
+  const run = async (...args: string[]): Promise<void> => {
+    await execFileAsync("git", args, { cwd: workspacePath });
+  };
+  await run("init", "-q", "-b", "main");
+  await run("config", "user.email", "fixture@example.test");
+  await run("config", "user.name", "Fixture");
+  await run("config", "commit.gpgsign", "false");
+  await writeFile(path.join(workspacePath, "README.md"), "base\n", "utf8");
+  await run("add", "-A");
+  await run("commit", "-q", "-m", "initial");
 }
 
 /** Copies the repo's `templates/default/.agent` fixture into `<workspacePath>/.agent`. */

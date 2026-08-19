@@ -7,6 +7,7 @@ import {
   serveWorkerRequest,
   toPlannedTask,
   toTaskResult,
+  toWorkerExecutionContext,
   type WorkerRequest,
   WorkerRequestSchema,
 } from "../../src/workers/protocol.js";
@@ -92,6 +93,43 @@ describe("worker protocol schemas", () => {
       confidence: 0.8,
     });
     expect("commit" in result).toBe(false);
+  });
+
+  it("still accepts a request that carries no dependency results", () => {
+    // The field was added after the first workers shipped; an older parent
+    // sends exactly this, and it has to stay valid.
+    const parsed = WorkerRequestSchema.parse(request());
+    expect(parsed.dependencyResults).toBeUndefined();
+    expect(toWorkerExecutionContext(parsed)).toBeUndefined();
+  });
+
+  it("round-trips dependency results into an execution context", () => {
+    const dependency = makeTaskResult({
+      taskId: "T01",
+      summary: "did the groundwork",
+    });
+    const parsed = WorkerRequestSchema.parse(
+      request({ dependencyResults: [dependency] }),
+    );
+
+    const context = toWorkerExecutionContext(parsed);
+    expect(context?.dependencyResults).toEqual([dependency]);
+    // Absent optionals are dropped rather than carried as explicit undefined.
+    expect("commit" in (context?.dependencyResults[0] ?? {})).toBe(false);
+  });
+
+  it("treats an empty dependency list as no context at all", () => {
+    const parsed = WorkerRequestSchema.parse(
+      request({ dependencyResults: [] }),
+    );
+    expect(toWorkerExecutionContext(parsed)).toBeUndefined();
+  });
+
+  it("rejects a dependency result that is not a task result", () => {
+    expect(
+      WorkerRequestSchema.safeParse(request({ dependencyResults: [{}] }))
+        .success,
+    ).toBe(false);
   });
 
   it("ignores blank, non-JSON and off-protocol stdout lines", () => {

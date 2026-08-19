@@ -184,6 +184,11 @@ export class TextRenderer implements Renderer {
       case "task.cancelled":
         this.#emitTaskLifecycle(event.type, taskIdOf(event, data), data);
         break;
+      case "worktree.created":
+      case "worktree.integrated":
+      case "worktree.removed":
+        this.#emitWorktree(event.type, taskIdOf(event, data), data);
+        break;
       default:
         break;
     }
@@ -228,6 +233,55 @@ export class TextRenderer implements Renderer {
       case "task.cancelled": {
         const reason = stringOrUndefined(data.reason) ?? "cancelled";
         this.#write(`⊘ ${taskId} (${reason})`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Renders the worktree isolation layer's `worktree.*` events.
+   *
+   * Only the moments that change what is in the repository get a line: a task
+   * got its own checkout, its work landed (or did not), and a branch outlived
+   * the run and is waiting for a human. A clean removal is the expected case
+   * and stays silent.
+   */
+  #emitWorktree(
+    type: string,
+    taskId: string,
+    data: Record<string, unknown>,
+  ): void {
+    switch (type) {
+      case "worktree.created": {
+        const branch = stringOrUndefined(data.branch) ?? "?";
+        this.#write(`⎇ ${taskId} worktree created (${branch})`);
+        break;
+      }
+      case "worktree.integrated": {
+        if (data.merged === true) {
+          const commit = stringOrUndefined(data.commit);
+          const suffix = commit === undefined ? "" : ` → ${commit.slice(0, 8)}`;
+          this.#write(`⇡ ${taskId} merged${suffix}`);
+          break;
+        }
+        const files = Array.isArray(data.conflictFiles)
+          ? data.conflictFiles.filter(
+              (file): file is string => typeof file === "string",
+            )
+          : [];
+        this.#write(
+          files.length === 0
+            ? `⚠ ${taskId} not merged (${stringOrUndefined(data.reason) ?? "unknown reason"})`
+            : `⚠ ${taskId} merge conflict: ${files.join(", ")}`,
+        );
+        break;
+      }
+      case "worktree.removed": {
+        if (data.keptBranch !== true) break;
+        const branch = stringOrUndefined(data.branch) ?? "?";
+        this.#write(this.#dim(`⎇ ${taskId} branch kept: ${branch}`));
         break;
       }
       default:

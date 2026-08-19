@@ -9,6 +9,7 @@ import {
   loadAgentProject,
   serveWorkerRequest,
   toPlannedTask,
+  toWorkerExecutionContext,
 } from "@agent/coding-agent";
 import type { EventSink } from "@agent/protocol";
 import { loadDotEnvFile } from "./env.js";
@@ -102,7 +103,14 @@ export async function runWorkerCommand(
         attempts: 1,
       };
       error(`worker: ${task.spec.id} as ${request.agent}`);
-      return await executor.execute(task, request.agent);
+      // The parent forwards what this task's dependencies produced; it reaches
+      // the briefing only if it is handed on as the execution context.
+      return await executor.execute(
+        task,
+        request.agent,
+        undefined,
+        toWorkerExecutionContext(request),
+      );
     } catch (failure) {
       // `serveWorkerRequest` turns this into a failed result line for the
       // parent; the stderr copy is what a human debugging by hand sees.

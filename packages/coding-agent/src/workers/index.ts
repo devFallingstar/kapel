@@ -47,8 +47,14 @@ export {
   TaskResultSchema,
   toPlannedTask,
   toTaskResult,
+  toWorkerExecutionContext,
   WorkerEventLineSchema,
   WorkerRequestSchema,
   WorkerResultLineSchema,
   WorkerStdoutLineSchema,
 } from "./protocol.js";
+export type {
+  WorkspaceExecutorFactory,
+  WorktreeIsolatedExecutorOptions,
+} from "./worktree-executor.js";
+export { WorktreeIsolatedExecutor } from "./worktree-executor.js";

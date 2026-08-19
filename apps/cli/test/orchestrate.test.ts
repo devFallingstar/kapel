@@ -1,11 +1,24 @@
+import { UsageTracker } from "@agent/ai";
 import type {
+  AgentProject,
   RuntimeTask,
   TaskResult,
   WorkerExecutor,
 } from "@agent/coding-agent";
+import {
+  ChildProcessWorkerExecutor,
+  WorktreeIsolatedExecutor,
+} from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OrchestrateCommandOptions } from "../src/orchestrate.js";
-import { runOrchestrate, validateWorkerMode } from "../src/orchestrate.js";
+import {
+  DEFAULT_ISOLATION,
+  defaultExecutorFactory,
+  runOrchestrate,
+  validateIsolation,
+  validateWorkerMode,
+  worktreeIsolationError,
+} from "../src/orchestrate.js";
 import { TextRenderer } from "../src/render.js";
 import {
   CapturingStream,
@@ -13,12 +26,25 @@ import {
   cleanupWorkspace,
   copyTemplateAgentDir,
   fixedPlannerFactory,
+  initRepo,
   makeWorkspace,
   ROUTING_POLICY,
   SAMPLE_PLAN,
   successResult,
   writeLock,
 } from "./orchestration-fixtures.js";
+
+/** The minimum an {@link AgentProject} needs to be for a factory that ignores it. */
+function emptyProject(): AgentProject {
+  return {
+    root: "/virtual/.agent",
+    config: { models: {}, agentSlots: {} },
+    agents: [],
+    orchestrationMarkdown: undefined,
+    knownAgentNames: () => new Set<string>(),
+    agent: () => undefined,
+  };
+}
 
 /**
  * A worker that never touches a model: it records who was asked to run what,
@@ -66,6 +92,9 @@ function options(
     dryRun: false,
     workerMode: "in-process",
     backend: "native",
+    // These fixtures run in throwaway directories that are not repositories,
+    // so isolation is opted out of except where a test is about it.
+    isolation: "none",
     ...overrides,
   };
 }
@@ -75,6 +104,75 @@ describe("validateWorkerMode", () => {
     expect(validateWorkerMode("in-process")).toBe("in-process");
     expect(validateWorkerMode("child")).toBe("child");
     expect(() => validateWorkerMode("thread")).toThrow(/--worker-mode/);
+  });
+});
+
+describe("validateIsolation", () => {
+  it("accepts the known modes and rejects anything else", () => {
+    expect(validateIsolation("worktree")).toBe("worktree");
+    expect(validateIsolation("none")).toBe("none");
+    expect(() => validateIsolation("sandbox")).toThrow(/--isolation/);
+  });
+
+  it("defaults to worktree isolation", () => {
+    expect(DEFAULT_ISOLATION).toBe("worktree");
+  });
+});
+
+describe("worktreeIsolationError", () => {
+  it("rejects a directory that is not a git repository", async () => {
+    const bare = await makeWorkspace("cli-isolation-bare-");
+    try {
+      const problem = await worktreeIsolationError(bare);
+      expect(problem).toContain("git repository with at least one commit");
+      expect(problem).toContain("--isolation none");
+    } finally {
+      await cleanupWorkspace(bare);
+    }
+  });
+
+  it("accepts a repository that has a commit", async () => {
+    const repo = await makeWorkspace("cli-isolation-repo-");
+    try {
+      await initRepo(repo);
+      expect(await worktreeIsolationError(repo)).toBeUndefined();
+    } finally {
+      await cleanupWorkspace(repo);
+    }
+  });
+});
+
+describe("defaultExecutorFactory / isolation", () => {
+  function factoryArgs(
+    cwd: string,
+    isolation: "worktree" | "none",
+  ): Parameters<typeof defaultExecutorFactory>[0] {
+    return {
+      project: emptyProject(),
+      workspacePath: cwd,
+      runId: "run-1",
+      events: { emit: () => undefined },
+      usage: new UsageTracker(),
+      // `child` keeps the factory away from model credentials: the executor it
+      // builds only needs an argv.
+      workerMode: "child",
+      backend: "native",
+      isolation,
+    };
+  }
+
+  it("wraps the per-workspace executor in worktree isolation by default", async () => {
+    const executor = await defaultExecutorFactory(
+      factoryArgs("/does/not/matter", "worktree"),
+    );
+    expect(executor).toBeInstanceOf(WorktreeIsolatedExecutor);
+  });
+
+  it("returns the bare executor under --isolation none", async () => {
+    const executor = await defaultExecutorFactory(
+      factoryArgs("/does/not/matter", "none"),
+    );
+    expect(executor).toBeInstanceOf(ChildProcessWorkerExecutor);
   });
 });
 
@@ -233,6 +331,82 @@ describe("agent orchestrate", () => {
 
     expect(code).toBe(1);
     expect(errLines.join("\n")).toContain("The Codex CLI is not installed.");
+  });
+
+  it("refuses to run with worktree isolation outside a git repository", async () => {
+    const executor = new ScriptedExecutor();
+    const { output, errLines } = capture();
+
+    const code = await runOrchestrate(
+      "add a health endpoint",
+      options(workspace, { isolation: "worktree" }),
+      {
+        output,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => executor,
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(errLines.join("\n")).toContain("--isolation none");
+    // Fail fast: nothing was executed.
+    expect(executor.calls).toEqual([]);
+  });
+
+  it("runs normally with worktree isolation when the workspace is a repository", async () => {
+    await initRepo(workspace);
+    const executor = new ScriptedExecutor();
+    const { output, lines } = capture();
+
+    const code = await runOrchestrate(
+      "add a health endpoint",
+      options(workspace, { isolation: "worktree" }),
+      {
+        output,
+        renderer: new TextRenderer(new CapturingStream().asStream()),
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => executor,
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("3/3 tasks completed");
+  });
+
+  it("does not hold --dry-run to the isolation precondition", async () => {
+    const { output, lines } = capture();
+
+    const code = await runOrchestrate(
+      "add a health endpoint",
+      options(workspace, { isolation: "worktree", dryRun: true }),
+      {
+        output,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => new ScriptedExecutor(),
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("Objective: add a health endpoint");
+  });
+
+  it("reports the isolation precondition through --json", async () => {
+    const { output, lines } = capture();
+
+    const code = await runOrchestrate(
+      "add a health endpoint",
+      options(workspace, { isolation: "worktree", json: true }),
+      {
+        output,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => new ScriptedExecutor(),
+      },
+    );
+
+    expect(code).toBe(1);
+    const parsed = JSON.parse(lines.at(-1) ?? "{}");
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain("--isolation none");
   });
 
   it("stops at the plan stage when the lock is stale", async () => {

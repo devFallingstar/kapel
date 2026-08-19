@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -37,7 +38,11 @@ function makeIo(): Io {
   };
 }
 
-function request(workspacePath: string, agent = "coder"): string {
+function request(
+  workspacePath: string,
+  agent = "coder",
+  extra: Record<string, unknown> = {},
+): string {
   return `${JSON.stringify({
     type: "task",
     task: task("T01", { title: "Add the endpoint" }),
@@ -45,16 +50,24 @@ function request(workspacePath: string, agent = "coder"): string {
     runId: "run-1",
     workspacePath,
     timeoutMs: 60_000,
+    ...extra,
   })}\n`;
 }
 
 /** Emits one event, then returns a canned result — no model, no filesystem. */
 class StubExecutor implements WorkerExecutor {
   readonly seen: { taskId: string; agent: string; attempts: number }[] = [];
+  readonly contexts: (WorkerExecutionContext | undefined)[] = [];
 
   constructor(private readonly args: WorkerExecutorFactoryArgs) {}
 
-  async execute(runtime: RuntimeTask, agent: string): Promise<TaskResult> {
+  async execute(
+    runtime: RuntimeTask,
+    agent: string,
+    _signal?: AbortSignal,
+    context?: WorkerExecutionContext,
+  ): Promise<TaskResult> {
+    this.contexts.push(context);
     this.seen.push({
       taskId: runtime.spec.id,
       agent,
@@ -138,6 +151,45 @@ describe("agent worker", () => {
     expect(seen?.runId).toBe("run-1");
     expect(seen?.taskTimeoutMs).toBe(60_000);
     expect(seen?.project.knownAgentNames().has("coder")).toBe(true);
+  });
+
+  it("threads the request's dependency results into the execution context", async () => {
+    const io = makeIo();
+    let executor: StubExecutor | undefined;
+    const dependency = successResult("T00", "did the groundwork");
+
+    const pending = runWorkerCommand({
+      io,
+      error: () => undefined,
+      executorFactory: (args) => {
+        executor = new StubExecutor(args);
+        return executor;
+      },
+    });
+    io.stdin.end(
+      request(workspace, "coder", { dependencyResults: [dependency] }),
+    );
+    await pending;
+
+    expect(executor?.contexts).toEqual([{ dependencyResults: [dependency] }]);
+  });
+
+  it("hands the executor no context when the request carries no dependencies", async () => {
+    const io = makeIo();
+    let executor: StubExecutor | undefined;
+
+    const pending = runWorkerCommand({
+      io,
+      error: () => undefined,
+      executorFactory: (args) => {
+        executor = new StubExecutor(args);
+        return executor;
+      },
+    });
+    io.stdin.end(request(workspace));
+    await pending;
+
+    expect(executor?.contexts).toEqual([undefined]);
   });
 
   it("exits 1 with no stdout output when the request is not a task", async () => {

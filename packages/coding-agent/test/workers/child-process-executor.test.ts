@@ -6,6 +6,7 @@ import {
   cleanup,
   isGone,
   makeRuntimeTask,
+  makeTaskResult,
   makeTempDir,
   RecordingSink,
   waitForExit,
@@ -141,6 +142,36 @@ describe("ChildProcessWorkerExecutor", () => {
     expect(sent.timeoutMs).toBe(30_000);
     expect(sent.task.id).toBe("task-1");
     expect(sent.task.affectedAreas).toEqual(["packages/uploader"]);
+  });
+
+  it("forwards dependency results, and omits the field when there are none", async () => {
+    const dumpPath = join(workspace, "request.json");
+    const script = childScript(`
+      require("fs").writeFileSync(${JSON.stringify(dumpPath)}, raw);
+      send({
+        type: "result",
+        result: { taskId: request.task.id, status: "success", summary: "ok", decisions: [], changedFiles: [], tests: { passed: 0, failed: 0, commands: [] }, unresolvedIssues: [], confidence: 0.8 },
+      });
+    `);
+    const dependency = makeTaskResult({ taskId: "T00", summary: "groundwork" });
+
+    await executor(script).execute(makeRuntimeTask(), "coder", undefined, {
+      dependencyResults: [dependency],
+    });
+    const withContext = JSON.parse(await readFile(dumpPath, "utf8")) as {
+      dependencyResults?: unknown[];
+    };
+    expect(withContext.dependencyResults).toEqual([dependency]);
+
+    // An empty list stays off the wire: the field is optional, and a child that
+    // predates it must still see a request it can parse.
+    await executor(script).execute(makeRuntimeTask(), "coder", undefined, {
+      dependencyResults: [],
+    });
+    const without = JSON.parse(await readFile(dumpPath, "utf8")) as {
+      dependencyResults?: unknown[];
+    };
+    expect("dependencyResults" in without).toBe(false);
   });
 
   it("merges extra environment into the child", async () => {

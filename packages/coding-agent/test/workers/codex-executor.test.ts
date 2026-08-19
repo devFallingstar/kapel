@@ -7,6 +7,7 @@ import {
   cleanup,
   initGitRepo,
   makeRuntimeTask,
+  makeTaskResult,
   makeTempDir,
   RecordingSink,
 } from "./test-helpers.js";
@@ -90,6 +91,31 @@ describe("CodexWorkerExecutor", () => {
     expect(prompt).toContain('acting as the "coder" worker');
     expect(argv).toContain("--cd");
     expect(argv).toContain(workspace);
+  });
+
+  it("includes dependency results from the execution context in the prompt", async () => {
+    const argvFile = join(dir, "argv.txt");
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const executor = new CodexWorkerExecutor({
+      workspacePath: workspace,
+      runId: "run-7",
+      backendOptions: { binaryPath },
+    });
+
+    await executor.execute(makeRuntimeTask(), "coder", undefined, {
+      dependencyResults: [
+        makeTaskResult({
+          taskId: "T00",
+          summary: "Added the /healthz route.",
+          changedFiles: ["src/server.ts"],
+        }),
+      ],
+    });
+
+    const prompt = (await readArgv(argvFile)).at(-1) ?? "";
+    expect(prompt).toContain("## Results from dependency tasks");
+    expect(prompt).toContain("### T00 — success");
+    expect(prompt).toContain("  - src/server.ts");
   });
 
   it("returns a failed result when codex exits non-zero", async () => {

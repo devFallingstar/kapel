@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/orchestration";
 import type { AgentEvent, EventSink } from "@agent/protocol";
@@ -63,6 +64,7 @@ export class ChildProcessWorkerExecutor implements WorkerExecutor {
     task: RuntimeTask,
     agent: string,
     signal?: AbortSignal,
+    context?: WorkerExecutionContext,
   ): Promise<TaskResult> {
     const taskId = task.spec.id;
     const { command, runId, workspacePath, taskTimeoutMs } = this.#options;
@@ -92,6 +94,10 @@ export class ChildProcessWorkerExecutor implements WorkerExecutor {
       );
     }
 
+    // An empty dependency list is left off the wire entirely: the field is
+    // optional, and an older child that ignores it must still see a request it
+    // can parse.
+    const dependencyResults = context?.dependencyResults ?? [];
     const request = JSON.stringify({
       type: "task",
       task: task.spec,
@@ -99,6 +105,7 @@ export class ChildProcessWorkerExecutor implements WorkerExecutor {
       runId,
       workspacePath,
       ...(taskTimeoutMs === undefined ? {} : { timeoutMs: taskTimeoutMs }),
+      ...(dependencyResults.length === 0 ? {} : { dependencyResults }),
     });
 
     // Events are queued synchronously as lines arrive and drained in order so

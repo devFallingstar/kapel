@@ -1,4 +1,8 @@
-import type { PlannedTask, TaskResult } from "@agent/orchestration";
+import type {
+  PlannedTask,
+  TaskResult,
+  WorkerExecutionContext,
+} from "@agent/orchestration";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { AgentEventSchema } from "@agent/protocol";
 import { z } from "zod";
@@ -58,6 +62,12 @@ export const WorkerRequestSchema = z.object({
   runId: z.string(),
   workspacePath: z.string(),
   timeoutMs: z.number().optional(),
+  /**
+   * Results of the task's direct dependencies, in dependency-declaration order.
+   * Optional on purpose: a parent that predates dependency context (or a task
+   * with no dependencies) sends a request without it, and that stays valid.
+   */
+  dependencyResults: z.array(TaskResultSchema).optional(),
 });
 
 export const WorkerEventLineSchema = z.object({
@@ -95,6 +105,20 @@ export function toPlannedTask(
     ...rest,
     ...(suggestedAgent === undefined ? {} : { suggestedAgent }),
   };
+}
+
+/**
+ * The execution context a request carries, or `undefined` when it carries none.
+ *
+ * An absent and an empty `dependencyResults` list mean the same thing to a
+ * worker, so both collapse to `undefined` rather than to an empty context.
+ */
+export function toWorkerExecutionContext(
+  request: WorkerRequest,
+): WorkerExecutionContext | undefined {
+  const results = request.dependencyResults;
+  if (results === undefined || results.length === 0) return undefined;
+  return { dependencyResults: results.map(toTaskResult) };
 }
 
 /** Converts a parsed result into the orchestration `TaskResult` shape. */

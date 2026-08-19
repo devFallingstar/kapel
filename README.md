@@ -82,8 +82,10 @@ During a run, task lifecycle lines are interleaved with the workers' own output:
 
 ```text
 ▶ T01 → explorer (attempt 1)
+⎇ T02 worktree created (agent-task/8f3a.../T02)
 ▶ T02 → coder (attempt 1)
 ✔ T02 — Added the /healthz route.
+⇡ T02 merged → 4b1c9de0
 ↑ T03 rerouted coder → lead
 ⊘ T04 (dependency-failed)
 ```
@@ -95,7 +97,21 @@ Execution options:
 - `--worker-mode in-process` (default) — every task runs in this process through the native agent loop, using the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
 - `--worker-mode child` — each task runs in a separate `agent worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
 - `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
+- `--isolation worktree` (default) / `--isolation none` — see [Worktree isolation](#worktree-isolation) below.
 - `--timeout <seconds>` applies **per task**, not to the run as a whole; `--max-iterations <n>` bounds each in-process worker's tool loop. `--json` turns the whole run into JSONL (worker events, task events, then a final `run.summary` line).
+
+#### Worktree isolation
+
+Parallel workers editing one checkout would see each other's half-finished edits, so by default **every mutating task gets its own git worktree**: a private checkout of the current `HEAD` on an `agent-task/<runId>/<taskId>` branch, under `.agent/worktrees/`. The worker only ever sees that directory. When the task succeeds, its changes are committed on the task branch and merged back into your checked-out branch — merges are serialized, so concurrent tasks land one after another rather than racing. The checkout and the branch are then deleted, and the task's reported `changedFiles`/`commit` describe what actually landed.
+
+This applies to every worker mode and to `--backend codex` alike; isolation is about how tasks share the repository, not about what runs them.
+
+- **Read-only tasks run in place.** `exploration` and `review` tasks never write, so they run directly in your workspace with no checkout and no branch.
+- **Conflicts are reported, not resolved.** If a task's branch cannot be merged (two tasks touched the same lines, or the base checkout was dirty), the task comes back `partial` with the conflicting files and the branch name in its unresolved issues, and **the branch is preserved** so you can merge or inspect it by hand. Your working tree is left clean — no merge in progress, no conflict markers.
+- **Failed tasks keep their evidence.** A task that fails after making edits still has them committed on its branch, which is kept for inspection; nothing is merged.
+- `--isolation none` opts out entirely: every task runs directly in the workspace, exactly as before. Use it when the workspace is not a git repository, or when you want a single shared tree.
+
+Worktree isolation needs the workspace to be a git repository with at least one commit; if it isn't, `agent orchestrate` says so and exits before planning work, suggesting `--isolation none`. Should a run be killed mid-flight, leftover checkouts and `agent-task/*` branches can be cleaned up with `git worktree prune` plus `git branch -D`.
 
 `agent worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
 

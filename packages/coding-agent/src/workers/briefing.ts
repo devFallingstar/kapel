@@ -1,4 +1,49 @@
-import type { PlannedTask } from "@agent/orchestration";
+import type {
+  PlannedTask,
+  TaskResult,
+  WorkerExecutionContext,
+} from "@agent/orchestration";
+
+/** How much of a dependency's summary is quoted into the briefing. */
+const MAX_DEPENDENCY_SUMMARY_CHARS = 400;
+
+/** How many changed files a dependency contributes before the list is cut short. */
+const MAX_DEPENDENCY_FILES = 20;
+
+function truncate(text: string, limit: number): string {
+  const trimmed = text.trim();
+  return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit)}…`;
+}
+
+/**
+ * Renders what a task's dependencies produced.
+ *
+ * A dependent task is usually building on files another worker just wrote, and
+ * in an isolated run it cannot ask: the changes exist in the base branch but
+ * nothing in the briefing points at them. Summaries are quoted rather than
+ * pasted whole, and file lists are capped, so a chatty dependency cannot crowd
+ * the task's own instructions out of the prompt.
+ */
+function dependencySection(results: readonly TaskResult[]): string[] {
+  const lines: string[] = ["", "## Results from dependency tasks", ""];
+
+  for (const result of results) {
+    lines.push(`### ${result.taskId} — ${result.status}`);
+    lines.push(truncate(result.summary, MAX_DEPENDENCY_SUMMARY_CHARS));
+
+    if (result.changedFiles.length > 0) {
+      lines.push("Changed files:");
+      for (const file of result.changedFiles.slice(0, MAX_DEPENDENCY_FILES)) {
+        lines.push(`  - ${file}`);
+      }
+      const extra = result.changedFiles.length - MAX_DEPENDENCY_FILES;
+      if (extra > 0) lines.push(`  - ... and ${extra} more`);
+    }
+    lines.push("");
+  }
+
+  return lines;
+}
 
 /**
  * The instruction every worker backend receives for a planned task.
@@ -7,7 +52,11 @@ import type { PlannedTask } from "@agent/orchestration";
  * backend and any child-process worker all get the same briefing, so a task's
  * behaviour does not silently change with the executor it is routed to.
  */
-export function buildTaskBriefing(task: PlannedTask, agent: string): string {
+export function buildTaskBriefing(
+  task: PlannedTask,
+  agent: string,
+  context?: WorkerExecutionContext,
+): string {
   const lines: string[] = [
     `You are acting as the "${agent}" worker on task ${task.id}.`,
     "",
@@ -39,6 +88,11 @@ export function buildTaskBriefing(task: PlannedTask, agent: string): string {
     "",
     "Work directly in the current workspace. Return a short summary of what you changed.",
   );
+
+  const dependencyResults = context?.dependencyResults ?? [];
+  if (dependencyResults.length > 0) {
+    lines.push(...dependencySection(dependencyResults));
+  }
 
   return lines.join("\n");
 }

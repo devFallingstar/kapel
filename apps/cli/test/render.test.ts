@@ -242,6 +242,81 @@ describe("TextRenderer / task.* lifecycle events", () => {
   });
 });
 
+describe("TextRenderer / worktree.* events", () => {
+  function worktreeEvent(
+    type: string,
+    data: unknown,
+    taskId = "T01",
+  ): AgentEvent {
+    return { id: "evt-1", runId: "run-1", timestamp: 0, type, taskId, data };
+  }
+
+  it("names the branch a task's checkout was created on", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.created", {
+        branch: "agent-task/run-1/T01",
+        path: "/repo/.agent/worktrees/run-1/T01",
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "⎇ T01 worktree created (agent-task/run-1/T01)",
+    ]);
+  });
+
+  it("shows a merge with the short commit it landed as", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.integrated", {
+        merged: true,
+        commit: "0123456789abcdef0123456789abcdef01234567",
+      }),
+    );
+    expect(stream.lines).toEqual(["⇡ T01 merged → 01234567"]);
+  });
+
+  it("shows the conflicting files when the merge did not happen", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.integrated", {
+        merged: false,
+        reason: "conflicts",
+        conflictFiles: ["src/a.ts", "src/b.ts"],
+      }),
+    );
+    expect(stream.lines).toEqual(["⚠ T01 merge conflict: src/a.ts, src/b.ts"]);
+  });
+
+  it("falls back to the reason when nothing conflicted", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.integrated", {
+        merged: false,
+        reason: "dirty-base",
+        conflictFiles: [],
+      }),
+    );
+    expect(stream.lines).toEqual(["⚠ T01 not merged (dirty-base)"]);
+  });
+
+  it("mentions a preserved branch but stays quiet about a clean removal", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.removed", {
+        keptBranch: true,
+        branch: "agent-task/run-1/T01",
+      }),
+    );
+    r.emit(
+      worktreeEvent("worktree.removed", {
+        keptBranch: false,
+        branch: "agent-task/run-1/T02",
+      }),
+    );
+    expect(stream.lines).toEqual(["⎇ T01 branch kept: agent-task/run-1/T01"]);
+  });
+});
+
 describe("TextRenderer#result / CodexRunResult", () => {
   it("shows the summary but no exit-code line on a clean success", () => {
     const { renderer: r, stream } = renderer();

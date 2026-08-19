@@ -1,6 +1,7 @@
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/orchestration";
 import type { EventSink } from "@agent/protocol";
@@ -45,6 +46,7 @@ export class CodexWorkerExecutor implements WorkerExecutor {
     task: RuntimeTask,
     agent: string,
     signal?: AbortSignal,
+    context?: WorkerExecutionContext,
   ): Promise<TaskResult> {
     const taskId = task.spec.id;
     const { workspacePath, runId } = this.#options;
@@ -62,7 +64,7 @@ export class CodexWorkerExecutor implements WorkerExecutor {
     let run: NormalizableRun;
     try {
       run = await backend.run(
-        { instruction: buildTaskBriefing(task.spec, agent) },
+        { instruction: buildTaskBriefing(task.spec, agent, context) },
         {
           runId,
           taskId,

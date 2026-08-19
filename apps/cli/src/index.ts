@@ -14,9 +14,12 @@ import { loadDotEnvFile } from "./env.js";
 import { runInit } from "./init.js";
 import { listModels } from "./models.js";
 import {
+  DEFAULT_ISOLATION,
   DEFAULT_WORKER_MODE,
+  ISOLATION_MODES,
   type OrchestrateCommandOptions,
   runOrchestrate,
+  validateIsolation,
   validateWorkerMode,
   WORKER_MODES,
 } from "./orchestrate.js";
@@ -226,6 +229,7 @@ function planOptions(command: Command): PlanCommandOptions {
 
 interface RawOrchestrateOpts {
   readonly workerMode: string;
+  readonly isolation: string;
   readonly dryRun: boolean;
 }
 
@@ -248,6 +252,7 @@ function orchestrateOptions(
     ...planOptions(command),
     dryRun: opts.dryRun,
     workerMode: validateWorkerMode(opts.workerMode),
+    isolation: validateIsolation(opts.isolation),
     backend: validateBackendName(raw.backend),
     maxIterations,
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
@@ -297,6 +302,11 @@ program
     "--worker-mode <mode>",
     `where workers run: ${WORKER_MODES.join(" | ")}`,
     DEFAULT_WORKER_MODE,
+  )
+  .option(
+    "--isolation <mode>",
+    `how mutating tasks are kept apart: ${ISOLATION_MODES.join(" | ")}`,
+    DEFAULT_ISOLATION,
   )
   .option("--dry-run", "plan only — same output as `agent plan`", false)
   .action(
