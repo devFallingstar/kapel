@@ -12,13 +12,13 @@
 빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.5.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.6.0.tgz
 kapel --version
 ```
 
 npm 레지스트리 배포 후에는 `npm install -g @devfallingstar/kapel` 로 대체됩니다.
 URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
-`npm install -g ./kapel/release/devfallingstar-kapel-0.5.0.tgz`. 제거는
+`npm install -g ./kapel/release/devfallingstar-kapel-0.6.0.tgz`. 제거는
 `npm uninstall -g @devfallingstar/kapel`.
 
 > `npm install -g github:...` 형태는 쓰지 마세요 — npm의 워크스페이스
@@ -138,7 +138,7 @@ git add -A && git commit -qm init
 kapel                     # 목적을 인자로 주지 않으면 대화형 모드로 진입
 ```
 
-배너(`kapel v0.5.0  claude-sonnet-5  session 0f3c9a2b`)와 `kapel>` 프롬프트가
+배너(`kapel v0.6.0  claude-sonnet-5  session 0f3c9a2b`)와 `kapel>` 프롬프트가
 뜨면 대화로 버그 수정을 지시합니다. 이 프롬프트는 입력 편집기입니다:
 줄 끝에 `\`를 붙이면(또는 여러 줄을 한 번에 붙여넣으면) 계속 입력할 수 있고
 빈 줄로 끝냅니다; ↑/↓로 이전 입력을 다시 불러올 수 있고 이는 `~/.kapel/history`에
@@ -419,7 +419,7 @@ kapel --backend claude-code "calc.js의 add 함수 옆에 sub 함수를 추가�
 kapel --backend claude-code            # 목적 없이 실행 → 대화형
 ```
 
-배너가 `kapel v0.5.0  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
+배너가 `kapel v0.6.0  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
 아래에 `approvals are enforced by the Claude Code CLI — kapel does not prompt here`
 가 표시됩니다 — 이 경로에서는 kapel이 `allow …? [y/n/a]`를 묻지 않습니다(승인은
 Claude Code CLI가 자체 정책으로 처리).
