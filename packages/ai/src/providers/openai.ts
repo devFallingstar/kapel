@@ -4,6 +4,7 @@ import type {
   ModelMessage,
   ModelProvider,
   ModelRequest,
+  ToolChoice,
   ToolDefinition,
 } from "../index.js";
 import { parseSse } from "../sse.js";
@@ -82,6 +83,24 @@ function toWireTool(tool: ToolDefinition) {
   };
 }
 
+/**
+ * Chat Completions spells forced tool use as a string enum plus a named
+ * function object: `"auto"`, `"required"` (any tool), or
+ * `{type:"function", function:{name}}` (one specific tool).
+ */
+function toWireToolChoice(
+  choice: ToolChoice,
+): string | Record<string, unknown> {
+  switch (choice.type) {
+    case "auto":
+      return "auto";
+    case "any":
+      return "required";
+    case "tool":
+      return { type: "function", function: { name: choice.name } };
+  }
+}
+
 function parseArguments(raw: string): unknown {
   const trimmed = raw.trim();
   if (trimmed === "") return {};
@@ -119,6 +138,9 @@ export class OpenAIProvider implements ModelProvider {
     };
     if (request.tools !== undefined && request.tools.length > 0) {
       body.tools = request.tools.map(toWireTool);
+    }
+    if (request.toolChoice !== undefined) {
+      body.tool_choice = toWireToolChoice(request.toolChoice);
     }
     if (request.temperature !== undefined)
       body.temperature = request.temperature;

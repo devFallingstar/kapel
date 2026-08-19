@@ -4,6 +4,7 @@ import type {
   ModelMessage,
   ModelProvider,
   ModelRequest,
+  ToolChoice,
   ToolDefinition,
 } from "../index.js";
 import { parseSse } from "../sse.js";
@@ -70,6 +71,18 @@ function toWireTool(tool: ToolDefinition) {
     description: tool.description,
     input_schema: tool.inputSchema,
   };
+}
+
+/** `tool_choice` on the Messages API mirrors our shape one-for-one. */
+function toWireToolChoice(choice: ToolChoice): Record<string, unknown> {
+  switch (choice.type) {
+    case "auto":
+      return { type: "auto" };
+    case "any":
+      return { type: "any" };
+    case "tool":
+      return { type: "tool", name: choice.name };
+  }
 }
 
 interface MappedMessages {
@@ -199,6 +212,9 @@ export class AnthropicProvider implements ModelProvider {
     if (system !== undefined) body.system = system;
     if (request.tools !== undefined && request.tools.length > 0) {
       body.tools = request.tools.map(toWireTool);
+    }
+    if (request.toolChoice !== undefined) {
+      body.tool_choice = toWireToolChoice(request.toolChoice);
     }
     if (request.temperature !== undefined)
       body.temperature = request.temperature;

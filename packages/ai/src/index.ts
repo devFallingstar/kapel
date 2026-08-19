@@ -52,10 +52,25 @@ export interface ToolDefinition {
   readonly inputSchema: unknown;
 }
 
+/**
+ * How the model is allowed (or forced) to use the supplied tools.
+ *
+ * - `auto`: the model decides between text and tool calls.
+ * - `any`: the model must call some tool, but picks which one.
+ * - `tool`: the model must call the named tool — the way to get structured
+ *   output out of a provider that has no dedicated response-format knob.
+ */
+export type ToolChoice =
+  | { readonly type: "auto" }
+  | { readonly type: "any" }
+  | { readonly type: "tool"; readonly name: string };
+
 export interface ModelRequest {
   readonly model: ModelDefinition;
   readonly messages: readonly ModelMessage[];
   readonly tools?: readonly ToolDefinition[];
+  /** Omitted means "let the provider apply its own default". */
+  readonly toolChoice?: ToolChoice;
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
 }

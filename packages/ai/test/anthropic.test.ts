@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ModelEvent, ModelRequest } from "../src/index.js";
+import type { ModelEvent, ModelRequest, ToolChoice } from "../src/index.js";
 import { AnthropicProvider, ProviderError } from "../src/index.js";
 import {
   anthropicModel,
@@ -242,6 +242,33 @@ describe("AnthropicProvider", () => {
         },
       ],
     });
+  });
+
+  it("maps every tool_choice variant, and omits tool_choice when unset", async () => {
+    const cases: readonly (readonly [ToolChoice, unknown])[] = [
+      [{ type: "auto" }, { type: "auto" }],
+      [{ type: "any" }, { type: "any" }],
+      [
+        { type: "tool", name: "emit_policy" },
+        { type: "tool", name: "emit_policy" },
+      ],
+    ];
+
+    for (const [toolChoice, wire] of cases) {
+      const mock = stubFetch(TEXT_TURN);
+      await drain(provider().stream({ ...simpleRequest, toolChoice }));
+      const body = requestBody(
+        mock.mock.calls[0] as unknown as readonly unknown[],
+      );
+      expect(body.tool_choice).toEqual(wire);
+      vi.unstubAllGlobals();
+    }
+
+    const unset = stubFetch(TEXT_TURN);
+    await drain(provider().stream(simpleRequest));
+    expect(
+      requestBody(unset.mock.calls[0] as unknown as readonly unknown[]),
+    ).not.toHaveProperty("tool_choice");
   });
 
   it("prefers request.maxOutputTokens, then model.maxOutputTokens, then a default", async () => {
