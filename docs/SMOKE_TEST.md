@@ -12,7 +12,7 @@
 빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/claude/upload-zip-commit-b8wouv/release/kapel-0.1.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/kapel-0.1.0.tgz
 kapel --version
 ```
 

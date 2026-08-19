@@ -9,7 +9,7 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/claude/upload-zip-commit-b8wouv/release/kapel-0.1.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/kapel-0.1.0.tgz
 
 cd /path/to/your/repo
 export ANTHROPIC_API_KEY=...          # see Authentication below for other options
@@ -18,7 +18,7 @@ kapel "fix the failing test"
 
 Once published to the npm registry this becomes simply `npm install -g kapel`.
 If the tarball URL is unreachable from your network, the equivalent two-step
-form is `git clone -b claude/upload-zip-commit-b8wouv
+form is `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
 ./kapel-src/release/kapel-0.1.0.tgz`.
 
