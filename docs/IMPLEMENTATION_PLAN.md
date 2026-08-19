@@ -27,12 +27,15 @@ Acceptance: one configured model can inspect and modify a repository safely.
 
 ## M2 — Policy compiler
 
-- [ ] load `.agent/orchestration.md`
-- [ ] compile natural language to Policy IR using structured output
-- [ ] semantic validation
-- [ ] ambiguity report
-- [ ] write/read `orchestration.lock.json`
-- [ ] `agent policy compile|check|explain`
+- [x] load `.agent/orchestration.md` (full `.agent/` project loader:
+      config.yaml model aliases/slots, agents/*.md front matter)
+- [x] compile natural language to Policy IR using structured output
+      (forced tool call, zod-issue feedback retries)
+- [x] semantic validation
+- [x] ambiguity report
+- [x] write/read `orchestration.lock.json` (normalized source hash,
+      deterministic serialization)
+- [x] `agent policy compile|check|explain`
 
 Acceptance: changing only natural-language policy changes the validated runtime policy.
 

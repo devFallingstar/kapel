@@ -13,6 +13,12 @@ import {
 import { loadDotEnvFile } from "./env.js";
 import { runInit } from "./init.js";
 import { listModels } from "./models.js";
+import {
+  type PolicyCommandOptions,
+  runPolicyCheck,
+  runPolicyCompile,
+  runPolicyExplain,
+} from "./policy.js";
 import { runObjective } from "./run.js";
 import { runCodexObjective } from "./run-codex.js";
 
@@ -200,12 +206,58 @@ program
     );
   });
 
-program
+function policyOptions(command: Command): PolicyCommandOptions {
+  const raw = command.optsWithGlobals() as RawRunOpts;
+  return {
+    cwd: raw.cwd,
+    json: raw.json,
+    ...(raw.model === undefined ? {} : { model: raw.model }),
+  };
+}
+
+const POLICY_SUBCOMMANDS = ["compile", "check", "explain"] as const;
+
+const policyCommand = program
   .command("policy")
-  .argument("<command>", "compile | check | explain")
-  .description("Manage orchestration policies (not yet implemented)")
-  .action((command: string) => {
-    console.log(`policy ${command}: TODO`);
+  .description("Manage orchestration policies (compile, check, explain)")
+  .argument("[unknownCommand]", "compile | check | explain");
+
+policyCommand
+  .command("compile")
+  .description(
+    "Compile .agent/orchestration.md into a policy lock using an LLM",
+  )
+  .action(async (_opts: unknown, command: Command) => {
+    process.exitCode = await runPolicyCompile(policyOptions(command));
   });
+
+policyCommand
+  .command("check")
+  .description("Check that the policy lock is fresh and valid (no LLM calls)")
+  .action(async (_opts: unknown, command: Command) => {
+    process.exitCode = await runPolicyCheck(policyOptions(command));
+  });
+
+policyCommand
+  .command("explain")
+  .description("Print a human-readable summary of the compiled policy")
+  .action(async (_opts: unknown, command: Command) => {
+    process.exitCode = await runPolicyExplain(policyOptions(command));
+  });
+
+policyCommand.action((unknownCommand: string | undefined) => {
+  // Reached only when `policy` is run with no subcommand, or with a first
+  // token that doesn't match `compile` | `check` | `explain` (commander
+  // dispatches recognized subcommands to their own `.action()` above
+  // without ever reaching this one).
+  if (unknownCommand === undefined) {
+    policyCommand.help();
+    return;
+  }
+  console.error(
+    `Unknown policy command "${unknownCommand}". Expected one of: ${POLICY_SUBCOMMANDS.join(", ")}.`,
+  );
+  process.exitCode = 1;
+});
 
 await program.parseAsync();

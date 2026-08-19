@@ -48,12 +48,12 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
 
       // Models declared in config.yaml.
       expect(project.config.models.lead).toEqual({
-        provider: "openai",
-        model: "gpt-5.6-sol",
+        provider: "anthropic",
+        model: "claude-opus-5",
       });
       expect(project.config.models.reviewer).toEqual({
-        provider: "anthropic",
-        model: "claude-opus",
+        provider: "openai",
+        model: "gpt-5.1",
       });
 
       expect(project.orchestrationMarkdown).toBeDefined();

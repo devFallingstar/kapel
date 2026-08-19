@@ -48,11 +48,11 @@ function errorMessage(error: unknown): string {
  * returns a friendly, printable error message on failure (unknown alias,
  * or a known model whose provider has no API key configured).
  */
-type ResolvedModel =
+export type ResolvedModel =
   | { readonly model: ModelDefinition; readonly provider: ModelProvider }
   | { readonly error: string };
 
-async function resolveModelAndProvider(
+export async function resolveModelAndProvider(
   env: Readonly<Record<string, string | undefined>>,
   alias: string,
 ): Promise<ResolvedModel> {

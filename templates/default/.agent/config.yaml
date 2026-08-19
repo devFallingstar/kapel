@@ -1,16 +1,16 @@
 models:
   lead:
-    provider: openai
-    model: gpt-5.6-sol
-  worker:
-    provider: openai
-    model: gpt-5.6-terra
-  cheap:
-    provider: openai
-    model: gpt-5.6-luna
-  reviewer:
     provider: anthropic
-    model: claude-opus
+    model: claude-opus-5
+  worker:
+    provider: anthropic
+    model: claude-sonnet-5
+  cheap:
+    provider: anthropic
+    model: claude-haiku-4-5
+  reviewer:
+    provider: openai
+    model: gpt-5.1
 
 agents:
   orchestrator: lead
