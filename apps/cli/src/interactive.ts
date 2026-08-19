@@ -50,7 +50,7 @@ import type { KapelConfig } from "./config.js";
 import {
   checkBackendAvailability,
   delegatedModelOverride,
-  resolveBackendSetting,
+  detectBackendSetting,
   resolveOrchestratorModel,
   ttyWizardPrompt,
 } from "./config-runtime.js";
@@ -77,26 +77,27 @@ import {
   workspaceFileExists,
 } from "./mention.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
-import {
-  DEFAULT_ISOLATION,
-  DEFAULT_WORKER_MODE,
-  runOrchestrate,
-} from "./orchestrate.js";
+import { DEFAULT_ISOLATION, runOrchestrate } from "./orchestrate.js";
 import {
   DEFAULT_PERMISSIONS,
   loadRepoPermissionRules,
   resolvePermissionRules,
 } from "./permissions.js";
-import { formatTable } from "./plan.js";
+import type { OrchestrationOutput, PlanCommandOptions } from "./plan.js";
+import { formatTable, runPlan } from "./plan.js";
 import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
 import { TextRenderer, usageRollupLines } from "./render.js";
+import type { ResumeCommandOptions } from "./resume-cmd.js";
+import { runResume } from "./resume-cmd.js";
 import type { ResolvedModel } from "./run.js";
 import {
   agentLoopOptions,
+  DEFAULT_MAX_ITERATIONS,
   defaultSystemPrompt,
   resolveModelAndProvider,
 } from "./run.js";
+import { runRunsCommand } from "./runs-cmd.js";
 import { isoTime } from "./sessions.js";
 
 /**
@@ -517,6 +518,27 @@ export interface InteractiveControllerDeps {
   /** Runs `/orchestrate <objective>`; absent means the command is unavailable. */
   readonly orchestrate?: (objective: string) => Promise<number>;
   /**
+   * Runs `/plan <objective>` — the same preparePlan pipeline `/orchestrate`
+   * starts with, stopping before execution. Absent means the command is
+   * unavailable.
+   *
+   * The three commands below take the {@link OrchestrationOutput} to write
+   * through, rather than printing for themselves: their output belongs in the
+   * REPL's own line stream (and therefore in the `DispatchResult`), not on a
+   * console the renderer does not know about.
+   */
+  readonly plan?: (
+    objective: string,
+    output: OrchestrationOutput,
+  ) => Promise<number>;
+  /** Runs `/runs` — the recorded orchestration runs of this workspace. */
+  readonly runs?: (output: OrchestrationOutput) => Promise<number>;
+  /** Runs `/resume-run <runId>` — see `resume-cmd.ts`. */
+  readonly resumeRun?: (
+    runId: string,
+    output: OrchestrationOutput,
+  ) => Promise<number>;
+  /**
    * Runs `/config` — the setup wizard — and returns the saved configuration,
    * or `undefined` when it was cancelled. Absent means there is no terminal to
    * run it on, and `/config` says so instead.
@@ -646,9 +668,20 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     help: "restore the files to before the last prompt",
   },
   {
+    name: "plan",
+    usage: "/plan <objective>",
+    help: "plan an objective and show the routing — nothing is executed",
+  },
+  {
     name: "orchestrate",
     usage: "/orchestrate <objective>",
     help: "run the multi-agent pipeline on an objective",
+  },
+  { name: "runs", usage: "/runs", help: "list this workspace's recorded runs" },
+  {
+    name: "resume-run",
+    usage: "/resume-run <runId>",
+    help: "re-execute the unfinished tasks of a recorded run (see /runs)",
   },
 ];
 
@@ -1359,6 +1392,81 @@ export async function createInteractiveController(
     return drain();
   };
 
+  /**
+   * The sink `/plan`, `/runs` and `/resume-run` write through.
+   *
+   * Everything they produce — tables, notes, and the "run `kapel policy
+   * compile` first" kind of failure — lands as REPL lines, which is what puts
+   * it in front of the renderer and in the dispatch result the tests read.
+   * `error` deliberately goes to the same place: there is no stderr worth
+   * separating out at a prompt.
+   */
+  const replOutput: OrchestrationOutput = { log: emit, error: emit };
+
+  /**
+   * `/plan <objective>` — the plan `/orchestrate` would execute, printed and
+   * then thrown away. Always with the routing rationale, which used to be a
+   * flag of its own: at a prompt the table and the reason behind it are one
+   * thought, and the alternative is another thing to remember to type.
+   */
+  const slashPlan = async (objective: string): Promise<DispatchResult> => {
+    if (deps.plan === undefined) {
+      emit("/plan is not available here.");
+      return drain();
+    }
+    if (objective === "") {
+      emit('usage: /plan "<objective>"');
+      return drain();
+    }
+    try {
+      await deps.plan(objective, replOutput);
+    } catch (error) {
+      // A failed plan (stale policy lock, unusable planner model, …) is a
+      // thing to fix and retry, not a reason to lose the conversation.
+      emit(errorText(error));
+    }
+    return drain();
+  };
+
+  /** `/runs` — the recorded runs, newest first, so `/resume-run` has an id to take. */
+  const slashRuns = async (): Promise<DispatchResult> => {
+    if (deps.runs === undefined) {
+      emit("/runs is not available here.");
+      return drain();
+    }
+    try {
+      await deps.runs(replOutput);
+    } catch (error) {
+      emit(errorText(error));
+    }
+    return drain();
+  };
+
+  /**
+   * `/resume-run <runId>` — finish a run that stopped part-way.
+   *
+   * Named around `/resume`, which was already taken by the conversation
+   * switcher: a run and a chat session are different things with different
+   * ids, and one command that guessed which was meant would be wrong at the
+   * worst possible moment.
+   */
+  const slashResumeRun = async (runId: string): Promise<DispatchResult> => {
+    if (deps.resumeRun === undefined) {
+      emit("/resume-run is not available here.");
+      return drain();
+    }
+    if (runId === "") {
+      emit("usage: /resume-run <runId>  — see /runs");
+      return drain();
+    }
+    try {
+      await deps.resumeRun(runId, replOutput);
+    } catch (error) {
+      emit(errorText(error));
+    }
+    return drain();
+  };
+
   const slashOrchestrate = async (
     objective: string,
   ): Promise<DispatchResult> => {
@@ -1487,8 +1595,14 @@ export async function createInteractiveController(
         return await slashCompact();
       case "undo":
         return await slashUndo();
+      case "plan":
+        return await slashPlan(argument);
       case "orchestrate":
         return await slashOrchestrate(argument);
+      case "runs":
+        return await slashRuns();
+      case "resume-run":
+        return await slashResumeRun(argument);
       default: {
         // P1-4: a name that isn't a built-in may still be a custom command
         // loaded from `.agent/commands/` — checked here, after every
@@ -1537,15 +1651,11 @@ export async function createInteractiveController(
 export interface InteractiveOptions {
   readonly cwd: string;
   readonly model?: string;
-  readonly maxIterations: number;
   readonly timeoutSeconds?: number;
-  readonly yes: boolean;
-  readonly json: boolean;
   /** `--no-save`: run the conversation without recording it. Defaults to true. */
   readonly save?: boolean;
   readonly continue?: boolean;
   readonly session?: string;
-  readonly system?: string;
   /** The raw `--backend` flag, if one was passed. */
   readonly backend?: string;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
@@ -1710,13 +1820,6 @@ async function startDelegatedOrNative(
 export async function runInteractive(
   options: InteractiveOptions,
 ): Promise<number> {
-  if (options.json) {
-    console.error(
-      '--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".',
-    );
-    return 1;
-  }
-
   const workspacePath = path.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
@@ -1732,10 +1835,8 @@ export async function runInteractive(
 
   // `.env` is loaded first so a workspace-local `AGENT_BACKEND`/`AGENT_MODEL`
   // takes part in the precedence chain exactly like a shell variable.
-  const backend = resolveBackendSetting(
-    options.backend,
-    process.env,
-    options.config,
+  const backend = (
+    await detectBackendSetting(options.backend, process.env, options.config)
   ).value;
   const modelSetting = resolveOrchestratorModel(
     options.model,
@@ -1855,7 +1956,9 @@ export async function runInteractive(
       : undefined;
 
     const prompter = createPrompter({
-      yes: options.yes,
+      // There is no `-y` here any more: the REPL is the one place a human is
+      // definitely present, so every write still gets asked about.
+      yes: false,
       interactive: interactiveTty,
       state: promptState,
       allowlist: sessionAllowlist,
@@ -1918,9 +2021,10 @@ export async function runInteractive(
         name: "agent",
         role: "worker",
         model: args.model,
-        systemPrompt:
-          options.system ??
-          composeSystemPrompt(defaultSystemPrompt(workspacePath), instructions),
+        systemPrompt: composeSystemPrompt(
+          defaultSystemPrompt(workspacePath),
+          instructions,
+        ),
         tools: builtinTools().map((tool) => tool.name),
         permissions: DEFAULT_PERMISSIONS,
       };
@@ -1935,7 +2039,7 @@ export async function runInteractive(
           }),
           usage: nativeUsage,
           events: renderer,
-          maxIterations: options.maxIterations,
+          maxIterations: DEFAULT_MAX_ITERATIONS,
           ...(options.timeoutSeconds === undefined
             ? {}
             : { timeoutMs: options.timeoutSeconds * 1000 }),
@@ -1949,8 +2053,7 @@ export async function runInteractive(
         ? nativeSession(args)
         : delegatedSession(args.backend, args);
 
-    const wizardTty =
-      interactiveTty && process.stdout.isTTY === true && !options.json;
+    const wizardTty = interactiveTty && process.stdout.isTTY === true;
 
     const controller = await createInteractiveController({
       workspacePath,
@@ -1975,7 +2078,16 @@ export async function runInteractive(
         customCommandNames.current = names;
       },
       orchestrate: (objective) =>
-        runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
+        runOrchestrate(
+          objective,
+          orchestrateOptionsFor(options, alias, backend),
+        ),
+      plan: (objective, output) =>
+        runPlan(objective, planOptionsFor(options, alias, backend), { output }),
+      runs: (output) =>
+        runRunsCommand({ cwd: options.cwd, json: false }, { output }),
+      resumeRun: (runId, output) =>
+        runResume(runId, resumeOptionsFor(options, backend), { output }),
       ...(wizardTty
         ? {
             configure: () =>
@@ -2125,23 +2237,66 @@ async function replLoop(args: ReplLoopArgs): Promise<number> {
   }
 }
 
-/** The orchestrate pipeline's options, derived from the REPL's own globals. */
+/**
+ * `/plan`'s options, derived from the REPL's own settings.
+ *
+ * `why: true` is not a choice the prompt offers — see `slashPlan` for why the
+ * rationale is always printed. The backend is the conversation's own resolved
+ * backend, so a REPL running on Claude Code plans through Claude Code, with no
+ * API key involved.
+ */
+function planOptionsFor(
+  options: InteractiveOptions,
+  alias: string,
+  backend: BackendName,
+): PlanCommandOptions {
+  return {
+    cwd: options.cwd,
+    json: false,
+    model: alias,
+    backend,
+    why: true,
+    ...(options.config === undefined ? {} : { config: options.config }),
+  };
+}
+
+/** The orchestrate pipeline's options, derived from the REPL's own settings. */
 function orchestrateOptionsFor(
   options: InteractiveOptions,
   alias: string,
+  backend: BackendName,
 ): OrchestrateCommandOptions {
   return {
     cwd: options.cwd,
     json: false,
     model: alias,
     dryRun: false,
-    workerMode: DEFAULT_WORKER_MODE,
-    backend: "native",
+    backend,
     isolation: DEFAULT_ISOLATION,
     validate: true,
     save: options.save !== false,
     tui: false,
-    maxIterations: options.maxIterations,
+    maxIterations: DEFAULT_MAX_ITERATIONS,
+    ...(options.config === undefined ? {} : { config: options.config }),
+    ...(options.timeoutSeconds === undefined
+      ? {}
+      : { timeoutSeconds: options.timeoutSeconds }),
+  };
+}
+
+/** `/resume-run`'s options: the execution half of {@link orchestrateOptionsFor}. */
+function resumeOptionsFor(
+  options: InteractiveOptions,
+  backend: BackendName,
+): ResumeCommandOptions {
+  return {
+    cwd: options.cwd,
+    json: false,
+    backend,
+    isolation: DEFAULT_ISOLATION,
+    validate: true,
+    tui: false,
+    maxIterations: DEFAULT_MAX_ITERATIONS,
     ...(options.timeoutSeconds === undefined
       ? {}
       : { timeoutSeconds: options.timeoutSeconds }),

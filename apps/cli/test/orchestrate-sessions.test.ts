@@ -31,7 +31,6 @@ function options(
     cwd,
     json: false,
     dryRun: false,
-    workerMode: "in-process",
     backend: "native",
     isolation: "none",
     ...overrides,

@@ -42,7 +42,6 @@ describe("kapel resume", () => {
       cwd: workspace,
       json: false,
       dryRun: false,
-      workerMode: "in-process",
       backend: "native",
       isolation: "none",
     };
@@ -54,7 +53,6 @@ describe("kapel resume", () => {
     return {
       cwd: workspace,
       json: false,
-      workerMode: "in-process",
       backend: "native",
       isolation: "none",
       ...overrides,

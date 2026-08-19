@@ -16,11 +16,7 @@ import type { SqliteSessionStore } from "@agent/session";
 import { reconstructRun } from "@agent/session";
 import type { BackendName } from "./backend.js";
 import { loadDotEnvFile } from "./env.js";
-import type {
-  IsolationMode,
-  RunOrchestrateDeps,
-  WorkerMode,
-} from "./orchestrate.js";
+import type { IsolationMode, RunOrchestrateDeps } from "./orchestrate.js";
 import {
   DEFAULT_ISOLATION,
   executePreparedPlan,
@@ -37,7 +33,6 @@ import {
 export interface ResumeCommandOptions {
   readonly cwd: string;
   readonly json: boolean;
-  readonly workerMode: WorkerMode;
   readonly backend: BackendName;
   /** Defaults to {@link DEFAULT_ISOLATION} when the caller omits it. */
   readonly isolation?: IsolationMode;
@@ -83,7 +78,7 @@ function stableJson(value: unknown): string {
  * and reviewed under the old constraints, and swapping the rules half way
  * through would produce a run that never existed under any one policy. That
  * makes drift something to *report*, not something to act on — the way to
- * apply a new policy is a new `kapel orchestrate`.
+ * apply a new policy is a fresh `/orchestrate`.
  */
 export async function policyDriftWarning(
   project: AgentProject,
@@ -93,7 +88,7 @@ export async function policyDriftWarning(
   const raw = await readOptionalFile(path.join(project.root, LOCK_FILE_NAME));
   const status = checkLock(markdown, raw);
   const tail =
-    "Resuming under the policy snapshot recorded with the run — start a new `kapel orchestrate` to plan under the current one.";
+    "Resuming under the policy snapshot recorded with the run — start a new `/orchestrate` to plan under the current one.";
 
   if (!status.fresh) {
     return `Warning: this project's policy lock is ${status.reason} (\`kapel policy compile\` would refresh it). ${tail}`;
@@ -138,8 +133,8 @@ export async function rebuildGraph(
 }
 
 /**
- * Implements `kapel resume <runId>`: re-execute the tasks a recorded run never
- * finished, appending to that run's own history.
+ * Backs the REPL's `/resume-run <runId>`: re-execute the tasks a recorded run
+ * never finished, appending to that run's own history.
  */
 export async function runResume(
   runId: string,
@@ -173,7 +168,7 @@ export async function runResume(
     const reconstruction = await reconstructRun(store, runId);
     if (reconstruction === undefined) {
       return fail(
-        `Unknown run ${runId}. Run \`kapel runs\` to see the recorded ones.`,
+        `Unknown run ${runId}. Run \`/runs\` to see the recorded ones.`,
       );
     }
 
@@ -227,7 +222,6 @@ export async function runResume(
         leadLine: `Resuming run ${run.id} — ${incompleteTaskIds.length} of ${plan.tasks.length} tasks left, up to ${run.policy.maxConcurrency} at a time`,
         options: {
           json: options.json,
-          workerMode: options.workerMode,
           backend: options.backend,
           isolation,
           validate: options.validate ?? true,

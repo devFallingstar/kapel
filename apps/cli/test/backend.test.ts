@@ -11,13 +11,10 @@ import {
   codexLoginGuidance,
   codexModelOverride,
   DEFAULT_BACKEND,
-  DEFAULT_SANDBOX_MODE,
   fullAutoForSandbox,
   isDelegatedBackend,
   resolveBackendName,
-  SANDBOX_MODES,
   validateBackendName,
-  validateSandboxMode,
 } from "../src/backend.js";
 
 describe("resolveBackendName", () => {
@@ -55,25 +52,6 @@ describe("validateBackendName", () => {
   it("throws a friendly error for an unknown backend", () => {
     expect(() => validateBackendName("bogus")).toThrow(/native, codex/);
     expect(() => validateBackendName("bogus")).toThrow(/--backend/);
-  });
-});
-
-describe("validateSandboxMode", () => {
-  it("accepts every known sandbox mode", () => {
-    for (const mode of SANDBOX_MODES) {
-      expect(validateSandboxMode(mode)).toBe(mode);
-    }
-  });
-
-  it("throws a friendly error for an unknown sandbox mode", () => {
-    expect(() => validateSandboxMode("bogus")).toThrow(/--sandbox/);
-    expect(() => validateSandboxMode("bogus")).toThrow(
-      /read-only, workspace-write, danger-full-access/,
-    );
-  });
-
-  it("defaults to workspace-write", () => {
-    expect(DEFAULT_SANDBOX_MODE).toBe("workspace-write");
   });
 });
 

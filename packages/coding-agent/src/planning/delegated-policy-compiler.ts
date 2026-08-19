@@ -55,7 +55,7 @@ export interface DelegatedPolicyCompilerOptions {
   readonly events?: EventSink;
   /**
    * Where to report what the CLI said each attempt spent, when the caller is
-   * keeping a ledger (`kapel orchestrate` opens one for the whole run). Left
+   * keeping a ledger (an orchestration run opens one for the whole run). Left
    * out, nothing is recorded — which is not the same as recording zero, and
    * the reason this is optional rather than a tracker the class owns.
    */

@@ -26,6 +26,13 @@ URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
 > 설치했다면 `npm uninstall -g orchestration-agent kapel` 후 위 방법으로
 > 재설치하세요.
 
+kapel은 **REPL 전용**입니다 — 에이전트 작업은 전부 `kapel`이 띄우는
+프롬프트 안에서 일어나고, 셸의 명령들(`init`/`config`/`models`/`runs`/
+`sessions`/`explain`/`policy`)은 설정과 조회만 합니다. 예전의 단발 실행
+형태(`kapel "<objective>"`, `kapel exec/plan/orchestrate/resume/worker`)와
+그 전용 플래그(`-i`, `-y`, `--system`, `--max-iterations`, 전역 `--json`,
+`--sandbox`, `--worker-mode`)는 모두 제거되었습니다.
+
 기여자용(소스 개발): 클론에서 `npm install && npm run build` 후
 `node apps/cli/dist/index.js ...` 또는 `npm install -g .` 사용.
 빠른 자체 점검: `npm test` → 1033개 테스트가 통과해야 합니다.
@@ -83,14 +90,29 @@ Worker model — small, single-function tasks  ← 예: haiku
 kapel config --show     # 저장된 백엔드·모델 4종 + 파일 경로
 kapel config --path     # 경로만
 kapel config            # 언제든 다시 설정 (현재 값이 기본 선택으로 뜸)
-kapel --no-setup "..."  # 마법사를 건너뛰고 환경변수/기본값으로 실행
+kapel --no-setup        # 마법사를 건너뛰고 환경변수/기본값으로 실행
 echo "" | kapel         # 파이프(비-TTY) — 마법사 없이 도움말만 출력
 ```
 
 우선순위 확인: `--backend`/`-m` 플래그 → `AGENT_BACKEND`/`AGENT_MODEL` 환경변수
-→ `~/.kapel/config.json` → 내장 기본값 순으로 먼저 잡히는 값이 이깁니다.
-예를 들어 설정이 `claude-code`여도 `kapel --backend native "..."`는 네이티브
+→ `~/.kapel/config.json` → **자동 감지** → 내장 기본값 순으로 먼저 잡히는 값이
+이깁니다. 예를 들어 설정이 `claude-code`여도 `kapel --backend native`는 네이티브
 경로로 실행됩니다.
+
+**백엔드 자동 감지** 확인 — 아무도 백엔드를 고르지 않은 상태(플래그 없음,
+`AGENT_BACKEND` 없음, 설정 파일 없음)에서만 동작합니다:
+
+```bash
+env -u AGENT_BACKEND KAPEL_CONFIG_DIR=/tmp/kapel-empty kapel --no-setup
+```
+
+**기대 동작**: 로그인된 Claude Code CLI가 있으면
+`backend: claude-code (auto-detected — set one with \`kapel config\`)` 한 줄이
+stderr로 뜨고 그 백엔드로 REPL이 열립니다. Claude Code가 없으면 Codex를,
+그것도 없으면 `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/`OPENAI_API_KEY`가
+있을 때 native를 고릅니다. 셋 다 없으면 예전처럼 조용히 native로 떨어집니다
+(안내 줄 없음 — 이때 알려야 할 것은 감지가 아니라 없는 자격증명이므로).
+감지는 프로세스당 한 번만 수행되고, 안내 줄도 한 번만 나옵니다.
 
 설정을 마친 뒤 `kapel init`을 실행하면 `.agent/config.yaml`의 `models:`가
 전역 설정에서 채워집니다(`lead`/`reviewer` ← 오케스트레이터 모델,
@@ -99,7 +121,8 @@ echo "" | kapel         # 파이프(비-TTY) — 마법사 없이 도움말만 �
 
 ## 1.6. 시나리오 A-1 — 권한 규칙 설정 파일 (P1-5)
 
-`-y` 없이 실행하면 `write_file`/`edit_file`/`bash`가 매번 물어봅니다. 방금 만든
+기본적으로 `write_file`/`edit_file`/`bash`는 프롬프트에서 매번 물어봅니다
+(`-y` 같은 일괄 승인 플래그는 없습니다 — REPL에는 답할 사람이 있으니까요). 방금 만든
 `$KAPEL_CONFIG_DIR/config.json`에 `permission` 블록을 직접 추가해서 특정
 명령만 자동 허용/차단되는지 확인하세요:
 
@@ -137,7 +160,7 @@ console.log("PASS");
 EOF
 git add -A && git commit -qm init
 
-kapel                     # 목적을 인자로 주지 않으면 대화형 모드로 진입
+kapel                     # REPL 진입 — 모든 에이전트 작업이 여기서 일어납니다
 ```
 
 배너(`kapel v0.7.0  claude-sonnet-5  session 0f3c9a2b`)와 `kapel>` 프롬프트가
@@ -260,30 +283,25 @@ session.`을 출력하고, 이후 프롬프트는 새 세션 위에서 이어집
 추가 확인: 턴 진행 중 Ctrl-C(해당 턴만 취소, 대화는 유지), 프롬프트에서 Ctrl-C
 두 번(종료), Ctrl-D(종료).
 
-**단발 실행(one-shot)** 형태도 그대로 동작합니다 — CI나 스크립트용:
+**제거된 표면** 확인 — 예전 단발 실행 명령과 플래그는 커맨더의 짧은 오류
+한 줄과 종료 코드 1로 끝나야 합니다(REPL로 가라는 안내 문구는 나오지 않습니다):
 
 ```bash
-kapel "calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘."
+kapel plan "add a health endpoint"   # error: unknown command 'plan'
+kapel exec "fix the test"            # error: unknown command 'exec'
+kapel worker                         # error: unknown command 'worker'
+kapel "fix the failing test"         # error: unknown command 'fix the failing test'
+kapel --json                         # error: unknown option '--json'
+kapel -i shot.png                    # error: unknown option '-i'
+echo $?                              # 1
 ```
 
-추가 확인: `-y`(프롬프트 생략), `--json`(JSONL 스트림 — 대화형에서는 지원하지
-않고 안내 후 종료 코드 1), Ctrl-C(중단), `--timeout 30`.
+`kapel --help`와 `kapel help`는 남은 관리용 명령(`chat`, `init`, `config`,
+`models`, `runs`, `sessions`, `explain`, `policy`, `help`)과 전역 플래그
+(`--cwd`, `-m/--model`, `--timeout`, `--backend`, `--no-setup`)만 보여야
+합니다 — `exec`/`plan`/`orchestrate`/`resume`/`worker` 행이 없어야 합니다.
 
-**파이프 입력 + objective 병합** 확인 — stdin이 터미널이 아니고 objective도
-있으면, 파이프로 들어온 내용이 objective 뒤에 `--- piped input ---` 구분선과
-함께 붙습니다:
-
-```bash
-cat calc.test.js | kapel "이 파일에서 버그를 찾아 고쳐줘"
-echo -n "" | kapel "fix the failing test"   # 0바이트 파이프 → objective 단독과 동일
-```
-
-**기대 동작**: 첫 명령은 `calc.test.js`의 내용이 프롬프트에 포함된 채로 실행됨
-(모델이 굳이 `read_file`을 부르지 않고도 파일 내용을 이미 알고 있음). 둘째
-명령은 파이프가 없을 때와 동일하게 동작 — objective만으로 실행됨. `-y`,
-`--json`, `-m`/`--backend` 등 다른 플래그와 조합해도 동일하게 동작합니다.
-objective 없이 파이프만 하는 경우(`echo "hi" | kapel`)는 이 병합과 무관한
-기존 기능 그대로입니다 — 대화형 REPL이 파이프 라인을 입력으로 소비.
+추가 확인: 턴 진행 중 Ctrl-C(해당 턴만 취소), `--timeout 30`.
 
 **`AGENTS.md` 로딩** 확인 — 같은 저장소에 프로젝트 지시 파일을 두고 다시 실행합니다:
 
@@ -297,51 +315,19 @@ kapel
 (`$KAPEL_CONFIG_DIR` 우선, 머신/사용자 전역 규칙)도 같은 방식으로 합쳐지며,
 존재하는 파일만 배너에 나열됩니다 — 아무 파일도 없으면 그 줄 자체가 생략됩니다.
 
-## 2.6. 시나리오 A-2 — 이미지 첨부 (P1-9)
+## 2.6. 이미지 첨부 — 현재 미지원
+
+이미지 첨부는 단발 실행의 `-i/--image` 플래그로만 가능했고, 그 플래그는
+제거되었습니다. REPL의 `@` 멘션은 에이전트가 `read_file`로 직접 읽도록 파일
+**경로**를 알려 줄 뿐이라 이미지 첨부 경로가 아닙니다.
 
 ```bash
-cd /tmp/agent-fixture
-# 아무 스크린샷/다이어그램 PNG나 JPEG를 하나 준비해서 경로를 넣습니다.
-kapel -i ./screenshot.png "이 화면에서 뭐가 문제인지 설명해줘"
-kapel -i ./before.png -i ./after.png "두 이미지의 차이를 요약해줘"
+kapel -i ./screenshot.png    # error: unknown option '-i'
 ```
 
-**기대 동작(네이티브, 기본 백엔드)**: 이미지가 첨부된 요청이 그대로 모델에
-전송되고, 화면 내용을 반영한 답변이 돌아옵니다. `--json`으로 실행해도 동일
-(이미지 바이트 자체는 이벤트 스트림에 노출되지 않습니다).
-
-다음으로 제한을 확인합니다:
-
-```bash
-kapel -i ./a.png -i ./b.png -i ./c.png -i ./d.png -i ./e.png "..."   # 5장 → 에러
-kapel -i ./does-not-exist.png "..."                                    # 없는 파일 → 에러
-```
-
-**기대 동작**: 둘 다 아무것도 실행하지 않고 종료 코드 1과 함께 사람이 읽을 수
-있는 에러 메시지를 즉시 출력합니다 — 각각 "최대 4장" 및 "파일을 찾을 수 없음"
-취지의 메시지. 5 MiB를 넘는 파일, 합계 20 MiB를 넘는 여러 파일도 같은 방식으로
-즉시 거부됩니다.
-
-Codex 백엔드로도 확인합니다:
-
-```bash
-kapel --backend codex -i ./screenshot.png "이 화면에서 뭐가 문제인지 설명해줘"
-```
-
-**기대 동작**: `codex exec`에 `-i <path>`가 붙어 스폰됩니다 — Codex CLI가 실제로
-이 플래그를 지원하는지는 kapel 쪽 코드/테스트로는 검증되지 않았으므로, 이
-시나리오에서 Codex가 이미지를 실제로 인식하는지 직접 확인해 주세요(모르는
-플래그로 거부한다면 이슈로 기록).
-
-마지막으로 Claude Code 백엔드는 의도적으로 미지원입니다:
-
-```bash
-kapel --backend claude-code -i ./screenshot.png "이 화면에서 뭐가 문제인지 설명해줘"
-```
-
-**기대 동작**: `claude` 프로세스를 아예 스폰하지 않고, "Claude Code's headless
--p mode has no documented flag for attaching images…" 취지의 메시지와 함께
-종료 코드 1로 즉시 끝납니다.
+**기대 동작**: 위 한 줄과 종료 코드 1. 프로바이더 계층(`@agent/ai`)의 비전
+입력 지원 자체는 그대로 남아 있으므로, 프롬프트에서 이미지를 붙이는 기능이
+생기면 그 위에 얹으면 됩니다.
 
 ## 2.7. 시나리오 A-3 — 커스텀 슬래시 명령 (P1-4)
 
@@ -395,19 +381,25 @@ kapel> /tests
 
 ```bash
 cd /tmp/agent-fixture
-kapel --backend codex "calc.js의 add 함수에 뺄셈 함수 sub를 추가해줘"
+kapel --backend codex           # REPL을 Codex 백엔드로 엶
+```
+
+```text
+kapel> calc.js의 add 함수 옆에 뺄셈 함수 sub를 추가해줘
 ```
 
 **기대 동작**: Codex CLI가 스폰되어 명령 실행·파일 변경이 스트리밍되고
-정상 종료합니다. 미설치/미로그인이면 설치·로그인 안내 후 종료 코드 1.
+턴이 정상 종료합니다. 배너에는 승인 절차가 Codex CLI 쪽에 있다는 줄이 뜹니다.
+미설치/미로그인이면 설치·로그인 안내 후 종료 코드 1. `kapel config`에서
+Codex를 골라 두면 플래그 없이도 같은 경로로 열립니다.
 
 ## 3.5. 시나리오 B2 — Claude Code 백엔드 (구독 로그인)
 
-API 키 없이 Claude 구독 로그인만으로 동작하는 경로입니다. 먼저 단발 실행:
+API 키 없이 Claude 구독 로그인만으로 동작하는 경로입니다:
 
 ```bash
 cd /tmp/agent-fixture
-kapel --backend claude-code "calc.js의 add 함수 옆에 sub 함수를 추가해줘"
+kapel --backend claude-code     # REPL을 Claude Code 백엔드로 엶
 ```
 
 **기대 동작**: `claude -p`가 스폰되어 도구 사용 라인(`→ claude: Edit`)과 최종
@@ -443,10 +435,11 @@ kapel> /exit
 (Codex 백엔드는 재개 가능한 id를 보고하지 않으므로 매 턴 최근 대화를 함께
 보내는 무상태 방식으로 동작합니다.)
 
-참고: 오케스트레이션(`kapel orchestrate --backend claude-code`)도 이제
-지원됩니다. 태스크마다 해당 태스크의 워크스페이스(기본값인 워크트리)에서
-`claude -p`를 하나씩 띄우고, 에이전트가 선언한 모델과 `tools:` 목록
-(`--allowedTools`로 전달)을 그대로 사용합니다.
+참고: 이 백엔드에서 연 REPL의 `/plan`·`/orchestrate`도 그대로 동작합니다.
+플래닝은 `claude -p --permission-mode plan` 한 번(읽기 전용)으로 위임되고,
+실행은 태스크마다 해당 태스크의 워크스페이스(워크트리)에서 `claude -p`를
+하나씩 띄우며, 에이전트가 선언한 모델과 `tools:` 목록(`--allowedTools`로
+전달)을 그대로 사용합니다.
 
 ## 4. 시나리오 C — 멀티 에이전트 오케스트레이션 (M2–M6)
 
@@ -481,37 +474,62 @@ kapel policy compile             # 실제로 lock을 갱신
 kapel policy compile --backend codex   # `tokens — …` 줄에 CLI가 보고한 토큰이,
 kapel policy diff --backend codex      # 보고가 없으면 `none reported by the codex CLI`가 출력됩니다
 
-kapel plan "calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘"
-                                # 태스크 DAG + 라우팅 미리보기 (실행 없음)
-kapel plan --why "calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘"
-                                # 각 태스크가 어느 규칙으로 어느 에이전트/모델에 라우팅되는지 근거 출력
-
-kapel orchestrate "calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘"
-                                # 실제 실행 — worktree 격리 + 병렬 워커
 ```
 
-**기대 동작**: `▶ T01 → explorer` 같은 태스크 라이프사이클 라인, worktree
-생성(⎇)·병합(⇡) 라인, 태스크별 상태 테이블, `git log`에 merge 커밋들.
+플래닝과 실행은 REPL 안에서 합니다:
 
-옵션 확인:
+```bash
+kapel                           # REPL 진입
+```
 
-- `--tui` — Ink 라이브 대시보드
-- `--worker-mode child` — 태스크별 자식 프로세스
-- `--isolation none` — worktree 격리 끄기
+```text
+kapel> /plan calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘
+kapel> /orchestrate calc.js에 곱셈/나눗셈 함수를 추가하고 각각 테스트 파일도 만들어줘
+```
+
+**`/plan` 기대 동작**: 태스크 DAG 표(ID/TYPE/COMPLEXITY/AGENT/DEPS/TITLE)에
+이어 `Routing rationale:` 절이 **항상** 출력됩니다 — 각 태스크가 어느 규칙
+(매칭 기준·strength·weight)으로 어느 에이전트/모델에 라우팅되는지, 매칭
+규칙이 없으면 `suggestedAgent`나 오케스트레이터로 떨어졌는지까지. 예전의
+`kapel plan --why`가 하던 일이며, 이제 플래그가 아니라 기본 동작입니다.
+아무것도 실행되지 않습니다.
+
+**`/orchestrate` 기대 동작**: `▶ T01 → explorer` 같은 태스크 라이프사이클
+라인, worktree 생성(⎇)·병합(⇡) 라인, 태스크별 상태 테이블, `git log`에 merge
+커밋들. 정책 lock이 없거나 오래되었으면 그 사실을 알리고 대화는 그대로
+유지됩니다(REPL이 끊기지 않습니다).
+
+격리(worktree), 검증기, 백엔드는 이제 플래그가 아니라 설정에서 결정됩니다 —
+`--worker-mode`/`--isolation`/`--tui`/`--dry-run`/`--no-validate`는 제거되었고,
+워커는 항상 이 프로세스의 네이티브 루프(또는 위임 백엔드의 CLI)에서 돕니다.
 
 ## 5. 세션·재개·설명 (M6)
 
+REPL 안에서:
+
+```text
+kapel> /runs                    ← 방금 런이 목록에 표시 (id로 아래 명령을 씁니다)
+kapel> /resume-run <runId>      ← (실패한 런이 있을 때) 미완료 태스크만 재실행
+```
+
+**기대 동작**: `/runs`는 ID/STATUS/STARTED/TASKS/OBJECTIVE 표를,
+`/resume-run`은 `Resuming run <id> — N of M tasks left …`로 시작해 남은
+태스크만 다시 실행합니다. 대화를 전환하는 `/resume`과는 다른 명령이라는
+점을 확인하세요 — `/resume <sessionId>`는 여전히 대화 전환이고, 런 id를
+넣어도 런을 재개하지 않습니다. 없는 런 id를 주면
+`Unknown run … Run \`/runs\` to see the recorded ones.` 한 줄이 뜨고 대화는
+유지됩니다.
+
+셸에서:
+
 ```bash
-kapel runs                      # 방금 런이 목록에 표시
-kapel explain T01               # 라우팅 근거 + 이벤트 다이제스트
-kapel resume <runId>            # (실패한 런이 있을 때) 미완료 태스크만 재실행
+kapel runs                      # 같은 목록 (--limit, --json)
+kapel explain T01               # 라우팅 근거 + 이벤트 다이제스트 (--run, --json)
 ```
 
 대화(시나리오 A)와 오케스트레이션 런은 같은 `.agent/sessions.db`에 각자
 저장됩니다: 대화는 `kapel chat --continue` / 프롬프트의 `/sessions`,
-런은 `kapel runs`로 확인합니다. 대화형 프롬프트에서
-`/orchestrate "<objective>"`로 위 파이프라인을 바로 돌릴 수도 있습니다
-(정책 lock이 최신이어야 하며, 실패해도 대화는 유지됩니다).
+런은 `/runs`(또는 `kapel runs`)로 확인합니다.
 
 REPL 밖에서 대화 목록을 보거나 복제하려면:
 
@@ -532,7 +550,7 @@ kapel sessions fork <id> --name "실험 브랜치"  # …이름을 붙여서 복
 
 ## 6. 검증 게이트 (M5)
 
-`.agent/config.yaml`에 추가 후 orchestrate를 다시 실행하면, 각 쓰기 태스크가
+`.agent/config.yaml`에 추가한 뒤 `/orchestrate`를 다시 돌리면, 각 쓰기 태스크가
 worktree 안에서 검증을 통과해야 병합됩니다:
 
 ```yaml
@@ -555,5 +573,6 @@ validation:
 
 ## 문제 리포트
 
-이슈가 발생하면 다음을 함께 공유해 주세요: 실행한 명령, `--json` 출력(가능하면),
-`kapel explain <taskId>` 출력, `.agent/sessions.db`의 해당 런 ID.
+이슈가 발생하면 다음을 함께 공유해 주세요: 실행한 명령(또는 슬래시 명령),
+`kapel runs --json` / `kapel explain <taskId> --json` 출력,
+`.agent/sessions.db`의 해당 런 ID.

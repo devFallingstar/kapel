@@ -53,6 +53,14 @@ function describe(command: readonly string[]): string {
  * group is killable on timeout or cancellation. As with the other executors,
  * every failure comes back as a `failed` {@link TaskResult} instead of a
  * rejected promise.
+ *
+ * **Nothing in the kapel CLI spawns this any more.** It used to back
+ * `--worker-mode child`, whose child process was `kapel worker`; both the flag
+ * and that command went when kapel became REPL-first, and the REPL runs every
+ * task through the in-process agent loop. What is left here is library
+ * surface: the executor and the protocol it speaks (`./protocol.ts`) are
+ * complete, tested, and take their argv from the caller, so an embedder that
+ * has its own worker binary can still drive one.
  */
 export class ChildProcessWorkerExecutor implements WorkerExecutor {
   readonly #options: ChildProcessWorkerExecutorOptions;

@@ -45,29 +45,29 @@ export const consoleOutput: OrchestrationOutput = {
   error: (line) => console.error(line),
 };
 
-/** Options shared by `kapel plan` and `kapel orchestrate`. */
+/** Options shared by the REPL's `/plan` and `/orchestrate`. */
 export interface PlanCommandOptions {
   readonly cwd: string;
   readonly model?: string;
   readonly json: boolean;
   /**
    * The resolved backend for this command. A delegated backend plans through
-   * that CLI instead of a native provider, which is what lets `kapel plan`
-   * and `kapel orchestrate` run with no API key at all.
+   * that CLI instead of a native provider, which is what lets `/plan` and
+   * `/orchestrate` run with no API key at all.
    */
   readonly backend: BackendName;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
   /**
-   * `kapel plan --why [taskId]`: after planning, print the routing rationale
-   * instead of executing anything. `true` means "no id was given" (explain
-   * every task); a string is the one task id requested. `undefined` (the
-   * default) leaves `kapel plan`'s normal output alone.
+   * After planning, print the routing rationale instead of executing
+   * anything. `true` means "every task"; a string is the one task id
+   * requested. `undefined` prints the plan alone. `/plan` always passes
+   * `true` — at a prompt the table and the reason behind it are one thought.
    */
   readonly why?: string | true;
 }
 
-/** Builds the planner used by `kapel plan`/`kapel orchestrate`. Overridable in tests. */
+/** Builds the planner used by `/plan` and `/orchestrate`. Overridable in tests. */
 export type PlannerFactory = (args: {
   readonly provider: ModelProvider;
   readonly model: ModelDefinition;
@@ -87,8 +87,8 @@ export type DelegatedPlannerFactory = (args: {
    * Where the delegated planning call reports what the CLI said it spent —
    * the delegating counterpart of the provider `planningThrough` wraps on the
    * native path, since there is no provider here to wrap. Set by
-   * `delegatedPlanningThrough` in `orchestrate.ts`; `kapel plan` alone keeps
-   * no ledger and leaves it out.
+   * `delegatedPlanningThrough` in `orchestrate.ts`; `/plan` alone keeps no
+   * ledger and leaves it out.
    */
   readonly usage?: DelegatedUsageSink;
 }) => Planner;
@@ -234,8 +234,8 @@ async function resolvePlannerModel(
  * The model id handed to a delegating CLI for planning.
  *
  * `-m/--model` wins verbatim — the flag names a model in *that CLI's*
- * catalog, so it is passed through untranslated (see `codexModelOverride` for
- * the same rule on the run path). Otherwise the policy's orchestrator agent
+ * catalog, so it is passed through untranslated. Otherwise the policy's
+ * orchestrator agent
  * decides, through the project's own alias table, exactly as on the native
  * path; `createDelegatedModelResolver` already reads "default" in
  * `config.yaml` as "no opinion". `undefined` means the CLI picks, which is
@@ -252,7 +252,7 @@ function delegatedPlannerModelId(
 }
 
 /**
- * Runs everything `kapel plan` and `kapel orchestrate` share: load the project,
+ * Runs everything `/plan` and `/orchestrate` share: load the project,
  * insist on a fresh policy lock, plan the objective, and reconcile the plan with
  * the policy.
  *
@@ -439,7 +439,7 @@ function taskRow(
   ];
 }
 
-/** Prints the plan preview both `kapel plan` and `orchestrate --dry-run` show. */
+/** Prints the plan preview both `/plan` and a dry-run orchestrate show. */
 export function renderPlan(
   prepared: PreparedPlan,
   output: OrchestrationOutput,
@@ -481,8 +481,8 @@ export function renderPlan(
 }
 
 /**
- * Why {@link PolicyRouter} would route one task — the body of `kapel plan
- * --why`. Re-derived straight from `PolicyRouter.decide` (the same decision
+ * Why {@link PolicyRouter} would route one task — the body of the routing
+ * rationale `/plan` prints. Re-derived straight from `PolicyRouter.decide` (the same decision
  * the scheduler itself makes) rather than reimplemented, so this can never
  * disagree with what actually routes the task at execution time.
  */
@@ -544,7 +544,7 @@ function routeReasonSentence(explanation: TaskRouteExplanation): string {
   return "no routing rule matched and no suggestedAgent — fell back to the policy's orchestrator";
 }
 
-/** Prints the `--why` section: one routing rationale line per task, `kapel plan` shows below the table. */
+/** Prints the rationale section: one line per task, below the plan table. */
 function renderWhy(
   explanations: readonly TaskRouteExplanation[],
   output: OrchestrationOutput,
@@ -565,9 +565,9 @@ function renderWhy(
 export type RunPlanDeps = PreparePlanDeps;
 
 /**
- * Implements `kapel plan`: preview the task graph without executing
+ * Backs the REPL's `/plan`: preview the task graph without executing
  * anything. `options.why` additionally prints the routing rationale for one
- * task (or every task, with no id) — see {@link explainTaskRoute}.
+ * task (or every task, with `true`) — see {@link explainTaskRoute}.
  */
 export async function runPlan(
   objective: string,

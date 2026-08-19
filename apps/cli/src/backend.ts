@@ -53,8 +53,7 @@ export function resolveBackendName(env: EnvLike, flag?: string): string {
 /**
  * Validates a resolved backend name. Throws a friendly, printable error for
  * anything other than a known backend — callers surface `error.message` and
- * exit 1, same as the existing `--max-iterations`/`--timeout` validation in
- * `index.ts`.
+ * exit 1, same as the `--timeout` validation in `index.ts`.
  */
 export function validateBackendName(raw: string): BackendName {
   if (isBackendName(raw)) return raw;
@@ -63,7 +62,13 @@ export function validateBackendName(raw: string): BackendName {
   );
 }
 
-/** Codex sandbox modes, as accepted by `codex exec --sandbox`. */
+/**
+ * Codex sandbox modes, as accepted by `codex exec --sandbox`.
+ *
+ * No longer selectable from the command line — `--sandbox` was a one-shot-run
+ * flag and went with the one-shot run. {@link DEFAULT_SANDBOX_MODE} is what a
+ * delegated Codex turn is given (see `delegated-chat.ts`).
+ */
 export const SANDBOX_MODES = [
   "read-only",
   "workspace-write",
@@ -72,18 +77,6 @@ export const SANDBOX_MODES = [
 export type SandboxMode = (typeof SANDBOX_MODES)[number];
 
 export const DEFAULT_SANDBOX_MODE: SandboxMode = "workspace-write";
-
-function isSandboxMode(value: string): value is SandboxMode {
-  return (SANDBOX_MODES as readonly string[]).includes(value);
-}
-
-/** Validates a `--sandbox` value; throws a friendly error otherwise. */
-export function validateSandboxMode(raw: string): SandboxMode {
-  if (isSandboxMode(raw)) return raw;
-  throw new Error(
-    `Invalid --sandbox value "${raw}": expected one of ${SANDBOX_MODES.join(", ")}.`,
-  );
-}
 
 /**
  * Whether Codex should run in `--full-auto` mode: true for every sandbox

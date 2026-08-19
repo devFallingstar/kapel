@@ -10,7 +10,6 @@ import type {
   WorkerExecutor,
 } from "@agent/coding-agent";
 import {
-  ChildProcessWorkerExecutor,
   ValidatingExecutor,
   WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
@@ -26,7 +25,6 @@ import {
   runOrchestrate,
   runSummaryLines,
   validateIsolation,
-  validateWorkerMode,
   worktreeIsolationError,
 } from "../src/orchestrate.js";
 import type { DelegatedPlannerFactory } from "../src/plan.js";
@@ -111,7 +109,6 @@ function options(
     cwd,
     json: false,
     dryRun: false,
-    workerMode: "in-process",
     backend: "native",
     // These fixtures run in throwaway directories that are not repositories,
     // so isolation is opted out of except where a test is about it.
@@ -119,14 +116,6 @@ function options(
     ...overrides,
   };
 }
-
-describe("validateWorkerMode", () => {
-  it("accepts the known modes and rejects anything else", () => {
-    expect(validateWorkerMode("in-process")).toBe("in-process");
-    expect(validateWorkerMode("child")).toBe("child");
-    expect(() => validateWorkerMode("thread")).toThrow(/--worker-mode/);
-  });
-});
 
 describe("validateIsolation", () => {
   it("accepts the known modes and rejects anything else", () => {
@@ -164,6 +153,11 @@ describe("worktreeIsolationError", () => {
 });
 
 describe("defaultExecutorFactory / isolation", () => {
+  /** Stands in for whatever the per-workspace factory would have built. */
+  const bare: WorkerExecutor = {
+    execute: () => Promise.reject(new Error("unreachable")),
+  };
+
   function factoryArgs(
     cwd: string,
     isolation: "worktree" | "none",
@@ -174,12 +168,12 @@ describe("defaultExecutorFactory / isolation", () => {
       runId: "run-1",
       events: { emit: () => undefined },
       usage: new UsageTracker(),
-      // `child` keeps the factory away from model credentials: the executor it
-      // builds only needs an argv.
-      workerMode: "child",
       backend: "native",
       isolation,
       validate: true,
+      // Injected so the isolation question can be answered without building a
+      // real executor — and therefore without resolving model credentials.
+      baseExecutorFactory: () => bare,
     };
   }
 
@@ -194,7 +188,7 @@ describe("defaultExecutorFactory / isolation", () => {
     const executor = await defaultExecutorFactory(
       factoryArgs("/does/not/matter", "none"),
     );
-    expect(executor).toBeInstanceOf(ChildProcessWorkerExecutor);
+    expect(executor).toBe(bare);
   });
 });
 
@@ -209,7 +203,7 @@ describe("defaultExecutorFactory / validation", () => {
     await cleanupWorkspace(workspace);
   });
 
-  /** `baseExecutorFactory` bypasses codex/child/in-process selection entirely. */
+  /** `baseExecutorFactory` bypasses the codex/claude-code/native selection entirely. */
   function factoryArgs(
     overrides: Partial<Parameters<typeof defaultExecutorFactory>[0]> = {},
   ): Parameters<typeof defaultExecutorFactory>[0] {
@@ -219,7 +213,6 @@ describe("defaultExecutorFactory / validation", () => {
       runId: "run-1",
       events: { emit: () => undefined },
       usage: new UsageTracker(),
-      workerMode: "in-process",
       backend: "native",
       isolation: "none",
       validate: true,

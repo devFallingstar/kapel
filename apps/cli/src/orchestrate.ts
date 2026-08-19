@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type {
   UsageBreakdown,
@@ -19,7 +18,6 @@ import type {
 } from "@agent/coding-agent";
 import {
   AgentLoopWorkerExecutor,
-  ChildProcessWorkerExecutor,
   ClaudeCodeBackend,
   ClaudeCodeWorkerExecutor,
   CodexBackend,
@@ -72,21 +70,6 @@ import {
   storeSink,
 } from "./sessions.js";
 
-/** Where the scheduler's workers run. */
-export const WORKER_MODES = ["in-process", "child"] as const;
-export type WorkerMode = (typeof WORKER_MODES)[number];
-
-export const DEFAULT_WORKER_MODE: WorkerMode = "in-process";
-
-/** Validates a `--worker-mode` value; throws a friendly, printable error otherwise. */
-export function validateWorkerMode(raw: string): WorkerMode {
-  if ((WORKER_MODES as readonly string[]).includes(raw))
-    return raw as WorkerMode;
-  throw new Error(
-    `Invalid --worker-mode value "${raw}": expected one of ${WORKER_MODES.join(", ")}.`,
-  );
-}
-
 /** How a mutating task's writes are kept apart from every other task's. */
 export const ISOLATION_MODES = ["worktree", "none"] as const;
 export type IsolationMode = (typeof ISOLATION_MODES)[number];
@@ -133,9 +116,8 @@ export async function worktreeIsolationError(
 }
 
 export interface OrchestrateCommandOptions extends PlanCommandOptions {
-  /** Stop after planning and print exactly what `kapel plan` would. */
+  /** Stop after planning and print exactly what `/plan` would. */
   readonly dryRun: boolean;
-  readonly workerMode: WorkerMode;
   readonly backend: BackendName;
   /** Defaults to {@link DEFAULT_ISOLATION} when the caller omits it. */
   readonly isolation?: IsolationMode;
@@ -166,7 +148,6 @@ export interface ExecutorFactoryArgs {
   /** The renderer, so worker events land in the same stream as task events. */
   readonly events: EventSink;
   readonly usage: UsageRecorder;
-  readonly workerMode: WorkerMode;
   readonly backend: BackendName;
   readonly isolation: IsolationMode;
   readonly taskTimeoutMs?: number;
@@ -188,18 +169,6 @@ export type ExecutorFactory = (
 ) => Promise<WorkerExecutor> | WorkerExecutor;
 
 /**
- * Absolute path of the CLI entry point, derived from this module's own URL.
- *
- * In the built layout `orchestrate.js` and `index.js` are siblings in `dist/`,
- * so this resolves to the same file the `agent` bin points at. `--worker-mode
- * child` therefore requires the CLI to have been built: it re-executes the
- * compiled entry, not the TypeScript source.
- */
-export function cliEntryPath(): string {
-  return fileURLToPath(new URL("./index.js", import.meta.url));
-}
-
-/**
  * Builds the "run a task in *this* directory" factory for a run.
  *
  * Everything expensive or fallible — the delegated CLI's availability probe,
@@ -207,10 +176,9 @@ export function cliEntryPath(): string {
  * only has to point an executor at a workspace, which is what makes it usable
  * per task worktree.
  *
- * A delegated backend outranks the worker mode: `--backend codex` and
- * `--backend claude-code` both mean "let that CLI do the work", and each is
- * already its own process, so there is no in-process variant of them to
- * choose between.
+ * A delegated backend decides everything: `--backend codex` and `--backend
+ * claude-code` both mean "let that CLI do the work", and each is already its
+ * own process. Everything else runs the native agent loop in this one.
  */
 async function workspaceExecutorFactory(
   args: ExecutorFactoryArgs,
@@ -255,19 +223,6 @@ async function workspaceExecutorFactory(
         runId,
         events,
         resolveAgentModel,
-        ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-      });
-  }
-
-  if (args.workerMode === "child") {
-    // The child inherits `process.env` through the executor's own spawn call,
-    // so credentials and `AGENT_*` settings carry over without being restated.
-    return (workspacePath) =>
-      new ChildProcessWorkerExecutor({
-        command: [process.execPath, cliEntryPath(), "worker"],
-        runId,
-        workspacePath,
-        events,
         ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       });
   }
@@ -357,7 +312,7 @@ function withValidation(
  * gated on the project's validators, wrapped in worktree isolation unless
  * `--isolation none` was asked for.
  *
- * The isolation wrapper applies to every worker mode and to `--backend codex`
+ * The isolation wrapper applies to the native loop and to `--backend codex`
  * alike — isolation is a property of how tasks share the repository, not of
  * what runs them, and a Codex worker pointed at a task checkout behaves
  * exactly like a native one pointed at it. Validation, by contrast, is
@@ -606,7 +561,6 @@ async function closeTui(
 /** Execution knobs {@link executePreparedPlan} needs, shared by orchestrate and resume. */
 export interface ExecuteRunOptions {
   readonly json: boolean;
-  readonly workerMode: WorkerMode;
   readonly backend: BackendName;
   readonly isolation: IsolationMode;
   /** Whether the run wants the project's validators; see {@link shouldRunValidators}. */
@@ -644,8 +598,8 @@ export interface ExecuteRunRequest {
 }
 
 /**
- * Executes a prepared plan: everything `kapel orchestrate` does once the plan
- * exists, which is also everything `kapel resume` does.
+ * Executes a prepared plan: everything `/orchestrate` does once the plan
+ * exists, which is also everything `/resume-run` does.
  *
  * The event stream is fanned out rather than handed to one renderer: the
  * renderer (or the dashboard, which replaces it — it owns the screen and
@@ -711,7 +665,6 @@ export async function executePreparedPlan(
       runId,
       events,
       usage,
-      workerMode: options.workerMode,
       backend: options.backend,
       isolation: options.isolation,
       validate: options.validate,
@@ -777,7 +730,7 @@ export const PLANNER_AGENT = "planner";
  *
  * The planner takes a provider and no usage recorder, so the recorder is
  * pushed down into the provider it is handed — see `usageRecordingProvider`.
- * An injected factory (tests, `--dry-run` fixtures) is preserved and wrapped
+ * An injected factory (tests, dry-run fixtures) is preserved and wrapped
  * the same way rather than replaced.
  */
 export function planningThrough(
@@ -821,8 +774,9 @@ export function delegatedPlanningThrough(
 }
 
 /**
- * Implements `kapel orchestrate`: plan the objective, rewrite the plan through
- * the policy, then run the resulting task graph across routed workers.
+ * The orchestration pipeline behind the REPL's `/orchestrate`: plan the
+ * objective, rewrite the plan through the policy, then run the resulting task
+ * graph across routed workers.
  */
 export async function runOrchestrate(
   objective: string,
@@ -840,7 +794,7 @@ export async function runOrchestrate(
 
   // Checked before planning: a plan costs a model call, and a workspace that
   // cannot host task worktrees would fail on the first mutating task anyway.
-  // `--dry-run` executes nothing, so it is exempt.
+  // A dry run executes nothing, so it is exempt.
   if (isolation === "worktree" && !options.dryRun) {
     const problem = await worktreeIsolationError(resolve(options.cwd));
     if (problem !== undefined) {
@@ -871,7 +825,8 @@ export async function runOrchestrate(
 
   const runId = crypto.randomUUID();
   // `--no-save` opts out; otherwise the run is recorded next to the rest of
-  // `.agent`, which is what makes `kapel runs`/`explain`/`resume` possible.
+  // `.agent`, which is what makes `/runs`, `kapel explain` and `/resume-run`
+  // possible.
   const store =
     options.save === false
       ? undefined
@@ -904,7 +859,6 @@ export async function runOrchestrate(
         usage,
         options: {
           json: options.json,
-          workerMode: options.workerMode,
           backend: options.backend,
           isolation,
           validate: options.validate ?? true,

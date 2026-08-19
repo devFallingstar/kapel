@@ -15,6 +15,11 @@ cd /path/to/your/repo
 kapel                                 # first run asks which backend and models to use
 ```
 
+`kapel` opens a prompt and stays there. **All agent work happens in that
+REPL** — talking, planning, orchestrating, resuming. The commands on the shell
+(`init`, `config`, `models`, `runs`, `sessions`, `explain`, `policy`) set kapel
+up and inspect what it did; none of them do the work themselves.
+
 The first time you run `kapel` on a terminal it asks five questions — which
 coding backend (Claude Code, Codex, or a plain API key) and which model to use
 for the orchestrator and for each of the three worker tiers — and stores the
@@ -34,9 +39,9 @@ https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
 
 For development, clone and run `npm install && npm run build`, then use `node apps/cli/dist/index.js` or `npm install -g .` from the repo root.
 
-### Interactive mode
+### The REPL
 
-`kapel` with no objective opens a conversation with the agent, in the directory you ran it from — the same way `claude`, `codex` or `opencode` do. Type, the agent works with its tools, and the conversation keeps going:
+`kapel` opens a conversation with the agent, in the directory you ran it from — the same way `claude`, `codex` or `opencode` do. Type, the agent works with its tools, and the conversation keeps going:
 
 ```text
 $ kapel
@@ -101,8 +106,16 @@ Commands available at the prompt:
 | `/usage` | tokens and cost so far |
 | `/compact` | compact the conversation history now (native backend only) |
 | `/undo` | put the files back the way they were before the last prompt |
-| `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
+| `/plan "<objective>"` | plan an objective into a task graph and show it, with the routing rationale — nothing is executed; see [Orchestrate](#orchestrate) |
+| `/orchestrate "<objective>"` | plan it *and* run it across routed workers; see [Orchestrate](#orchestrate) |
+| `/runs` | list this workspace's recorded orchestration runs, newest first |
+| `/resume-run <runId>` | finish the tasks a recorded run never completed (the id comes from `/runs`) |
 | `/<name>` (custom) | run a command from `.agent/commands/<name>.md`; see below |
+
+`/resume` and `/resume-run` are deliberately different commands: one switches
+this REPL onto a stored *conversation*, the other re-executes an unfinished
+orchestration *run*. Two kinds of id, two names — a single command that guessed
+which you meant would be wrong at the worst possible moment.
 
 Anything else you type is a message to the agent.
 
@@ -140,62 +153,44 @@ kapel chat --session 0f3c9a2b   # a specific one (id, unique prefix, or /name)
 kapel chat --no-save            # …or don't record this one at all
 ```
 
-`kapel chat` is the explicit spelling of the default: use it when you want those flags, or in a script. The globals below (`-m/--model`, `--cwd`, `-y`, `--timeout`, `--max-iterations`) work the same here. `--json` does not — there is no event stream to script against until you say something, so use the one-shot form for that.
+`kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`) work the same either way.
 
-### One-shot mode
+Images cannot be attached to a turn yet. `@` mentions name a file for the agent to read; there is no path from the prompt to an image attachment, and the `-i/--image` flag that used to exist only ever worked for a one-shot run.
 
-Give `kapel` an objective on the command line and it runs a single agent loop to completion and exits — the shape to reach for in CI, in a script, or when you already know exactly what you want done:
+### Commands on the shell
 
-```bash
-kapel "fix the failing test"
-kapel --json "fix the failing test"    # newline-delimited JSON events
-kapel -y "fix the failing test"        # no permission prompts
-```
-
-`kapel exec "<objective>"` is the same thing spelled out.
-
-**Piped stdin becomes context**, not a second conversation: when stdin isn't a terminal and you also give an objective, whatever is piped in is read to the end (capped at 1 MiB, truncated with a `[stdin truncated]` marker past that) and appended after the objective, separated by a `--- piped input ---` line:
+Everything outside the REPL is setup and inspection:
 
 ```bash
-cat error.log | kapel "explain this failure"
+kapel                    # open the REPL — this is where the work happens
+kapel chat               # the same thing, spelled out (--continue, --session, --no-save)
+kapel init               # copy the default .agent/ configuration into this repo
+kapel config             # re-run setup (--show prints it, --path prints the file path)
+kapel models             # model aliases and their credential status
+kapel runs               # orchestration runs recorded here (--limit, --json)
+kapel sessions           # chat sessions recorded here (--limit, --json)
+kapel sessions fork <id|name> [--name <name>]
+kapel explain <taskId>   # how one task of a run was routed and what happened (--run, --json)
+kapel policy compile | check | explain | diff
+kapel help [command]     # same as --help
 ```
 
-Piping nothing (`< /dev/null`, or a command that produces no output) leaves the objective untouched — same as not piping at all. This composes with every flag above (`--json`, `-y`, `--backend`, `-m`, …), since the piped text only ever changes the objective/prompt text. Piping with **no** objective given is a different, unchanged feature — lines piped in drive the interactive prompt instead (see [Interactive mode](#interactive-mode)).
+Global flags, on every command:
 
-**Attach images with `-i/--image <path>`** (repeatable, up to 4 per run, 5 MiB per file, 20 MiB combined):
-
-```bash
-kapel -i screenshot.png "why does this dialog render off-screen?"
-kapel -i before.png -i after.png "what changed between these two?"
-```
-
-PNG, JPEG, GIF and WEBP are recognized from the file's actual bytes, not its extension — a `.png` that is really a renamed JPEG is still sent correctly as JPEG. Support depends on the backend:
-
-| Backend | Support |
-|---|---|
-| native (default) | Sent as image content blocks alongside the objective, in the same request as the rest of the turn. |
-| `--backend codex` | Forwarded as repeated `codex exec -i <path>` flags. This has only been exercised against a fake CLI in kapel's own tests, not the real Codex binary — treat it as unverified until you've tried it. |
-| `--backend claude-code` | Not supported: `claude -p` (headless mode) has no documented flag for attaching an image, so kapel fails the run immediately with a clear message rather than silently dropping the attachment or stuffing it into the text prompt. |
-
-Interactive mode (`kapel chat`) does not accept `-i/--image` yet.
-
-Useful commands and flags:
-
-- `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id|name>`, `--no-save`
-- `kapel init` — copy the default `.agent/` configuration template into the current repo
-- `kapel models` — list available model aliases and their credential status
-- `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
-- `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
-- `kapel sessions` / `kapel sessions fork <id|name> [--name <name>]` — list and branch interactive chat sessions; see [Sessions](#sessions)
-- `-m, --model <alias>` — pick the model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
-- `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
-- `-i, --image <path>` — attach an image (repeatable, up to 4, 5 MiB each); native and codex backends only, see above
-- `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only). Assistant text arrives twice over: as `model.text.delta` lines while it streams, and once whole in the turn's `model.turn.completed` line — a consumer that only knows the latter can ignore the deltas and read exactly what it always did
-- `--timeout <seconds>`, `--max-iterations <n>` — run limits
-- `--backend <native|codex|claude-code>` — execution backend (default `native`, or `AGENT_BACKEND`, or your stored config); see [Codex backend](#codex-backend) and [Claude Code backend](#claude-code-backend)
-- `--sandbox <read-only|workspace-write|danger-full-access>` — Codex sandbox mode (default `workspace-write`)
+- `--cwd <dir>` — the workspace to operate in (default: the current directory)
+- `-m, --model <alias>` — override the planner/orchestrator model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
+- `--backend <native|codex|claude-code>` — override the execution backend; see [First-run setup](#first-run-setup) for what happens when nothing overrides it
+- `--timeout <seconds>` — model call timeout
 - `--no-setup` — never run the first-run wizard; use environment variables and defaults instead
-- `kapel config` — re-run setup; `--show` prints the current configuration and its path, `--path` prints just the path
+
+`--json` is not global. It lives on the commands that actually emit machine-readable output — `runs`, `sessions`, `sessions fork`, `explain`, and each `policy` subcommand — and nowhere else.
+
+A command that no longer exists gets the same terse answer as a typo:
+
+```text
+$ kapel plan "add a health endpoint"
+error: unknown command 'plan'
+```
 
 ### First-run setup
 
@@ -229,13 +224,30 @@ answers to the conversation you are already in — the thread is kept, only the
 turns that follow change backend or model.
 
 **Everything resolves in one order**, wherever a backend or a model is chosen
-(one-shot, chat, `plan`, `orchestrate`, `policy compile`):
+(the REPL, `/plan`, `/orchestrate`, `policy compile`):
 
 ```text
-explicit CLI flag  >  environment variable  >  ~/.kapel/config.json  >  built-in default
-     --backend            AGENT_BACKEND              backend                 native
-     -m/--model           AGENT_MODEL                models.orchestrator     claude-sonnet-5
+explicit CLI flag  >  environment variable  >  ~/.kapel/config.json  >  detected  >  built-in default
+     --backend            AGENT_BACKEND              backend                            native
+     -m/--model           AGENT_MODEL                models.orchestrator                claude-sonnet-5
 ```
+
+**Backend auto-detection** fills the gap in the last step but one. If nothing
+has chosen a backend — no `--backend`, no `AGENT_BACKEND`, no stored config
+(a `--no-setup` run, a piped one, a machine whose config was never written) —
+kapel looks for one that actually works instead of assuming `native` and
+failing on a missing credential: a logged-in Claude Code CLI first, then a
+logged-in Codex CLI, then a provider credential in the environment. Whatever it
+finds is announced in one line on stderr and used for that process:
+
+```text
+backend: claude-code (auto-detected — set one with `kapel config`)
+```
+
+The probe runs at most once per process, and never at all when anything above
+it in the order has an answer. With nothing usable found, `native` stands, in
+silence — at that point the thing worth hearing about is the missing
+credential, not the detection.
 
 `.agent/config.yaml` is a separate, per-project thing: it says which model each
 *agent* of an orchestration run uses. `kapel init` seeds it from your global
@@ -245,10 +257,11 @@ template unchanged when you don't.
 
 ### Permissions
 
-Without `-y`, `write_file`/`edit_file`/`bash` ask on the terminal (`[y/n/a]` —
-"a" remembers the answer for the rest of that run only, never written
-anywhere). A `permission` block, hand-edited into either config file, changes
-what asks and what doesn't — opencode's syntax, unchanged:
+`write_file`/`edit_file`/`bash` ask at the prompt (`[y/n/a]` — "a" remembers the
+answer for the rest of that session only, never written anywhere). There is no
+flag to turn the asking off: the REPL is the one place a human is definitely
+present. A `permission` block, hand-edited into either config file, changes what
+asks and what doesn't — opencode's syntax, unchanged:
 
 ```jsonc
 // ~/.kapel/config.json
@@ -292,7 +305,7 @@ Drop an `AGENTS.md` in your repo and kapel follows it from the first turn — th
 2. `AGENTS.md` at the repo root — project rules, shared with other agents.
 3. `.agent/AGENTS.md` — kapel-specific overrides.
 
-All that exist are concatenated in that order; a missing file is simply skipped. The interactive banner names whichever were loaded (`instructions: AGENTS.md, .agent/AGENTS.md`), and one-shot runs (`kapel "<objective>"`) apply them the same way, silently. The combined text is capped at 32 KiB. An explicit `--system "<prompt>"` replaces the default system prompt outright and is not combined with `AGENTS.md` files. Delegated backends (`--backend codex`, `--backend claude-code`) run the external CLI's own agent loop, which does not take a system prompt from kapel — those AGENTS.md files are not injected there, though the CLIs themselves may already read AGENTS.md-style files on their own.
+All that exist are concatenated in that order; a missing file is simply skipped. The REPL's banner names whichever were loaded (`instructions: AGENTS.md, .agent/AGENTS.md`). The combined text is capped at 32 KiB. Delegated backends (`--backend codex`, `--backend claude-code`) run the external CLI's own agent loop, which does not take a system prompt from kapel — those AGENTS.md files are not injected there, though the CLIs themselves may already read AGENTS.md-style files on their own.
 
 ### Claude Code backend
 
@@ -303,10 +316,11 @@ login:
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-claude                  # once, to log in with your Claude subscription
-kapel --backend claude-code "fix the failing test"
-kapel --backend claude-code            # …or a whole conversation
+claude                            # once, to log in with your Claude subscription
+kapel --backend claude-code       # …and open the REPL on it
 ```
+
+Pick it once in `kapel config` and the flag stops being necessary; with neither, kapel detects a logged-in `claude` on its own (see [First-run setup](#first-run-setup)).
 
 `kapel` never touches Anthropic's OAuth flow or Claude Code's credentials on
 this path — it spawns `claude -p` in the workspace and renders the stream it
@@ -324,19 +338,14 @@ transcript once on the first turn and continues by id from there. Codex chats
 are stateless instead — `codex exec --json` does not report a resumable id —
 so each Codex turn carries the recent transcript with it.
 
-**Orchestration runs on it too.** `kapel orchestrate --backend claude-code`
-spawns one `claude -p` per task, in that task's own workspace (its worktree,
-under the default `--isolation worktree`), on the model the routed agent
+**Orchestration runs on it too.** `/orchestrate` under this backend
+spawns one `claude -p` per task, in that task's own workspace (its worktree —
+isolation is always on), on the model the routed agent
 declares in `.agent/agents/*.md`. Unlike Codex, Claude Code can be scoped per
 run, so each agent's `tools:` list is translated into `--allowedTools` —
 a reviewer really does run without `Write` and `Edit`. Approvals stay Claude
 Code's own (`acceptEdits`), and the project's `validation:` commands gate
 mutating tasks here just as they do on the native loop.
-
-What this backend still does not support is `-i/--image`: `claude -p` has no
-image flag, so a run with attachments fails immediately with a clear message
-rather than sending the objective without them — see
-[One-shot mode](#one-shot-mode).
 
 ### Authentication
 
@@ -358,11 +367,11 @@ Want OpenAI models without an `OPENAI_API_KEY`? Pass `--backend codex` (or set `
 
 ```bash
 npm install -g @openai/codex
-codex login          # ChatGPT OAuth — no API key
-kapel --backend codex "fix the failing test"
+codex login                 # ChatGPT OAuth — no API key
+kapel --backend codex       # …and open the REPL on it
 ```
 
-`kapel` never handles OpenAI credentials itself on this path — it just spawns `codex exec --json` in the workspace and lets Codex authenticate and run its own agent loop. `-m/--model` is forwarded to Codex only when you pass it explicitly; otherwise Codex picks its own default. `--sandbox <read-only|workspace-write|danger-full-access>` (default `workspace-write`) controls how much Codex is allowed to touch — anything other than `read-only` runs `--full-auto` so it doesn't stall on approval prompts. `--max-iterations` and the native permission prompts don't apply here; Codex enforces its own approvals via the sandbox mode.
+`kapel` never handles OpenAI credentials itself on this path — it just spawns `codex exec --json` in the workspace and lets Codex authenticate and run its own agent loop. `-m/--model` is forwarded to Codex only when you pass it explicitly; otherwise Codex picks its own default. Codex runs under its `workspace-write` sandbox with `--full-auto`, so it doesn't stall on approval prompts; kapel's own permission prompts don't apply here — Codex enforces its own approvals via the sandbox. As with Claude Code, picking it in `kapel config` makes the flag unnecessary, and a logged-in `codex` is detected when nothing else has chosen.
 
 ### Policy
 
@@ -373,27 +382,32 @@ kapel --backend codex "fix the failing test"
 - `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM. Same line-annotated warnings/ambiguities as `compile`.
 - `kapel policy diff` — recompiles `orchestration.md` (one LLM call, same resolution as `compile`) and diffs the result against the current lock **without writing it**, so you can review a change before committing to it: routing/review/escalation rules added, removed, or changed field-by-field (matched by each rule's own `id`, not its position — reordering a policy's rules between compiles is not a change), plus any changed defaults (`orchestrator`, `maxConcurrency`, `parallelizeIndependentTasks`, `defaultMaxAttempts`). `--json` emits `{ok, unchanged, defaults, routing, review, escalation, warnings, ambiguities}`. "Same resolution as `compile`" includes the backend: under `--backend codex`/`--backend claude-code` the recompile is delegated to that CLI, so `diff` needs no API key either.
 
-All four accept `--cwd` and `--json`.
+All four accept `--cwd`, and each takes its own `--json`.
 
 ### Orchestrate
 
-`kapel "<objective>"` runs one model in one loop. `kapel orchestrate "<objective>"` runs the full M3 pipeline instead: the objective is **planned** into a task DAG, the plan is **rewritten by your compiled policy** (unknown agents dropped, mandated reviews injected, unrunnable plans rejected), and the resulting tasks are **routed to different workers and executed in parallel** by the deterministic scheduler.
+A message at the prompt runs one model in one loop. `/orchestrate` runs the full M3 pipeline instead: the objective is **planned** into a task DAG, the plan is **rewritten by your compiled policy** (unknown agents dropped, mandated reviews injected, unrunnable plans rejected), and the resulting tasks are **routed to different workers and executed in parallel** by the deterministic scheduler.
 
 ```bash
-kapel policy compile                        # once, and after every orchestration.md edit
-kapel plan "add a health endpoint"          # preview the task graph — no work is done
-kapel orchestrate "add a health endpoint"   # plan, then execute it
+kapel policy compile     # once, on the shell, and after every orchestration.md edit
 ```
 
-Both commands require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `kapel policy compile`. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, the CLI falls back to the normal default model and says so).
+```text
+kapel> /plan add a health endpoint          ← preview the task graph — no work is done
+kapel> /orchestrate add a health endpoint   ← plan, then execute it
+kapel> /runs                                ← what has been run here
+kapel> /resume-run 0f3c9a2b                 ← finish a run that stopped part-way
+```
+
+Both `/plan` and `/orchestrate` require a fresh `.agent/orchestration.lock.json` and refuse to guess: a missing or stale lock is an error telling you to run `kapel policy compile`. It is reported in the REPL and the conversation carries on. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, kapel falls back to the normal default model and says so).
 
 Under `--backend codex` or `--backend claude-code` the planning conversation is delegated to that CLI too, so **planning needs no API key either** — it runs as one read-only `codex exec --sandbox read-only` / `claude -p --permission-mode plan` call in your workspace, on the orchestrator agent's configured model (or whatever `-m/--model` names, verbatim), and the plan it replies with is validated against the same schema and the same rules as on the native path.
 
 `kapel policy compile` is delegated the same way on those backends — the same single read-only call, the same IR schema, the same warnings and ambiguities in the lock — on whatever model your `orchestrator` setting names (`-m/--model` > `AGENT_MODEL` > `~/.kapel/config.json`), or the CLI's own default when nothing names one, in which case the lock records it as `<codex default>`/`<claude-code default>`. `kapel policy diff` recompiles through the same delegated path. **So the whole pipeline — compile, diff, plan, orchestrate — runs on a Codex or Claude Code subscription with no API key anywhere.**
 
-`kapel plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `kapel orchestrate --dry-run` prints exactly the same thing.
+`/plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite.
 
-`kapel plan --why [taskId]` additionally prints the routing rationale — the same `PolicyRouter.decide` the scheduler itself runs at execution time — for one task, or every task when no id is given: which rule matched (its match criteria, strength and weight) or, with no matching rule, whether it fell back to the task's `suggestedAgent` or the policy's orchestrator, plus the model alias the picked agent is configured with. `--json` adds a `why` array of `{taskId, title, type, complexity, agent, modelAlias?, reason, rule?}` alongside the usual plan output.
+It then prints the **routing rationale** for every task, always: the same `PolicyRouter.decide` the scheduler itself runs at execution time, saying which rule matched (its match criteria, strength and weight) or, with no matching rule, whether it fell back to the task's `suggestedAgent` or the policy's orchestrator — plus the model alias the picked agent is configured with. This used to be a `--why` flag you had to remember; at a prompt the table and the reason behind it are one thought.
 
 During a run, task lifecycle lines are interleaved with the workers' own output:
 
@@ -409,29 +423,26 @@ During a run, task lifecycle lines are interleaved with the workers' own output:
 
 The run ends with a per-task status table and token/cost totals, and exits `0` only if every task completed.
 
-Execution options:
+How a run executes is decided by your configuration, not by flags:
 
-- `--worker-mode in-process` (default) — every task runs in this process through the native agent loop, using the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
-- `--worker-mode child` — each task runs in a separate `kapel worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
-- `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
-- `--backend claude-code` — delegate every task to the Claude Code CLI instead (see [Claude Code backend](#claude-code-backend)): one `claude -p` per task in that task's workspace, on the agent's configured model, with the agent's `tools:` list passed through as `--allowedTools`. Claude Code enforces its own approvals (`acceptEdits`), and validators still run.
-- `--isolation worktree` (default) / `--isolation none` — see [Worktree isolation](#worktree-isolation) below.
-- `--tui` — replace the streaming event lines with a live dashboard (task table, worker log, elapsed time). Text mode only: combining it with `--json` is an error, since the dashboard owns the terminal. The final status table and token totals are printed as usual once it comes down.
-- `--no-save` — don't record this run in `.agent/sessions.db`; see [Sessions](#sessions).
-- `--timeout <seconds>` applies **per task**, not to the run as a whole; `--max-iterations <n>` bounds each in-process worker's tool loop. `--json` turns the whole run into JSONL (worker events, task events, then a final `run.summary` line).
+- **Workers run in this process**, through the native agent loop, on the model each agent declares in `.agent/agents/*.md` (resolved via the `models:` aliases in `.agent/config.yaml`). **Independent tasks fan out to different configured workers**: with a policy that routes `exploration` to your explorer agent and `implementation` to your coder agent, those two tasks run concurrently on two different models.
+- **Under a delegated backend, every task goes to that CLI instead.** `codex` (see [Codex backend](#codex-backend)) or `claude-code` (see [Claude Code backend](#claude-code-backend)): one `claude -p` per task in that task's workspace, on the agent's configured model, with the agent's `tools:` list passed through as `--allowedTools`. Claude Code enforces its own approvals (`acceptEdits`), and validators still run.
+- **Worktree isolation is on**, always — see [Worktree isolation](#worktree-isolation) below.
+- **The project's validators gate every mutating task**; see [Validation and review](#validation-and-review).
+- **The run is recorded** in `.agent/sessions.db` unless the REPL was opened with `kapel chat --no-save`; see [Sessions](#sessions).
+- `--timeout <seconds>` applies **per task**, not to the run as a whole.
 
 #### Worktree isolation
 
 Parallel workers editing one checkout would see each other's half-finished edits, so by default **every mutating task gets its own git worktree**: a private checkout of the current `HEAD` on an `agent-task/<runId>/<taskId>` branch, under `.agent/worktrees/`. The worker only ever sees that directory. When the task succeeds, its changes are committed on the task branch and merged back into your checked-out branch — merges are serialized, so concurrent tasks land one after another rather than racing. The checkout and the branch are then deleted, and the task's reported `changedFiles`/`commit` describe what actually landed.
 
-This applies to every worker mode and to `--backend codex` alike; isolation is about how tasks share the repository, not about what runs them.
+This applies to the native loop and to `--backend codex` alike; isolation is about how tasks share the repository, not about what runs them.
 
 - **Read-only tasks run in place.** `exploration` and `review` tasks never write, so they run directly in your workspace with no checkout and no branch.
 - **Conflicts are reported, not resolved.** If a task's branch cannot be merged (two tasks touched the same lines, or the base checkout was dirty), the task comes back `partial` with the conflicting files and the branch name in its unresolved issues, and **the branch is preserved** so you can merge or inspect it by hand. Your working tree is left clean — no merge in progress, no conflict markers.
 - **Failed tasks keep their evidence.** A task that fails after making edits still has them committed on its branch, which is kept for inspection; nothing is merged.
-- `--isolation none` opts out entirely: every task runs directly in the workspace, exactly as before. Use it when the workspace is not a git repository, or when you want a single shared tree.
 
-Worktree isolation needs the workspace to be a git repository with at least one commit; if it isn't, `kapel orchestrate` says so and exits before planning work, suggesting `--isolation none`. Should a run be killed mid-flight, leftover checkouts and `agent-task/*` branches can be cleaned up with `git worktree prune` plus `git branch -D`.
+Worktree isolation needs the workspace to be a git repository with at least one commit; if it isn't, `/orchestrate` says so before spending a model call on a plan. Should a run be killed mid-flight, leftover checkouts and `agent-task/*` branches can be cleaned up with `git worktree prune` plus `git branch -D`.
 
 #### Validation and review
 
@@ -445,24 +456,28 @@ validation:
     command: npm test        # timeoutSeconds: 300  (optional, default 600)
 ```
 
-Each command runs via `bash -lc` **inside the task's own worktree, before it is merged back**; a failing command fails the task (and cancels its dependents) instead of merging broken work, and its output streams as `validation.started`/`validation.completed` events. Failed and low-confidence results are retried per the policy's `escalation`/`defaultMaxAttempts` rules, rerouting to another agent when configured. `--no-validate` skips validators for one run; they're skipped under `--backend codex` regardless, since Codex reports one result per task with no hook to run a separate suite against. Separately, a policy's `review:` rules inject **blocking** review tasks for matching risk categories — a rejected verdict fails the task (and the run) the same way a failed validator does.
+Each command runs via `bash -lc` **inside the task's own worktree, before it is merged back**; a failing command fails the task (and cancels its dependents) instead of merging broken work, and its output streams as `validation.started`/`validation.completed` events. Failed and low-confidence results are retried per the policy's `escalation`/`defaultMaxAttempts` rules, rerouting to another agent when configured. Validators are skipped under `--backend codex`, since Codex reports one result per task with no hook to run a separate suite against. Separately, a policy's `review:` rules inject **blocking** review tasks for matching risk categories — a rejected verdict fails the task (and the run) the same way a failed validator does.
 
 #### Sessions
 
-Every `kapel orchestrate` run records itself in a SQLite database at **`.agent/sessions.db`**: the objective, the policy snapshot it executed under, the post-rewrite plan, every event it emitted, and a rolling per-task summary. The run id is printed as the run starts (`Run 0f3c… — 3 tasks, up to 4 at a time`) — that is what the three commands below take.
+Every `/orchestrate` run records itself in a SQLite database at **`.agent/sessions.db`**: the objective, the policy snapshot it executed under, the post-rewrite plan, every event it emitted, and a rolling per-task summary. The run id is printed as the run starts (`Run 0f3c… — 3 tasks, up to 4 at a time`) — that is what the commands below take.
 
-```bash
-kapel runs                     # what has been run here, newest first
-kapel explain T03              # why T03 ran where it ran, and what happened to it
-kapel explain T03 --run 0f3c…  # …in a specific run (default: the most recent)
-kapel resume 0f3c…             # finish the tasks that never succeeded
+```text
+kapel> /runs                   ← what has been run here, newest first
+kapel> /resume-run 0f3c…       ← finish the tasks that never succeeded
 ```
 
-- **`kapel runs`** lists id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` emits the same as an array. A workspace with no database yet just says so.
-- **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
-- **`kapel resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `kapel orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
+```bash
+kapel runs                     # the same listing, from the shell (--limit, --json)
+kapel explain T03              # why T03 ran where it ran, and what happened to it
+kapel explain T03 --run 0f3c…  # …in a specific run (default: the most recent)
+```
 
-Interactive conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `kapel runs` reads the orchestration runs above. See [Interactive mode](#interactive-mode). Outside the REPL, `kapel sessions` lists them the same way `kapel runs` lists orchestration runs, and `kapel sessions fork <id|name> [--name <name>]` copies one — its title, model and whole transcript so far — into a brand new session that then evolves independently of the one it was forked from:
+- **`/runs`** and **`kapel runs`** list id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` (shell only) emits the same as an array. A workspace with no database yet just says so.
+- **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
+- **`/resume-run <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `/orchestrate`. Isolation, validators and the backend are whatever `/orchestrate` itself would use.
+
+Conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `/runs` reads the orchestration runs above. See [The REPL](#the-repl). Outside the REPL, `kapel sessions` lists them the same way `kapel runs` lists orchestration runs, and `kapel sessions fork <id|name> [--name <name>]` copies one — its title, model and whole transcript so far — into a brand new session that then evolves independently of the one it was forked from:
 
 ```bash
 kapel sessions                                # this workspace's chat sessions, newest-touched first
@@ -474,9 +489,7 @@ kapel sessions fork 0f3c… --name "plan b"     # …and name the copy
 
 `/fork [name]` at the prompt does the same copy `kapel sessions fork` does, but from inside the REPL and on the conversation you're already in: it branches everything said so far into a new session and switches you onto it immediately (the original stays put, unaffected, with its own history up to the fork point). Useful for "let me try a different approach without losing where I was" — `/fork before-refactor`, try the risky thing, `/resume` back to the original if it doesn't pan out.
 
-`--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
-
-`kapel worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
+`kapel chat --no-save` skips persistence entirely — for the conversation and for anything `/orchestrate` runs from it, so nothing is written and those runs cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 
 ## Project plan
 
@@ -511,7 +524,7 @@ Validation / review / merge
 - npm workspaces
 - Zod for runtime schemas
 - SQLite + Drizzle for durable sessions (`.agent/sessions.db`)
-- Ink/React for the terminal dashboard (`--tui`)
+- Ink/React for the terminal dashboard
 - Git worktrees for parallel worker isolation
 - JSONL events / JSON-RPC for integrations
 

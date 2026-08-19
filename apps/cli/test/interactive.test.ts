@@ -15,7 +15,7 @@ import { UNATTRIBUTED } from "@agent/ai";
 import type { ChatTurnResult } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
   CustomCommand,
   LoadCustomCommandsResult,
@@ -39,7 +39,6 @@ import {
   invalidSessionName,
   openChatStore,
   resolveStartSession,
-  runInteractive,
   SIGINT_LINE,
   shortId,
   slashCompleter,
@@ -419,7 +418,10 @@ describe("interactive controller — slash commands", () => {
       "/model",
       "/usage",
       "/compact",
+      "/plan",
       "/orchestrate",
+      "/runs",
+      "/resume-run",
     ]) {
       expect(text).toContain(command);
     }
@@ -680,6 +682,150 @@ describe("interactive controller — slash commands", () => {
     const h = await harness({ orchestrate: async () => 0 });
     expect((await h.controller.handleLine("/orchestrate")).output).toEqual([
       'usage: /orchestrate "<objective>"',
+    ]);
+  });
+
+  it("/plan renders the plan through the REPL's own lines", async () => {
+    const objectives: string[] = [];
+    const h = await harness({
+      plan: async (objective, output) => {
+        objectives.push(objective);
+        output.log("Objective: add a route");
+        output.log("T01  implementation  medium  coder  -  Add the route");
+        output.log("Routing rationale:");
+        return 0;
+      },
+    });
+
+    const result = await h.controller.handleLine("/plan add a route");
+    expect(objectives).toEqual(["add a route"]);
+    expect(result.output).toEqual([
+      "Objective: add a route",
+      "T01  implementation  medium  coder  -  Add the route",
+      "Routing rationale:",
+    ]);
+    expect(result.effect).toBeUndefined();
+    // The plan is a preview: nothing was sent to the model, so no turn ran.
+    expect(h.written).toEqual(result.output);
+  });
+
+  it("/plan reports a failed pipeline without ending the conversation", async () => {
+    const h = await harness({
+      plan: async (_objective, output) => {
+        output.error("No policy lock found. Run `kapel policy compile`.");
+        return 1;
+      },
+    });
+    const result = await h.controller.handleLine("/plan add a route");
+    expect(result.output).toEqual([
+      "No policy lock found. Run `kapel policy compile`.",
+    ]);
+    expect(result.effect).toBeUndefined();
+  });
+
+  it("/plan surfaces a thrown failure as one line", async () => {
+    const h = await harness({
+      plan: async () => {
+        throw new Error("planner model is not configured");
+      },
+    });
+    expect((await h.controller.handleLine("/plan x")).output).toEqual([
+      "planner model is not configured",
+    ]);
+  });
+
+  it("/plan without an objective prints its usage", async () => {
+    const h = await harness({ plan: async () => 0 });
+    expect((await h.controller.handleLine("/plan")).output).toEqual([
+      'usage: /plan "<objective>"',
+    ]);
+  });
+
+  it("/plan says so when there is no pipeline to run", async () => {
+    const h = await harness();
+    expect((await h.controller.handleLine("/plan x")).output).toEqual([
+      "/plan is not available here.",
+    ]);
+  });
+
+  it("/runs lists the recorded runs, so /resume-run has an id to take", async () => {
+    let called = 0;
+    const h = await harness({
+      runs: async (output) => {
+        called += 1;
+        output.log("ID    STATUS   STARTED  TASKS  OBJECTIVE");
+        output.log("0f3c  failed   …        1/3    add a health endpoint");
+        return 0;
+      },
+    });
+    const result = await h.controller.handleLine("/runs");
+    expect(called).toBe(1);
+    expect(result.output).toEqual([
+      "ID    STATUS   STARTED  TASKS  OBJECTIVE",
+      "0f3c  failed   …        1/3    add a health endpoint",
+    ]);
+  });
+
+  it("/runs says so when runs are not being recorded", async () => {
+    const h = await harness();
+    expect((await h.controller.handleLine("/runs")).output).toEqual([
+      "/runs is not available here.",
+    ]);
+  });
+
+  it("/resume-run re-executes one recorded run by id", async () => {
+    const ids: string[] = [];
+    const h = await harness({
+      resumeRun: async (runId, output) => {
+        ids.push(runId);
+        output.log(`Resuming run ${runId} — 2 of 3 tasks left`);
+        return 0;
+      },
+    });
+    const result = await h.controller.handleLine("/resume-run 0f3c9a2b");
+    expect(ids).toEqual(["0f3c9a2b"]);
+    expect(result.output).toEqual([
+      "Resuming run 0f3c9a2b — 2 of 3 tasks left",
+    ]);
+  });
+
+  it("/resume-run is distinct from /resume, which still switches conversations", async () => {
+    const ids: string[] = [];
+    const h = await harness({
+      resumeRun: async (runId) => {
+        ids.push(runId);
+        return 0;
+      },
+    });
+    // `/resume` with an id nothing matches is the session switcher answering,
+    // not the run resumer: the two never see each other's arguments.
+    const switched = await h.controller.handleLine("/resume 0f3c9a2b");
+    expect(ids).toEqual([]);
+    expect(switched.output.join("\n")).not.toContain("Resuming run");
+  });
+
+  it("/resume-run without an id points at /runs", async () => {
+    const h = await harness({ resumeRun: async () => 0 });
+    expect((await h.controller.handleLine("/resume-run")).output).toEqual([
+      "usage: /resume-run <runId>  — see /runs",
+    ]);
+  });
+
+  it("/resume-run reports a failure without ending the conversation", async () => {
+    const h = await harness({
+      resumeRun: async () => {
+        throw new Error("Unknown run zzz.");
+      },
+    });
+    const result = await h.controller.handleLine("/resume-run zzz");
+    expect(result.output).toEqual(["Unknown run zzz."]);
+    expect(result.effect).toBeUndefined();
+  });
+
+  it("/resume-run says so when there is nothing to resume into", async () => {
+    const h = await harness();
+    expect((await h.controller.handleLine("/resume-run 0f3c")).output).toEqual([
+      "/resume-run is not available here.",
     ]);
   });
 });
@@ -1285,7 +1431,10 @@ describe("slashCompleter", () => {
       "/usage",
       "/compact",
       "/undo",
+      "/plan",
       "/orchestrate",
+      "/runs",
+      "/resume-run",
       "/review",
       "/ship-it",
     ]);
@@ -1406,27 +1555,6 @@ describe("interactive helpers", () => {
 // --- the shell around the controller ----------------------------------------
 
 describe("runInteractive", () => {
-  it("refuses --json and points at the one-shot form", async () => {
-    const errors: string[] = [];
-    const spy = vi.spyOn(console, "error").mockImplementation((line) => {
-      errors.push(String(line));
-    });
-    try {
-      const code = await runInteractive({
-        cwd: tempDir,
-        maxIterations: 4,
-        yes: false,
-        json: true,
-      });
-      expect(code).toBe(1);
-    } finally {
-      spy.mockRestore();
-    }
-    expect(errors.join("\n")).toContain(
-      "--json is not supported in interactive mode",
-    );
-  });
-
   it("openChatStore creates .agent and its database without `kapel init`", async () => {
     const workspace = path.join(tempDir, "unconfigured-repo");
     await mkdir(workspace, { recursive: true });

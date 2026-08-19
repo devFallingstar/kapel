@@ -23,7 +23,7 @@ import { runSelectPrompt } from "./select-prompt.js";
  * is not a choice.
  */
 
-export type SettingSource = "flag" | "env" | "config" | "default";
+export type SettingSource = "flag" | "env" | "config" | "detected" | "default";
 
 export interface ResolvedSetting<T> {
   readonly value: T;
@@ -41,6 +41,10 @@ function present(value: string | undefined): value is string {
  * Both the flag and the environment variable are validated, so a typo in
  * either is a printable error rather than a silent fallback; the config's
  * backend is already a checked value by the time it is parsed.
+ *
+ * Callers that can await should prefer {@link detectBackendSetting}, which
+ * only differs in the `default` case — where it looks for a backend that is
+ * actually usable before settling for `native`.
  */
 export function resolveBackendSetting(
   flag: string | undefined,
@@ -58,6 +62,117 @@ export function resolveBackendSetting(
     return { value: config.backend, source: "config" };
   }
   return { value: DEFAULT_BACKEND, source: "default" };
+}
+
+// --- Backend auto-detection -------------------------------------------------
+
+/**
+ * The probes {@link detectBackendSetting} runs, in order. Overridable in tests
+ * so the detection logic can be exercised without a CLI on the machine.
+ */
+export interface BackendDetectionProbe {
+  /** Whether the Claude Code CLI is installed *and* logged in. */
+  claudeCode(): Promise<boolean>;
+  /** Whether the Codex CLI is installed *and* logged in. */
+  codex(): Promise<boolean>;
+  /** Whether this environment carries a provider credential the native loop can use. */
+  nativeCredential(env: EnvLike): boolean;
+}
+
+export const defaultBackendDetectionProbe: BackendDetectionProbe = {
+  claudeCode: async () => {
+    const availability = await ClaudeCodeBackend.checkAvailability();
+    return availability.installed && availability.loggedIn;
+  },
+  codex: async () => {
+    const availability = await CodexBackend.checkAvailability();
+    return availability.installed && availability.loggedIn;
+  },
+  nativeCredential: (env) =>
+    present(env.ANTHROPIC_API_KEY) ||
+    present(env.ANTHROPIC_AUTH_TOKEN) ||
+    present(env.OPENAI_API_KEY),
+};
+
+/**
+ * The probe's verdict for this process. Each probe spawns a CLI, so it runs
+ * once no matter how many callers ask; `undefined` inside the promise means
+ * "nothing to detect", which is not the same as "not probed yet".
+ */
+let detectionCache: Promise<BackendName | undefined> | undefined;
+/** Whether the one-line announcement has already been printed this process. */
+let detectionAnnounced = false;
+
+/** Forgets the cached probe and the announcement. Test-only. */
+export function resetBackendDetection(): void {
+  detectionCache = undefined;
+  detectionAnnounced = false;
+}
+
+async function probeBackend(
+  probe: BackendDetectionProbe,
+  env: EnvLike,
+): Promise<BackendName | undefined> {
+  if (await probe.claudeCode()) return "claude-code";
+  if (await probe.codex()) return "codex";
+  if (probe.nativeCredential(env)) return "native";
+  return undefined;
+}
+
+export interface DetectBackendDeps {
+  /**
+   * The probe to run. Only consulted on the first detection of the process —
+   * the result is cached (see {@link detectionCache}), so a test that wants a
+   * different answer calls {@link resetBackendDetection} first.
+   */
+  readonly probe?: BackendDetectionProbe;
+  /** Where the announcement goes. Defaults to stderr, so `--json` stays clean. */
+  readonly announce?: (line: string) => void;
+}
+
+/**
+ * {@link resolveBackendSetting}, with one extra step for the case it cannot
+ * answer honestly: nobody has chosen a backend anywhere.
+ *
+ * Falling straight through to `native` there is what used to send someone with
+ * a logged-in `claude` sitting right next to them into a missing-credential
+ * error. So when — and only when — the flag, the environment and the config
+ * are all silent, the CLIs are probed in order (claude-code, then codex), then
+ * a provider credential, and whatever is actually usable is chosen and said
+ * out loud. With nothing usable found, the old `native` default stands, in
+ * silence: a machine with no backend at all should hear about the credential,
+ * not about the detection.
+ *
+ * The wizard path deliberately does not come through here — it asks.
+ */
+export async function detectBackendSetting(
+  flag: string | undefined,
+  env: EnvLike,
+  config: KapelConfig | undefined,
+  deps: DetectBackendDeps = {},
+): Promise<ResolvedSetting<BackendName>> {
+  const chosen = resolveBackendSetting(flag, env, config);
+  if (chosen.source !== "default") return chosen;
+
+  detectionCache ??= probeBackend(
+    deps.probe ?? defaultBackendDetectionProbe,
+    env,
+  );
+  const detected = await detectionCache;
+  if (detected === undefined) return chosen;
+
+  if (!detectionAnnounced) {
+    detectionAnnounced = true;
+    const announce =
+      deps.announce ??
+      ((line: string): void => {
+        console.error(line);
+      });
+    announce(
+      `backend: ${detected} (auto-detected — set one with \`kapel config\`)`,
+    );
+  }
+  return { value: detected, source: "detected" };
 }
 
 /**

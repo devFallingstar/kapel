@@ -138,8 +138,8 @@ export interface DelegatedRunOptions {
  *
  * Read-only is by construction: Codex runs under `--sandbox read-only` and
  * Claude Code under `--permission-mode plan`. A step that only decides *what*
- * should happen has no business editing files — `kapel plan`,
- * `orchestrate --dry-run` and `kapel policy compile` all promise to touch
+ * should happen has no business editing files — `/plan`, a dry-run
+ * orchestrate and `kapel policy compile` all promise to touch
  * nothing but the artifact they write themselves, and under a real
  * `orchestrate` the edits belong to the routed workers in their own task
  * worktrees.
