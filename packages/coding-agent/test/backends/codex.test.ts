@@ -215,6 +215,40 @@ describe("CodexBackend.run", () => {
     expect(result.summary).toContain("sandbox denied write access");
   });
 
+  it("names the requested model in the failure summary when one was set", async () => {
+    const binaryPath = await writeFakeCodex(dir, {
+      stderr: "fatal: model not found\n",
+      exitCode: 1,
+    });
+    const backend = new CodexBackend({ binaryPath, model: "gpt-5.1-codex" });
+
+    const result = await backend.run(
+      { instruction: "fail please" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("fatal: model not found");
+    expect(result.summary).toContain('model "gpt-5.1-codex" was requested');
+    expect(result.summary).toContain("account or plan may not have access");
+  });
+
+  it("omits the model hint when no model was requested", async () => {
+    const binaryPath = await writeFakeCodex(dir, {
+      stderr: "fatal: sandbox denied write access\n",
+      exitCode: 1,
+    });
+    const backend = new CodexBackend({ binaryPath });
+
+    const result = await backend.run(
+      { instruction: "fail quietly" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.summary).not.toContain("was requested");
+  });
+
   it("fails with an install hint when the binary is missing", async () => {
     const backend = new CodexBackend({
       binaryPath: join(dir, "definitely-not-installed"),

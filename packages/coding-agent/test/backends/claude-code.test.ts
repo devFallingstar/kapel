@@ -382,6 +382,43 @@ describe("ClaudeCodeBackend.run", () => {
     expect(result.sessionId).toBe("sess-2");
   });
 
+  it("names the requested model in the failure summary when one was set", async () => {
+    const binaryPath = await writeFakeClaude(dir, {
+      stderr: "Error: model not found\n",
+      exitCode: 1,
+    });
+    const backend = new ClaudeCodeBackend({
+      binaryPath,
+      model: "claude-fable-5",
+    });
+
+    const result = await backend.run(
+      { instruction: "fail please" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("Error: model not found");
+    expect(result.summary).toContain('model "claude-fable-5" was requested');
+    expect(result.summary).toContain("account or plan may not have access");
+  });
+
+  it("omits the model hint when no model was requested", async () => {
+    const binaryPath = await writeFakeClaude(dir, {
+      stderr: "Error: credit balance is too low\n",
+      exitCode: 1,
+    });
+    const backend = new ClaudeCodeBackend({ binaryPath });
+
+    const result = await backend.run(
+      { instruction: "fail please" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.summary).not.toContain("was requested");
+  });
+
   it("fails with an install and login hint when the binary is missing", async () => {
     const backend = new ClaudeCodeBackend({
       binaryPath: join(dir, "definitely-not-installed"),

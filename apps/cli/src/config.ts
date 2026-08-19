@@ -179,40 +179,82 @@ export function backendChoices(): readonly SelectChoice[] {
 }
 
 /**
- * Claude Code's `--model` takes both aliases and full model ids; the aliases
- * are the stable half, so those are what the wizard offers.
+ * Every catalog id for one provider, sorted alphabetically.
+ *
+ * The choice lists below are built from this instead of a hand-maintained
+ * snippet so that adding a model to {@link defaultModelCatalog} automatically
+ * widens what every backend's wizard offers — nobody has to remember to keep
+ * `config.ts` in sync with the catalog by hand.
  */
-const CLAUDE_CODE_CHOICES: readonly SelectChoice[] = [
-  { value: "opus", label: "opus", hint: "Claude Opus — highest capability" },
-  { value: "sonnet", label: "sonnet", hint: "Claude Sonnet — balanced" },
-  { value: "haiku", label: "haiku", hint: "Claude Haiku — fastest/cheapest" },
-  {
-    value: "default",
-    label: "default",
-    hint: "whatever your Claude Code account defaults to",
-  },
-];
+function catalogIdsForProvider(
+  provider: "anthropic" | "openai",
+): readonly string[] {
+  const catalog = defaultModelCatalog();
+  return Object.keys(catalog)
+    .filter((id) => catalog[id]?.provider === provider)
+    .sort();
+}
 
 /**
- * The Codex CLI picks its own default when no `-m` is passed, and which ids
- * an account can actually use varies by plan and CLI version. So `default`
- * leads and is what the wizard recommends; the named ids are offered, clearly
- * marked as account-dependent, for people who know they have them.
+ * Claude Code's `--model` takes both aliases and full model ids. The wizard
+ * offers every model the provider serves — kapel does not pre-guess which
+ * tier an account is on, since that guess is exactly the kind of gatekeeping
+ * that goes stale the moment a plan changes. A model the account cannot
+ * actually use fails clearly at run time instead (see the model-access hint
+ * in `packages/coding-agent/src/backends/claude-code.ts`).
+ *
+ * Order: the three stable aliases first (what most people want, and they
+ * stay valid across catalog churn), then every Anthropic catalog id sorted
+ * alphabetically, then `default` last as the catch-all "whatever the account
+ * defaults to" choice.
  */
-const CODEX_CHOICES: readonly SelectChoice[] = [
-  { value: "default", label: "default", hint: "let the Codex CLI choose" },
-  {
-    value: "gpt-5.1-codex",
-    label: "gpt-5.1-codex",
-    hint: "only if your account has it",
-  },
-  { value: "gpt-5.1", label: "gpt-5.1", hint: "only if your account has it" },
-  {
-    value: "gpt-5-mini",
-    label: "gpt-5-mini",
-    hint: "only if your account has it",
-  },
-];
+function claudeCodeChoices(): readonly SelectChoice[] {
+  const aliases: readonly SelectChoice[] = [
+    { value: "opus", label: "opus", hint: "Claude Opus — highest capability" },
+    { value: "sonnet", label: "sonnet", hint: "Claude Sonnet — balanced" },
+    { value: "haiku", label: "haiku", hint: "Claude Haiku — fastest/cheapest" },
+  ];
+  const fullIds: readonly SelectChoice[] = catalogIdsForProvider(
+    "anthropic",
+  ).map((id) => ({
+    value: id,
+    label: id,
+    hint: "full model id — errors at run time if your plan lacks it",
+  }));
+  return [
+    ...aliases,
+    ...fullIds,
+    {
+      value: "default",
+      label: "default",
+      hint: "whatever your Claude Code account defaults to",
+    },
+  ];
+}
+
+/**
+ * The Codex CLI accepts any model id a plan allows, and which ids that is
+ * varies by account — kapel does not pre-filter the list down to a guess.
+ * `default` leads because it is what the wizard recommends (the Codex CLI
+ * picks its own default when no `-m` is passed); every other id is offered
+ * with a neutral hint since there is no way to know from here whether the
+ * signed-in account has it.
+ *
+ * `gpt-5.1-codex` is listed by hand because it is a real, Codex-CLI-specific
+ * id that is not part of the shared catalog (it is never used through the
+ * native API path {@link defaultModelCatalog} models). Every other id comes
+ * from the catalog's OpenAI entries, sorted alphabetically alongside it.
+ */
+function codexChoices(): readonly SelectChoice[] {
+  const runTimeHint = "errors at run time if your plan lacks it";
+  const named = Array.from(
+    new Set(["gpt-5.1-codex", ...catalogIdsForProvider("openai")]),
+  ).sort();
+  return [
+    { value: "default", label: "default", hint: "let the Codex CLI choose" },
+    ...named.map((id) => ({ value: id, label: id, hint: runTimeHint })),
+  ];
+}
 
 function nativeChoices(): readonly SelectChoice[] {
   const catalog = defaultModelCatalog();
@@ -230,8 +272,8 @@ function nativeChoices(): readonly SelectChoice[] {
 }
 
 function choicesForBackend(backend: KapelBackend): readonly SelectChoice[] {
-  if (backend === "claude-code") return CLAUDE_CODE_CHOICES;
-  if (backend === "codex") return CODEX_CHOICES;
+  if (backend === "claude-code") return claudeCodeChoices();
+  if (backend === "codex") return codexChoices();
   return nativeChoices();
 }
 

@@ -112,11 +112,13 @@ describe("runConfigWizard", () => {
     const config = await runConfigWizard(deps(prompt));
     expect(config?.models.orchestrator).toBe("gpt-5.1");
     const modelStep = prompt.calls[1];
+    // `default` leads; the rest is every named/catalog id sorted
+    // alphabetically (see `codexChoices` in `src/config.ts`).
     expect(modelStep?.choices.map((choice) => choice.value)).toEqual([
       "default",
-      "gpt-5.1-codex",
-      "gpt-5.1",
       "gpt-5-mini",
+      "gpt-5.1",
+      "gpt-5.1-codex",
     ]);
   });
 

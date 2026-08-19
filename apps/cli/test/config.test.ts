@@ -180,12 +180,25 @@ describe("backendChoices", () => {
 });
 
 describe("modelChoicesFor", () => {
-  it("offers the Claude Code aliases", () => {
+  const anthropicCatalogIds = Object.keys(defaultModelCatalog())
+    .filter((id) => defaultModelCatalog()[id]?.provider === "anthropic")
+    .sort();
+  const openaiCatalogIds = Object.keys(defaultModelCatalog())
+    .filter((id) => defaultModelCatalog()[id]?.provider === "openai")
+    .sort();
+
+  it("offers the Claude Code aliases, every catalog id, and default", () => {
     expect(
       modelChoicesFor("claude-code", "orchestrator").map(
         (choice) => choice.value,
       ),
-    ).toEqual(["opus", "sonnet", "haiku", "default"]);
+    ).toEqual(["opus", "sonnet", "haiku", ...anthropicCatalogIds, "default"]);
+  });
+
+  it("does not gate the Claude Code catalog ids behind an account guess", () => {
+    for (const choice of modelChoicesFor("claude-code", "worker")) {
+      expect(choice.hint).not.toContain("only if your account has it");
+    }
   });
 
   it("marks the role's suggestion in the Claude Code list", () => {
@@ -203,27 +216,29 @@ describe("modelChoicesFor", () => {
     expect(hintOf("cheap", "haiku")).toContain("suggested for this role");
   });
 
-  it("leads the Codex list with `default` for every role", () => {
+  it("leads the Codex list with `default` and offers every catalog id", () => {
+    const expectedNamed = Array.from(
+      new Set(["gpt-5.1-codex", ...openaiCatalogIds]),
+    ).sort();
     for (const role of ["orchestrator", "worker", "cheap"] as const) {
       const choices = modelChoicesFor("codex", role);
       expect(choices[0]?.value).toBe("default");
       expect(choices[0]?.hint).toContain("suggested for this role");
       expect(choices.map((choice) => choice.value)).toEqual([
         "default",
-        "gpt-5.1-codex",
-        "gpt-5.1",
-        "gpt-5-mini",
+        ...expectedNamed,
       ]);
     }
   });
 
-  it("warns that the named Codex ids depend on the account", () => {
+  it("does not gate the named Codex ids behind an account guess", () => {
     const named = modelChoicesFor("codex", "worker").filter(
       (choice) => choice.value !== "default",
     );
-    expect(named).toHaveLength(3);
+    expect(named.length).toBeGreaterThan(0);
     for (const choice of named) {
-      expect(choice.hint).toContain("account");
+      expect(choice.hint).not.toContain("only if your account has it");
+      expect(choice.hint).toContain("errors at run time");
     }
   });
 

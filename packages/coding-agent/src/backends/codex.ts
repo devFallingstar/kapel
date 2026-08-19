@@ -371,10 +371,11 @@ export class CodexBackend {
     }
 
     const reason = failureReason(state);
+    const hint = modelAccessHint(this.#options.model);
     return finish(
       settle(
         "failed",
-        `Codex exited with code ${String(exitCode)}: ${reason}`,
+        `Codex exited with code ${String(exitCode)}: ${reason}${hint}`,
         exitCode,
       ),
     );
@@ -554,6 +555,19 @@ function failureReason(state: RunState): string {
   if (state.stderr.trim() !== "") return tail(state.stderr, 1000);
   if (state.rawLines.length > 0) return state.rawLines.slice(-3).join("\n");
   return "no error details were reported";
+}
+
+/**
+ * When a specific model was requested (as opposed to letting the CLI pick
+ * its own default) and the run failed, appends a note that the account or
+ * plan may simply not have that model — one of the most common reasons a
+ * Codex run fails, and one the raw exit code and stderr tail rarely say in
+ * so many words. This is offered as a possibility, not a diagnosis: it is
+ * appended alongside the real failure reason, never in place of it.
+ */
+function modelAccessHint(model: string | undefined): string {
+  if (model === undefined) return "";
+  return ` (model "${model}" was requested — your account or plan may not have access to it)`;
 }
 
 /**
