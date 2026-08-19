@@ -17,6 +17,7 @@ export type { ChildProcessWorkerExecutorOptions } from "./child-process-executor
 export { ChildProcessWorkerExecutor } from "./child-process-executor.js";
 export type { CodexWorkerExecutorOptions } from "./codex-executor.js";
 export { CodexWorkerExecutor } from "./codex-executor.js";
+export { createDelegatedModelResolver } from "./delegated-model.js";
 export type {
   NormalizableRun,
   NormalizeTaskResultInput,

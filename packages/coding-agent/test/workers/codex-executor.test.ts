@@ -165,4 +165,78 @@ describe("CodexWorkerExecutor", () => {
     expect(result.status).toBe("failed");
     expect(result.summary).toContain("timed out after 300ms");
   }, 20_000);
+
+  it("passes the resolveAgentModel result to codex as -m, overriding backendOptions.model", async () => {
+    const argvFile = join(dir, "argv.txt");
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const executor = new CodexWorkerExecutor({
+      workspacePath: workspace,
+      runId: "run-7",
+      backendOptions: { binaryPath, model: "run-wide-default" },
+      resolveAgentModel: (agent) =>
+        agent === "coder" ? "gpt-5-codex" : undefined,
+    });
+
+    await executor.execute(makeRuntimeTask(), "coder");
+
+    const argv = await readArgv(argvFile);
+    const modelIndex = argv.indexOf("-m");
+    expect(modelIndex).toBeGreaterThanOrEqual(0);
+    expect(argv[modelIndex + 1]).toBe("gpt-5-codex");
+  });
+
+  it("falls back to backendOptions.model when resolveAgentModel has no answer", async () => {
+    const argvFile = join(dir, "argv.txt");
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const executor = new CodexWorkerExecutor({
+      workspacePath: workspace,
+      runId: "run-7",
+      backendOptions: { binaryPath, model: "run-wide-default" },
+      resolveAgentModel: () => undefined,
+    });
+
+    await executor.execute(makeRuntimeTask(), "coder");
+
+    const argv = await readArgv(argvFile);
+    const modelIndex = argv.indexOf("-m");
+    expect(modelIndex).toBeGreaterThanOrEqual(0);
+    expect(argv[modelIndex + 1]).toBe("run-wide-default");
+  });
+
+  describe("describeAgent", () => {
+    it("prefers the resolver's model over backendOptions.model", () => {
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { model: "run-wide-default" },
+        resolveAgentModel: () => "gpt-5-codex",
+      });
+
+      expect(executor.describeAgent("coder")).toEqual({
+        model: "gpt-5-codex",
+      });
+    });
+
+    it("falls back to backendOptions.model when the resolver has no answer", () => {
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { model: "run-wide-default" },
+        resolveAgentModel: () => undefined,
+      });
+
+      expect(executor.describeAgent("coder")).toEqual({
+        model: "run-wide-default",
+      });
+    });
+
+    it("returns undefined when neither the resolver nor backendOptions name a model", () => {
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+      });
+
+      expect(executor.describeAgent("coder")).toBeUndefined();
+    });
+  });
 });

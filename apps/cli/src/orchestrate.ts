@@ -17,6 +17,7 @@ import {
   ChildProcessWorkerExecutor,
   CodexBackend,
   CodexWorkerExecutor,
+  createDelegatedModelResolver,
   DeterministicScheduler,
   PolicyRouter,
   TaskGraph,
@@ -206,11 +207,13 @@ async function workspaceExecutorFactory(
     if (!availability.loggedIn) {
       throw new Error(codexLoginGuidance(availability));
     }
+    const resolveAgentModel = createDelegatedModelResolver(args.project);
     return (workspacePath) =>
       new CodexWorkerExecutor({
         workspacePath,
         runId,
         events,
+        resolveAgentModel,
         ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       });
   }

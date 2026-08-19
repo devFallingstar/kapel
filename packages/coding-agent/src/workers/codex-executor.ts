@@ -1,6 +1,7 @@
 import type {
   RuntimeTask,
   TaskResult,
+  WorkerAgentDescription,
   WorkerExecutionContext,
   WorkerExecutor,
 } from "@agent/orchestration";
@@ -21,9 +22,22 @@ export interface CodexWorkerExecutorOptions {
   readonly taskTimeoutMs?: number;
   /**
    * Passed through to {@link CodexBackend}. `events` and `timeoutMs` here are
-   * overridden by the executor-level options above when those are set.
+   * overridden by the executor-level options above when those are set, and
+   * `model` is overridden per task by {@link resolveAgentModel} when that
+   * resolver has an answer for the routed agent.
    */
   readonly backendOptions?: CodexBackendOptions;
+  /**
+   * Looks up the model the routed agent is configured for, typically
+   * {@link createDelegatedModelResolver} bound to the run's `AgentProject`.
+   *
+   * A per-task result overrides `backendOptions.model` for that task — the
+   * router picked this agent for a reason, and an agent-specific model is a
+   * more specific choice than a run-wide default — while `undefined` (agent
+   * unknown, alias unresolved, or `config.yaml` says "default") leaves
+   * `backendOptions.model` as the fallback so a run-wide `-m` still applies.
+   */
+  readonly resolveAgentModel?: (agent: string) => string | undefined;
 }
 
 /**
@@ -42,6 +56,24 @@ export class CodexWorkerExecutor implements WorkerExecutor {
     this.#options = options;
   }
 
+  /**
+   * The model {@link resolveAgentModel} would resolve for `agent`, falling
+   * back to `backendOptions.model` — the same precedence {@link execute}
+   * applies when it builds the {@link CodexBackend} for a task, exposed here
+   * so it can be reported before the task actually runs.
+   */
+  #modelFor(agent: string): string | undefined {
+    return (
+      this.#options.resolveAgentModel?.(agent) ??
+      this.#options.backendOptions?.model
+    );
+  }
+
+  describeAgent(agent: string): WorkerAgentDescription | undefined {
+    const model = this.#modelFor(agent);
+    return model === undefined ? undefined : { model };
+  }
+
   async execute(
     task: RuntimeTask,
     agent: string,
@@ -50,9 +82,11 @@ export class CodexWorkerExecutor implements WorkerExecutor {
   ): Promise<TaskResult> {
     const taskId = task.spec.id;
     const { workspacePath, runId } = this.#options;
+    const model = this.#modelFor(agent);
 
     const backend = new CodexBackend({
       ...this.#options.backendOptions,
+      ...(model === undefined ? {} : { model }),
       ...(this.#options.events === undefined
         ? {}
         : { events: this.#options.events }),
