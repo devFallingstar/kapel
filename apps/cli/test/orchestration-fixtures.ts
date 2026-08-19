@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -13,8 +14,9 @@ import type {
 import { createLockfile, serializeLockfile } from "@agent/coding-agent";
 import type { OrchestrationOutput, PlannerFactory } from "../src/plan.js";
 
-export const SCRATCHPAD =
-  "/tmp/claude-0/-home-user-multi-model-orchestration-agent/475a4108-ea0d-56a1-9770-14d838a0e5f8/scratchpad";
+export // Session-provided scratch dir when set (keeps CI and local machines on
+// the OS temp dir).
+const SCRATCHPAD = process.env.AGENT_TEST_TMPDIR || tmpdir();
 
 const TEMPLATE_AGENT_DIR = path.join(
   import.meta.dirname,

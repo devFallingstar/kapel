@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -22,8 +23,9 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-const SCRATCHPAD =
-  "/tmp/claude-0/-home-user-multi-model-orchestration-agent/475a4108-ea0d-56a1-9770-14d838a0e5f8/scratchpad";
+// Session-provided scratch dir when set (keeps CI and local machines on
+// the OS temp dir).
+const SCRATCHPAD = process.env.AGENT_TEST_TMPDIR || tmpdir();
 
 export async function makeTempDir(prefix = "workers-test-"): Promise<string> {
   return mkdtemp(join(SCRATCHPAD, prefix));

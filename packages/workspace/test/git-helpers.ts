@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
  * Root for throwaway repositories. `AGENT_TEST_TMPDIR` lets sandboxed runs point
  * the fixtures at a writable scratch directory.
  */
-const TEST_TMP_ROOT = process.env.AGENT_TEST_TMPDIR ?? tmpdir();
+const TEST_TMP_ROOT = process.env.AGENT_TEST_TMPDIR || tmpdir();
 
 const created: string[] = [];
 
