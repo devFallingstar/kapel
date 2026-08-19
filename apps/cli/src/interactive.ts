@@ -70,7 +70,11 @@ import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
 import { TextRenderer } from "./render.js";
 import type { ResolvedModel } from "./run.js";
-import { defaultSystemPrompt, resolveModelAndProvider } from "./run.js";
+import {
+  agentLoopOptions,
+  defaultSystemPrompt,
+  resolveModelAndProvider,
+} from "./run.js";
 import { isoTime } from "./sessions.js";
 
 /**
@@ -103,6 +107,15 @@ export interface InteractiveSession {
     context: AgentLoopRunContext,
   ): Promise<ChatTurnResult>;
   messages(): readonly ModelMessage[];
+  /**
+   * Forces an immediate compaction pass over this session's history, ignoring
+   * the auto-compaction threshold. Backs `/compact`; absent (as it is on any
+   * fake that doesn't declare it) means `/compact` has nothing to call and
+   * reports itself unsupported. See `AgentChatSession.compactNow`.
+   */
+  compactNow?(
+    context: AgentLoopRunContext,
+  ): Promise<{ elided: number; savedChars: number }>;
 }
 
 /** What one turn reports back, for either kind of conversation. */
@@ -135,6 +148,14 @@ export interface ChatLike {
   toModelMessages(): readonly ModelMessage[];
   /** A delegating backend's own session id, when it is holding the thread. */
   sessionRef?(): string | undefined;
+  /**
+   * Forces an immediate compaction pass; see {@link InteractiveSession.compactNow}.
+   * A delegated backend has none — the external CLI owns its own context
+   * management — which is exactly how `/compact` tells the two apart.
+   */
+  compactNow?(
+    context: AgentLoopRunContext,
+  ): Promise<{ elided: number; savedChars: number }>;
 }
 
 /** Either shape a session factory may return. */
@@ -146,6 +167,13 @@ export function toChatLike(session: InteractiveSessionLike): ChatLike {
   return {
     send: (instruction, context) => session.send(instruction, context),
     toModelMessages: () => session.messages(),
+    ...(session.compactNow === undefined
+      ? {}
+      : {
+          compactNow: (context: AgentLoopRunContext) =>
+            // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+            session.compactNow!(context),
+        }),
   };
 }
 
@@ -471,6 +499,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     help: "re-run setup (backend and models) and apply it here",
   },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
+  {
+    name: "compact",
+    usage: "/compact",
+    help: "compact the conversation history now",
+  },
   {
     name: "orchestrate",
     usage: "/orchestrate <objective>",
@@ -863,6 +896,34 @@ export async function createInteractiveController(
     return drain("config-changed");
   };
 
+  /**
+   * `/compact` — force an immediate compaction pass over this conversation's
+   * history, regardless of the auto-compaction threshold.
+   *
+   * A delegated backend (`claude-code`/`codex`) manages its own context on
+   * its own side, so there is nothing here for `/compact` to reach into —
+   * `chat.compactNow` is simply absent for it (see {@link toChatLike}), and
+   * that absence is exactly what tells the two cases apart.
+   */
+  const slashCompact = async (): Promise<DispatchResult> => {
+    if (chat.compactNow === undefined) {
+      const cli = backend === "codex" ? "Codex" : "Claude Code";
+      emit(`/compact is not supported with the ${cli} backend.`);
+      return drain();
+    }
+
+    const result = await chat.compactNow({
+      runId: sessionId,
+      workspacePath: deps.workspacePath,
+    });
+    emit(
+      result.elided === 0
+        ? "nothing to compact."
+        : `compacted: elided ${result.elided} tool result${result.elided === 1 ? "" : "s"}, saved ~${result.savedChars} chars`,
+    );
+    return drain();
+  };
+
   const slashOrchestrate = async (
     objective: string,
   ): Promise<DispatchResult> => {
@@ -912,6 +973,8 @@ export async function createInteractiveController(
       case "usage":
         emit(usageTotalsLine(deps.usage.totals()));
         return drain();
+      case "compact":
+        return await slashCompact();
       case "orchestrate":
         return await slashOrchestrate(argument);
       default:
@@ -1272,10 +1335,9 @@ export async function runInteractive(
         permissions: DEFAULT_PERMISSIONS,
       };
       return AgentChatSession.restore(
-        {
+        agentLoopOptions({
           agent,
           provider: args.provider,
-          tools: builtinTools(),
           permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
             defaultDecision: "ask",
             ...(prompter === undefined ? {} : { prompter }),
@@ -1286,7 +1348,7 @@ export async function runInteractive(
           ...(options.timeoutSeconds === undefined
             ? {}
             : { timeoutMs: options.timeoutSeconds * 1000 }),
-        },
+        }),
         args.messages,
       );
     };

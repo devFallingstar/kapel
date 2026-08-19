@@ -132,9 +132,16 @@ kapel> calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.tes
 ```text
 kapel> sub 함수도 추가하고 테스트도 같이 만들어줘
 kapel> /usage        # 누적 토큰·비용
+kapel> /compact      # 지금 바로 컨텍스트 압축 ("compacted: elided … / nothing to compact.")
 kapel> /sessions     # 이 디렉터리의 대화 목록 (id, 마지막 갱신, 메시지 수, 제목)
 kapel> /exit
 ```
+
+네이티브 백엔드는 대화가 60메시지를 넘으면 자동으로도 압축됩니다 — 오래된 도구
+결과가 지워지고(대화 자체는 남고, 지워졌다는 표시만 남습니다) 회색 글씨로
+`≈ context compacted: …` 한 줄이 뜨며 대화는 끊기지 않고 계속됩니다. `--backend
+codex`/`--backend claude-code`에서는 외부 CLI가 자기 컨텍스트를 관리하므로
+`/compact`는 "not supported with the … backend" 한 줄만 출력합니다.
 
 이어서 **재개**를 확인합니다 — 대화는 `.agent/sessions.db`에 저장되므로
 프로세스를 껐다 켜도 이어집니다:
@@ -146,9 +153,9 @@ kapel chat --continue     # 방금 그 대화를 그대로 이어받음 ("resume
 `kapel chat --help`로 `--session <id>`(특정 대화, 접두사 가능)와 `--no-save`도
 확인할 수 있습니다. 프롬프트에서 `/new`(새 대화), `/resume <id>`(전환),
 `/model <alias>`(이후 턴부터 모델 교체), `/config`(설정 마법사를 다시 돌려
-백엔드·모델을 이 대화에 바로 적용 — 대화 내용은 유지됨), `/help`도 함께 눌러
-보세요. `/config`는 터미널에서만 동작하며, 파이프로 실행 중이면
-`/config needs a terminal —` 안내가 나옵니다.
+백엔드·모델을 이 대화에 바로 적용 — 대화 내용은 유지됨), `/compact`(지금 바로
+컨텍스트 압축), `/help`도 함께 눌러 보세요. `/config`는 터미널에서만 동작하며,
+파이프로 실행 중이면 `/config needs a terminal —` 안내가 나옵니다.
 
 추가 확인: 턴 진행 중 Ctrl-C(해당 턴만 취소, 대화는 유지), 프롬프트에서 Ctrl-C
 두 번(종료), Ctrl-D(종료).
@@ -213,6 +220,7 @@ Claude Code CLI가 자체 정책으로 처리).
 kapel> calc.test.js가 실패하는 이유를 찾아줘
 kapel> 방금 말한 그 파일을 고쳐줘        ← 앞 턴을 기억하는지 확인 (--resume 연결)
 kapel> /model sonnet                    ← 이후 턴부터 모델 교체 (대화는 유지)
+kapel> /compact                         ← "not supported with the Claude Code backend." 한 줄
 kapel> /sessions                        ← 네이티브 대화와 같은 DB에 기록됨
 kapel> /exit
 ```

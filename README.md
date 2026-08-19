@@ -75,9 +75,12 @@ Commands available at the prompt:
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
 | `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
 | `/usage` | tokens and cost so far |
+| `/compact` | compact the conversation history now (native backend only) |
 | `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
 
 Anything else you type is a message to the agent.
+
+On the native backend, a long conversation compacts itself automatically once it passes 60 messages — old tool results get elided (kept ones are marked, nothing is dropped from the transcript), leaving one dim `≈ context compacted: …` line — so it keeps going instead of eventually blowing the model's context window. `/compact` does the same thing on demand, useful right before a turn you want as much context budget for as possible. Under `--backend codex` or `--backend claude-code` the external CLI manages its own context, so `/compact` there just says it isn't supported.
 
 **Sessions are per directory and survive restarts.** Every conversation is recorded in `.agent/sessions.db` beside the repo (the directory is created on first use — no `kapel init` needed), titled from your first message. Pick one back up with:
 

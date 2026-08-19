@@ -110,4 +110,21 @@ export class AgentChatSession {
   messages(): readonly ModelMessage[] {
     return this.#messages.map(copyMessage);
   }
+
+  /**
+   * Forces an immediate compaction pass over the retained history, ignoring
+   * the `maxMessages` threshold a send's automatic pass respects. Backs the
+   * `/compact` slash command.
+   *
+   * Safe to call between sends (nothing is in flight) and on a session with
+   * no history yet — there is simply nothing to elide, and it reports zero.
+   *
+   * @returns how many tool results were elided and how many characters were
+   * saved, for the caller to render a one-line summary.
+   */
+  async compactNow(
+    context: AgentLoopRunContext,
+  ): Promise<{ elided: number; savedChars: number }> {
+    return await this.#engine.compactNow(this.#messages, context);
+  }
 }

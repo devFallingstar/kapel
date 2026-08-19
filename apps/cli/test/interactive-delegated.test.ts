@@ -345,6 +345,26 @@ describe("interactive controller — delegated backend", () => {
     expect(banner).toContain("claude-code · opus");
     expect(banner).toContain("approvals are enforced by the Claude Code CLI");
   });
+
+  it("/compact reports itself unsupported instead of erroring", async () => {
+    const h = await delegatedHarness();
+    await h.controller.handleLine("hello");
+
+    const result = await h.controller.handleLine("/compact");
+    expect(result.output).toEqual([
+      "/compact is not supported with the Claude Code backend.",
+    ]);
+  });
+
+  it("/compact names Codex when that is the live backend", async () => {
+    const h = await delegatedHarness({ backend: "codex" });
+    await h.controller.handleLine("hello");
+
+    const result = await h.controller.handleLine("/compact");
+    expect(result.output).toEqual([
+      "/compact is not supported with the Codex backend.",
+    ]);
+  });
 });
 
 // --- /config ----------------------------------------------------------------

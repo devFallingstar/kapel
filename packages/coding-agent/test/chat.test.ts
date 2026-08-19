@@ -482,6 +482,55 @@ describe("AgentChatSession — compaction across sends", () => {
     // The elision is retained, not just applied to one request.
     expect(session.messages()[3]?.content).toContain("elided");
   });
+
+  it("compactNow forces a pass immediately, ignoring maxMessages (/compact)", async () => {
+    const BIG = "x".repeat(500);
+    const big = makeTool("big", async () => BIG);
+    const provider = new ScriptedProvider([
+      toolTurn("call-1", "big", {}),
+      text("one"),
+      toolTurn("call-2", "big", {}),
+      text("two"),
+    ]);
+    const sink = new RecordingSink();
+    const session = new AgentChatSession(
+      options(provider, {
+        tools: [big],
+        events: sink,
+        // maxMessages(100) is nowhere near what two sends produce, so the
+        // automatic pass never fires — compactNow must not care.
+        compaction: {
+          maxMessages: 100,
+          preserveRecent: 4,
+          minContentChars: 100,
+        },
+      }),
+    );
+
+    await session.send("first", RUN_CONTEXT);
+    await session.send("second", RUN_CONTEXT);
+    expect(sink.ofType("context.compacted")).toHaveLength(0);
+
+    const result = await session.compactNow(RUN_CONTEXT);
+    expect(result.elided).toBe(1);
+
+    const compactions = sink.ofType("context.compacted");
+    expect(compactions).toHaveLength(1);
+
+    // send #1's tool result aged out of the 4-message preserve window and
+    // was elided; the retained snapshot reflects it immediately.
+    expect(session.messages()[3]?.content).toContain("elided");
+    expect(session.messages()[7]?.content).toBe(BIG);
+  });
+
+  it("compactNow reports zero on a session with no history yet", async () => {
+    const provider = new ScriptedProvider([]);
+    const session = new AgentChatSession(options(provider));
+    expect(await session.compactNow(RUN_CONTEXT)).toEqual({
+      elided: 0,
+      savedChars: 0,
+    });
+  });
 });
 
 describe("AgentChatSession — events", () => {

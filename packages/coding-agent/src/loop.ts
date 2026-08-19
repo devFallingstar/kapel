@@ -404,15 +404,9 @@ export class AgentLoopEngine {
 
   /**
    * Deterministic context compaction, run at the start of every iteration
-   * before the request is built. No-op unless `compaction` was supplied.
-   *
-   * Walks `messages` from the beginning, skipping the system message, the
-   * first user message, the last `preserveRecent` messages, and any tool
-   * message already elided (its content already carries the elision
-   * marker, which also keeps re-running this pass a no-op — but we still
-   * skip on sight so the scan stays cheap). Assistant and user/system
-   * messages are never touched: providers need the tool-call structure
-   * intact, and the instruction must stay legible.
+   * before the request is built. No-op unless `compaction` was supplied, and
+   * only once `messages.length` exceeds `maxMessages` — see {@link compactNow}
+   * for a version that skips that threshold check.
    */
   async #compact(
     messages: ModelMessage[],
@@ -424,6 +418,51 @@ export class AgentLoopEngine {
     const maxMessages = options.maxMessages ?? DEFAULT_COMPACTION_MAX_MESSAGES;
     if (messages.length <= maxMessages) return;
 
+    await this.#runCompaction(messages, context, options);
+  }
+
+  /**
+   * Forces one compaction pass over `messages` right now, ignoring the
+   * `maxMessages` threshold {@link drive}'s automatic pass respects. Backs
+   * the `/compact` slash command: a human asking to compact means "do it
+   * now", not "do it once the conversation happens to be long enough".
+   *
+   * Uses this engine's configured `compaction` tuning (`preserveRecent`,
+   * `minContentChars`) when there is one, and this module's own defaults
+   * otherwise — so calling it does something sensible even on an engine
+   * built with no `compaction` option at all.
+   *
+   * @returns how many tool results were elided and how many characters were
+   * saved, for a caller to render a one-line summary.
+   */
+  async compactNow(
+    messages: ModelMessage[],
+    context: AgentLoopRunContext,
+  ): Promise<{ elided: number; savedChars: number }> {
+    return await this.#runCompaction(
+      messages,
+      context,
+      this.#options.compaction ?? {},
+    );
+  }
+
+  /**
+   * The actual elision pass, shared by the automatic (`#compact`) and forced
+   * (`compactNow`) entry points.
+   *
+   * Walks `messages` from the beginning, skipping the system message, the
+   * first user message, the last `preserveRecent` messages, and any tool
+   * message already elided (its content already carries the elision
+   * marker, which also keeps re-running this pass a no-op — but we still
+   * skip on sight so the scan stays cheap). Assistant and user/system
+   * messages are never touched: providers need the tool-call structure
+   * intact, and the instruction must stay legible.
+   */
+  async #runCompaction(
+    messages: ModelMessage[],
+    context: AgentLoopRunContext,
+    options: CompactionOptions,
+  ): Promise<{ elided: number; savedChars: number }> {
     const preserveRecent =
       options.preserveRecent ?? DEFAULT_COMPACTION_PRESERVE_RECENT;
     const minContentChars =
@@ -459,6 +498,8 @@ export class AgentLoopEngine {
         messages: messages.length,
       });
     }
+
+    return { elided, savedChars };
   }
 
   async #executeCall(

@@ -74,11 +74,17 @@ function provider(id: string): ModelProvider {
  */
 class FakeSession implements InteractiveSession {
   readonly sends: { instruction: string; runId: string }[] = [];
+  readonly compactCalls: { runId: string }[] = [];
   readonly #messages: ModelMessage[] = [];
   status: ChatTurnResult["status"] = "success";
   failWith: Error | undefined;
   /** Runs inside `send`, so a test can make a turn consume tokens. */
   onSend: (() => void) | undefined;
+  /** What `/compact` reports back; overridable per test. */
+  compactResult: { elided: number; savedChars: number } = {
+    elided: 2,
+    savedChars: 900,
+  };
 
   constructor(seed: readonly ModelMessage[] = []) {
     this.#messages.push(...seed);
@@ -106,6 +112,13 @@ class FakeSession implements InteractiveSession {
 
   messages(): readonly ModelMessage[] {
     return this.#messages.slice();
+  }
+
+  async compactNow(context: {
+    runId: string;
+  }): Promise<{ elided: number; savedChars: number }> {
+    this.compactCalls.push({ runId: context.runId });
+    return this.compactResult;
   }
 }
 
@@ -331,6 +344,7 @@ describe("interactive controller — slash commands", () => {
       "/resume",
       "/model",
       "/usage",
+      "/compact",
       "/orchestrate",
     ]) {
       expect(text).toContain(command);
@@ -356,6 +370,40 @@ describe("interactive controller — slash commands", () => {
     h.usage.costUsd = 0.0125;
     expect((await h.controller.handleLine("/usage")).output).toEqual([
       "tokens — input: 1500, output: 250  (~$0.0125)",
+    ]);
+  });
+
+  it("/compact forces compaction on the native session and reports what was elided", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    h.session().compactResult = { elided: 3, savedChars: 1200 };
+
+    const result = await h.controller.handleLine("/compact");
+    expect(result.output).toEqual([
+      "compacted: elided 3 tool results, saved ~1200 chars",
+    ]);
+    expect(h.session().compactCalls).toEqual([
+      { runId: h.controller.sessionId() },
+    ]);
+  });
+
+  it("/compact says so in singular for exactly one elided result", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    h.session().compactResult = { elided: 1, savedChars: 400 };
+
+    expect((await h.controller.handleLine("/compact")).output).toEqual([
+      "compacted: elided 1 tool result, saved ~400 chars",
+    ]);
+  });
+
+  it("/compact says there was nothing to compact", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    h.session().compactResult = { elided: 0, savedChars: 0 };
+
+    expect((await h.controller.handleLine("/compact")).output).toEqual([
+      "nothing to compact.",
     ]);
   });
 

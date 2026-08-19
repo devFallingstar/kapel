@@ -40,6 +40,32 @@ function codexEvent(type: string, data: unknown): AgentEvent {
   };
 }
 
+describe("TextRenderer / context.compacted events", () => {
+  it("renders elided count and chars saved", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(codexEvent("context.compacted", { elided: 5, savedChars: 12345 }));
+    expect(stream.lines).toEqual([
+      "≈ context compacted: 5 tool results elided, 12345 chars saved",
+    ]);
+  });
+
+  it("uses the singular for exactly one elided result", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(codexEvent("context.compacted", { elided: 1, savedChars: 400 }));
+    expect(stream.lines).toEqual([
+      "≈ context compacted: 1 tool result elided, 400 chars saved",
+    ]);
+  });
+
+  it("falls back to zero for a malformed payload rather than throwing", () => {
+    const { renderer: r, stream } = renderer();
+    r.emit(codexEvent("context.compacted", {}));
+    expect(stream.lines).toEqual([
+      "≈ context compacted: 0 tool results elided, 0 chars saved",
+    ]);
+  });
+});
+
 describe("TextRenderer / claude-code.* events", () => {
   function claudeEvent(type: string, data: unknown): AgentEvent {
     return { id: "evt-1", runId: "run-1", timestamp: 0, type, data };

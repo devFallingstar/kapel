@@ -1,13 +1,18 @@
 import type {
   ModelDefinition,
   ModelEvent,
+  ModelMessage,
   ModelProvider,
   ModelRequest,
 } from "@agent/ai";
 import type { AgentDefinition, Tool, ToolContext } from "@agent/core";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
-import { AgentLoop, type AgentLoopRunContext } from "../src/loop.js";
+import {
+  AgentLoop,
+  AgentLoopEngine,
+  type AgentLoopRunContext,
+} from "../src/loop.js";
 import { PermissionEngine } from "../src/permissions.js";
 
 // --- fakes (mirrors test/loop.test.ts patterns) ----------------------------
@@ -348,5 +353,96 @@ describe("AgentLoop compaction — enabled", () => {
       if (message === undefined) continue;
       expect(message.content.startsWith(ELISION_PREFIX)).toBe(true);
     }
+  });
+});
+
+describe("AgentLoopEngine.compactNow — forced compaction (/compact)", () => {
+  /** A short conversation, well under any auto-compaction threshold. */
+  function conversation(): ModelMessage[] {
+    return [
+      { role: "system", content: "You are a coding agent." },
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call-1", name: "big", input: {} }],
+      },
+      { role: "tool", toolCallId: "call-1", content: BIG_CONTENT },
+      { role: "assistant", content: "" },
+      { role: "tool", toolCallId: "call-2", content: BIG_CONTENT },
+    ];
+  }
+
+  it("compacts immediately even though messages.length never approached maxMessages", async () => {
+    const sink = new RecordingSink();
+    const engine = new AgentLoopEngine({
+      agent: AGENT,
+      provider: new ScriptedProvider([]),
+      tools: [bigTool()],
+      permissions: allowAll(),
+      events: sink,
+      // maxMessages(100) is nowhere near this 6-message conversation, so the
+      // automatic pass (#compact, run only from `drive`) would never fire —
+      // compactNow must not care.
+      compaction: { maxMessages: 100, preserveRecent: 2, minContentChars: 100 },
+    });
+
+    const messages = conversation();
+    const result = await engine.compactNow(messages, RUN_CONTEXT);
+
+    // Only call-1's result is outside the last 2 messages' preserve window.
+    expect(result).toEqual({
+      elided: 1,
+      savedChars:
+        BIG_CONTENT.length -
+        `[tool result elided during context compaction: ${BIG_CONTENT.length} chars]`
+          .length,
+    });
+    expect(messages[3]?.content.startsWith(ELISION_PREFIX)).toBe(true);
+    // call-2's result is within the preserved tail and stays untouched.
+    expect(messages[5]?.content).toBe(BIG_CONTENT);
+
+    const events = sink.compactionEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.data).toMatchObject({ elided: 1, messages: 6 });
+  });
+
+  it("falls back to this module's own defaults when the engine has no compaction option at all", async () => {
+    const sink = new RecordingSink();
+    const engine = new AgentLoopEngine({
+      agent: AGENT,
+      provider: new ScriptedProvider([]),
+      tools: [bigTool()],
+      permissions: allowAll(),
+      events: sink,
+      // No `compaction` — the automatic pass is disabled entirely, but
+      // compactNow should still do something sensible (default
+      // preserveRecent 20 keeps this whole 6-message conversation intact).
+    });
+
+    const messages = conversation();
+    const result = await engine.compactNow(messages, RUN_CONTEXT);
+
+    expect(result).toEqual({ elided: 0, savedChars: 0 });
+    expect(sink.compactionEvents()).toHaveLength(0);
+    expect(messages[3]?.content).toBe(BIG_CONTENT);
+  });
+
+  it("reports zero and emits nothing on an empty or already-compact history", async () => {
+    const sink = new RecordingSink();
+    const engine = new AgentLoopEngine({
+      agent: AGENT,
+      provider: new ScriptedProvider([]),
+      tools: [bigTool()],
+      permissions: allowAll(),
+      events: sink,
+      compaction: { preserveRecent: 0, minContentChars: 100 },
+    });
+
+    expect(await engine.compactNow([], RUN_CONTEXT)).toEqual({
+      elided: 0,
+      savedChars: 0,
+    });
+    expect(sink.compactionEvents()).toHaveLength(0);
   });
 });

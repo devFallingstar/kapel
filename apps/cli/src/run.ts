@@ -1,8 +1,15 @@
 import path from "node:path";
-import type { ModelDefinition, ModelProvider, UsageTotals } from "@agent/ai";
+import type {
+  ModelDefinition,
+  ModelProvider,
+  UsageRecorder,
+  UsageTotals,
+} from "@agent/ai";
 import { UsageTracker } from "@agent/ai";
+import type { AgentLoopOptions, CompactionOptions } from "@agent/coding-agent";
 import { AgentLoop, builtinTools, PermissionEngine } from "@agent/coding-agent";
 import type { AgentDefinition } from "@agent/core";
+import type { EventSink } from "@agent/protocol";
 import type { KapelConfig } from "./config.js";
 import { resolveOrchestratorModel } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
@@ -22,6 +29,52 @@ export interface RunObjectiveOptions {
   readonly system?: string;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
+}
+
+/**
+ * The native loop's default deterministic compaction, applied on every
+ * run — one-shot ({@link runObjective}) and interactive (`nativeSession` in
+ * `interactive.ts`) alike.
+ *
+ * Deliberately empty: `CompactionOptions` defers entirely to `loop.ts`'s own
+ * built-in defaults (compact once a conversation exceeds 60 messages, keep
+ * the most recent 20 untouched, elide only tool results over 400 chars).
+ * Those numbers are exactly what the roadmap's acceptance check exercises
+ * ("a 60-message conversation keeps going, leaving one compaction log
+ * line"), so there is no reason to duplicate or override them here.
+ */
+export const DEFAULT_COMPACTION: CompactionOptions = {};
+
+/** What {@link agentLoopOptions} needs beyond the fixed tool set and compaction default. */
+export interface AgentLoopOptionsArgs {
+  readonly agent: AgentDefinition;
+  readonly provider: ModelProvider;
+  readonly permissions: PermissionEngine;
+  readonly usage: UsageRecorder;
+  readonly events: EventSink;
+  readonly maxIterations: number;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * The native loop's `AgentLoopOptions`, shared between the one-shot
+ * (`runObjective`) and interactive (`nativeSession` in `interactive.ts`)
+ * paths so both build the same tool set and pick up {@link DEFAULT_COMPACTION}
+ * the same way. Factored out (rather than inlined at each call site) so the
+ * compaction wiring is directly testable without exercising a whole run.
+ */
+export function agentLoopOptions(args: AgentLoopOptionsArgs): AgentLoopOptions {
+  return {
+    agent: args.agent,
+    provider: args.provider,
+    tools: builtinTools(),
+    permissions: args.permissions,
+    usage: args.usage,
+    events: args.events,
+    maxIterations: args.maxIterations,
+    ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }),
+    compaction: DEFAULT_COMPACTION,
+  };
 }
 
 export function defaultSystemPrompt(workspaceRoot: string): string {
@@ -143,18 +196,19 @@ export async function runObjective(
   process.on("SIGINT", onSigint);
 
   try {
-    const loop = new AgentLoop({
-      agent,
-      provider,
-      tools: builtinTools(),
-      permissions,
-      usage,
-      events: renderer,
-      maxIterations: options.maxIterations,
-      ...(options.timeoutSeconds === undefined
-        ? {}
-        : { timeoutMs: options.timeoutSeconds * 1000 }),
-    });
+    const loop = new AgentLoop(
+      agentLoopOptions({
+        agent,
+        provider,
+        permissions,
+        usage,
+        events: renderer,
+        maxIterations: options.maxIterations,
+        ...(options.timeoutSeconds === undefined
+          ? {}
+          : { timeoutMs: options.timeoutSeconds * 1000 }),
+      }),
+    );
 
     const result = await loop.run(
       { instruction: objective },

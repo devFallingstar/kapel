@@ -218,6 +218,17 @@ export class TextRenderer implements Renderer {
         this.#write(ok ? "  ✓" : `  ✗ (${denied ? "denied" : "error"})`);
         break;
       }
+      case "context.compacted": {
+        const elided = typeof data.elided === "number" ? data.elided : 0;
+        const savedChars =
+          typeof data.savedChars === "number" ? data.savedChars : 0;
+        this.#write(
+          this.#dim(
+            `≈ context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`,
+          ),
+        );
+        break;
+      }
       case "task.started":
       case "task.completed":
       case "task.escalated":
