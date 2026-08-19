@@ -76,6 +76,18 @@ export async function writeFakeCodex(
   return binaryPath;
 }
 
+/**
+ * Writes an executable bash script that impersonates the `claude` CLI. Same
+ * mechanics as {@link writeFakeCodex}; only the binary name differs.
+ */
+export function writeFakeClaude(
+  dir: string,
+  spec: FakeCodexSpec = {},
+  name = "claude",
+): Promise<string> {
+  return writeFakeCodex(dir, spec, name);
+}
+
 /** Collects every event the backend forwards, preserving order. */
 export class RecordingSink implements EventSink {
   readonly events: AgentEvent[] = [];
