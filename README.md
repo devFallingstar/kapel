@@ -24,6 +24,8 @@ Useful commands and flags:
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
+- `--backend <native|codex>` — execution backend (default `native`, or `AGENT_BACKEND`); see [Codex backend](#codex-backend)
+- `--sandbox <read-only|workspace-write|danger-full-access>` — Codex sandbox mode (default `workspace-write`)
 
 ### Authentication
 
@@ -38,6 +40,18 @@ Any of these can also go in a `.env` file in the workspace instead of the shell 
 `ANTHROPIC_BASE_URL` overrides the API endpoint (for gateways/proxies) under any of the three.
 
 **OpenAI** — `OPENAI_API_KEY` only. OpenAI does not offer third-party OAuth for direct API access; if your organization fronts OpenAI with its own OAuth-authenticated gateway, point `OPENAI_BASE_URL` at it and keep using `OPENAI_API_KEY` for whatever credential that gateway expects.
+
+### Codex backend
+
+Want OpenAI models without an `OPENAI_API_KEY`? Pass `--backend codex` (or set `AGENT_BACKEND=codex`) to delegate the objective to OpenAI's own Codex CLI instead of the native provider loop:
+
+```bash
+npm install -g @openai/codex
+codex login          # ChatGPT OAuth — no API key
+agent --backend codex "fix the failing test"
+```
+
+`agent` never handles OpenAI credentials itself on this path — it just spawns `codex exec --json` in the workspace and lets Codex authenticate and run its own agent loop. `-m/--model` is forwarded to Codex only when you pass it explicitly; otherwise Codex picks its own default. `--sandbox <read-only|workspace-write|danger-full-access>` (default `workspace-write`) controls how much Codex is allowed to touch — anything other than `read-only` runs `--full-auto` so it doesn't stall on approval prompts. `--max-iterations` and the native permission prompts don't apply here; Codex enforces its own approvals via the sandbox mode.
 
 ## Project plan
 

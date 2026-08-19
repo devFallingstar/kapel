@@ -1,10 +1,20 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { Command } from "commander";
+import {
+  codexModelOverride,
+  DEFAULT_SANDBOX_MODE,
+  fullAutoForSandbox,
+  resolveBackendName,
+  SANDBOX_MODES,
+  validateBackendName,
+  validateSandboxMode,
+} from "./backend.js";
 import { loadDotEnvFile } from "./env.js";
 import { runInit } from "./init.js";
 import { listModels } from "./models.js";
 import { runObjective } from "./run.js";
+import { runCodexObjective } from "./run-codex.js";
 
 interface RawRunOpts {
   readonly cwd: string;
@@ -14,6 +24,8 @@ interface RawRunOpts {
   readonly yes: boolean;
   readonly json: boolean;
   readonly system?: string;
+  readonly backend: string;
+  readonly sandbox: string;
 }
 
 function parsePositive(raw: string, flag: string, integer: boolean): number {
@@ -48,6 +60,26 @@ function toRunOptions(raw: RawRunOpts): Parameters<typeof runObjective>[1] {
   };
 }
 
+function toCodexRunOptions(
+  raw: RawRunOpts,
+): Parameters<typeof runCodexObjective>[1] {
+  const timeoutSeconds =
+    raw.timeout === undefined
+      ? undefined
+      : parsePositive(raw.timeout, "--timeout", false);
+  const sandbox = validateSandboxMode(raw.sandbox);
+  const model = codexModelOverride(raw.model);
+
+  return {
+    cwd: raw.cwd,
+    json: raw.json,
+    sandbox,
+    fullAuto: fullAutoForSandbox(sandbox),
+    ...(model === undefined ? {} : { model }),
+    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+  };
+}
+
 async function runAndExit(
   objectiveParts: readonly string[],
   raw: RawRunOpts,
@@ -60,6 +92,12 @@ async function runAndExit(
   }
 
   try {
+    const backend = validateBackendName(raw.backend);
+    if (backend === "codex") {
+      const options = toCodexRunOptions(raw);
+      process.exitCode = await runCodexObjective(objective, options);
+      return;
+    }
     const options = toRunOptions(raw);
     process.exitCode = await runObjective(objective, options);
   } catch (error) {
@@ -90,7 +128,17 @@ program
   .option("--timeout <seconds>", "overall run timeout, in seconds")
   .option("-y, --yes", "auto-approve every permission prompt", false)
   .option("--json", "emit newline-delimited JSON events instead of text", false)
-  .option("--system <text>", "override the default system prompt");
+  .option("--system <text>", "override the default system prompt")
+  .option(
+    "--backend <name>",
+    "execution backend to use: native | codex",
+    resolveBackendName(process.env),
+  )
+  .option(
+    "--sandbox <mode>",
+    `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`,
+    DEFAULT_SANDBOX_MODE,
+  );
 
 program
   .argument(
@@ -144,6 +192,12 @@ program
         `${entry.alias.padEnd(aliasWidth)}  ${entry.provider.padEnd(10)}  ${entry.credentialStatus}`,
       );
     }
+
+    console.log();
+    console.log(
+      "backend codex — uses the OpenAI Codex CLI with its own ChatGPT OAuth " +
+        '(run: agent --backend codex "...")',
+    );
   });
 
 program
