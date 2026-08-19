@@ -20,6 +20,19 @@ import type { PermissionEngine } from "./permissions.js";
 
 export const DEFAULT_MAX_ITERATIONS = 32;
 
+/**
+ * Deterministic (non-LLM) context compaction, run at the start of every
+ * iteration. Disabled unless this whole options object is supplied.
+ */
+export interface CompactionOptions {
+  /** Compact once `messages.length` exceeds this. Default 60. */
+  readonly maxMessages?: number;
+  /** Never touch the last N messages. Default 20. */
+  readonly preserveRecent?: number;
+  /** Only elide tool-result contents longer than this. Default 400. */
+  readonly minContentChars?: number;
+}
+
 export interface AgentLoopOptions {
   readonly agent: AgentDefinition;
   readonly provider: ModelProvider;
@@ -31,6 +44,7 @@ export interface AgentLoopOptions {
   readonly timeoutMs?: number;
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
+  readonly compaction?: CompactionOptions;
 }
 
 export interface AgentLoopRunContext {
@@ -95,6 +109,16 @@ function serializeToolOutput(output: unknown): string {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+const ELISION_PREFIX = "[tool result elided during context compaction: ";
+
+const DEFAULT_COMPACTION_MAX_MESSAGES = 60;
+const DEFAULT_COMPACTION_PRESERVE_RECENT = 20;
+const DEFAULT_COMPACTION_MIN_CONTENT_CHARS = 400;
+
+function elisionMarker(originalLength: number): string {
+  return `${ELISION_PREFIX}${originalLength} chars]`;
 }
 
 function buildUserContent(input: AgentRunInput): string {
@@ -167,6 +191,8 @@ export class AgentLoop {
     try {
       while (iterations < maxIterations) {
         iterations += 1;
+
+        await this.#compact(messages, context);
 
         const request: ModelRequest = {
           model: agent.model,
@@ -310,6 +336,65 @@ export class AgentLoop {
         : { cachedInputTokens: event.cachedInputTokens }),
     };
     recorder.record(this.#options.agent.model, usage);
+  }
+
+  /**
+   * Deterministic context compaction, run at the start of every iteration
+   * before the request is built. No-op unless `compaction` was supplied.
+   *
+   * Walks `messages` from the beginning, skipping the system message, the
+   * first user message, the last `preserveRecent` messages, and any tool
+   * message already elided (its content already carries the elision
+   * marker, which also keeps re-running this pass a no-op — but we still
+   * skip on sight so the scan stays cheap). Assistant and user/system
+   * messages are never touched: providers need the tool-call structure
+   * intact, and the instruction must stay legible.
+   */
+  async #compact(
+    messages: ModelMessage[],
+    context: AgentLoopRunContext,
+  ): Promise<void> {
+    const options = this.#options.compaction;
+    if (options === undefined) return;
+
+    const maxMessages = options.maxMessages ?? DEFAULT_COMPACTION_MAX_MESSAGES;
+    if (messages.length <= maxMessages) return;
+
+    const preserveRecent =
+      options.preserveRecent ?? DEFAULT_COMPACTION_PRESERVE_RECENT;
+    const minContentChars =
+      options.minContentChars ?? DEFAULT_COMPACTION_MIN_CONTENT_CHARS;
+
+    const systemIndex = messages.findIndex((m) => m.role === "system");
+    const firstUserIndex = messages.findIndex((m) => m.role === "user");
+    const preserveFrom = Math.max(0, messages.length - preserveRecent);
+
+    let elided = 0;
+    let savedChars = 0;
+
+    for (let i = 0; i < preserveFrom; i += 1) {
+      if (i === systemIndex || i === firstUserIndex) continue;
+
+      const message = messages[i];
+      if (message === undefined) continue;
+      if (message.role !== "tool") continue;
+      if (message.content.startsWith(ELISION_PREFIX)) continue;
+      if (message.content.length <= minContentChars) continue;
+
+      const originalLength = message.content.length;
+      const elidedContent = elisionMarker(originalLength);
+      messages[i] = { ...message, content: elidedContent };
+      elided += 1;
+      savedChars += originalLength - elidedContent.length;
+    }
+
+    if (elided > 0) {
+      await this.#emit(context, "context.compacted", {
+        elided,
+        savedChars,
+        messages: messages.length,
+      });
+    }
   }
 
   async #executeCall(
