@@ -15,6 +15,7 @@ import {
   ClaudeCodeBackend,
   CodexBackend,
   PermissionEngine,
+  SessionAllowlist,
 } from "@agent/coding-agent";
 import type { AgentDefinition } from "@agent/core";
 import type {
@@ -1237,6 +1238,10 @@ export async function runInteractive(
 
     const interactiveTty = process.stdin.isTTY === true;
     const promptState = createPromptState();
+    // Approvals answered with "a" are remembered for the life of this REPL,
+    // across `/model` and `/config` switches — which is why the allowlist is
+    // created here and not inside the per-session engine below.
+    const sessionAllowlist = new SessionAllowlist();
     const nativeUsage = new UsageTracker();
     const delegatedUsage = new DelegatedUsage();
     // One usage view over both engines, so `/usage` and the per-turn delta
@@ -1278,6 +1283,7 @@ export async function runInteractive(
       yes: options.yes,
       interactive: interactiveTty,
       state: promptState,
+      allowlist: sessionAllowlist,
       ...(inputManager === undefined
         ? {}
         : { ask: (query: string) => inputManager.question(query) }),
@@ -1349,6 +1355,7 @@ export async function runInteractive(
           provider: args.provider,
           permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
             defaultDecision: "ask",
+            overlay: sessionAllowlist,
             ...(prompter === undefined ? {} : { prompter }),
           }),
           usage: nativeUsage,

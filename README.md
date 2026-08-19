@@ -49,7 +49,11 @@ kapel> calc.test.js is failing — find out why and fix it
   ✓
 → grep {"pattern":"function add"}
   ✓
-allow edit_file? {"path":"calc.js","old":"a - b","new":"a + b"} [y/N] y
+  calc.js
+  - return a - b;
+  + return a + b;
+  a = always allow edit_file this session
+allow edit_file? [y/n/a] y
   ✓
 `add` subtracted instead of adding. Fixed and `node calc.test.js` now prints PASS.
 tokens +4210 in, +318 out  (~$0.0138)
@@ -59,7 +63,7 @@ kapel> now add a `sub` function next to it, with a test
 kapel> /exit
 ```
 
-Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
+Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". The question is what will happen, not a truncated blob of JSON: `bash` shows the command it will run, `edit_file` a `-`/`+` diff of the replacement, `write_file` the head of the new file. Answers are `y` (allow this once), `n`/Enter/Ctrl-C (deny), or `a` — allow it and stop asking for the rest of the session: for `bash` that remembers the *command prefix* (answering `a` to `npm test --run foo` stops asking for `npm test …`, while `npm publish` still asks; a command with a shell operator such as `&&` or `|` is never remembered), and for every other tool it remembers the tool name. Nothing is written to disk — a new `kapel` starts asking again — and an explicit deny rule is never overridden by it. (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
 
 The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
 

@@ -125,8 +125,16 @@ kapel                     # 목적을 인자로 주지 않으면 대화형 모�
 kapel> calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘.
 ```
 
-**기대 동작**: read/grep은 자동 허용, `edit_file`/`bash` 실행 전에 `allow ...? [y/N]`
+**기대 동작**: read/grep은 자동 허용, `edit_file`/`bash` 실행 전에 `allow ...? [y/n/a]`
 프롬프트 → y 응답 → 수정 후 요약 + 그 턴의 토큰/비용 한 줄(`tokens +… in, +… out`).
+프롬프트 위에는 실제로 일어날 일이 먼저 표시됩니다 — `bash`는 명령 전문,
+`edit_file`은 `-`/`+` 유니파이드 diff, `write_file`은 경로와 내용 앞부분.
+답은 `y`(이번만 허용) / `n`·Enter·Ctrl-C(거부) / `a`(이 세션 동안 계속 허용)
+세 가지입니다. `a`는 `bash`의 경우 **명령 프리픽스**를 기억합니다 —
+`npm test --run foo`에 `a`로 답하면 이후 `npm test …`는 다시 묻지 않지만
+`npm publish`는 다시 묻습니다(`&&`·`|` 같은 셸 연산자가 섞인 명령은 기억하지 않음).
+그 밖의 도구는 도구 이름 단위로 기억하며, 어느 쪽도 디스크에 저장되지 않아
+프로세스가 끝나면 사라집니다.
 프롬프트로 돌아오면 대화가 이어집니다:
 
 ```text
@@ -213,7 +221,7 @@ kapel --backend claude-code            # 목적 없이 실행 → 대화형
 
 배너가 `kapel v0.4.0  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
 아래에 `approvals are enforced by the Claude Code CLI — kapel does not prompt here`
-가 표시됩니다 — 이 경로에서는 kapel이 `allow …? [y/N]`을 묻지 않습니다(승인은
+가 표시됩니다 — 이 경로에서는 kapel이 `allow …? [y/n/a]`를 묻지 않습니다(승인은
 Claude Code CLI가 자체 정책으로 처리).
 
 ```text

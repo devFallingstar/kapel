@@ -7,7 +7,12 @@ import type {
 } from "@agent/ai";
 import { UsageTracker } from "@agent/ai";
 import type { AgentLoopOptions, CompactionOptions } from "@agent/coding-agent";
-import { AgentLoop, builtinTools, PermissionEngine } from "@agent/coding-agent";
+import {
+  AgentLoop,
+  builtinTools,
+  PermissionEngine,
+  SessionAllowlist,
+} from "@agent/coding-agent";
 import type { AgentDefinition } from "@agent/core";
 import type { EventSink } from "@agent/protocol";
 import type { KapelConfig } from "./config.js";
@@ -157,6 +162,9 @@ export async function runObjective(
   const { model, provider } = resolved;
 
   const promptState = createPromptState();
+  // Approvals answered with "a" live here for the rest of the process, and
+  // are consulted by the engine before it prompts again.
+  const sessionAllowlist = new SessionAllowlist();
   const usage = new UsageTracker();
 
   const renderer: Renderer = options.json
@@ -174,10 +182,12 @@ export async function runObjective(
     yes: options.yes,
     interactive: process.stdin.isTTY === true && !options.json,
     state: promptState,
+    allowlist: sessionAllowlist,
   });
 
   const permissions = new PermissionEngine(DEFAULT_PERMISSIONS, {
     defaultDecision: "ask",
+    overlay: sessionAllowlist,
     ...(prompter === undefined ? {} : { prompter }),
   });
   const instructions = loadInstructions(workspacePath, process.env);
