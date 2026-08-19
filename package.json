@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc -b",
     "bundle": "node scripts/bundle.mjs",
-    "prepare": "npm run build && npm run bundle",
+    "prepare": "node scripts/prepare.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "biome check .",

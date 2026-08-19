@@ -1,5 +1,8 @@
 node_modules/
 dist/
+!/dist/
+/dist/*
+!/dist/kapel.js
 *.tsbuildinfo
 .env
 .env.*
