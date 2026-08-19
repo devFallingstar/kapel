@@ -330,7 +330,7 @@ describe("defaultExecutorFactory / validation", () => {
   });
 });
 
-describe("agent orchestrate", () => {
+describe("kapel orchestrate", () => {
   let workspace: string;
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
 
@@ -577,7 +577,7 @@ describe("agent orchestrate", () => {
         },
       );
       expect(code).toBe(1);
-      expect(errLines.join("\n")).toContain("agent init");
+      expect(errLines.join("\n")).toContain("kapel init");
     } finally {
       await cleanupWorkspace(bare);
     }

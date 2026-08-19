@@ -20,7 +20,7 @@ import {
   writeLock,
 } from "./orchestration-fixtures.js";
 
-describe("agent resume", () => {
+describe("kapel resume", () => {
   let workspace: string;
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
 

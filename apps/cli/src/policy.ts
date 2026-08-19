@@ -22,7 +22,7 @@ import { loadDotEnvFile } from "./env.js";
 import { resolveModelAlias } from "./models.js";
 import { resolveModelAndProvider } from "./run.js";
 
-/** Options shared by all `agent policy <command>` subcommands — the global `--cwd`/`-m`/`--json` flags. */
+/** Options shared by all `kapel policy <command>` subcommands — the global `--cwd`/`-m`/`--json` flags. */
 export interface PolicyCommandOptions {
   readonly cwd: string;
   readonly model?: string;
@@ -42,7 +42,7 @@ const consoleOutput: PolicyOutput = {
 
 const LOCK_FILE_NAME = "orchestration.lock.json";
 
-/** Builds the `PolicyCompiler` used by `agent policy compile`. Overridable in tests. */
+/** Builds the `PolicyCompiler` used by `kapel policy compile`. Overridable in tests. */
 export type CompilerFactory = (args: {
   readonly provider: ModelProvider;
   readonly model: ModelDefinition;
@@ -112,7 +112,7 @@ async function loadProjectForPolicy(
   }
 
   if (project === undefined) {
-    const message = "No .agent directory found — run `agent init` first";
+    const message = "No .agent directory found — run `kapel init` first";
     if (json) jsonLine(output, { ok: false, error: message });
     else output.error(message);
     return { exitCode: 1 };
@@ -135,7 +135,7 @@ export interface RunPolicyCompileDeps {
   readonly compilerFactory?: CompilerFactory;
 }
 
-/** Implements `agent policy compile`: LLM-compiles `orchestration.md` and writes the policy lock. */
+/** Implements `kapel policy compile`: LLM-compiles `orchestration.md` and writes the policy lock. */
 export async function runPolicyCompile(
   options: PolicyCommandOptions,
   deps: RunPolicyCompileDeps = {},
@@ -241,7 +241,7 @@ export async function runPolicyCompile(
   return 0;
 }
 
-/** Implements `agent policy check`: validates the policy lock's freshness without calling an LLM. */
+/** Implements `kapel policy check`: validates the policy lock's freshness without calling an LLM. */
 export async function runPolicyCheck(
   options: PolicyCommandOptions,
   deps: { readonly output?: PolicyOutput } = {},
@@ -271,11 +271,11 @@ export async function runPolicyCheck(
       });
     } else if (status.reason === "missing") {
       output.error(
-        `No policy lock found at ${lockPath}. Run \`agent policy compile\` to create one.`,
+        `No policy lock found at ${lockPath}. Run \`kapel policy compile\` to create one.`,
       );
     } else if (status.reason === "stale-source") {
       output.error(
-        "orchestration.md has changed since the policy lock was compiled. Run `agent policy compile` to refresh it.",
+        "orchestration.md has changed since the policy lock was compiled. Run `kapel policy compile` to refresh it.",
       );
     } else {
       output.error(
@@ -323,7 +323,7 @@ export async function runPolicyCheck(
   return 0;
 }
 
-/** Implements `agent policy explain`: prints a human-readable summary of the locked policy. */
+/** Implements `kapel policy explain`: prints a human-readable summary of the locked policy. */
 export async function runPolicyExplain(
   options: PolicyCommandOptions,
   deps: { readonly output?: PolicyOutput } = {},
@@ -350,12 +350,12 @@ export async function runPolicyExplain(
   } else if (status.reason === "stale-source" && status.lock !== undefined) {
     lock = status.lock;
   } else if (status.reason === "missing") {
-    const message = `No policy lock found at ${lockPath}. Run \`agent policy compile\` to create one.`;
+    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` to create one.`;
     if (options.json) jsonLine(output, { ok: false, error: message });
     else output.error(message);
     return 1;
   } else {
-    const message = `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`agent policy compile\` to recreate it.`;
+    const message = `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`kapel policy compile\` to recreate it.`;
     if (options.json) jsonLine(output, { ok: false, error: message });
     else output.error(message);
     return 1;
@@ -363,7 +363,7 @@ export async function runPolicyExplain(
 
   if (!status.fresh && !options.json) {
     output.error(
-      "Warning: orchestration.md has changed since this lock was compiled — this explanation may be stale. Run `agent policy compile` to refresh it.",
+      "Warning: orchestration.md has changed since this lock was compiled — this explanation may be stale. Run `kapel policy compile` to refresh it.",
     );
   }
 

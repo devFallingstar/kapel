@@ -84,7 +84,7 @@ export async function loadProjectConfig(
   }
 
   // The default is resolved here rather than at run time so that everything
-  // downstream — the runner, the reporting, a future `agent config` dump —
+  // downstream — the runner, the reporting, a future `kapel config` dump —
   // agrees on how long a validator is allowed to take.
   const validators: ProjectValidator[] = (result.data.validation ?? []).map(
     (entry) => ({

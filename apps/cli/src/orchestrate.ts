@@ -107,7 +107,7 @@ export async function worktreeIsolationError(
 }
 
 export interface OrchestrateCommandOptions extends PlanCommandOptions {
-  /** Stop after planning and print exactly what `agent plan` would. */
+  /** Stop after planning and print exactly what `kapel plan` would. */
   readonly dryRun: boolean;
   readonly workerMode: WorkerMode;
   readonly backend: BackendName;
@@ -498,8 +498,8 @@ export interface ExecuteRunRequest {
 }
 
 /**
- * Executes a prepared plan: everything `agent orchestrate` does once the plan
- * exists, which is also everything `agent resume` does.
+ * Executes a prepared plan: everything `kapel orchestrate` does once the plan
+ * exists, which is also everything `kapel resume` does.
  *
  * The event stream is fanned out rather than handed to one renderer: the
  * renderer (or the dashboard, which replaces it — it owns the screen and
@@ -624,7 +624,7 @@ export async function executePreparedPlan(
 }
 
 /**
- * Implements `agent orchestrate`: plan the objective, rewrite the plan through
+ * Implements `kapel orchestrate`: plan the objective, rewrite the plan through
  * the policy, then run the resulting task graph across routed workers.
  */
 export async function runOrchestrate(
@@ -663,7 +663,7 @@ export async function runOrchestrate(
 
   const runId = crypto.randomUUID();
   // `--no-save` opts out; otherwise the run is recorded next to the rest of
-  // `.agent`, which is what makes `agent runs`/`explain`/`resume` possible.
+  // `.agent`, which is what makes `kapel runs`/`explain`/`resume` possible.
   const store =
     options.save === false
       ? undefined

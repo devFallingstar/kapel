@@ -85,7 +85,7 @@ class StubExecutor implements WorkerExecutor {
   }
 }
 
-describe("agent worker", () => {
+describe("kapel worker", () => {
   let workspace: string;
 
   beforeEach(async () => {
@@ -218,8 +218,8 @@ describe("agent worker", () => {
       const parsed = JSON.parse(lines[0] ?? "{}");
       expect(parsed.result.taskId).toBe("T01");
       expect(parsed.result.status).toBe("failed");
-      expect(parsed.result.summary).toContain("agent init");
-      expect(errors.join("\n")).toContain("agent init");
+      expect(parsed.result.summary).toContain("kapel init");
+      expect(errors.join("\n")).toContain("kapel init");
     } finally {
       await cleanupWorkspace(bare);
     }

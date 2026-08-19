@@ -65,7 +65,7 @@ export function sessionDbPathFor(workspacePath: string): string {
  * Opens the session store for a workspace, or `undefined` when there is none
  * to open.
  *
- * A run persists itself only in a project that has been `agent init`-ed: the
+ * A run persists itself only in a project that has been `kapel init`-ed: the
  * database lives beside the rest of `.agent`, and creating that directory
  * behind the user's back to hold a database is not this command's business.
  * A store that cannot be opened at all (a locked or corrupt file, a read-only

@@ -1,10 +1,19 @@
 {
-  "name": "orchestration-agent",
+  "name": "kapel",
   "version": "0.1.0",
+  "description": "Kapel — a multi-model orchestration coding agent for your terminal",
   "private": true,
   "type": "module",
+  "bin": {
+    "kapel": "./dist/kapel.js"
+  },
+  "files": [
+    "dist/kapel.js",
+    "templates",
+    "README.md"
+  ],
   "engines": {
-    "node": ">=24"
+    "node": ">=20"
   },
   "workspaces": [
     "apps/*",
@@ -12,10 +21,21 @@
   ],
   "scripts": {
     "build": "tsc -b",
+    "bundle": "node scripts/bundle.mjs",
+    "prepare": "npm run build && npm run bundle",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "lint": "biome check .",
     "format": "biome format --write ."
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "commander": "^14",
+    "drizzle-orm": "^0.45.2",
+    "ink": "^6",
+    "react": "^19",
+    "yaml": "^2",
+    "zod": "^4"
   },
   "devDependencies": {
     "@biomejs/biome": "^2",

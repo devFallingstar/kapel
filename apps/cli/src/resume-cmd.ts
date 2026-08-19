@@ -83,7 +83,7 @@ function stableJson(value: unknown): string {
  * and reviewed under the old constraints, and swapping the rules half way
  * through would produce a run that never existed under any one policy. That
  * makes drift something to *report*, not something to act on — the way to
- * apply a new policy is a new `agent orchestrate`.
+ * apply a new policy is a new `kapel orchestrate`.
  */
 export async function policyDriftWarning(
   project: AgentProject,
@@ -93,10 +93,10 @@ export async function policyDriftWarning(
   const raw = await readOptionalFile(path.join(project.root, LOCK_FILE_NAME));
   const status = checkLock(markdown, raw);
   const tail =
-    "Resuming under the policy snapshot recorded with the run — start a new `agent orchestrate` to plan under the current one.";
+    "Resuming under the policy snapshot recorded with the run — start a new `kapel orchestrate` to plan under the current one.";
 
   if (!status.fresh) {
-    return `Warning: this project's policy lock is ${status.reason} (\`agent policy compile\` would refresh it). ${tail}`;
+    return `Warning: this project's policy lock is ${status.reason} (\`kapel policy compile\` would refresh it). ${tail}`;
   }
   if (stableJson(status.lock.policy) !== stableJson(snapshot)) {
     return `Warning: this project's policy has changed since run started. ${tail}`;
@@ -138,7 +138,7 @@ export async function rebuildGraph(
 }
 
 /**
- * Implements `agent resume <runId>`: re-execute the tasks a recorded run never
+ * Implements `kapel resume <runId>`: re-execute the tasks a recorded run never
  * finished, appending to that run's own history.
  */
 export async function runResume(
@@ -173,7 +173,7 @@ export async function runResume(
     const reconstruction = await reconstructRun(store, runId);
     if (reconstruction === undefined) {
       return fail(
-        `Unknown run ${runId}. Run \`agent runs\` to see the recorded ones.`,
+        `Unknown run ${runId}. Run \`kapel runs\` to see the recorded ones.`,
       );
     }
 
@@ -200,7 +200,7 @@ export async function runResume(
       throw error;
     }
     if (project === undefined) {
-      return fail("No .agent directory found — run `agent init` first");
+      return fail("No .agent directory found — run `kapel init` first");
     }
 
     if (isolation === "worktree") {

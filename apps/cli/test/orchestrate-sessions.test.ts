@@ -61,7 +61,7 @@ class FakeTui implements TuiController {
   }
 }
 
-describe("agent orchestrate — session persistence", () => {
+describe("kapel orchestrate — session persistence", () => {
   let workspace: string;
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
 
@@ -223,7 +223,7 @@ describe("outcomeLine", () => {
   });
 });
 
-describe("agent orchestrate — --tui", () => {
+describe("kapel orchestrate — --tui", () => {
   let workspace: string;
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
 

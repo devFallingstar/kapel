@@ -120,7 +120,7 @@ function capture(): {
   };
 }
 
-describe("agent policy", () => {
+describe("kapel policy", () => {
   let workspace: string;
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
 
@@ -224,7 +224,7 @@ describe("agent policy", () => {
           { output },
         );
         expect(code).toBe(1);
-        expect(errLines.join("\n")).toContain("agent init");
+        expect(errLines.join("\n")).toContain("kapel init");
       } finally {
         await rm(bare, { recursive: true, force: true });
       }
@@ -255,7 +255,7 @@ describe("agent policy", () => {
         { output },
       );
       expect(code).toBe(1);
-      expect(errLines.join("\n")).toContain("agent policy compile");
+      expect(errLines.join("\n")).toContain("kapel policy compile");
     });
 
     it("reports fresh right after a successful compile", async () => {
@@ -332,7 +332,7 @@ describe("agent policy", () => {
         { output },
       );
       expect(code).toBe(1);
-      expect(errLines.join("\n")).toContain("agent policy compile");
+      expect(errLines.join("\n")).toContain("kapel policy compile");
     });
 
     it("prints describePolicy output plus warnings/ambiguities from the lock", async () => {
@@ -364,7 +364,7 @@ describe("agent policy", () => {
           { output },
         );
         expect(code).toBe(1);
-        expect(errLines.join("\n")).toContain("agent init");
+        expect(errLines.join("\n")).toContain("kapel init");
       } finally {
         await rm(bare, { recursive: true, force: true });
       }

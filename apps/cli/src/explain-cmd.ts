@@ -256,7 +256,7 @@ function renderText(
 }
 
 /**
- * Implements `agent explain <taskId>`: what happened to one task of one
+ * Implements `kapel explain <taskId>`: what happened to one task of one
  * recorded run, and why it ran where it did.
  */
 export async function runExplainCommand(
@@ -284,7 +284,7 @@ export async function runExplainCommand(
       return fail(
         options.run === undefined
           ? "No runs recorded yet."
-          : `Unknown run ${options.run}. Run \`agent runs\` to see the recorded ones.`,
+          : `Unknown run ${options.run}. Run \`kapel runs\` to see the recorded ones.`,
       );
     }
 

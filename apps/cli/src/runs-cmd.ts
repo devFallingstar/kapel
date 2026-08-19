@@ -8,7 +8,7 @@ import {
   sessionDbPathFor,
 } from "./sessions.js";
 
-/** How many runs `agent runs` lists when `--limit` is not given. */
+/** How many runs `kapel runs` lists when `--limit` is not given. */
 export const DEFAULT_RUNS_LIMIT = 20;
 
 export interface RunsCommandOptions {
@@ -58,7 +58,7 @@ function summaryRow(run: PersistedRunSummary): readonly string[] {
 }
 
 /**
- * Implements `agent runs`: the recorded runs of this workspace, newest first.
+ * Implements `kapel runs`: the recorded runs of this workspace, newest first.
  *
  * A workspace with no session database is not an error — it is a workspace
  * that has not orchestrated anything yet (or has only ever run `--no-save`),

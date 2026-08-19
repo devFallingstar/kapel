@@ -107,7 +107,7 @@ async function runAndExit(
 ): Promise<void> {
   const objective = objectiveParts.join(" ").trim();
   if (objective === "") {
-    console.error('Usage: agent [options] "<objective>"');
+    console.error('Usage: kapel [options] "<objective>"');
     process.exitCode = 1;
     return;
   }
@@ -130,17 +130,17 @@ async function runAndExit(
 const program = new Command();
 
 program
-  .name("agent")
+  .name("kapel")
   .description(
-    "A multi-model coding agent: point it at a repository and an objective, " +
-      "and it inspects and edits files via an LLM tool-call loop.",
+    "Kapel — a multi-model orchestration coding agent: point it at a repository " +
+      "and an objective, and it plans, routes, and edits via LLM tool-call loops.",
   )
   .version("0.1.0")
   // These run options live on the top-level program (not repeated on `exec`)
   // so both the default command and `exec` share one definition; commander
   // resolves them for subcommands too via Command#optsWithGlobals().
   .option("--cwd <dir>", "workspace root to operate in", process.cwd())
-  .option("-m, --model <alias>", "model alias to use (see `agent models`)")
+  .option("-m, --model <alias>", "model alias to use (see `kapel models`)")
   .option(
     "--max-iterations <n>",
     "maximum tool-call iterations before giving up",
@@ -217,7 +217,7 @@ program
     console.log();
     console.log(
       "backend codex — uses the OpenAI Codex CLI with its own ChatGPT OAuth " +
-        '(run: agent --backend codex "...")',
+        '(run: kapel --backend codex "...")',
     );
   });
 
@@ -345,7 +345,7 @@ program
   .action(async (objective: string[], _opts: unknown, command: Command) => {
     await objectiveCommand(
       objective,
-      'Usage: agent plan "<objective>"',
+      'Usage: kapel plan "<objective>"',
       (text) => runPlan(text, planOptions(command)),
     );
   });
@@ -358,13 +358,13 @@ withExecutionOptions(
     )
     .argument("<objective...>", "the objective to orchestrate"),
 )
-  .option("--dry-run", "plan only — same output as `agent plan`", false)
+  .option("--dry-run", "plan only — same output as `kapel plan`", false)
   .option("--no-save", "do not record this run in .agent/sessions.db")
   .action(
     async (objective: string[], opts: RawOrchestrateOpts, command: Command) => {
       await objectiveCommand(
         objective,
-        'Usage: agent orchestrate "<objective>"',
+        'Usage: kapel orchestrate "<objective>"',
         (text) => runOrchestrate(text, orchestrateOptions(command, opts)),
       );
     },
@@ -374,7 +374,7 @@ withExecutionOptions(
   program
     .command("resume")
     .description("Re-execute the unfinished tasks of a recorded run")
-    .argument("<runId>", "the run to resume (see `agent runs`)"),
+    .argument("<runId>", "the run to resume (see `kapel runs`)"),
 ).action(async (runId: string, opts: RawExecutionOpts, command: Command) => {
   try {
     process.exitCode = await runResume(runId, resumeOptions(command, opts));

@@ -127,7 +127,7 @@ export function hasApiKey(env: EnvLike, provider: string): boolean {
 
 /**
  * A human-readable hint for how to configure credentials for `provider`,
- * used both in the `agent models` listing's help text and in the
+ * used both in the `kapel models` listing's help text and in the
  * missing-credential error `run` raises. Anthropic gets a richer message
  * than the generic "set THIS_ENV_VAR" hint, since it has three valid
  * credential sources.
@@ -147,7 +147,7 @@ export function credentialHintForProvider(provider: string): string {
 }
 
 /**
- * Formats how `agent models` should display the Anthropic credential (or
+ * Formats how `kapel models` should display the Anthropic credential (or
  * lack of one) for an anthropic-provider row: the credential's source when
  * present, `"✗"` when absent. Factored out as a pure function so the
  * formatting logic is testable without shelling out to `ant`.
@@ -166,7 +166,7 @@ export interface ModelListEntry {
   /** True when a credential is available for this model's provider. */
   readonly hasKey: boolean;
   /**
-   * The text `agent models` prints for this row's credential status: for
+   * The text `kapel models` prints for this row's credential status: for
    * anthropic, the credential source ("api key" / "auth token" /
    * "oauth (ant)") or "✗"; for every other provider, plain "✓" / "✗".
    */

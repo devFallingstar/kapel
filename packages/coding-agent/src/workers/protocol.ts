@@ -219,7 +219,7 @@ function write(
  * Serves a single worker request on a pair of streams: read the request line,
  * run `handler`, write the result line.
  *
- * Kept free of any executor dependency so the CLI's `agent worker` command can
+ * Kept free of any executor dependency so the CLI's `kapel worker` command can
  * wire whichever backend it likes into it. Returns the suggested process exit
  * code: `0` when a result line was written for a well-formed request, `1` when
  * the request could not be read or the handler threw (a failed result line is

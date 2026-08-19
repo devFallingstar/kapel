@@ -33,14 +33,14 @@ export const consoleOutput: OrchestrationOutput = {
   error: (line) => console.error(line),
 };
 
-/** Options shared by `agent plan` and `agent orchestrate`. */
+/** Options shared by `kapel plan` and `kapel orchestrate`. */
 export interface PlanCommandOptions {
   readonly cwd: string;
   readonly model?: string;
   readonly json: boolean;
 }
 
-/** Builds the planner used by `agent plan`/`agent orchestrate`. Overridable in tests. */
+/** Builds the planner used by `kapel plan`/`kapel orchestrate`. Overridable in tests. */
 export type PlannerFactory = (args: {
   readonly provider: ModelProvider;
   readonly model: ModelDefinition;
@@ -173,7 +173,7 @@ async function resolvePlannerModel(
 }
 
 /**
- * Runs everything `agent plan` and `agent orchestrate` share: load the project,
+ * Runs everything `kapel plan` and `kapel orchestrate` share: load the project,
  * insist on a fresh policy lock, plan the objective, and reconcile the plan with
  * the policy.
  *
@@ -207,7 +207,7 @@ export async function preparePlan(
     return fail(
       output,
       json,
-      "No .agent directory found — run `agent init` first",
+      "No .agent directory found — run `kapel init` first",
     );
   }
 
@@ -227,7 +227,7 @@ export async function preparePlan(
       return fail(
         output,
         json,
-        `No policy lock found at ${lockPath}. Run \`agent policy compile\` before planning.`,
+        `No policy lock found at ${lockPath}. Run \`kapel policy compile\` before planning.`,
         { reason: status.reason },
       );
     }
@@ -235,14 +235,14 @@ export async function preparePlan(
       return fail(
         output,
         json,
-        "orchestration.md has changed since the policy lock was compiled. Run `agent policy compile` to refresh it before planning.",
+        "orchestration.md has changed since the policy lock was compiled. Run `kapel policy compile` to refresh it before planning.",
         { reason: status.reason },
       );
     }
     return fail(
       output,
       json,
-      `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`agent policy compile\` to recreate it.`,
+      `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`kapel policy compile\` to recreate it.`,
       { reason: status.reason },
     );
   }
@@ -329,7 +329,7 @@ function taskRow(
   ];
 }
 
-/** Prints the plan preview both `agent plan` and `orchestrate --dry-run` show. */
+/** Prints the plan preview both `kapel plan` and `orchestrate --dry-run` show. */
 export function renderPlan(
   prepared: PreparedPlan,
   output: OrchestrationOutput,
@@ -372,7 +372,7 @@ export function renderPlan(
 
 export type RunPlanDeps = PreparePlanDeps;
 
-/** Implements `agent plan`: preview the task graph without executing anything. */
+/** Implements `kapel plan`: preview the task graph without executing anything. */
 export async function runPlan(
   objective: string,
   options: PlanCommandOptions,

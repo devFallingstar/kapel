@@ -48,7 +48,7 @@ export interface InitOptions {
   readonly entryUrl?: string;
 }
 
-/** Implements `agent init`: copies the repo's `.agent` template into `cwd`. */
+/** Implements `kapel init`: copies the repo's `.agent` template into `cwd`. */
 export async function runInit(options: InitOptions): Promise<number> {
   const entryDir = path.dirname(
     fileURLToPath(options.entryUrl ?? import.meta.url),

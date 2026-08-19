@@ -139,7 +139,7 @@ describe("agent plan", () => {
     );
 
     expect(code).toBe(1);
-    expect(errLines.join("\n")).toContain("agent policy compile");
+    expect(errLines.join("\n")).toContain("kapel policy compile");
   });
 
   it("fails when orchestration.md changed after the lock was written", async () => {
@@ -165,7 +165,7 @@ describe("agent plan", () => {
     expect(code).toBe(1);
     const text = errLines.join("\n");
     expect(text).toContain("orchestration.md has changed");
-    expect(text).toContain("agent policy compile");
+    expect(text).toContain("kapel policy compile");
   });
 
   it("fails when no .agent directory exists", async () => {
@@ -178,7 +178,7 @@ describe("agent plan", () => {
         { output, plannerFactory: fixedPlannerFactory(SAMPLE_PLAN) },
       );
       expect(code).toBe(1);
-      expect(errLines.join("\n")).toContain("agent init");
+      expect(errLines.join("\n")).toContain("kapel init");
     } finally {
       await rm(bare, { recursive: true, force: true });
     }

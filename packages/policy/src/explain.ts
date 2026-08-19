@@ -79,7 +79,7 @@ function section<T>(
 
 /**
  * Renders a policy as a plain-English, multi-line summary — the body of
- * `agent policy explain`.
+ * `kapel policy explain`.
  */
 export function describePolicy(policy: OrchestrationPolicy): string {
   const lines: string[] = [

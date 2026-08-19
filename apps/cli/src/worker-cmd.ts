@@ -56,7 +56,7 @@ export interface RunWorkerCommandDeps {
 }
 
 /**
- * Implements `agent worker`: the child-process endpoint of the worker protocol.
+ * Implements `kapel worker`: the child-process endpoint of the worker protocol.
  *
  * One request in on stdin, one result line out on stdout, then exit. **stdout is
  * the protocol channel**, so nothing human-facing may be written to it — every
@@ -83,7 +83,7 @@ export async function runWorkerCommand(
       const project = await loadAgentProject(request.workspacePath);
       if (project === undefined) {
         throw new Error(
-          `No .agent directory found in ${request.workspacePath} — run \`agent init\` there first`,
+          `No .agent directory found in ${request.workspacePath} — run \`kapel init\` there first`,
         );
       }
 
