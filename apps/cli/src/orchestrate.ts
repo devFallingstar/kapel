@@ -2,8 +2,13 @@ import { execFile } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { UsageRecorder, UsageTotals } from "@agent/ai";
-import { UsageTracker } from "@agent/ai";
+import type {
+  UsageBreakdown,
+  UsageDimension,
+  UsageRecorder,
+  UsageTotals,
+} from "@agent/ai";
+import { UNATTRIBUTED, UsageTracker, usageRecordingProvider } from "@agent/ai";
 import type {
   AgentProject,
   ExecutionPlan,
@@ -21,7 +26,9 @@ import {
   CodexWorkerExecutor,
   createDelegatedModelResolver,
   createDelegatedToolsResolver,
+  DelegatedPlanner,
   DeterministicScheduler,
+  LlmPlanner,
   PolicyRouter,
   TaskGraph,
   ValidatingExecutor,
@@ -36,15 +43,25 @@ import {
   claudeCodeLoginGuidance,
   codexInstallGuidance,
   codexLoginGuidance,
+  delegatedModelIdentity,
 } from "./backend.js";
 import type {
+  DelegatedPlannerFactory,
   OrchestrationOutput,
   PlanCommandOptions,
+  PlannerFactory,
   PreparePlanDeps,
 } from "./plan.js";
 import { consoleOutput, formatTable, preparePlan, renderPlan } from "./plan.js";
 import { createProjectModelResolver } from "./project-models.js";
-import { JsonRenderer, type Renderer, TextRenderer } from "./render.js";
+import {
+  formatCostUsd,
+  formatTokenCount,
+  JsonRenderer,
+  type Renderer,
+  TextRenderer,
+  usageRollupLines,
+} from "./render.js";
 import {
   bestEffort,
   closeRunStore,
@@ -425,14 +442,85 @@ function usageLine(totals: UsageTotals): string {
     : line;
 }
 
-function summaryRow(task: RuntimeTask): readonly string[] {
+/**
+ * The slice of {@link UsageTracker} a run summary reads.
+ *
+ * Narrow on purpose: the summary is a pure function of these two views, which
+ * is what lets {@link runSummaryLines} be tested without a scheduler.
+ */
+export interface RunUsageView {
+  totals(): UsageTotals;
+  breakdownBy(dimension: UsageDimension): ReadonlyMap<string, UsageBreakdown>;
+}
+
+/**
+ * The per-task columns: which model did the work, what it spent, what that
+ * cost.
+ *
+ * `-` means nothing was recorded against the task at all — a task run by a
+ * delegated backend (`--backend codex`, `--backend claude-code`) or in a
+ * child worker, none of which report per-task token usage back to this
+ * process. (The delegated *planner* does, via `delegatedPlanningThrough`, but
+ * planning belongs to no task and lands under `planner` instead.) That is
+ * distinct from `n/a` in the `$` column, which means the tokens *are* known
+ * and their price is not.
+ */
+function summaryRow(
+  task: RuntimeTask,
+  spent: UsageBreakdown | undefined,
+): readonly string[] {
   return [
     task.status,
     task.spec.id,
     task.assignedAgent ?? "-",
     String(task.attempts),
+    spent === undefined ? "-" : spent.models.join("+"),
+    spent === undefined
+      ? "-"
+      : `${formatTokenCount(spent.usage.inputTokens)}/${formatTokenCount(spent.usage.outputTokens)}`,
+    spent === undefined ? "-" : formatCostUsd(spent.costUsd, spent.pricing),
     task.spec.title,
   ];
+}
+
+/**
+ * The end-of-run report, as lines.
+ *
+ * Three views of the same numbers, narrowing from what to who to how much: one
+ * row per task, one line per model, then the run total. The per-model rollup
+ * is the only place a reader can check the claim the whole project rests on —
+ * that the expensive model planned and cheap workers executed — so it is
+ * derived from the same tracker as the total and always adds up to it.
+ */
+export function runSummaryLines(
+  tasks: readonly RuntimeTask[],
+  usage: RunUsageView,
+): readonly string[] {
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  const byTask = usage.breakdownBy("task");
+  return [
+    "",
+    ...formatTable(
+      ["STATUS", "ID", "AGENT", "TRIES", "MODEL", "TOKENS", "$", "TITLE"],
+      tasks.map((task) => summaryRow(task, byTask.get(task.spec.id))),
+    ),
+    "",
+    `${completed}/${tasks.length} tasks completed`,
+    ...usageRollupLines(usage.breakdownBy("model"), { countTasks: true }),
+    usageLine(usage.totals()),
+  ];
+}
+
+/** The per-model rollup as JSON: same buckets, `null` where no price is known. */
+function modelRollupJson(usage: RunUsageView): readonly unknown[] {
+  return [...usage.breakdownBy("model").values()].map((entry) => ({
+    model: entry.key,
+    tasks: entry.tasks.filter((id) => id !== UNATTRIBUTED).length,
+    usage: entry.usage,
+    // Never 0 for an unpriced model: 0 would read as "this was free".
+    costUsd: entry.pricing === "unknown" ? null : entry.costUsd,
+    pricing: entry.pricing,
+  }));
 }
 
 /**
@@ -443,7 +531,7 @@ function summaryRow(task: RuntimeTask): readonly string[] {
 function renderRunSummary(
   runId: string,
   tasks: readonly RuntimeTask[],
-  totals: UsageTotals,
+  usage: RunUsageView,
   output: OrchestrationOutput,
   json: boolean,
 ): number {
@@ -451,33 +539,37 @@ function renderRunSummary(
   const ok = completed === tasks.length;
 
   if (json) {
+    const totals = usage.totals();
+    const byTask = usage.breakdownBy("task");
     jsonLine(output, {
       type: "run.summary",
       runId,
       ok,
-      tasks: tasks.map((task) => ({
-        id: task.spec.id,
-        status: task.status,
-        agent: task.assignedAgent,
-        attempts: task.attempts,
-        ...(task.result === undefined ? {} : { result: task.result }),
-      })),
+      tasks: tasks.map((task) => {
+        const spent = byTask.get(task.spec.id);
+        return {
+          id: task.spec.id,
+          status: task.status,
+          agent: task.assignedAgent,
+          attempts: task.attempts,
+          ...(spent === undefined
+            ? {}
+            : {
+                models: spent.models,
+                usage: spent.usage,
+                costUsd: spent.pricing === "unknown" ? null : spent.costUsd,
+              }),
+          ...(task.result === undefined ? {} : { result: task.result }),
+        };
+      }),
+      models: modelRollupJson(usage),
       usage: totals.usage,
       costUsd: totals.costUsd,
     });
     return ok ? 0 : 1;
   }
 
-  output.log("");
-  for (const line of formatTable(
-    ["STATUS", "ID", "AGENT", "TRIES", "TITLE"],
-    tasks.map(summaryRow),
-  )) {
-    output.log(line);
-  }
-  output.log("");
-  output.log(`${completed}/${tasks.length} tasks completed`);
-  output.log(usageLine(totals));
+  for (const line of runSummaryLines(tasks, usage)) output.log(line);
   return ok ? 0 : 1;
 }
 
@@ -541,6 +633,13 @@ export interface ExecuteRunRequest {
   readonly store?: SqliteSessionStore;
   /** Replaces the default `Run <id> — …` header line (text mode only). */
   readonly leadLine?: string;
+  /**
+   * The run's usage ledger. Supplied when the caller already spent tokens on
+   * this run before execution started — `runOrchestrate` plans through it, so
+   * the summary can attribute the planner's spend alongside the workers'.
+   * Omitted, execution starts from an empty one.
+   */
+  readonly usage?: UsageTracker;
   readonly options: ExecuteRunOptions;
 }
 
@@ -590,7 +689,7 @@ export async function executePreparedPlan(
     store === undefined ? undefined : storeSink(store),
   );
 
-  const usage = new UsageTracker();
+  const usage = request.usage ?? new UsageTracker();
   const taskTimeoutMs =
     options.timeoutSeconds === undefined
       ? undefined
@@ -667,7 +766,58 @@ export async function executePreparedPlan(
   // what survives in the scrollback, so it must not land inside a live frame.
   await closeTui(tui, outcomeLine(tasks));
 
-  return renderRunSummary(runId, tasks, usage.totals(), output, options.json);
+  return renderRunSummary(runId, tasks, usage, output, options.json);
+}
+
+/** The agent name planning spend is attributed to; it belongs to no task. */
+export const PLANNER_AGENT = "planner";
+
+/**
+ * Wraps a planner factory so the planning call records what it spent.
+ *
+ * The planner takes a provider and no usage recorder, so the recorder is
+ * pushed down into the provider it is handed — see `usageRecordingProvider`.
+ * An injected factory (tests, `--dry-run` fixtures) is preserved and wrapped
+ * the same way rather than replaced.
+ */
+export function planningThrough(
+  usage: UsageRecorder,
+  inner: PlannerFactory | undefined,
+): PlannerFactory {
+  const factory: PlannerFactory = inner ?? ((args) => new LlmPlanner(args));
+  return (args) =>
+    factory({
+      ...args,
+      provider: usageRecordingProvider(args.provider, usage, {
+        agent: PLANNER_AGENT,
+      }),
+    });
+}
+
+/**
+ * {@link planningThrough} for a delegating backend.
+ *
+ * There is no provider to tee through here — the model call happens inside a
+ * `codex`/`claude` subprocess — so the recorder goes in directly and the
+ * planner pushes whatever token counts the CLI reported into it. A CLI that
+ * reports nothing records nothing, which is why the summary distinguishes an
+ * absent bucket (`-`) from a zero one; nothing on this path invents numbers.
+ */
+export function delegatedPlanningThrough(
+  usage: UsageRecorder,
+  inner: DelegatedPlannerFactory | undefined,
+): DelegatedPlannerFactory {
+  const factory: DelegatedPlannerFactory =
+    inner ?? ((args) => new DelegatedPlanner(args));
+  return (args) =>
+    factory({
+      ...args,
+      usage: {
+        recorder: usage,
+        model: delegatedModelIdentity(args.backend, args.model),
+        tags: { agent: PLANNER_AGENT },
+      },
+    });
 }
 
 /**
@@ -700,7 +850,18 @@ export async function runOrchestrate(
     }
   }
 
-  const prepared = await preparePlan(objective, options, deps);
+  // One ledger for the whole run, opened before the plan: planning is a model
+  // call like any other, and a cost report that silently omitted the model
+  // that plans would hide exactly the number this command exists to show.
+  const usage = new UsageTracker();
+  const prepared = await preparePlan(objective, options, {
+    ...deps,
+    plannerFactory: planningThrough(usage, deps.plannerFactory),
+    delegatedPlannerFactory: delegatedPlanningThrough(
+      usage,
+      deps.delegatedPlannerFactory,
+    ),
+  });
   if ("exitCode" in prepared) return prepared.exitCode;
 
   if (options.dryRun) {
@@ -740,6 +901,7 @@ export async function runOrchestrate(
         policy: prepared.policy,
         plan: prepared.plan,
         graph: new TaskGraph(prepared.plan),
+        usage,
         options: {
           json: options.json,
           workerMode: options.workerMode,

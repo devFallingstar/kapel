@@ -399,6 +399,57 @@ describe("CodexBackend argument construction", () => {
     ]);
   });
 
+  it("passes each attached image as a repeated -i <path> flag, before extraArgs and the prompt (P1-9)", async () => {
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const backend = new CodexBackend({
+      binaryPath,
+      extraArgs: ["--color", "never"],
+    });
+
+    await backend.run(
+      {
+        instruction: "describe these",
+        images: [
+          {
+            mediaType: "image/png",
+            base64: "cG5n",
+            path: "/tmp/one.png",
+          },
+          {
+            mediaType: "image/jpeg",
+            base64: "anBn",
+            path: "/tmp/two.jpg",
+          },
+        ],
+      },
+      context(workspace),
+    );
+
+    expect(await readArgv(argvFile)).toEqual([
+      "exec",
+      "--json",
+      "--cd",
+      workspace,
+      "--full-auto",
+      "-i",
+      "/tmp/one.png",
+      "-i",
+      "/tmp/two.jpg",
+      "--color",
+      "never",
+      "describe these",
+    ]);
+  });
+
+  it("passes no -i flags when there are no attached images", async () => {
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const backend = new CodexBackend({ binaryPath });
+
+    await backend.run({ instruction: "ship it" }, context(workspace));
+
+    expect(await readArgv(argvFile)).not.toContain("-i");
+  });
+
   it("uses an explicit --sandbox workspace-write when fullAuto is disabled", async () => {
     const binaryPath = await writeFakeCodex(dir, { argvFile });
     const backend = new CodexBackend({

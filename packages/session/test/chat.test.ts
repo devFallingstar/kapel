@@ -293,6 +293,226 @@ describe("chat message appends", () => {
   });
 });
 
+describe("chat session naming", () => {
+  it("omits name when the session has none", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession());
+
+    const record = (await store.listChatSessions())[0] as ChatSessionRecord;
+    expect("name" in record).toBe(false);
+    expect(
+      (await store.loadChatSession("chat-1"))?.record.name,
+    ).toBeUndefined();
+    store.close();
+  });
+
+  it("stores a name given at creation", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession({ name: "release notes" }));
+
+    const record = (await store.listChatSessions())[0];
+    expect(record?.name).toBe("release notes");
+    store.close();
+  });
+
+  it("renames a session and touches it, independent of title", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession());
+    pinClock(12_345);
+    await store.renameChatSession("chat-1", "my session");
+
+    const record = (await store.loadChatSession("chat-1"))?.record;
+    expect(record?.name).toBe("my session");
+    expect(record?.title).toBe("add persistence");
+    expect(record?.updatedAt).toBe(12_345);
+
+    // Renaming something that is not there is a silent no-op, like
+    // setChatSessionTitle.
+    await store.renameChatSession("ghost", "nothing");
+    expect(await store.listChatSessions()).toHaveLength(1);
+    store.close();
+  });
+
+  it("a later rename overwrites an earlier one", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession({ name: "first" }));
+    await store.renameChatSession("chat-1", "second");
+    expect((await store.loadChatSession("chat-1"))?.record.name).toBe("second");
+    store.close();
+  });
+});
+
+describe("chat_sessions.name migration", () => {
+  it("adds the name column to a v0.5.0-shaped database on open", async () => {
+    const path = tempDbPath();
+
+    // Build the table exactly as it looked before `name` existed, bypassing
+    // the store entirely so this reproduces a database that predates the
+    // column.
+    const raw = new Database(path);
+    raw.exec(`
+      CREATE TABLE chat_sessions (
+        id TEXT PRIMARY KEY,
+        workspace_path TEXT NOT NULL,
+        title TEXT NOT NULL,
+        model_alias TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE chat_messages (
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        message_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, seq)
+      );
+    `);
+    raw
+      .prepare(
+        `INSERT INTO chat_sessions
+           (id, workspace_path, title, model_alias, created_at, updated_at, message_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run("old-1", "/work/repo", "pre-existing session", null, 1, 1, 0);
+    raw.close();
+
+    // Opening through the store must not throw, must pick the old row up,
+    // and must let it be named going forward.
+    const store = new SqliteSessionStore({ path });
+    const listed = await store.listChatSessions();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: "old-1",
+      title: "pre-existing session",
+    });
+    expect("name" in (listed[0] as ChatSessionRecord)).toBe(false);
+
+    await store.renameChatSession("old-1", "caught up");
+    expect((await store.loadChatSession("old-1"))?.record.name).toBe(
+      "caught up",
+    );
+    store.close();
+
+    // And the migration itself must be idempotent across further opens.
+    const reopened = new SqliteSessionStore({ path });
+    expect((await reopened.loadChatSession("old-1"))?.record.name).toBe(
+      "caught up",
+    );
+    reopened.close();
+  });
+});
+
+describe("chat session forking", () => {
+  it("copies metadata and the whole transcript into a new session", async () => {
+    const store = memoryStore();
+    await store.createChatSession(
+      chatSession({ modelAlias: "sonnet", name: "original" }),
+    );
+    await store.appendChatMessages("chat-1", turns("hello", "hi there"));
+
+    const newId = await store.forkChatSession("chat-1");
+    expect(newId).not.toBe("chat-1");
+
+    const forked = await store.loadChatSession(newId);
+    expect(forked?.record).toMatchObject({
+      id: newId,
+      workspacePath: "/work/repo",
+      title: "add persistence",
+      modelAlias: "sonnet",
+      messageCount: 2,
+    });
+    // A name is not copied automatically — see docstring on forkChatSession.
+    expect(forked?.record.name).toBeUndefined();
+    expect(forked?.messages).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi there" },
+    ]);
+    store.close();
+  });
+
+  it("names the fork when asked", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession());
+    await store.appendChatMessages("chat-1", turns("hello"));
+
+    const newId = await store.forkChatSession("chat-1", { name: "branch a" });
+    expect((await store.loadChatSession(newId))?.record.name).toBe("branch a");
+    store.close();
+  });
+
+  it("is independent of the source afterwards, in both directions", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession());
+    await store.appendChatMessages("chat-1", turns("hello", "hi there"));
+
+    const newId = await store.forkChatSession("chat-1");
+    await store.appendChatMessages(newId, [
+      { seq: 2, message: { role: "user", content: "only on the fork" } },
+    ]);
+    await store.appendChatMessages("chat-1", [
+      { seq: 2, message: { role: "user", content: "only on the original" } },
+    ]);
+
+    const original = await store.loadChatSession("chat-1");
+    const forked = await store.loadChatSession(newId);
+    expect(original?.messages.map((m) => m.content)).toEqual([
+      "hello",
+      "hi there",
+      "only on the original",
+    ]);
+    expect(forked?.messages.map((m) => m.content)).toEqual([
+      "hello",
+      "hi there",
+      "only on the fork",
+    ]);
+    expect(original?.record.messageCount).toBe(3);
+    expect(forked?.record.messageCount).toBe(3);
+    store.close();
+  });
+
+  it("copies zero messages cleanly for a session with none", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession());
+
+    const newId = await store.forkChatSession("chat-1");
+    const forked = await store.loadChatSession(newId);
+    expect(forked?.messages).toEqual([]);
+    expect(forked?.record.messageCount).toBe(0);
+    store.close();
+  });
+
+  it("rejects forking a session that does not exist", async () => {
+    const store = memoryStore();
+    await expect(store.forkChatSession("nope")).rejects.toThrow(/nope/);
+    store.close();
+  });
+
+  it("survives a JSON round-trip of tool calls through a fork", async () => {
+    const store = memoryStore();
+    await store.createChatSession(chatSession());
+    const transcript: readonly ModelMessage[] = [
+      { role: "user", content: "read the file" },
+      {
+        role: "assistant",
+        content: "reading",
+        toolCalls: [
+          { id: "call-1", name: "read_file", input: { path: "src/index.ts" } },
+        ],
+      },
+      { role: "tool", content: "ok", toolCallId: "call-1", isError: false },
+    ];
+    await store.appendChatMessages(
+      "chat-1",
+      transcript.map((message, seq) => ({ seq, message })),
+    );
+
+    const newId = await store.forkChatSession("chat-1");
+    expect((await store.loadChatSession(newId))?.messages).toEqual(transcript);
+    store.close();
+  });
+});
+
 describe("chat session mutation", () => {
   it("tolerates a duplicate create without clobbering the transcript", async () => {
     const store = memoryStore();

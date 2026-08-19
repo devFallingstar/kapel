@@ -1,6 +1,7 @@
 import path from "node:path";
 import { UsageTracker } from "@agent/ai";
 import { CodexBackend } from "@agent/coding-agent";
+import type { AgentImageAttachment } from "@agent/core";
 import {
   codexInstallGuidance,
   codexLoginGuidance,
@@ -17,6 +18,8 @@ export interface RunCodexObjectiveOptions {
   readonly json: boolean;
   readonly sandbox: SandboxMode;
   readonly fullAuto: boolean;
+  /** `-i/--image` attachments, already validated and read; see `images.ts` (P1-9). */
+  readonly images?: readonly AgentImageAttachment[];
 }
 
 /**
@@ -67,7 +70,12 @@ export async function runCodexObjective(
 
   try {
     const result = await backend.run(
-      { instruction: objective },
+      {
+        instruction: objective,
+        ...(options.images !== undefined && options.images.length > 0
+          ? { images: options.images }
+          : {}),
+      },
       {
         runId: crypto.randomUUID(),
         workspacePath,

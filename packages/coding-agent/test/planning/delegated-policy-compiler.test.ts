@@ -1,3 +1,4 @@
+import { UsageTracker } from "@agent/ai";
 import { PolicyCompileError } from "@agent/policy";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DelegatedPolicyCompiler } from "../../src/planning/delegated-policy-compiler.js";
@@ -15,6 +16,21 @@ import {
 } from "./delegated-cli-harness.js";
 
 const KNOWN_AGENTS = ["lead", "coder", "reviewer"] as const;
+
+/**
+ * The stand-in definition a delegated step attributes its spend to — the CLI
+ * owns its own catalog, so nothing here claims a price.
+ */
+const DELEGATED_MODEL = {
+  provider: "anthropic",
+  id: "<claude-code default>",
+  capabilities: {
+    tools: false,
+    reasoning: false,
+    vision: false,
+    structuredOutput: false,
+  },
+} as const;
 
 const MARKDOWN = `# Orchestration
 
@@ -239,5 +255,67 @@ describe("DelegatedPolicyCompiler", () => {
     expect((error as PolicyCompileError).lastIssues?.[0]?.message).toContain(
       "exited with code 3",
     );
+  });
+
+  it("records what the CLI reported spending, per attempt", async () => {
+    // The first reply is rejected, so both attempts' tokens must land in the
+    // ledger: a compile that had to retry cost what both calls cost.
+    const usage = new UsageTracker();
+    const withUsage = (reply: string): string =>
+      `${json({
+        type: "result",
+        subtype: "success",
+        result: reply,
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })}\n`;
+    const cli = await writeScriptedCli(dir, "claude-code", [
+      withUsage(json(INVALID_OUTPUT)),
+      withUsage(json(VALID_OUTPUT)),
+    ]);
+
+    const compiler = new DelegatedPolicyCompiler({
+      backend: "claude-code",
+      workspacePath: workspace,
+      knownAgents: KNOWN_AGENTS,
+      createBackend: fakeBackendFactory(cli.binaryPath),
+      usage: {
+        recorder: usage,
+        model: DELEGATED_MODEL,
+        tags: { agent: "policy" },
+      },
+    });
+
+    await compiler.compile(MARKDOWN);
+
+    const totals = usage.totals();
+    expect(totals.usage.inputTokens).toBe(200);
+    expect(totals.usage.outputTokens).toBe(40);
+    // No pricing is claimed for a CLI subscription, so no cost is invented.
+    expect(totals.costUsd).toBe(0);
+    expect([...usage.breakdownBy("agent").keys()]).toEqual(["policy"]);
+  });
+
+  it("records nothing when the CLI reported no usage", async () => {
+    // "No usage" must stay distinguishable from "zero tokens": the ledger
+    // gets no sample at all, so the CLI can report a zero-token line instead
+    // of the caller printing one the CLI never claimed.
+    const usage = new UsageTracker();
+    const cli = await writeScriptedCli(dir, "claude-code", [
+      claudeReply(json(VALID_OUTPUT)),
+    ]);
+
+    const compiler = new DelegatedPolicyCompiler({
+      backend: "claude-code",
+      workspacePath: workspace,
+      knownAgents: KNOWN_AGENTS,
+      createBackend: fakeBackendFactory(cli.binaryPath),
+      usage: { recorder: usage, model: DELEGATED_MODEL },
+    });
+
+    await compiler.compile(MARKDOWN);
+
+    expect(usage.totals().usage.inputTokens).toBe(0);
+    expect(usage.totals().usage.outputTokens).toBe(0);
+    expect([...usage.breakdownBy("agent").values()]).toEqual([]);
   });
 });

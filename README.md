@@ -9,7 +9,7 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.5.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.6.0.tgz
 
 cd /path/to/your/repo
 kapel                                 # first run asks which backend and models to use
@@ -27,7 +27,7 @@ Once published to the npm registry this becomes simply `npm install -g @devfalli
 If the tarball URL is unreachable from your network, the equivalent two-step
 form is `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.5.0.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.6.0.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
@@ -40,10 +40,10 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-kapel v0.5.0  claude-sonnet-5  session 0f3c9a2b
+kapel v0.6.0  claude-sonnet-5  session 0f3c9a2b
 /path/to/your/repo
 type /help for commands, /exit to quit
-\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands
+\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files
 
 kapel> calc.test.js is failing — find out why and fix it
 → read_file {"path":"calc.test.js"}
@@ -68,7 +68,22 @@ Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; an
 
 The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
 
-The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Typing `/` and pressing Tab completes the slash command.
+The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Tab completes what is under the cursor: a `/` command name, the argument of a command that has a fixed vocabulary (`/model ` offers the built-in aliases), or an `@` file mention.
+
+**`@` mentions a file.** Type `@` and part of a path, then Tab: the match is fuzzy over the whole path, so `@clisrc` finds `apps/cli/src/…` and `@input.ts` finds it wherever it lives. A unique winner is filled in; several share whatever prefix they have in common, and pressing Tab again lists them. The candidates are the workspace's files as `git ls-files --cached --others --exclude-standard` reports them — tracked files plus untracked ones your `.gitignore` does not exclude — cached for a few seconds so holding Tab down does not spawn a process per keystroke. Outside a git repo the list comes from a bounded walk instead (four levels deep, `node_modules`/`.git`/`dist` skipped).
+
+The mention stays plain text in your message. When the message is sent, every `@` token that names a real file inside the workspace is collected into one extra line:
+
+```text
+kapel> why is @apps/cli/src/input.ts holding stdin the whole time?
+
+  …sent as…
+  why is @apps/cli/src/input.ts holding stdin the whole time?
+
+  [mentioned files: apps/cli/src/input.ts]
+```
+
+The file's *contents* are never pasted in — the agent has `read_file` and decides for itself how much of the file it needs, which keeps the context window for the conversation instead of for bytes nobody asked for. A token that names nothing (`@here`, an email address, a path outside the directory you opened `kapel` in) is left alone and reported to nobody.
 
 Commands available at the prompt:
 
@@ -77,23 +92,51 @@ Commands available at the prompt:
 | `/help` | list these commands |
 | `/exit`, `/quit` | leave the session |
 | `/new` | start a fresh conversation in this directory |
-| `/sessions` | list this directory's conversations (id, last touched, messages, title) |
-| `/resume <id>` | switch to a stored conversation — a unique id prefix is enough |
+| `/sessions` | list this directory's conversations (id, name, last touched, messages, title) |
+| `/resume <id\|name>` | switch to a stored conversation — a unique id prefix or a `/name` both work |
+| `/name` / `/name <name>` | show, or set, this conversation's name — persists immediately |
+| `/fork` / `/fork <name>` | branch this conversation (everything said so far) into a new session and switch to it |
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
 | `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
 | `/usage` | tokens and cost so far |
 | `/compact` | compact the conversation history now (native backend only) |
+| `/undo` | put the files back the way they were before the last prompt |
 | `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
+| `/<name>` (custom) | run a command from `.agent/commands/<name>.md`; see below |
 
 Anything else you type is a message to the agent.
 
+**Custom commands from `.agent/commands/*.md`.** A file there defines `/<name>` (the name is the filename, lowercase letters/digits/hyphens only — e.g. `.agent/commands/review.md` becomes `/review`). The file is an optional YAML front matter block followed by a prompt template:
+
+```markdown
+---
+description: Review the current diff for bugs, then summarize risk
+model: claude-haiku-4-5
+---
+Review the current diff for bugs, correctness issues, and anything unfinished.
+
+$ARGUMENTS
+```
+
+`description` shows up in `/help`. `model` pins *this one turn* to that model (native backend only — on a delegated backend, or an alias that doesn't resolve, kapel prints one line saying the pin was skipped and runs on the session's current model instead); the session's own model is unaffected before or after. `agent` is parsed but reserved for a future sub-agent dispatch and does nothing yet. Whatever you type after the command name replaces every `$ARGUMENTS` in the template, or — if the template has no placeholder — gets appended after a blank line. The expanded text is sent exactly like a typed message: checkpoints, `@` mentions and history all apply normally. A file whose name collides with a built-in command (`/help.md`, say) is skipped in favor of the built-in, with a warning printed by `/help`; commands are scanned once at startup and rescanned on every `/help`, so adding a file mid-session doesn't need a restart. `kapel init` ships one example, `.agent/commands/review.md`.
+
 On the native backend, a long conversation compacts itself automatically once it passes 60 messages — old tool results get elided (kept ones are marked, nothing is dropped from the transcript), leaving one dim `≈ context compacted: …` line — so it keeps going instead of eventually blowing the model's context window. `/compact` does the same thing on demand, useful right before a turn you want as much context budget for as possible. Under `--backend codex` or `--backend claude-code` the external CLI manages its own context, so `/compact` there just says it isn't supported.
+
+**`/undo` — a checkpoint before every prompt.** The interactive agent writes straight to your files, with no worktree between you and it, so kapel takes a snapshot of the working tree just before each message is sent (slash commands change nothing, so they take none) and `/undo` restores the newest one: `↩ restored 3 files to before "fix the tests" (2 min ago)`. The snapshot is a git tree object built against a *temporary* index — your index, your worktree and your stash list are never touched — which means it covers untracked files too, not only the ones `git stash` would see. Restoring diffs that snapshot against the tree as it is now and reverses the difference: files the turn changed are rewritten, files it created are deleted, files it deleted come back.
+
+Read the fine print before you rely on it:
+
+- **git only.** Outside a git repository nothing is captured and `/undo` says so — full-directory copies of an arbitrary working directory are not a trade kapel is willing to make on your behalf.
+- **It reverts the file, not the author.** Everything that changed since the checkpoint goes back, whoever changed it — the agent's `edit_file`, a `bash` command it ran, your own editor in another window, a build that wrote into the tree. If a turn ran that long, look before you undo.
+- **Scope.** The snapshot covers the whole repository the working directory belongs to, minus anything `.gitignore` excludes (`node_modules/`, build output, `.env`) and minus `.agent/`, which holds kapel's own session database and task worktrees. Those are never captured and never restored.
+- **One-way, and only for this process.** There is no `/redo`: an undone checkpoint is popped. The last 20 checkpoints of a session are kept, in memory only — quitting kapel forgets them. The commit objects behind them stay in the repository unreferenced (`git show <hash>` still works if you noted one down) until git's own garbage collection eventually prunes them.
+- **Refusals.** `/undo` will not run while a merge, rebase, cherry-pick, revert or bisect is half-finished; finish or abort that first. The checkpoint stays put in the meantime.
 
 **Sessions are per directory and survive restarts.** Every conversation is recorded in `.agent/sessions.db` beside the repo (the directory is created on first use — no `kapel init` needed), titled from your first message. Pick one back up with:
 
 ```bash
 kapel chat --continue           # the most recent conversation here
-kapel chat --session 0f3c9a2b   # a specific one (id or unique prefix)
+kapel chat --session 0f3c9a2b   # a specific one (id, unique prefix, or /name)
 kapel chat --no-save            # …or don't record this one at all
 ```
 
@@ -111,15 +154,42 @@ kapel -y "fix the failing test"        # no permission prompts
 
 `kapel exec "<objective>"` is the same thing spelled out.
 
+**Piped stdin becomes context**, not a second conversation: when stdin isn't a terminal and you also give an objective, whatever is piped in is read to the end (capped at 1 MiB, truncated with a `[stdin truncated]` marker past that) and appended after the objective, separated by a `--- piped input ---` line:
+
+```bash
+cat error.log | kapel "explain this failure"
+```
+
+Piping nothing (`< /dev/null`, or a command that produces no output) leaves the objective untouched — same as not piping at all. This composes with every flag above (`--json`, `-y`, `--backend`, `-m`, …), since the piped text only ever changes the objective/prompt text. Piping with **no** objective given is a different, unchanged feature — lines piped in drive the interactive prompt instead (see [Interactive mode](#interactive-mode)).
+
+**Attach images with `-i/--image <path>`** (repeatable, up to 4 per run, 5 MiB per file, 20 MiB combined):
+
+```bash
+kapel -i screenshot.png "why does this dialog render off-screen?"
+kapel -i before.png -i after.png "what changed between these two?"
+```
+
+PNG, JPEG, GIF and WEBP are recognized from the file's actual bytes, not its extension — a `.png` that is really a renamed JPEG is still sent correctly as JPEG. Support depends on the backend:
+
+| Backend | Support |
+|---|---|
+| native (default) | Sent as image content blocks alongside the objective, in the same request as the rest of the turn. |
+| `--backend codex` | Forwarded as repeated `codex exec -i <path>` flags. This has only been exercised against a fake CLI in kapel's own tests, not the real Codex binary — treat it as unverified until you've tried it. |
+| `--backend claude-code` | Not supported: `claude -p` (headless mode) has no documented flag for attaching an image, so kapel fails the run immediately with a clear message rather than silently dropping the attachment or stuffing it into the text prompt. |
+
+Interactive mode (`kapel chat`) does not accept `-i/--image` yet.
+
 Useful commands and flags:
 
-- `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id>`, `--no-save`
+- `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id|name>`, `--no-save`
 - `kapel init` — copy the default `.agent/` configuration template into the current repo
 - `kapel models` — list available model aliases and their credential status
 - `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
 - `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
+- `kapel sessions` / `kapel sessions fork <id|name> [--name <name>]` — list and branch interactive chat sessions; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
+- `-i, --image <path>` — attach an image (repeatable, up to 4, 5 MiB each); native and codex backends only, see above
 - `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only). Assistant text arrives twice over: as `model.text.delta` lines while it streams, and once whole in the turn's `model.turn.completed` line — a consumer that only knows the latter can ignore the deltas and read exactly what it always did
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
 - `--backend <native|codex|claude-code>` — execution backend (default `native`, or `AGENT_BACKEND`, or your stored config); see [Codex backend](#codex-backend) and [Claude Code backend](#claude-code-backend)
@@ -173,6 +243,47 @@ config when you have one (`lead` and `reviewer` from the orchestrator model,
 `complex`, `worker` and `cheap` from the three worker models), and copies the
 template unchanged when you don't.
 
+### Permissions
+
+Without `-y`, `write_file`/`edit_file`/`bash` ask on the terminal (`[y/n/a]` —
+"a" remembers the answer for the rest of that run only, never written
+anywhere). A `permission` block, hand-edited into either config file, changes
+what asks and what doesn't — opencode's syntax, unchanged:
+
+```jsonc
+// ~/.kapel/config.json
+{
+  "version": 1, "backend": "…", "models": { "…": "…" },
+  "permission": {
+    "edit_file": "allow",
+    "bash": { "*": "ask", "git *": "allow", "rm *": "deny" }
+  }
+}
+```
+
+```yaml
+# .agent/config.yaml — same shape, applies to this project only
+permission:
+  edit_file: allow
+  bash:
+    "*": ask
+    "git *": allow
+    "rm *": deny
+```
+
+Each tool's value is `"allow" | "ask" | "deny"`, except `bash`, whose value is
+a map of command patterns to verdicts: `"*"` is the catch-all, `"git *"`
+matches any `git` subcommand, `"git log *"` matches only `git log`, and a bare
+`"git"` matches only `git` with no subcommand at all — the most specific
+pattern that matches wins, and an explicit `"deny"` always wins a tie.
+
+Precedence: built-in defaults, then `~/.kapel/config.json`, then
+`.agent/config.yaml` — each layer only needs to mention what it wants to
+change. A `"deny"` from any of these three cannot be talked around by
+answering "a" at the prompt; it never reaches the prompt at all. There is no
+`/config` UI for this yet — edit the file, restart the run. Neither file needs
+a `permission` block; both work exactly as before without one.
+
 ### Project instructions (AGENTS.md)
 
 Drop an `AGENTS.md` in your repo and kapel follows it from the first turn — the same file Codex and opencode already read, and that Claude Code picks up via `@AGENTS.md` imports, so a repository only has to write its rules once. Up to three are merged into the system prompt, machine-level first so a project's rules add to (never silently lose to) your personal ones:
@@ -222,6 +333,11 @@ a reviewer really does run without `Write` and `Edit`. Approvals stay Claude
 Code's own (`acceptEdits`), and the project's `validation:` commands gate
 mutating tasks here just as they do on the native loop.
 
+What this backend still does not support is `-i/--image`: `claude -p` has no
+image flag, so a run with attachments fails immediately with a clear message
+rather than sending the objective without them — see
+[One-shot mode](#one-shot-mode).
+
 ### Authentication
 
 Any of these can also go in a `.env` file in the workspace instead of the shell environment.
@@ -252,11 +368,12 @@ kapel --backend codex "fix the failing test"
 
 `.agent/orchestration.md` is your routing/concurrency/review/retry/escalation policy, written in plain English. The CLI compiles it to a typed, deterministic IR:
 
-- `kapel policy compile` — uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map).
+- `kapel policy compile` — uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map). Each warning/ambiguity that quotes a source phrase is annotated with the `orchestration.md:12` line (or `:12-13` when the phrase wraps lines) it was found at — best-effort: a phrase the compiler paraphrased instead of quoting carries no location, never a wrong one. `--json` adds parallel `warningLocations`/`ambiguityLocations` arrays (`null` where unresolved). The text output also prints what the compile spent; on a delegated backend that is whatever the CLI reported, and "none reported" when it reported nothing rather than a misleading `0`.
 - `kapel policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
-- `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM.
+- `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM. Same line-annotated warnings/ambiguities as `compile`.
+- `kapel policy diff` — recompiles `orchestration.md` (one LLM call, same resolution as `compile`) and diffs the result against the current lock **without writing it**, so you can review a change before committing to it: routing/review/escalation rules added, removed, or changed field-by-field (matched by each rule's own `id`, not its position — reordering a policy's rules between compiles is not a change), plus any changed defaults (`orchestrator`, `maxConcurrency`, `parallelizeIndependentTasks`, `defaultMaxAttempts`). `--json` emits `{ok, unchanged, defaults, routing, review, escalation, warnings, ambiguities}`. "Same resolution as `compile`" includes the backend: under `--backend codex`/`--backend claude-code` the recompile is delegated to that CLI, so `diff` needs no API key either.
 
-All three accept `--cwd` and `--json`.
+All four accept `--cwd` and `--json`.
 
 ### Orchestrate
 
@@ -272,9 +389,11 @@ Both commands require a fresh `.agent/orchestration.lock.json` and refuse to gue
 
 Under `--backend codex` or `--backend claude-code` the planning conversation is delegated to that CLI too, so **planning needs no API key either** — it runs as one read-only `codex exec --sandbox read-only` / `claude -p --permission-mode plan` call in your workspace, on the orchestrator agent's configured model (or whatever `-m/--model` names, verbatim), and the plan it replies with is validated against the same schema and the same rules as on the native path.
 
-`kapel policy compile` is delegated the same way on those backends — the same single read-only call, the same IR schema, the same warnings and ambiguities in the lock — on whatever model your `orchestrator` setting names (`-m/--model` > `AGENT_MODEL` > `~/.kapel/config.json`), or the CLI's own default when nothing names one, in which case the lock records it as `<codex default>`/`<claude-code default>`. **So the whole pipeline — compile, plan, orchestrate — runs on a Codex or Claude Code subscription with no API key anywhere.**
+`kapel policy compile` is delegated the same way on those backends — the same single read-only call, the same IR schema, the same warnings and ambiguities in the lock — on whatever model your `orchestrator` setting names (`-m/--model` > `AGENT_MODEL` > `~/.kapel/config.json`), or the CLI's own default when nothing names one, in which case the lock records it as `<codex default>`/`<claude-code default>`. `kapel policy diff` recompiles through the same delegated path. **So the whole pipeline — compile, diff, plan, orchestrate — runs on a Codex or Claude Code subscription with no API key anywhere.**
 
 `kapel plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite. `--json` emits a single `{plan, injectedReviews, notes, routes}` object. `kapel orchestrate --dry-run` prints exactly the same thing.
+
+`kapel plan --why [taskId]` additionally prints the routing rationale — the same `PolicyRouter.decide` the scheduler itself runs at execution time — for one task, or every task when no id is given: which rule matched (its match criteria, strength and weight) or, with no matching rule, whether it fell back to the task's `suggestedAgent` or the policy's orchestrator, plus the model alias the picked agent is configured with. `--json` adds a `why` array of `{taskId, title, type, complexity, agent, modelAlias?, reason, rule?}` alongside the usual plan output.
 
 During a run, task lifecycle lines are interleaved with the workers' own output:
 
@@ -343,7 +462,17 @@ kapel resume 0f3c…             # finish the tasks that never succeeded
 - **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
 - **`kapel resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `kapel orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
 
-Interactive conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `kapel runs` reads the orchestration runs above. See [Interactive mode](#interactive-mode).
+Interactive conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `kapel runs` reads the orchestration runs above. See [Interactive mode](#interactive-mode). Outside the REPL, `kapel sessions` lists them the same way `kapel runs` lists orchestration runs, and `kapel sessions fork <id|name> [--name <name>]` copies one — its title, model and whole transcript so far — into a brand new session that then evolves independently of the one it was forked from:
+
+```bash
+kapel sessions                                # this workspace's chat sessions, newest-touched first
+kapel sessions fork 0f3c…                     # copy a conversation into a new, unnamed session
+kapel sessions fork 0f3c… --name "plan b"     # …and name the copy
+```
+
+`kapel sessions` shows a `NAME` column once any listed session has one; a session picks up a name by being forked with `--name`, or from `/name` at the prompt (see the command table above — it persists immediately, no need to wait for the next message). `kapel sessions fork` and `--session` everywhere they appear (`kapel chat --session`, `/resume`) resolve `<id|name>` in this order: an exact id, then a unique id prefix, then an exact name — if two sessions share a name the most recently touched one is used and a note is printed to stderr. `--json` on either `sessions` command emits the same fields as an array/object instead of a table/line.
+
+`/fork [name]` at the prompt does the same copy `kapel sessions fork` does, but from inside the REPL and on the conversation you're already in: it branches everything said so far into a new session and switches you onto it immediately (the original stays put, unaffected, with its own history up to the fork point). Useful for "let me try a different approach without losing where I was" — `/fork before-refactor`, try the risky thing, `/resume` back to the original if it doesn't pan out.
 
 `--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 

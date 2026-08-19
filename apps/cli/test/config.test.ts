@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { defaultModelCatalog } from "@agent/ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KapelConfig } from "../src/config.js";
 import {
   backendChoices,
@@ -242,6 +242,142 @@ describe("saveKapelConfig / loadKapelConfig", () => {
   it("returns undefined for a JSON document that is not an object", async () => {
     await writeFile(kapelConfigPath(env), '"nope"', "utf8");
     expect(await loadKapelConfig(env)).toBeUndefined();
+  });
+});
+
+// --- P1-5: the machine-level `permission` block ------------------------------
+
+async function writeRawConfig(
+  filePath: string,
+  overrides: Record<string, unknown>,
+): Promise<void> {
+  await writeFile(
+    filePath,
+    JSON.stringify({
+      version: KAPEL_CONFIG_VERSION,
+      backend: "codex",
+      models: MODELS,
+      updatedAt: 1,
+      ...overrides,
+    }),
+    "utf8",
+  );
+}
+
+describe("loadKapelConfig - permission block", () => {
+  it("round-trips a valid permission block, flat and pattern-map alike", async () => {
+    await writeRawConfig(kapelConfigPath(env), {
+      permission: {
+        edit_file: "allow",
+        bash: { "*": "ask", "git *": "allow", "rm *": "deny" },
+      },
+    });
+
+    const loaded = await loadKapelConfig(env);
+    expect(loaded?.permission).toEqual({
+      edit_file: "allow",
+      bash: { "*": "ask", "git *": "allow", "rm *": "deny" },
+    });
+  });
+
+  it("omits the key entirely when there is no permission block", async () => {
+    await writeRawConfig(kapelConfigPath(env), {});
+    const loaded = await loadKapelConfig(env);
+    expect(loaded).not.toHaveProperty("permission");
+  });
+
+  it("drops an invalid tool verdict and warns, but keeps the rest of the config", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await writeRawConfig(kapelConfigPath(env), {
+        permission: { edit_file: "maybe", read_file: "allow" },
+      });
+
+      const loaded = await loadKapelConfig(env);
+      expect(loaded?.backend).toBe("codex");
+      expect(loaded?.permission).toEqual({ read_file: "allow" });
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("drops an invalid bash pattern verdict and warns", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await writeRawConfig(kapelConfigPath(env), {
+        permission: { bash: { "*": "ask", "git *": "sometimes" } },
+      });
+
+      const loaded = await loadKapelConfig(env);
+      expect(loaded?.permission).toEqual({ bash: { "*": "ask" } });
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("ignores a permission block that isn't an object, warns, keeps the config", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await writeRawConfig(kapelConfigPath(env), { permission: "allow" });
+
+      const loaded = await loadKapelConfig(env);
+      expect(loaded?.backend).toBe("codex");
+      expect(loaded).not.toHaveProperty("permission");
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("drops a bash entry left with no valid patterns at all", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await writeRawConfig(kapelConfigPath(env), {
+        permission: { bash: { "git *": "sometimes" } },
+      });
+
+      const loaded = await loadKapelConfig(env);
+      expect(loaded).not.toHaveProperty("permission");
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("never crashes on a malformed permission block", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await writeRawConfig(kapelConfigPath(env), {
+        permission: { bash: 42, edit_file: [] },
+      });
+      await expect(loadKapelConfig(env)).resolves.toBeDefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("saveKapelConfig - permission preservation", () => {
+  it("writes a permission block when one is passed", async () => {
+    await saveKapelConfig(
+      {
+        backend: "codex",
+        models: MODELS,
+        updatedAt: 1,
+        permission: { edit_file: "allow" },
+      },
+      env,
+    );
+    const loaded = await loadKapelConfig(env);
+    expect(loaded?.permission).toEqual({ edit_file: "allow" });
+  });
+
+  it("writes no permission key when none is passed", async () => {
+    await saveKapelConfig({ backend: "codex", models: MODELS }, env);
+    const loaded = await loadKapelConfig(env);
+    expect(loaded).not.toHaveProperty("permission");
   });
 });
 

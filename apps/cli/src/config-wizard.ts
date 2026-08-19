@@ -194,18 +194,31 @@ export async function runConfigWizard(
     low: picked.low ?? defaults.low,
   };
 
+  // The wizard has no permission-editing step (P1-5 is file-edited only) —
+  // whatever `permission` block the config already had on disk rides along
+  // unchanged rather than being dropped by this rewrite.
   const config: KapelConfig = {
     version: KAPEL_CONFIG_VERSION,
     backend,
     models,
     updatedAt: (deps.now ?? Date.now)(),
+    ...(deps.current?.permission === undefined
+      ? {}
+      : { permission: deps.current.permission }),
   };
 
   for (const line of describeConfig(config)) deps.write(line);
 
   if (deps.save !== false) {
     const filePath = await saveKapelConfig(
-      { backend, models, updatedAt: config.updatedAt },
+      {
+        backend,
+        models,
+        updatedAt: config.updatedAt,
+        ...(config.permission === undefined
+          ? {}
+          : { permission: config.permission }),
+      },
       deps.env,
     );
     deps.write(`saved to ${filePath}`);

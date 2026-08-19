@@ -236,6 +236,43 @@ describe("AgentLoop — plain text turns", () => {
     expect(user.indexOf("file a")).toBeLessThan(user.indexOf("file b"));
   });
 
+  it("attaches images to the seeded user message (P1-9), and omits `images` when there are none", async () => {
+    const provider = new ScriptedProvider([text("ok")]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [],
+      permissions: allowAll(),
+    });
+
+    await loop.run(
+      {
+        instruction: "what is in this screenshot?",
+        images: [
+          { mediaType: "image/png", base64: "cG5n", path: "/tmp/a.png" },
+        ],
+      },
+      RUN_CONTEXT,
+    );
+
+    const messages = provider.requests[0]?.messages ?? [];
+    expect(messages[1]?.role).toBe("user");
+    expect(messages[1]?.images).toEqual([
+      { mediaType: "image/png", base64: "cG5n", path: "/tmp/a.png" },
+    ]);
+
+    const secondProvider = new ScriptedProvider([text("ok")]);
+    const secondLoop = new AgentLoop({
+      agent: AGENT,
+      provider: secondProvider,
+      tools: [],
+      permissions: allowAll(),
+    });
+    await secondLoop.run({ instruction: "no images here" }, RUN_CONTEXT);
+    const plainMessages = secondProvider.requests[0]?.messages ?? [];
+    expect(plainMessages[1]).not.toHaveProperty("images");
+  });
+
   it("passes the tool definitions to the provider", async () => {
     const echo = makeTool("echo", async (input) => input);
     const provider = new ScriptedProvider([text("done")]);

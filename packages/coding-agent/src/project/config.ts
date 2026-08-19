@@ -28,6 +28,21 @@ const ValidatorSchema = z
   })
   .strict();
 
+// opencode's permission syntax (P1-5): a flat verdict per tool, or, for
+// `bash`, a map of command-prefix patterns to verdicts —
+// `{"bash": {"*": "ask", "git *": "allow"}}`. See
+// `packages/coding-agent/src/permissions.ts` for how a pattern matches.
+const PermissionDecisionSchema = z.enum(["allow", "ask", "deny"]);
+const BashPermissionRulesSchema = z.record(
+  z.string(),
+  PermissionDecisionSchema,
+);
+const ToolPermissionRuleSchema = z.union([
+  PermissionDecisionSchema,
+  BashPermissionRulesSchema,
+]);
+const PermissionSchema = z.record(z.string(), ToolPermissionRuleSchema);
+
 const ConfigFileSchema = z
   .object({
     models: z.record(z.string(), ModelRefSchema).optional(),
@@ -35,6 +50,7 @@ const ConfigFileSchema = z
       .record(z.string(), z.string().min(1, "must not be empty"))
       .optional(),
     validation: z.array(ValidatorSchema).optional(),
+    permission: PermissionSchema.optional(),
   })
   .strict();
 
@@ -42,12 +58,14 @@ const EMPTY_CONFIG: AgentProjectConfig = {
   models: {},
   agentSlots: {},
   validators: [],
+  permission: {},
 };
 
 /**
  * Loads `<agentDir>/config.yaml`. A missing file yields the empty config
- * (`{ models: {}, agentSlots: {}, validators: [] }`); malformed YAML or a shape
- * mismatch throws {@link ProjectConfigError} with every problem found.
+ * (`{ models: {}, agentSlots: {}, validators: [], permission: {} }`);
+ * malformed YAML or a shape mismatch throws {@link ProjectConfigError} with
+ * every problem found.
  */
 export async function loadProjectConfig(
   agentDir: string,
@@ -98,5 +116,6 @@ export async function loadProjectConfig(
     models,
     agentSlots: { ...(result.data.agents ?? {}) },
     validators,
+    permission: { ...(result.data.permission ?? {}) },
   };
 }

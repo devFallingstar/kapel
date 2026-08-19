@@ -1,4 +1,8 @@
-import type { ModelDefinition, ToolDefinition } from "@agent/ai";
+import type {
+  ImageMediaType,
+  ModelDefinition,
+  ToolDefinition,
+} from "@agent/ai";
 
 export type AgentRole = "orchestrator" | "worker" | "reviewer";
 export type PermissionDecision = "allow" | "ask" | "deny";
@@ -32,9 +36,23 @@ export interface ToolRegistry {
   listFor(agent: AgentDefinition): readonly Tool[];
 }
 
+/**
+ * One image attached to a run (P1-9's `-i/--image`). `base64` is what the
+ * native loop hands the model as an `ImagePart`; `path` is the absolute
+ * filesystem path it was read from, which delegated CLI backends that take
+ * a path rather than inline bytes (e.g. Codex's `-i`) forward as-is.
+ */
+export interface AgentImageAttachment {
+  readonly mediaType: ImageMediaType;
+  readonly base64: string;
+  readonly path: string;
+}
+
 export interface AgentRunInput {
   readonly instruction: string;
   readonly context?: readonly string[];
+  /** Images attached to this run, already validated and read (P1-9). */
+  readonly images?: readonly AgentImageAttachment[];
 }
 
 export interface AgentRunResult {

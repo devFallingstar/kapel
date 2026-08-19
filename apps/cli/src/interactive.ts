@@ -5,9 +5,11 @@ import type {
   ModelDefinition,
   ModelMessage,
   ModelProvider,
+  UsageBreakdown,
+  UsageDimension,
   UsageTotals,
 } from "@agent/ai";
-import { UsageTracker } from "@agent/ai";
+import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type { AgentLoopRunContext, ChatTurnResult } from "@agent/coding-agent";
 import {
   AgentChatSession,
@@ -21,6 +23,7 @@ import type { AgentDefinition } from "@agent/core";
 import type {
   ChatSessionRecord,
   ChatSessionTranscript,
+  ForkChatSessionOptions,
   ListChatSessionsOptions,
   NewChatSession,
   PersistedChatMessage,
@@ -28,6 +31,7 @@ import type {
 import {
   chatTitleFrom,
   defaultSessionDbPath,
+  resolveChatSessionReference,
   SqliteSessionStore,
 } from "@agent/session";
 import type { BackendName } from "./backend.js";
@@ -38,6 +42,10 @@ import {
   codexLoginGuidance,
   isDelegatedBackend,
 } from "./backend.js";
+import type { CheckpointStore } from "./checkpoint.js";
+import { createCheckpointStore, undoLines } from "./checkpoint.js";
+import type { CustomCommand, LoadCustomCommandsResult } from "./commands.js";
+import { expandCustomCommand, loadCustomCommands } from "./commands.js";
 import type { KapelConfig } from "./config.js";
 import {
   checkBackendAvailability,
@@ -53,23 +61,36 @@ import {
 } from "./delegated-chat.js";
 import { loadDotEnvFile } from "./env.js";
 import { createHistoryAppender, loadHistory } from "./history.js";
+import type { CompleterResult, InputCompleter } from "./input.js";
 import {
   createInputManager,
   INPUT_SIGINT,
   type InputManager,
 } from "./input.js";
 import { composeSystemPrompt, loadInstructions } from "./instructions.js";
+import type { FileLister } from "./mention.js";
+import {
+  annotateMentions,
+  completeMention,
+  createFileLister,
+  mentionTokenAt,
+  workspaceFileExists,
+} from "./mention.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import {
   DEFAULT_ISOLATION,
   DEFAULT_WORKER_MODE,
   runOrchestrate,
 } from "./orchestrate.js";
-import { DEFAULT_PERMISSIONS } from "./permissions.js";
+import {
+  DEFAULT_PERMISSIONS,
+  loadRepoPermissionRules,
+  resolvePermissionRules,
+} from "./permissions.js";
 import { formatTable } from "./plan.js";
 import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
-import { TextRenderer } from "./render.js";
+import { TextRenderer, usageRollupLines } from "./render.js";
 import type { ResolvedModel } from "./run.js";
 import {
   agentLoopOptions,
@@ -82,7 +103,7 @@ import { isoTime } from "./sessions.js";
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
  * here so both spellings of it come from one place.
  */
-export const CLI_VERSION = "0.5.0";
+export const CLI_VERSION = "0.6.0";
 
 /** How many characters of a session id identify it in listings and the banner. */
 const SHORT_ID = 8;
@@ -211,6 +232,13 @@ export interface ChatStore {
     messages: readonly PersistedChatMessage[],
   ): Promise<void>;
   setChatSessionTitle(sessionId: string, title: string): Promise<void>;
+  /** Backs `/name`; see `SqliteSessionStore.renameChatSession`. */
+  renameChatSession(sessionId: string, name: string): Promise<void>;
+  /** Backs `/fork`; see `SqliteSessionStore.forkChatSession`. */
+  forkChatSession(
+    sessionId: string,
+    options?: ForkChatSessionOptions,
+  ): Promise<string>;
   listChatSessions(
     workspacePath?: string,
     options?: ListChatSessionsOptions,
@@ -231,6 +259,8 @@ export type InteractiveEffect =
   | "exit"
   | "new-session"
   | "resumed"
+  | "renamed"
+  | "forked"
   | "model-changed"
   | "config-changed";
 
@@ -246,6 +276,8 @@ export interface DispatchResult {
 export interface InteractiveStart {
   readonly sessionId: string;
   readonly title: string;
+  /** User-given label (`/name`), when the resumed session has one. */
+  readonly name?: string;
   /** True when a row for this id already exists in the store. */
   readonly persisted: boolean;
   readonly messages: readonly ModelMessage[];
@@ -259,47 +291,35 @@ export interface StartSelector {
 }
 
 export type StartResolution =
-  | { readonly start: InteractiveStart }
+  | { readonly start: InteractiveStart; readonly note?: string }
   | { readonly error: string };
 
-function availableSessionsHint(records: readonly ChatSessionRecord[]): string {
-  if (records.length === 0) return "";
-  const listed = records
-    .slice(0, SESSIONS_LIMIT)
-    .map((record) => shortId(record.id))
-    .join(", ");
-  return ` Available: ${listed}.`;
-}
-
 /**
- * Resolves a session reference against the stored sessions of one workspace.
- *
- * Prefix matching is deliberate: the ids users see are the short ones, so the
- * ids they type are short too. An ambiguous prefix is an error rather than a
- * "first match wins" guess — resuming the wrong conversation is not something
- * the user would notice until they had already talked to it.
+ * Resolves a `--session`/`/resume` reference and reports the one thing about
+ * it worth telling the user without failing the resolution: two sessions
+ * sharing a name, resolved to the more recent one. `matchChatSession` used to
+ * live here as a hand-rolled id-only version of exactly this; P1-8 moved that
+ * logic into `@agent/session` (`resolveChatSessionReference`) and taught it
+ * names too, so both `--session` and `/resume` take a name as readily as an
+ * id or an id prefix — this is the one place that still has to turn its
+ * `onNote` into something printable.
  */
-export function matchChatSession(
+function resolveSessionReference(
   records: readonly ChatSessionRecord[],
   reference: string,
-): { readonly record: ChatSessionRecord } | { readonly error: string } {
-  const exact = records.find((record) => record.id === reference);
-  if (exact !== undefined) return { record: exact };
-
-  const matches = records.filter((record) => record.id.startsWith(reference));
-  const first = matches[0];
-  if (first === undefined) {
-    return {
-      error: `No chat session matches "${reference}".${availableSessionsHint(records)}`,
-    };
-  }
-  if (matches.length > 1) {
-    const ids = matches.map((record) => shortId(record.id)).join(", ");
-    return {
-      error: `"${reference}" matches ${matches.length} sessions: ${ids}. Use a longer prefix.`,
-    };
-  }
-  return { record: first };
+):
+  | { readonly record: ChatSessionRecord; readonly note?: string }
+  | { readonly error: string } {
+  let note: string | undefined;
+  const resolved = resolveChatSessionReference(records, reference, {
+    onNote: (found) => {
+      note = found;
+    },
+  });
+  if ("error" in resolved) return { error: resolved.error };
+  return note === undefined
+    ? { record: resolved.record }
+    : { record: resolved.record, note };
 }
 
 function startFrom(transcript: ChatSessionTranscript): InteractiveStart {
@@ -308,12 +328,15 @@ function startFrom(transcript: ChatSessionTranscript): InteractiveStart {
     title: transcript.record.title,
     persisted: true,
     messages: transcript.messages,
+    ...(transcript.record.name === undefined
+      ? {}
+      : { name: transcript.record.name }),
   };
 }
 
 /**
  * Decides which conversation this invocation opens: a new one, the most
- * recently touched one (`--continue`), or a named one (`--session`).
+ * recently touched one (`--continue`), or a named one (`--session <id|name>`).
  *
  * Both resume flags need somewhere to resume *from*, so asking for one
  * without persistence — or in a workspace that has never recorded a chat — is
@@ -343,13 +366,15 @@ export async function resolveStartSession(
   const records = await store.listChatSessions(workspacePath);
 
   if (selector.session !== undefined) {
-    const matched = matchChatSession(records, selector.session);
+    const matched = resolveSessionReference(records, selector.session);
     if ("error" in matched) return { error: matched.error };
     const transcript = await store.loadChatSession(matched.record.id);
     if (transcript === undefined) {
       return { error: `Chat session ${matched.record.id} could not be read.` };
     }
-    return { start: startFrom(transcript) };
+    return matched.note === undefined
+      ? { start: startFrom(transcript) }
+      : { start: startFrom(transcript), note: matched.note };
   }
 
   const latest = records[0];
@@ -410,6 +435,41 @@ export function usageTotalsLine(totals: UsageTotals): string {
     : line;
 }
 
+/**
+ * `/usage`'s per-model view: whatever the native tracker attributed, plus one
+ * bucket per delegating backend that ran a turn this process.
+ *
+ * A delegated backend bills a subscription, not tokens, so its bucket carries
+ * real token counts and a price only when the CLI itself reported one —
+ * otherwise `unknown`, which renders as `n/a` rather than a misleading `$0.00`.
+ */
+export function chatUsageBreakdown(
+  native: ReadonlyMap<string, UsageBreakdown>,
+  delegated: readonly {
+    readonly label: string;
+    readonly totals: UsageTotals;
+  }[],
+): ReadonlyMap<string, UsageBreakdown> {
+  const out = new Map(native);
+  for (const { label, totals } of delegated) {
+    const { inputTokens, outputTokens } = totals.usage;
+    if (inputTokens === 0 && outputTokens === 0 && totals.costUsd === 0) {
+      continue;
+    }
+    out.set(label, {
+      key: label,
+      usage: totals.usage,
+      costUsd: totals.costUsd,
+      pricing: totals.costUsd > 0 ? "known" : "unknown",
+      models: [label],
+      agents: [UNATTRIBUTED],
+      tasks: [UNATTRIBUTED],
+      samples: 1,
+    });
+  }
+  return out;
+}
+
 /** What one turn cost, as a difference between two cumulative snapshots. */
 export function usageDeltaLine(
   before: UsageTotals,
@@ -439,8 +499,19 @@ export interface InteractiveControllerDeps {
   readonly provider?: ModelProvider;
   /** Where the conversation starts; see {@link resolveStartSession}. */
   readonly start: InteractiveStart;
-  /** Cumulative usage across every turn of this process. */
-  readonly usage: { totals(): UsageTotals };
+  /**
+   * Cumulative usage across every turn of this process.
+   *
+   * `breakdownBy` is optional: a source that cannot attribute its spend (a
+   * bare delegated total) still reports a running total, and `/usage` prints
+   * the breakdown only when there is one to print.
+   */
+  readonly usage: {
+    totals(): UsageTotals;
+    breakdownBy?(
+      dimension: UsageDimension,
+    ): ReadonlyMap<string, UsageBreakdown>;
+  };
   /** Resolves a `/model <alias>` switch. Defaults to the real registry. */
   readonly resolveModel?: (alias: string) => Promise<ResolvedModel>;
   /** Runs `/orchestrate <objective>`; absent means the command is unavailable. */
@@ -451,14 +522,44 @@ export interface InteractiveControllerDeps {
    * run it on, and `/config` says so instead.
    */
   readonly configure?: () => Promise<KapelConfig | undefined>;
+  /**
+   * Working-tree checkpoints for `/undo`. Absent means the feature is off and
+   * `/undo` says so — which is what a caller with no filesystem to snapshot
+   * (the tests) gets by simply not passing one.
+   */
+  readonly checkpoints?: CheckpointStore;
+  /**
+   * Decides whether an `@mention` names a real workspace file, for the
+   * send-time annotation. Defaults to a containment-checked `stat` under
+   * {@link workspacePath}; tests override it to keep the decision in memory.
+   */
+  readonly fileExists?: (relativePath: string) => boolean | Promise<boolean>;
   readonly newId?: () => string;
   readonly now?: () => number;
+  /**
+   * Scans `.agent/commands/*.md` for custom slash commands (P1-4). Defaults
+   * to the real filesystem scan rooted at {@link workspacePath}; tests
+   * substitute a fake source to avoid touching disk. Runs once when the
+   * controller is built and again on every `/help` — see the comment above
+   * {@link loadCustomCommands}, which is cheap enough for both.
+   */
+  readonly customCommands?: () => Promise<LoadCustomCommandsResult>;
+  /**
+   * Called after every custom-command scan (initial load and each `/help`
+   * rescan) with the names found, so a caller that built its Tab completer
+   * before the controller existed (the REPL's `InputManager` has to — see
+   * `runInteractive`) can keep offering current names without re-scanning
+   * itself.
+   */
+  readonly onCustomCommandsChanged?: (names: readonly string[]) => void;
 }
 
 /** The REPL's brain: everything a typed line can do, with no terminal in sight. */
 export interface InteractiveController {
   sessionId(): string;
   title(): string;
+  /** This conversation's `/name`d label, or `undefined` when it has none. */
+  name(): string | undefined;
   modelAlias(): string;
   /** Which engine the live conversation runs on. */
   backend(): BackendName;
@@ -473,6 +574,29 @@ interface SlashCommand {
   readonly name: string;
   readonly usage: string;
   readonly help: string;
+  /**
+   * The command's argument vocabulary, when it has a finite and knowable one.
+   *
+   * Only `/model` does. `/resume` takes a session id — finite, but a property
+   * of the store rather than of the command, and the ids are already one
+   * `/sessions` away; `/orchestrate` takes free-form English; everything else
+   * takes nothing at all. Completing a word the command does not actually
+   * accept would be worse than completing nothing, so this stays empty
+   * wherever the vocabulary is not genuinely closed.
+   */
+  readonly args?: readonly string[];
+}
+
+/**
+ * The aliases `/model` can switch to — the built-in catalog's ids.
+ *
+ * A delegated backend will accept names beyond this list (the external CLI
+ * owns that vocabulary), which is why `/model` itself does not validate
+ * against the catalog; offering it on Tab is a shortcut for the common case,
+ * not a constraint on what may be typed.
+ */
+function modelAliases(): readonly string[] {
+  return Object.keys(defaultModelCatalog()).sort();
 }
 
 const SLASH_COMMANDS: readonly SlashCommand[] = [
@@ -486,13 +610,24 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     name: "resume",
-    usage: "/resume <id>",
+    usage: "/resume <id|name>",
     help: "switch to a stored conversation",
+  },
+  {
+    name: "name",
+    usage: "/name [name]",
+    help: "show, or set, this conversation's name",
+  },
+  {
+    name: "fork",
+    usage: "/fork [name]",
+    help: "branch this conversation into a new session",
   },
   {
     name: "model",
     usage: "/model [alias]",
     help: "show or switch the model for future turns",
+    args: modelAliases(),
   },
   {
     name: "config",
@@ -506,6 +641,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     help: "compact the conversation history now",
   },
   {
+    name: "undo",
+    usage: "/undo",
+    help: "restore the files to before the last prompt",
+  },
+  {
     name: "orchestrate",
     usage: "/orchestrate <objective>",
     help: "run the multi-agent pipeline on an objective",
@@ -513,15 +653,80 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
 ];
 
 /**
- * Tab completion for the input editor: `/` plus a prefix of a known command
- * name completes against {@link SLASH_COMMANDS}; anything else offers no
+ * Tab completion for slash commands, in two halves.
+ *
+ * Before the first space, `/` plus a prefix completes the command *name*
+ * against {@link SLASH_COMMANDS} plus `customNames` — the custom commands
+ * found under `.agent/commands/` (P1-4), appended after the built-ins so a
+ * name collision (already resolved by {@link loadCustomCommands} in favor of
+ * the built-in) never shows up twice. After the first space, the last word
+ * completes against that command's {@link SlashCommand.args} — the model
+ * aliases for `/model`, nothing for anything else (including every custom
+ * command, whose arguments are free-form `$ARGUMENTS` text with no closed
+ * vocabulary to guess at). A line that is not a slash command offers no
  * completions. Matches `readline`'s synchronous `Completer` shape.
  */
-export function slashCompleter(line: string): [string[], string] {
+export function slashCompleter(
+  line: string,
+  customNames: readonly string[] = [],
+): CompleterResult {
   if (!line.startsWith("/")) return [[], line];
-  const names = SLASH_COMMANDS.map((command) => `/${command.name}`);
-  const hits = names.filter((name) => name.startsWith(line));
-  return [hits.length > 0 ? hits : names, line];
+
+  const space = line.indexOf(" ");
+  if (space === -1) {
+    const names = [
+      ...SLASH_COMMANDS.map((command) => `/${command.name}`),
+      ...customNames.map((name) => `/${name}`),
+    ];
+    const hits = names.filter((name) => name.startsWith(line));
+    return [hits.length > 0 ? hits : names, line];
+  }
+
+  const name = line.slice(1, space).toLowerCase();
+  const values = SLASH_COMMANDS.find((command) => command.name === name)?.args;
+  if (values === undefined || values.length === 0) return [[], line];
+
+  // Only the word under the cursor is replaced, so `/model claude-` completes
+  // in place instead of swallowing the command that precedes it.
+  const argument = line.slice(space + 1);
+  const partial = argument.slice(argument.lastIndexOf(" ") + 1);
+  const hits = values.filter((value) => value.startsWith(partial));
+  return [hits.length > 0 ? [...hits] : [...values], partial];
+}
+
+/**
+ * The REPL's one completer: `@` mentions when a mention is being typed, slash
+ * commands otherwise.
+ *
+ * Routing on the token under the cursor rather than on the first character of
+ * the line is what lets the two coexist — `@` wins wherever it appears
+ * (including inside a slash command's arguments), `/` only ever applies to a
+ * line that starts with one, and a plain sentence gets neither.
+ *
+ * Async only when it has to be: the slash half returns its tuple directly, and
+ * only the mention half — which may spawn `git ls-files` — returns a promise.
+ * Without a {@link FileLister} (no workspace to list) the mention half is
+ * simply absent and every line falls through to {@link slashCompleter}.
+ *
+ * `customNames` is a getter rather than a static list because this completer
+ * is built once, before the controller exists (see `runInteractive` — the
+ * `InputManager` it is wired into has to precede the controller, which needs
+ * the `InputManager` to build its first session), while the controller's own
+ * view of `.agent/commands/` can change on every `/help`. Reading through a
+ * getter is what lets the two stay in sync without the completer re-scanning
+ * anything itself.
+ */
+export function createReplCompleter(
+  files?: FileLister,
+  customNames?: () => readonly string[],
+): InputCompleter {
+  return (line: string): CompleterResult | Promise<CompleterResult> => {
+    if (files !== undefined) {
+      const token = mentionTokenAt(line);
+      if (token !== undefined) return completeMention(files, token);
+    }
+    return slashCompleter(line, customNames?.() ?? []);
+  };
 }
 
 function errorText(error: unknown): string {
@@ -560,6 +765,22 @@ export function instructionsBannerLine(
 }
 
 /**
+ * `undefined` when `candidate` is a usable `/name`/`/fork` label; the
+ * printable reason otherwise. Empty is rejected because a name that reads
+ * back as "(unnamed)" is not a name; a leading `/` is rejected because
+ * `/resume that-name` would otherwise be indistinguishable from a slash
+ * command. Everything else is accepted as typed — trimming is the caller's
+ * job (both `/name` and `/fork` already hand this the trimmed argument).
+ */
+export function invalidSessionName(candidate: string): string | undefined {
+  if (candidate === "") return "a name cannot be empty.";
+  if (candidate.startsWith("/")) {
+    return 'a name cannot start with "/" — that would be ambiguous with slash commands.';
+  }
+  return undefined;
+}
+
+/**
  * Builds the interactive controller.
  *
  * Async because the first conversation has to exist before any line can be
@@ -573,6 +794,12 @@ export async function createInteractiveController(
   const resolveModel =
     deps.resolveModel ??
     ((alias: string) => resolveModelAndProvider(process.env, alias));
+  const builtinCommandNames = new Set(
+    SLASH_COMMANDS.map((command) => command.name),
+  );
+  const loadCommands =
+    deps.customCommands ??
+    (() => loadCustomCommands(deps.workspacePath, builtinCommandNames));
 
   let backend: BackendName = deps.backend ?? "native";
   let modelAlias = deps.modelAlias;
@@ -581,6 +808,7 @@ export async function createInteractiveController(
 
   let sessionId = deps.start.sessionId;
   let title = deps.start.title;
+  let sessionName = deps.start.name;
   let persisted = deps.start.persisted;
   let titleDirty = false;
 
@@ -607,6 +835,21 @@ export async function createInteractiveController(
   ): Promise<void> => {
     session = await deps.createSession(factoryArgs(messages, sessionRef));
     chat = toChatLike(session);
+  };
+
+  // P1-4: custom slash commands from `.agent/commands/*.md`. Scanned once
+  // here (below, after `handleMessage` exists) and again on every `/help` —
+  // both scans are the same cheap directory read, so staleness between the
+  // two never lasts longer than one `/help` away.
+  let customCommands: readonly CustomCommand[] = [];
+  let customCommandWarnings: readonly string[] = [];
+  const refreshCustomCommands = async (): Promise<void> => {
+    const result = await loadCommands();
+    customCommands = result.commands;
+    customCommandWarnings = result.warnings;
+    deps.onCustomCommandsChanged?.(
+      customCommands.map((command) => command.name),
+    );
   };
 
   const lines: string[] = [];
@@ -678,19 +921,38 @@ export async function createInteractiveController(
     await build(chat.toModelMessages(), sessionRef);
   };
 
+  const fileExists =
+    deps.fileExists ??
+    ((relativePath: string) =>
+      workspaceFileExists(deps.workspacePath, relativePath));
+
   const handleMessage = async (
     text: string,
     signal?: AbortSignal,
   ): Promise<DispatchResult> => {
+    // The checkpoint is taken here rather than in `handleLine` because this is
+    // the one place a line is known to be about to start a turn: a slash
+    // command changes no files and would only push the real work off the end
+    // of a 20-deep stack. It covers the delegated backends too — an external
+    // CLI edits the same working tree kapel is standing in.
+    const checkpointWarning = await deps.checkpoints?.capture(text);
+    if (checkpointWarning !== undefined) emit(checkpointWarning);
+
     if (title === "") {
       title = chatTitleFrom(text);
       titleDirty = true;
     }
 
+    // `@path` mentions stay verbatim in the message and gain one trailing
+    // line naming the files they resolved to (see `annotateMentions`). The
+    // title and the checkpoint label above deliberately come from the text as
+    // typed — the annotation is for the agent, not for the history.
+    const instruction = await annotateMentions(text, fileExists);
+
     const before = deps.usage.totals();
     let result: ChatTurnLike | undefined;
     try {
-      result = await chat.send(text, {
+      result = await chat.send(instruction, {
         runId: sessionId,
         workspacePath: deps.workspacePath,
         ...(signal === undefined ? {} : { signal }),
@@ -716,7 +978,13 @@ export async function createInteractiveController(
     });
   };
 
-  const slashHelp = (): DispatchResult => {
+  const slashHelp = async (): Promise<DispatchResult> => {
+    // Rescanned here (as well as once at controller start) so a command file
+    // added or fixed mid-session shows up without restarting the REPL — the
+    // scan is one directory read plus one `readFile` per command, cheap
+    // enough to redo on every `/help`.
+    await refreshCustomCommands();
+
     emit("commands:");
     const width = Math.max(
       ...SLASH_COMMANDS.map((command) => command.usage.length),
@@ -725,6 +993,21 @@ export async function createInteractiveController(
       emit(`  ${command.usage.padEnd(width)}  ${command.help}`);
     }
     emit("anything else is sent to the agent.");
+
+    if (customCommands.length > 0) {
+      emit("");
+      emit("custom commands (.agent/commands/):");
+      const customWidth = Math.max(
+        ...customCommands.map((command) => command.name.length + 1),
+      );
+      for (const command of customCommands) {
+        const usage = `/${command.name}`.padEnd(customWidth);
+        emit(`  ${usage}  ${command.description ?? "(no description)"}`);
+      }
+    }
+    for (const warning of customCommandWarnings) {
+      emit(`warning: ${warning}`);
+    }
     return drain();
   };
 
@@ -751,19 +1034,27 @@ export async function createInteractiveController(
       emit(`No chat sessions recorded for ${deps.workspacePath} yet.`);
       return drain();
     }
-    const rows = records.map((record) => [
+    // A NAME column only when it would say something — matching `kapel
+    // sessions`'s own listing (`sessionRow` in `sessions.ts`), so a
+    // workspace nobody has ever run `/name` in does not grow a column of
+    // blanks.
+    const showName = records.some((record) => record.name !== undefined);
+    const rows = records.map((record) => {
       // The conversation this REPL is on gets a marker of its own column, so
       // the ids stay in one straight line.
-      record.id === sessionId ? "*" : "",
-      shortId(record.id),
-      isoTime(record.updatedAt),
-      String(record.messageCount),
-      record.title === "" ? "(untitled)" : record.title,
-    ]);
-    for (const line of formatTable(
-      ["", "ID", "UPDATED", "MSGS", "TITLE"],
-      rows,
-    )) {
+      const row = [record.id === sessionId ? "*" : "", shortId(record.id)];
+      if (showName) row.push(record.name ?? "");
+      row.push(
+        isoTime(record.updatedAt),
+        String(record.messageCount),
+        record.title === "" ? "(untitled)" : record.title,
+      );
+      return row;
+    });
+    const headers = showName
+      ? ["", "ID", "NAME", "UPDATED", "MSGS", "TITLE"]
+      : ["", "ID", "UPDATED", "MSGS", "TITLE"];
+    for (const line of formatTable(headers, rows)) {
       emit(line);
     }
     return drain();
@@ -777,11 +1068,17 @@ export async function createInteractiveController(
       return drain();
     }
     if (argument === "") {
-      emit("usage: /resume <id>  — see /sessions");
+      emit("usage: /resume <id|name>  — see /sessions");
       return drain();
     }
     const records = await listRecords();
-    const matched = matchChatSession(records, argument);
+    // P1-8: `resolveChatSessionReference` accepts a `/name`d session as
+    // readily as an id or an id prefix — `onNote` is how it tells us "two
+    // sessions share that name, resolved to the newer one" without treating
+    // the ambiguity as an error.
+    const matched = resolveChatSessionReference(records, argument, {
+      onNote: (note) => emit(note),
+    });
     if ("error" in matched) {
       emit(matched.error);
       return drain();
@@ -800,6 +1097,7 @@ export async function createInteractiveController(
     await persist();
     sessionId = transcript.record.id;
     title = transcript.record.title;
+    sessionName = transcript.record.name;
     persisted = true;
     titleDirty = false;
     await build(transcript.messages);
@@ -807,6 +1105,125 @@ export async function createInteractiveController(
       `resumed ${title === "" ? shortId(sessionId) : title} (${transcript.messages.length} messages)`,
     );
     return drain("resumed");
+  };
+
+  /**
+   * `/name [name]` — show or set this conversation's user-given label.
+   *
+   * Bare `/name` reads it back rather than doing anything, which is what
+   * makes it safe to run just to check. Setting it persists immediately
+   * (rather than waiting for the next message, the way the auto-derived
+   * `title` does) because naming a session is itself the whole point of
+   * running the command — a name nobody can see again until the next turn
+   * would not be worth having.
+   */
+  const slashName = async (argument: string): Promise<DispatchResult> => {
+    if (argument === "") {
+      emit(sessionName === undefined ? "(unnamed)" : sessionName);
+      return drain();
+    }
+    const problem = invalidSessionName(argument);
+    if (problem !== undefined) {
+      emit(problem);
+      return drain();
+    }
+
+    sessionName = argument;
+    if (deps.store === undefined) {
+      emit(
+        `named "${sessionName}" for this run (not persisted — sessions are not being recorded, --no-save).`,
+      );
+      return drain();
+    }
+    try {
+      if (!persisted) {
+        // Mirrors `persist()`'s lazy row creation, but on purpose skips its
+        // "nothing was said yet" guard: naming *is* the thing the user asked
+        // to happen, unlike the title, which only exists as a side effect of
+        // a message being sent.
+        await deps.store.createChatSession({
+          id: sessionId,
+          workspacePath: deps.workspacePath,
+          title,
+          name: sessionName,
+          modelAlias,
+          createdAt: now(),
+        });
+        persisted = true;
+        titleDirty = false;
+      } else {
+        await deps.store.renameChatSession(sessionId, sessionName);
+      }
+    } catch (error) {
+      emit(`(not saved: ${errorText(error)})`);
+      return drain();
+    }
+    emit(`named "${sessionName}"`);
+    return drain("renamed");
+  };
+
+  /**
+   * `/fork [name]` — branch this conversation (everything said up to now)
+   * into a new, independent session and switch this REPL onto it, the same
+   * way `/resume` switches onto a stored one.
+   *
+   * The source has to actually be in the store for `SqliteSessionStore.
+   * forkChatSession` to copy — `persist()` here covers the ordinary case (a
+   * few turns have already been saved along the way) and also the one where
+   * every one of them landed this same turn; a conversation that has never
+   * said anything at all still has nothing to fork, which is reported rather
+   * than silently forking an empty session.
+   */
+  const slashFork = async (argument: string): Promise<DispatchResult> => {
+    if (deps.store === undefined) {
+      emit(
+        "sessions are not being recorded (--no-save), so there is nothing to fork.",
+      );
+      return drain();
+    }
+    if (argument !== "") {
+      const problem = invalidSessionName(argument);
+      if (problem !== undefined) {
+        emit(problem);
+        return drain();
+      }
+    }
+
+    await persist();
+    if (!persisted) {
+      emit("nothing to fork yet — say something first.");
+      return drain();
+    }
+
+    const forkName = argument === "" ? undefined : argument;
+    let newSessionId: string;
+    try {
+      newSessionId = await deps.store.forkChatSession(
+        sessionId,
+        forkName === undefined ? {} : { name: forkName },
+      );
+    } catch (error) {
+      emit(`could not fork: ${errorText(error)}`);
+      return drain();
+    }
+
+    // The new session's row (title, model, transcript) was just written by
+    // the store from `sessionId`'s own row, so what's already in memory —
+    // `chat.toModelMessages()` — is exactly its transcript; no need to read
+    // it back. `title` itself carries over untouched (the store copied it
+    // verbatim); only `sessionName` does *not* — a fork is unnamed unless
+    // this command named it, even when the source had a name (see
+    // `ForkChatSessionOptions`).
+    const messages = chat.toModelMessages();
+    sessionId = newSessionId;
+    sessionName = forkName;
+    persisted = true;
+    titleDirty = false;
+    await build(messages);
+    emit(
+      `forked to ${shortId(sessionId)}${forkName === undefined ? "" : ` (${forkName})`} — now on the new session.`,
+    );
+    return drain("forked");
   };
 
   /** `alias (provider/id)` natively; `alias (backend)` for a delegated one. */
@@ -925,6 +1342,23 @@ export async function createInteractiveController(
     return drain();
   };
 
+  /**
+   * `/undo` — put the working tree back the way it was before the last prompt.
+   *
+   * One-way by design: the checkpoint that was just restored is popped and
+   * there is no `/redo`. Redo would mean keeping a snapshot of the state the
+   * user just asked to throw away and then re-applying it over whatever they
+   * did next, which is a merge, not an undo.
+   */
+  const slashUndo = async (): Promise<DispatchResult> => {
+    if (deps.checkpoints === undefined) {
+      emit("/undo is not available here.");
+      return drain();
+    }
+    for (const line of undoLines(await deps.checkpoints.undo())) emit(line);
+    return drain();
+  };
+
   const slashOrchestrate = async (
     objective: string,
   ): Promise<DispatchResult> => {
@@ -947,7 +1381,71 @@ export async function createInteractiveController(
     return drain();
   };
 
-  const handleSlash = async (line: string): Promise<DispatchResult> => {
+  /**
+   * Runs a custom command (P1-4): its template, expanded against whatever
+   * followed the command name (see `expandCustomCommand`), is sent exactly
+   * like a typed message — through `handleMessage`, so checkpoints, mention
+   * annotation and history all apply the same as they would if the user had
+   * pasted the expanded text in themselves.
+   *
+   * `model` in the command's front matter pins *this one turn* to that
+   * model, native backend only: the session is rebuilt onto it (the same
+   * mechanism `/model` uses), the turn runs, and the session is rebuilt back
+   * onto whatever model was live before — so the switch never outlives the
+   * command and never shows up in `/model`. A delegated backend has no
+   * catalog to resolve a pin against (the external CLI owns that), and an
+   * alias `resolveModel` cannot resolve is exactly the same shape of
+   * problem `/model` already reports — both cases run the turn anyway, on
+   * the session's current model, with one line explaining why the pin was
+   * skipped.
+   */
+  const dispatchCustomCommand = async (
+    command: CustomCommand,
+    argument: string,
+    signal?: AbortSignal,
+  ): Promise<DispatchResult> => {
+    const instruction = expandCustomCommand(command, argument);
+
+    if (command.model === undefined) {
+      return await handleMessage(instruction, signal);
+    }
+    if (backend !== "native") {
+      emit(
+        `note: /${command.name} asks for model "${command.model}", but the ` +
+          `${backend} backend has no per-command model to switch — running ` +
+          "on the session's current model.",
+      );
+      return await handleMessage(instruction, signal);
+    }
+    const resolved = await resolveModel(command.model);
+    if ("error" in resolved) {
+      emit(
+        `note: /${command.name} asks for model "${command.model}": ${resolved.error} — running on the session's current model.`,
+      );
+      return await handleMessage(instruction, signal);
+    }
+
+    const savedAlias = modelAlias;
+    const savedModel = model;
+    const savedProvider = provider;
+    modelAlias = command.model;
+    model = resolved.model;
+    provider = resolved.provider;
+    await rebuildSession(true);
+    try {
+      return await handleMessage(instruction, signal);
+    } finally {
+      modelAlias = savedAlias;
+      model = savedModel;
+      provider = savedProvider;
+      await rebuildSession(true);
+    }
+  };
+
+  const handleSlash = async (
+    line: string,
+    signal?: AbortSignal,
+  ): Promise<DispatchResult> => {
     const space = line.indexOf(" ");
     const name = (space === -1 ? line : line.slice(0, space))
       .slice(1)
@@ -957,7 +1455,7 @@ export async function createInteractiveController(
     switch (name) {
       case "help":
       case "?":
-        return slashHelp();
+        return await slashHelp();
       case "exit":
       case "quit":
         return drain("exit");
@@ -967,26 +1465,53 @@ export async function createInteractiveController(
         return await slashSessions();
       case "resume":
         return await slashResume(argument);
+      case "name":
+        return await slashName(argument);
+      case "fork":
+        return await slashFork(argument);
       case "model":
         return await slashModel(argument);
       case "config":
         return await slashConfig();
       case "usage":
         emit(usageTotalsLine(deps.usage.totals()));
+        // Indented under the total: the same tokens, split by which model
+        // spent them. Absent when the usage source cannot attribute anything.
+        for (const line of usageRollupLines(
+          deps.usage.breakdownBy?.("model") ?? new Map(),
+        )) {
+          emit(`  ${line}`);
+        }
         return drain();
       case "compact":
         return await slashCompact();
+      case "undo":
+        return await slashUndo();
       case "orchestrate":
         return await slashOrchestrate(argument);
-      default:
+      default: {
+        // P1-4: a name that isn't a built-in may still be a custom command
+        // loaded from `.agent/commands/` — checked here, after every
+        // built-in, so a custom file can never shadow one.
+        const custom = customCommands.find((c) => c.name === name);
+        if (custom !== undefined) {
+          return await dispatchCustomCommand(custom, argument, signal);
+        }
         emit(`Unknown command "/${name}". Type /help for the list.`);
         return drain();
+      }
     }
   };
+
+  // P1-4: the one scan a session that never touches `/help` still gets, so
+  // custom commands (and tab completion for them, via
+  // `onCustomCommandsChanged`) work from the very first prompt.
+  await refreshCustomCommands();
 
   return {
     sessionId: () => sessionId,
     title: () => title,
+    name: () => sessionName,
     modelAlias: () => modelAlias,
     backend: () => backend,
     session: () => session,
@@ -995,13 +1520,13 @@ export async function createInteractiveController(
       cwd,
       ...(isDelegatedBackend(backend) ? [approvalsLine(backend)] : []),
       "type /help for commands, /exit to quit",
-      "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands",
+      "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files",
       "",
     ],
     handleLine: async (line, signal) => {
       const trimmed = line.trim();
       if (trimmed === "") return { output: [] };
-      if (trimmed.startsWith("/")) return await handleSlash(trimmed);
+      if (trimmed.startsWith("/")) return await handleSlash(trimmed, signal);
       return await handleMessage(trimmed, signal);
     },
   };
@@ -1195,6 +1720,15 @@ export async function runInteractive(
   const workspacePath = path.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
+  // P1-5: same permission-rule merge as one-shot runs (run.ts) — defaults <
+  // machine config < repo config; a config deny is checked before the
+  // session allowlist overlay, so it can never be masked by an 'a' answer.
+  const repoPermission = await loadRepoPermissionRules(workspacePath);
+  const permissionRules = resolvePermissionRules(
+    DEFAULT_PERMISSIONS,
+    options.config?.permission,
+    repoPermission,
+  );
 
   // `.env` is loaded first so a workspace-local `AGENT_BACKEND`/`AGENT_MODEL`
   // takes part in the precedence chain exactly like a shell variable.
@@ -1243,11 +1777,37 @@ export async function runInteractive(
     // created here and not inside the per-session engine below.
     const sessionAllowlist = new SessionAllowlist();
     const nativeUsage = new UsageTracker();
-    const delegatedUsage = new DelegatedUsage();
+    // One ledger per delegating backend rather than one for all of them: a
+    // `/config` can switch backends mid-thread, and `/usage` should then say
+    // which CLI spent what instead of merging Codex's tokens into Claude
+    // Code's line.
+    const delegatedUsage = new Map<
+      Exclude<BackendName, "native">,
+      DelegatedUsage
+    >();
+    const delegatedUsageFor = (
+      target: Exclude<BackendName, "native">,
+    ): DelegatedUsage => {
+      const existing = delegatedUsage.get(target);
+      if (existing !== undefined) return existing;
+      const created = new DelegatedUsage();
+      delegatedUsage.set(target, created);
+      return created;
+    };
     // One usage view over both engines, so `/usage` and the per-turn delta
     // read the same however the conversation is being run — and keep adding up
     // across a `/config` that switches from one to the other mid-thread.
-    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
+    const usage = {
+      totals: () => sumTotals(nativeUsage, ...delegatedUsage.values()),
+      breakdownBy: (dimension: UsageDimension) =>
+        chatUsageBreakdown(
+          nativeUsage.breakdownBy(dimension),
+          [...delegatedUsage].map(([label, ledger]) => ({
+            label,
+            totals: ledger.totals(),
+          })),
+        ),
+    };
 
     // The renderer owns everything the turn puts on screen: streamed assistant
     // text, tool lines, and the status line that fills the silence in between.
@@ -1268,13 +1828,28 @@ export async function runInteractive(
       current: undefined,
     };
 
+    // One lister for the whole REPL: its cache is what keeps a burst of Tabs
+    // from spawning `git ls-files` per keystroke.
+    const mentionFiles = createFileLister({ workspacePath });
+
+    // P1-4: names tab-completion offers for custom commands. It starts empty
+    // and is kept current by `onCustomCommandsChanged` below — the
+    // `InputManager` (and its completer) has to exist before the controller
+    // does, since the controller's first session is built through the
+    // prompter this manager backs, so the completer cannot simply ask the
+    // controller for its list at build time.
+    const customCommandNames: { current: readonly string[] } = { current: [] };
+
     const inputManager = interactiveTty
       ? createInputManager({
           input: process.stdin,
           output: process.stdout,
           history: await loadHistory(),
           onHistoryAppend: createHistoryAppender(),
-          completer: slashCompleter,
+          completer: createReplCompleter(
+            mentionFiles,
+            () => customCommandNames.current,
+          ),
           onIdleSigint: () => activeTurn.current?.abort(),
         })
       : undefined;
@@ -1325,7 +1900,7 @@ export async function runInteractive(
           const result = await chat.send(instruction, {
             ...(context.signal === undefined ? {} : { signal: context.signal }),
           });
-          delegatedUsage.add(result);
+          delegatedUsageFor(target).add(result);
           return result;
         },
         toModelMessages: () => chat.toModelMessages(),
@@ -1353,7 +1928,7 @@ export async function runInteractive(
         agentLoopOptions({
           agent,
           provider: args.provider,
-          permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
+          permissions: new PermissionEngine(permissionRules, {
             defaultDecision: "ask",
             overlay: sessionAllowlist,
             ...(prompter === undefined ? {} : { prompter }),
@@ -1393,6 +1968,12 @@ export async function runInteractive(
       ...(startup.provider === undefined ? {} : { provider: startup.provider }),
       start: started.start,
       usage,
+      // One store for the whole REPL: the checkpoints outlive `/new`,
+      // `/resume` and `/model`, because the working tree does too.
+      checkpoints: createCheckpointStore({ workspacePath }),
+      onCustomCommandsChanged: (names) => {
+        customCommandNames.current = names;
+      },
       orchestrate: (objective) =>
         runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
       ...(wizardTty
@@ -1436,6 +2017,13 @@ export async function runInteractive(
           color,
         ),
       );
+    }
+    // P1-8: `--session <name>` matched more than one stored session by name
+    // — `resolveStartSession` still picked one (the most recently updated),
+    // this just says so, so a name that turns out to be ambiguous is
+    // noticed here rather than after acting on the wrong conversation.
+    if ("note" in started && started.note !== undefined) {
+      console.log(dim(started.note, color));
     }
 
     const lineSource =

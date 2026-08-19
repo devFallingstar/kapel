@@ -1,21 +1,30 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ModelDefinition, ModelProvider } from "@agent/ai";
+import type { ModelDefinition, ModelProvider, UsageTotals } from "@agent/ai";
+import { UsageTracker, usageRecordingProvider } from "@agent/ai";
 import type {
   AgentProject,
+  DelegatedUsageSink,
+  LocatedIssue,
   OrchestrationPolicy,
   PolicyCompiler,
   PolicyLockfile,
+  SourceLocation,
 } from "@agent/coding-agent";
 import {
   checkLock,
   createLockfile,
   DelegatedPolicyCompiler,
   describePolicy,
+  diffPolicies,
+  formatPolicyDiff,
+  formatSourceLocation,
   LlmPolicyCompiler,
   loadAgentProject,
+  locateIssues,
   PolicyCompileError,
   ProjectConfigError,
+  parseLockfile,
   serializeLockfile,
   validatePolicy,
 } from "@agent/coding-agent";
@@ -72,6 +81,12 @@ export type DelegatedCompilerFactory = (args: {
   /** `undefined` means "let the CLI pick its own model". */
   readonly model?: string;
   readonly knownAgents: readonly string[];
+  /**
+   * Where the delegated compile reports what the CLI said it spent — the
+   * delegating counterpart of `usageRecordingProvider` on the native path,
+   * which has no provider here to wrap.
+   */
+  readonly usage?: DelegatedUsageSink;
 }) => PolicyCompiler;
 
 const defaultDelegatedCompilerFactory: DelegatedCompilerFactory = (args) =>
@@ -90,14 +105,35 @@ async function readOptionalFile(filePath: string): Promise<string | undefined> {
   }
 }
 
-function printBulletList(
+/**
+ * Prints a labeled bullet list of warnings/ambiguities, each carrying a
+ * best-effort {@link LocatedIssue} location: a trailing `[orchestration.md:12]`
+ * when the source phrase the message quotes was found in the policy source.
+ */
+function printLocatedList(
   output: PolicyOutput,
   label: string,
-  items: readonly string[],
+  located: readonly LocatedIssue[],
 ): void {
-  if (items.length === 0) return;
+  if (located.length === 0) return;
   output.log(`${label}:`);
-  for (const item of items) output.log(`  - ${item}`);
+  for (const item of located) {
+    const suffix =
+      item.location === undefined
+        ? ""
+        : ` [${formatSourceLocation(item.location)}]`;
+    output.log(`  - ${item.message}${suffix}`);
+  }
+}
+
+/** JSON-friendly parallel array: one location (or `null`) per message, in order. */
+function jsonLocations(
+  messages: readonly string[],
+  markdown: string,
+): ReadonlyArray<SourceLocation | null> {
+  return locateIssues(messages, markdown).map(
+    (issue) => issue.location ?? null,
+  );
 }
 
 type ProjectLoadResult =
@@ -180,6 +216,104 @@ export interface RunPolicyCompileDeps {
   readonly delegatedCompilerFactory?: DelegatedCompilerFactory;
 }
 
+/** The agent name a policy compile's spend is attributed to. */
+const POLICY_AGENT = "policy";
+
+/**
+ * A compiler ready to run, plus the ledger it spends into.
+ *
+ * Both `compile` and `diff` make the same call — the difference is only what
+ * they do with the result — so both resolve their compiler here, and neither
+ * can end up supporting a backend the other doesn't.
+ */
+interface ResolvedPolicyCompiler {
+  readonly compiler: PolicyCompiler;
+  readonly model: ModelDefinition;
+  readonly usage: UsageTracker;
+  /** The CLI the compile is delegated to; `undefined` on the native path. */
+  readonly delegatedTo?: DelegatedBackendName;
+}
+
+/**
+ * Resolves the compiler for a policy command, along with the ledger it
+ * records into.
+ *
+ * P1-1 (leftover): the compile call is a model turn like any other, but it
+ * runs outside the agent loop and its `UsageTracker`, so it spends nothing
+ * anyone sees unless it is wired to record. On the native path that means
+ * wrapping the provider handed to the compiler (`usageRecordingProvider`) —
+ * the same technique `orchestrate` uses for the planner (`planningThrough`
+ * in `orchestrate.ts`). A delegating CLI has no provider to wrap, so it gets
+ * the equivalent seam instead: a `DelegatedUsageSink` the compiler pushes
+ * whatever token counts the subprocess reported into. Those two paths do not
+ * report the same fidelity, and {@link policyUsageLine} is careful to say
+ * "none reported" rather than print a zero the CLI never claimed.
+ */
+async function buildPolicyCompiler(
+  options: PolicyCompileOptions,
+  deps: RunPolicyCompileDeps,
+  context: {
+    readonly workspacePath: string;
+    readonly project: AgentProject;
+    readonly output: PolicyOutput;
+  },
+): Promise<ResolvedPolicyCompiler | { readonly exitCode: number }> {
+  const { workspacePath, project, output } = context;
+  const usage = new UsageTracker();
+  const knownAgents = [...project.knownAgentNames()];
+
+  const fail = (error: string): { readonly exitCode: number } => {
+    if (options.json) jsonLine(output, { ok: false, error });
+    else output.error(error);
+    return { exitCode: 1 };
+  };
+
+  if (isDelegatedBackend(options.backend)) {
+    // The whole point of a delegating backend is that the user has a CLI
+    // subscription and no API key, so nothing on this path may touch the
+    // provider registry — not even to name the compiler's model.
+    const backend = options.backend;
+    // `-m/--model` wins verbatim: the flag names a model in *that CLI's*
+    // catalog, so it is forwarded untranslated. Otherwise the orchestrator's
+    // model setting decides, since compiling the policy is the orchestrator's
+    // kind of job; `undefined` lets the CLI pick.
+    const modelId = delegatedModelOverride(
+      resolveOrchestratorModel(options.model, process.env, options.config),
+    );
+    const factory = deps.delegatedCompilerFactory;
+    if (factory === undefined) {
+      const unavailable = await delegatedBackendError(backend);
+      if (unavailable !== undefined) return fail(unavailable);
+    }
+    const model = delegatedModelIdentity(backend, modelId);
+    const compiler = (factory ?? defaultDelegatedCompilerFactory)({
+      backend,
+      workspacePath,
+      knownAgents,
+      ...(modelId === undefined ? {} : { model: modelId }),
+      usage: { recorder: usage, model, tags: { agent: POLICY_AGENT } },
+    });
+    return { compiler, model, usage, delegatedTo: backend };
+  }
+
+  const alias = resolveOrchestratorModel(
+    options.model,
+    process.env,
+    options.config,
+  ).value;
+  const resolved = await resolveModelAndProvider(process.env, alias);
+  if ("error" in resolved) return fail(resolved.error);
+  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
+  const compiler = compilerFactory({
+    provider: usageRecordingProvider(resolved.provider, usage, {
+      agent: POLICY_AGENT,
+    }),
+    model: resolved.model,
+    knownAgents,
+  });
+  return { compiler, model: resolved.model, usage };
+}
+
 /** Implements `kapel policy compile`: LLM-compiles `orchestration.md` and writes the policy lock. */
 export async function runPolicyCompile(
   options: PolicyCompileOptions,
@@ -197,58 +331,13 @@ export async function runPolicyCompile(
   if ("exitCode" in loaded) return loaded.exitCode;
   const { project, markdown } = loaded;
 
-  const knownAgents = [...project.knownAgentNames()];
-
-  let compiler: PolicyCompiler;
-  let model: ModelDefinition;
-  if (isDelegatedBackend(options.backend)) {
-    // The whole point of a delegating backend is that the user has a CLI
-    // subscription and no API key, so nothing on this path may touch the
-    // provider registry — not even to name the compiler's model.
-    const backend = options.backend;
-    // `-m/--model` wins verbatim: the flag names a model in *that CLI's*
-    // catalog, so it is forwarded untranslated. Otherwise the orchestrator's
-    // model setting decides, since compiling the policy is the orchestrator's
-    // kind of job; `undefined` lets the CLI pick.
-    const modelId = delegatedModelOverride(
-      resolveOrchestratorModel(options.model, process.env, options.config),
-    );
-    const factory = deps.delegatedCompilerFactory;
-    if (factory === undefined) {
-      const unavailable = await delegatedBackendError(backend);
-      if (unavailable !== undefined) {
-        if (options.json) jsonLine(output, { ok: false, error: unavailable });
-        else output.error(unavailable);
-        return 1;
-      }
-    }
-    compiler = (factory ?? defaultDelegatedCompilerFactory)({
-      backend,
-      workspacePath,
-      knownAgents,
-      ...(modelId === undefined ? {} : { model: modelId }),
-    });
-    model = delegatedModelIdentity(backend, modelId);
-  } else {
-    const alias = resolveOrchestratorModel(
-      options.model,
-      process.env,
-      options.config,
-    ).value;
-    const resolved = await resolveModelAndProvider(process.env, alias);
-    if ("error" in resolved) {
-      if (options.json) jsonLine(output, { ok: false, error: resolved.error });
-      else output.error(resolved.error);
-      return 1;
-    }
-    const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-    compiler = compilerFactory({
-      provider: resolved.provider,
-      model: resolved.model,
-      knownAgents,
-    });
-    model = resolved.model;
-  }
+  const built = await buildPolicyCompiler(options, deps, {
+    workspacePath,
+    project,
+    output,
+  });
+  if ("exitCode" in built) return built.exitCode;
+  const { compiler, model, usage, delegatedTo } = built;
 
   let result: Awaited<ReturnType<PolicyCompiler["compile"]>>;
   try {
@@ -312,6 +401,11 @@ export async function runPolicyCompile(
       policy: result.policy,
       warnings,
       ambiguities,
+      // Best-effort `.agent/orchestration.md` locations for each warning/
+      // ambiguity above, one entry per index (`null` when unresolved). See
+      // `locateIssues` in `@agent/policy`.
+      warningLocations: jsonLocations(warnings, markdown),
+      ambiguityLocations: jsonLocations(ambiguities, markdown),
     });
     return 0;
   }
@@ -321,9 +415,38 @@ export async function runPolicyCompile(
   output.log(
     `Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`,
   );
-  printBulletList(output, "Warnings", warnings);
-  printBulletList(output, "Ambiguities", ambiguities);
+  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
   return 0;
+}
+
+/**
+ * `tokens — input: N, output: N  (~$X)` — what a policy compile spent.
+ *
+ * A delegating CLI reports token counts only when it feels like it, and never
+ * a price (a subscription is not billed per token). So an empty ledger under
+ * a delegated backend is reported as "none reported by the codex CLI" rather
+ * than as `input: 0, output: 0`, which would read as "this compile was free"
+ * — the same distinction the run summary draws between `-` and `$ n/a`.
+ *
+ * The native path keeps printing zeros: there the ledger is fed by the very
+ * provider the compiler streams through, so an empty one really does mean no
+ * tokens crossed it.
+ */
+function policyUsageLine(
+  totals: UsageTotals,
+  delegatedTo?: DelegatedBackendName,
+): string {
+  const nothingReported =
+    totals.usage.inputTokens === 0 && totals.usage.outputTokens === 0;
+  if (nothingReported && delegatedTo !== undefined) {
+    return `tokens — none reported by the ${delegatedTo} CLI`;
+  }
+  const line = `tokens — input: ${totals.usage.inputTokens}, output: ${totals.usage.outputTokens}`;
+  return totals.costUsd > 0
+    ? `${line}  (~$${totals.costUsd.toFixed(4)})`
+    : line;
 }
 
 /** Implements `kapel policy check`: validates the policy lock's freshness without calling an LLM. */
@@ -460,13 +583,137 @@ export async function runPolicyExplain(
       description,
       warnings: lock.warnings,
       ambiguities: lock.ambiguities,
+      // Located against the *current* orchestration.md — when the lock is
+      // stale (`fresh: false` above) these are still best-effort against
+      // text that may have moved since the lock was compiled.
+      warningLocations: jsonLocations(lock.warnings, markdown),
+      ambiguityLocations: jsonLocations(lock.ambiguities, markdown),
       fresh: status.fresh,
     });
     return 0;
   }
 
   output.log(description);
-  printBulletList(output, "Warnings", lock.warnings);
-  printBulletList(output, "Ambiguities", lock.ambiguities);
+  printLocatedList(output, "Warnings", locateIssues(lock.warnings, markdown));
+  printLocatedList(
+    output,
+    "Ambiguities",
+    locateIssues(lock.ambiguities, markdown),
+  );
+  return 0;
+}
+
+export type RunPolicyDiffDeps = RunPolicyCompileDeps;
+
+/**
+ * Implements `kapel policy diff`: recompiles `orchestration.md` (same LLM
+ * call as `kapel policy compile`) and diffs the result against the
+ * currently locked policy, without writing anything — a way to preview what
+ * `kapel policy compile` would change before committing to it.
+ *
+ * "Same LLM call" includes the backend: the compiler comes from the same
+ * {@link buildPolicyCompiler} `compile` uses, so a delegated compile diffs
+ * with no API key exactly as it compiles with none.
+ */
+export async function runPolicyDiff(
+  options: PolicyCompileOptions,
+  deps: RunPolicyDiffDeps = {},
+): Promise<number> {
+  const output = deps.output ?? consoleOutput;
+  const workspacePath = path.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+
+  const loaded = await loadProjectForPolicy(
+    workspacePath,
+    output,
+    options.json,
+  );
+  if ("exitCode" in loaded) return loaded.exitCode;
+  const { project, markdown } = loaded;
+
+  const lockPath = path.join(project.root, LOCK_FILE_NAME);
+  const lockContent = await readOptionalFile(lockPath);
+  if (lockContent === undefined || lockContent.trim() === "") {
+    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` first — there is nothing to diff against.`;
+    if (options.json) jsonLine(output, { ok: false, error: message });
+    else output.error(message);
+    return 1;
+  }
+
+  let existingLock: PolicyLockfile;
+  try {
+    existingLock = parseLockfile(lockContent);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (options.json) jsonLine(output, { ok: false, error: message });
+    else output.error(message);
+    return 1;
+  }
+
+  const built = await buildPolicyCompiler(options, deps, {
+    workspacePath,
+    project,
+    output,
+  });
+  if ("exitCode" in built) return built.exitCode;
+  const { compiler, usage, delegatedTo } = built;
+
+  let result: Awaited<ReturnType<PolicyCompiler["compile"]>>;
+  try {
+    result = await compiler.compile(markdown);
+  } catch (error) {
+    if (error instanceof PolicyCompileError) {
+      if (options.json) {
+        jsonLine(output, {
+          ok: false,
+          error: error.message,
+          attempts: error.attempts,
+          issues: (error.lastIssues ?? []).map(
+            (issue) => `${issue.path}: ${issue.message}`,
+          ),
+        });
+      } else {
+        output.error(error.message);
+      }
+      return 1;
+    }
+    throw error;
+  }
+
+  const diff = diffPolicies(existingLock.policy, result.policy);
+
+  if (options.json) {
+    jsonLine(output, {
+      ok: true,
+      unchanged: diff.unchanged,
+      defaults: diff.defaults,
+      routing: diff.routing,
+      review: diff.review,
+      escalation: diff.escalation,
+      warnings: result.warnings,
+      ambiguities: result.ambiguities,
+    });
+    return 0;
+  }
+
+  output.log(
+    diff.unchanged
+      ? "No changes from the locked policy."
+      : "Policy diff (locked -> recompiled):",
+  );
+  if (!diff.unchanged) {
+    output.log("");
+    for (const line of formatPolicyDiff(diff)) output.log(line);
+  }
+  // A diff costs a real compile, so it reports its spend like `compile` does.
+  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  printLocatedList(output, "Warnings", locateIssues(result.warnings, markdown));
+  printLocatedList(
+    output,
+    "Ambiguities",
+    locateIssues(result.ambiguities, markdown),
+  );
+  output.log("");
+  output.log("Run `kapel policy compile` to update the lock.");
   return 0;
 }

@@ -1,3 +1,9 @@
+import type {
+  ModelDefinition,
+  ModelUsage,
+  UsageRecorder,
+  UsageTags,
+} from "@agent/ai";
 import type { AgentRunInput, AgentRunResult } from "@agent/core";
 import type { EventSink } from "@agent/protocol";
 import type { z } from "zod";
@@ -23,6 +29,45 @@ import { CodexBackend } from "../backends/codex.js";
 export type DelegatedCliName = "codex" | "claude-code";
 
 /**
+ * One CLI attempt's result: an {@link AgentRunResult} that may also say what
+ * the CLI reported spending.
+ *
+ * `usage` is optional because the CLIs are not obliged to report it — both
+ * wrappers fill `CodexRunResult.usage`/`ClaudeCodeRunResult.usage` only when
+ * the stream carried token counts. Nothing here invents numbers: an attempt
+ * that reported none simply records none, which is why every consumer has to
+ * distinguish "no usage" from "zero tokens".
+ */
+export interface DelegatedRunResult extends AgentRunResult {
+  readonly usage?: ModelUsage;
+}
+
+/**
+ * Where a delegated step reports what its CLI said it spent.
+ *
+ * The delegating path has no `ModelProvider` to tee through, so
+ * `usageRecordingProvider` — the trick the native planner and policy compiler
+ * use — has nothing to wrap. This is the equivalent seam: the caller supplies
+ * the recorder, the stand-in {@link ModelDefinition} for "whatever the CLI
+ * ran" (see `delegatedModelIdentity` in the CLI), and the attribution tags,
+ * and each attempt hands back whatever the subprocess reported.
+ */
+export interface DelegatedUsageSink {
+  readonly recorder: UsageRecorder;
+  readonly model: ModelDefinition;
+  readonly tags?: UsageTags;
+}
+
+/** Records one attempt's reported usage, if there is a sink and there is usage. */
+export function recordDelegatedUsage(
+  sink: DelegatedUsageSink | undefined,
+  result: DelegatedRunResult,
+): void {
+  if (sink === undefined || result.usage === undefined) return;
+  sink.recorder.record(sink.model, result.usage, sink.tags);
+}
+
+/**
  * The slice of {@link CodexBackend}/{@link ClaudeCodeBackend} these steps
  * use: one prompt in, one result out. Narrow on purpose, so
  * {@link DelegatedBackendFactory} can substitute a stand-in without
@@ -36,7 +81,7 @@ export interface DelegatedCliBackend {
       readonly workspacePath: string;
       readonly signal?: AbortSignal;
     },
-  ): Promise<AgentRunResult>;
+  ): Promise<DelegatedRunResult>;
 }
 
 /**
@@ -107,7 +152,7 @@ export async function runDelegatedPrompt(
   options: DelegatedRunOptions,
   prompt: string,
   signal?: AbortSignal,
-): Promise<AgentRunResult> {
+): Promise<DelegatedRunResult> {
   const { events, timeoutMs, model, workspacePath, runId } = options;
   const shared = {
     ...(model === undefined ? {} : { model }),

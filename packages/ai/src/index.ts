@@ -1,3 +1,5 @@
+import type { UsageTags } from "./usage.js";
+
 export type ModelRole = "orchestrator" | "worker" | "reviewer";
 
 export interface ModelCapabilities {
@@ -35,9 +37,38 @@ export interface ToolCall {
   readonly input: unknown;
 }
 
+/**
+ * Image formats a provider's vision input accepts (P1-9's `-i/--image`). Both
+ * Anthropic's Messages API and OpenAI's Chat Completions accept exactly this
+ * set as base64-encoded content.
+ */
+export type ImageMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp";
+
+/**
+ * One image attached to a user turn, ready to serialize as a provider
+ * content block. `base64` carries the raw encoded bytes with no `data:` URL
+ * prefix — each provider's request builder adds whatever wrapper its own
+ * wire format wants.
+ */
+export interface ImagePart {
+  readonly mediaType: ImageMediaType;
+  readonly base64: string;
+}
+
 export interface ModelMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
   readonly content: string;
+  /**
+   * Set on `role: "user"` messages that attach images (P1-9). A provider
+   * that cannot express `ModelMessage.images` at all should not claim
+   * {@link ModelCapabilities.vision}; providers in this package that do
+   * claim it serialize this into their own image content block shape.
+   */
+  readonly images?: readonly ImagePart[];
   /** Set on `role: "tool"` messages: the id of the call this result answers. */
   readonly toolCallId?: string;
   /** Set on `role: "assistant"` messages that requested tool calls. */
@@ -117,12 +148,24 @@ export interface ModelRegistry {
   providerFor(model: ModelDefinition): ModelProvider;
 }
 
-/** Sink for accumulating token usage (and therefore cost) across turns. */
+/**
+ * Sink for accumulating token usage (and therefore cost) across turns.
+ *
+ * `tags` is optional on both sides of the contract: a caller that knows which
+ * agent or task is spending says so, an older two-argument call still records,
+ * and an implementation is free to ignore the attribution entirely.
+ */
 export interface UsageRecorder {
-  record(model: ModelDefinition, usage: ModelUsage): void;
+  record(model: ModelDefinition, usage: ModelUsage, tags?: UsageTags): void;
 }
 
 export { defaultModelCatalog } from "./catalog.js";
+export {
+  mediaTypeFromExtension,
+  resolveImageMediaType,
+  SUPPORTED_IMAGE_MEDIA_TYPES,
+  sniffImageMediaType,
+} from "./image.js";
 export type { AnthropicProviderOptions } from "./providers/anthropic.js";
 export { AnthropicProvider } from "./providers/anthropic.js";
 export type { ProviderErrorInit } from "./providers/errors.js";
@@ -132,5 +175,16 @@ export { OpenAIProvider } from "./providers/openai.js";
 export { StaticModelRegistry } from "./registry.js";
 export type { SseMessage } from "./sse.js";
 export { parseSse } from "./sse.js";
-export type { UsageTotals } from "./usage.js";
-export { UsageTracker } from "./usage.js";
+export type {
+  UsageBreakdown,
+  UsageDimension,
+  UsagePricing,
+  UsageTags,
+  UsageTotals,
+} from "./usage.js";
+export {
+  UNATTRIBUTED,
+  UsageTracker,
+  usageCostUsd,
+  usageRecordingProvider,
+} from "./usage.js";

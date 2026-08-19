@@ -1,1 +1,1 @@
-v0.5.0 release — P0 UX: streaming, status line, compaction, AGENTS.md, routing attribution, y/n/a approvals with diffs
+v0.6.0 release retry — fix history test teardown race (ENOTEMPTY)

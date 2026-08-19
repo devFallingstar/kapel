@@ -1,4 +1,3 @@
-import type { AgentRunResult } from "@agent/core";
 import type {
   ExecutionPlan,
   PlanIssue,
@@ -17,6 +16,8 @@ import { z } from "zod";
 import type {
   DelegatedBackendFactory,
   DelegatedCliName,
+  DelegatedRunResult,
+  DelegatedUsageSink,
   Rejection,
 } from "./delegated-cli.js";
 import {
@@ -25,6 +26,7 @@ import {
   extractJsonObject,
   formatIssues,
   issuesFromZodError,
+  recordDelegatedUsage,
   runDelegatedPrompt,
   stringifyPromptSchema,
 } from "./delegated-cli.js";
@@ -51,6 +53,13 @@ export interface DelegatedPlannerOptions {
   readonly timeoutMs?: number;
   /** Optional sink for the CLI's normalized events. */
   readonly events?: EventSink;
+  /**
+   * Where to report what the CLI said each attempt spent, when the caller is
+   * keeping a ledger (`kapel orchestrate` opens one for the whole run). Left
+   * out, nothing is recorded — which is not the same as recording zero, and
+   * the reason this is optional rather than a tracker the class owns.
+   */
+  readonly usage?: DelegatedUsageSink;
   /**
    * Test-only injection point, mirroring `PreparePlanDeps.plannerFactory` in
    * the CLI; production callers never set this.
@@ -180,6 +189,10 @@ export class DelegatedPlanner {
         ...(rejection === undefined ? {} : { rejection }),
       });
       const run = await this.#run(prompt, signal);
+      // Recorded per attempt, not per plan: a rejected reply still cost the
+      // tokens it cost, and a ledger that only counted the accepted attempt
+      // would under-report exactly the runs that went badly.
+      recordDelegatedUsage(this.#options.usage, run);
       signal?.throwIfAborted();
 
       const reply = run.output ?? run.summary;
@@ -257,7 +270,10 @@ export class DelegatedPlanner {
   }
 
   /** Runs one attempt through the delegating CLI. */
-  async #run(prompt: string, signal?: AbortSignal): Promise<AgentRunResult> {
+  async #run(
+    prompt: string,
+    signal?: AbortSignal,
+  ): Promise<DelegatedRunResult> {
     const { events, timeoutMs, model, workspacePath, createBackend } =
       this.#options;
     return await runDelegatedPrompt(

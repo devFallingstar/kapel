@@ -1,4 +1,3 @@
-import type { AgentRunResult } from "@agent/core";
 import type {
   PolicyCompileIssue,
   PolicyCompileResult,
@@ -15,6 +14,8 @@ import type { EventSink } from "@agent/protocol";
 import type {
   DelegatedBackendFactory,
   DelegatedCliName,
+  DelegatedRunResult,
+  DelegatedUsageSink,
   Rejection,
 } from "./delegated-cli.js";
 import {
@@ -22,6 +23,7 @@ import {
   buildRetrySection,
   extractJsonObject,
   formatIssues,
+  recordDelegatedUsage,
   runDelegatedPrompt,
   stringifyPromptSchema,
 } from "./delegated-cli.js";
@@ -51,6 +53,13 @@ export interface DelegatedPolicyCompilerOptions {
   readonly timeoutMs?: number;
   /** Optional sink for the CLI's normalized events. */
   readonly events?: EventSink;
+  /**
+   * Where to report what the CLI said each attempt spent, when the caller is
+   * keeping a ledger (`kapel orchestrate` opens one for the whole run). Left
+   * out, nothing is recorded — which is not the same as recording zero, and
+   * the reason this is optional rather than a tracker the class owns.
+   */
+  readonly usage?: DelegatedUsageSink;
   /**
    * Test-only injection point, mirroring `RunPolicyCompileDeps.compilerFactory`
    * in the CLI; production callers never set this.
@@ -164,6 +173,9 @@ export class DelegatedPolicyCompiler implements PolicyCompiler {
         ...(rejection === undefined ? {} : { rejection }),
       });
       const run = await this.#run(prompt, signal);
+      // Recorded per attempt, not per compile: a rejected reply still cost
+      // the tokens it cost.
+      recordDelegatedUsage(this.#options.usage, run);
       signal?.throwIfAborted();
 
       const reply = run.output ?? run.summary;
@@ -231,7 +243,10 @@ export class DelegatedPolicyCompiler implements PolicyCompiler {
   }
 
   /** Runs one attempt through the delegating CLI. */
-  async #run(prompt: string, signal?: AbortSignal): Promise<AgentRunResult> {
+  async #run(
+    prompt: string,
+    signal?: AbortSignal,
+  ): Promise<DelegatedRunResult> {
     const { events, timeoutMs, model, workspacePath, createBackend } =
       this.#options;
     return await runDelegatedPrompt(

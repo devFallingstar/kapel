@@ -84,6 +84,11 @@ export interface ChatSessionRecord {
    */
   readonly workspacePath: string;
   readonly title: string;
+  /**
+   * User-given label (`/name`, `--name`), distinct from the auto-derived
+   * `title`. Absent when the session was never named.
+   */
+  readonly name?: string;
   readonly modelAlias?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -100,12 +105,20 @@ export interface NewChatSession {
   readonly id: string;
   readonly workspacePath: string;
   readonly title: string;
+  /** Optional label to start the session with (e.g. a `--name` flag). */
+  readonly name?: string;
   readonly modelAlias?: string;
   readonly createdAt: number;
 }
 
 export interface ListChatSessionsOptions {
   readonly limit?: number;
+}
+
+/** Options for {@link SqliteSessionStore.forkChatSession}. */
+export interface ForkChatSessionOptions {
+  /** Label for the new session. Omit to leave it unnamed. */
+  readonly name?: string;
 }
 
 /** A chat session read back whole: its metadata and its ordered transcript. */
@@ -242,6 +255,36 @@ function taskResultPatchFor(event: AgentEvent): TaskResultPatch | undefined {
 type Db = ReturnType<typeof drizzle>;
 
 /**
+ * Adds `chat_sessions.name` to a database that predates it, so a v0.5.0
+ * database (created by `BOOTSTRAP_DDL` before the column existed) keeps
+ * working instead of failing every chat-session query the moment this store
+ * starts selecting a column that isn't there.
+ *
+ * `BOOTSTRAP_DDL`'s `CREATE TABLE IF NOT EXISTS` only shapes a *new* file —
+ * once `chat_sessions` exists, that statement is a no-op regardless of which
+ * columns it has, so the column has to be added out-of-band. `PRAGMA
+ * table_info` is the guard: it lists the table's actual columns, so the
+ * `ALTER TABLE` only runs the one time it is needed and is a no-op on every
+ * later open (including brand new databases, which already have the column
+ * from `BOOTSTRAP_DDL` and so skip the `ALTER TABLE` too).
+ */
+function ensureChatSessionsNameColumn(sqlite: Database.Database): void {
+  const columns = sqlite.pragma("table_info(chat_sessions)") as ReadonlyArray<{
+    readonly name: string;
+  }>;
+  const hasName = columns.some((column) => column.name === "name");
+  if (!hasName) {
+    sqlite.exec("ALTER TABLE chat_sessions ADD COLUMN name TEXT");
+  }
+  // Safe to (re)create unconditionally: by this point the column always
+  // exists, either from BOOTSTRAP_DDL on a new database or the ALTER TABLE
+  // just above on an old one.
+  sqlite.exec(
+    "CREATE INDEX IF NOT EXISTS chat_sessions_name_idx ON chat_sessions (name)",
+  );
+}
+
+/**
  * SQLite-backed {@link SessionStore}. Runs, their event stream and a rolling
  * per-task summary live in one file, so a run can be inspected or resumed
  * after the process that produced it is gone.
@@ -263,6 +306,7 @@ export class SqliteSessionStore implements SessionStore {
       this.#sqlite.pragma("journal_mode = WAL");
     }
     this.#sqlite.exec(BOOTSTRAP_DDL);
+    ensureChatSessionsNameColumn(this.#sqlite);
     this.#db = drizzle(this.#sqlite);
   }
 
@@ -477,6 +521,7 @@ export class SqliteSessionStore implements SessionStore {
         id: session.id,
         workspacePath: session.workspacePath,
         title: session.title,
+        name: session.name ?? null,
         modelAlias: session.modelAlias ?? null,
         createdAt: session.createdAt,
         updatedAt: session.createdAt,
@@ -533,11 +578,25 @@ export class SqliteSessionStore implements SessionStore {
     });
   }
 
-  /** Renames a session and marks it as freshly touched. */
+  /** Rewrites the auto-derived title and marks the session as freshly touched. */
   async setChatSessionTitle(sessionId: string, title: string): Promise<void> {
     this.#db
       .update(chatSessions)
       .set({ title, updatedAt: Date.now() })
+      .where(eq(chatSessions.id, sessionId))
+      .run();
+  }
+
+  /**
+   * Sets a session's user-given `name` (`/name`, `kapel sessions rename` —
+   * whatever the caller spells it as) and marks it as freshly touched.
+   * Renaming a session that is not there is a silent no-op, like
+   * {@link setChatSessionTitle}.
+   */
+  async renameChatSession(sessionId: string, name: string): Promise<void> {
+    this.#db
+      .update(chatSessions)
+      .set({ name, updatedAt: Date.now() })
       .where(eq(chatSessions.id, sessionId))
       .run();
   }
@@ -612,6 +671,73 @@ export class SqliteSessionStore implements SessionStore {
     });
   }
 
+  /**
+   * Copies a session — its metadata (workspace, title, model) and its whole
+   * transcript as of now — into a brand new session, and returns the new
+   * session's id.
+   *
+   * The fork is independent from the moment it is created: it does not carry
+   * the source id forward anywhere, so appending to either session afterwards
+   * never touches the other. `options.name` labels the new session; leaving
+   * it out leaves the fork unnamed even if the source had a name, since a
+   * name is a label the user chose for one specific conversation branch, not
+   * a property that should silently propagate to every copy of it.
+   *
+   * Throws if `sessionId` does not name an existing session — unlike the
+   * read paths, a fork has nothing useful to return for a source that isn't
+   * there.
+   */
+  async forkChatSession(
+    sessionId: string,
+    options: ForkChatSessionOptions = {},
+  ): Promise<string> {
+    const newId = crypto.randomUUID();
+    const now = Date.now();
+
+    this.#db.transaction((tx) => {
+      const source = tx
+        .select()
+        .from(chatSessions)
+        .where(eq(chatSessions.id, sessionId))
+        .limit(1)
+        .get();
+      if (source === undefined) {
+        throw new Error(`Chat session ${sessionId} not found`);
+      }
+
+      tx.insert(chatSessions)
+        .values({
+          id: newId,
+          workspacePath: source.workspacePath,
+          title: source.title,
+          name: options.name ?? null,
+          modelAlias: source.modelAlias,
+          createdAt: now,
+          updatedAt: now,
+          messageCount: source.messageCount,
+        })
+        .run();
+
+      const sourceMessages = tx
+        .select()
+        .from(chatMessages)
+        .where(eq(chatMessages.sessionId, sessionId))
+        .all();
+      for (const message of sourceMessages) {
+        tx.insert(chatMessages)
+          .values({
+            sessionId: newId,
+            seq: message.seq,
+            messageJson: message.messageJson,
+            createdAt: now,
+          })
+          .run();
+      }
+    });
+
+    return newId;
+  }
+
   close(): void {
     this.#sqlite.close();
   }
@@ -627,6 +753,7 @@ function toChatSessionRecord(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     messageCount: row.messageCount,
+    ...(row.name === null ? {} : { name: row.name }),
     ...(row.modelAlias === null ? {} : { modelAlias: row.modelAlias }),
   };
 }

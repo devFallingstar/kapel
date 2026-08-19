@@ -31,7 +31,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  // A second attempt covers any straggling write finishing mid-removal.
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // --- historyFilePath ---------------------------------------------------------
@@ -55,7 +60,7 @@ describe("loadHistory", () => {
     append("second");
     append("third");
     // Let the serialized append chain settle.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(async () => (await loadHistory(env)).length === 3);
 
     await expect(loadHistory(env)).resolves.toEqual([
       "third",
@@ -95,7 +100,13 @@ describe("createHistoryAppender", () => {
   it("creates the config dir on first append", async () => {
     const append = createHistoryAppender(env);
     append("hello");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(async () => {
+      try {
+        return (await readFile(historyFilePath(env), "utf8")).includes("hello");
+      } catch {
+        return false;
+      }
+    });
 
     const raw = await readFile(historyFilePath(env), "utf8");
     expect(raw).toBe("hello\n");
@@ -107,15 +118,26 @@ describe("createHistoryAppender", () => {
     append("a");
     append("b");
     append("a");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(async () => (await loadHistory(env)).length === 3);
 
     await expect(loadHistory(env)).resolves.toEqual(["a", "b", "a"]);
   });
 
-  it("never throws even if given odd input", () => {
+  it("never throws even if given odd input", async () => {
     const append = createHistoryAppender(env);
     expect(() => append("")).not.toThrow();
     expect(() => append("normal")).not.toThrow();
+    // Wait out the serialized write chain so afterEach's directory removal
+    // can't race a write still in flight (ENOTEMPTY on rmdir).
+    await waitUntil(async () => {
+      try {
+        return (await readFile(historyFilePath(env), "utf8")).includes(
+          "normal",
+        );
+      } catch {
+        return false;
+      }
+    });
   });
 
   it("trims the file back to HISTORY_LIMIT once it exceeds 2x the limit", async () => {

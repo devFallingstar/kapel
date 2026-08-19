@@ -244,6 +244,95 @@ describe("AnthropicProvider", () => {
     });
   });
 
+  it("serializes image parts as base64 image content blocks before the text block", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    const request: ModelRequest = {
+      model: anthropicModel,
+      messages: [
+        {
+          role: "user",
+          content: "what is in this screenshot?",
+          images: [
+            { mediaType: "image/png", base64: "cG5nLWJ5dGVz" },
+            { mediaType: "image/jpeg", base64: "anBnLWJ5dGVz" },
+          ],
+        },
+      ],
+    };
+    await drain(provider().stream(request));
+
+    const body = requestBody(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: "cG5nLWJ5dGVz",
+            },
+          },
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: "anBnLWJ5dGVz",
+            },
+          },
+          { type: "text", text: "what is in this screenshot?" },
+        ],
+      },
+    ]);
+  });
+
+  it("omits the trailing text block when an image-only user turn has empty content", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    const request: ModelRequest = {
+      model: anthropicModel,
+      messages: [
+        {
+          role: "user",
+          content: "",
+          images: [{ mediaType: "image/webp", base64: "d2VicA==" }],
+        },
+      ],
+    };
+    await drain(provider().stream(request));
+
+    const body = requestBody(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/webp",
+              data: "d2VicA==",
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("sends a plain string user message when there are no images (unchanged behavior)", async () => {
+    const mock = stubFetch(TEXT_TURN);
+    await drain(provider().stream(simpleRequest));
+    const body = requestBody(
+      mock.mock.calls[0] as unknown as readonly unknown[],
+    );
+    expect(body.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
+
   it("maps every tool_choice variant, and omits tool_choice when unset", async () => {
     const cases: readonly (readonly [ToolChoice, unknown])[] = [
       [{ type: "auto" }, { type: "auto" }],

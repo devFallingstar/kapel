@@ -1,3 +1,4 @@
+import { UsageTracker } from "@agent/ai";
 import { PlanError } from "@agent/orchestration";
 import type { OrchestrationPolicy } from "@agent/policy";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,6 +28,18 @@ const POLICY: OrchestrationPolicy = {
 };
 
 const KNOWN_AGENTS = ["lead", "coder"] as const;
+
+/** The stand-in identity a delegated step attributes its spend to. */
+const DELEGATED_MODEL = {
+  provider: "openai",
+  id: "gpt-5-codex",
+  capabilities: {
+    tools: false,
+    reasoning: false,
+    vision: false,
+    structuredOutput: false,
+  },
+} as const;
 
 const VALID_PLAN = {
   objective: "add a health endpoint",
@@ -218,5 +231,57 @@ describe("DelegatedPlanner", () => {
     expect((error as PlanError).lastIssues?.[0]?.message).toContain(
       "exited with code 3",
     );
+  });
+
+  it("records what the CLI reported spending, and nothing when it reported none", async () => {
+    const spent = new UsageTracker();
+    const silent = new UsageTracker();
+    const reply = json(VALID_PLAN);
+    const withUsage = await writeScriptedCli(dir, "codex", [
+      `${json({
+        type: "turn.completed",
+        usage: { input_tokens: 4_000, output_tokens: 500 },
+      })}\n${codexReply(reply)}`,
+    ]);
+    const quietDir = await makeTempDir("delegated-planner-quiet-");
+    const withoutUsage = await writeScriptedCli(quietDir, "codex", [
+      codexReply(reply),
+    ]);
+
+    const plannerFor = (
+      cliPath: string,
+      usage: UsageTracker,
+    ): DelegatedPlanner =>
+      new DelegatedPlanner({
+        backend: "codex",
+        workspacePath: workspace,
+        knownAgents: KNOWN_AGENTS,
+        createBackend: fakeBackendFactory(cliPath),
+        usage: {
+          recorder: usage,
+          model: DELEGATED_MODEL,
+          tags: { agent: "planner" },
+        },
+      });
+
+    await plannerFor(withUsage.binaryPath, spent).plan(
+      "add an endpoint",
+      POLICY,
+    );
+    await plannerFor(withoutUsage.binaryPath, silent).plan(
+      "add an endpoint",
+      POLICY,
+    );
+
+    expect(spent.totals().usage).toEqual({
+      inputTokens: 4_000,
+      outputTokens: 500,
+    });
+    expect([...spent.breakdownBy("agent").keys()]).toEqual(["planner"]);
+    // A CLI that reported nothing leaves no sample at all — "no usage" must
+    // stay distinguishable from "zero tokens".
+    expect([...silent.breakdownBy("agent").values()]).toEqual([]);
+
+    await cleanup(quietDir);
   });
 });

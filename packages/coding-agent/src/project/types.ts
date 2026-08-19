@@ -1,4 +1,5 @@
 import type { AgentRole } from "@agent/core";
+import type { ToolPermissionRule } from "../permissions.js";
 
 /** A `provider`/`model` pair as declared under `models.<alias>` in config.yaml. */
 export interface ProjectModelRef {
@@ -51,6 +52,14 @@ export interface AgentProjectConfig {
   readonly agentSlots: Readonly<Record<string, string>>;
   /** The `validation` list, in file order. Empty when the key is absent. */
   readonly validators: readonly ProjectValidator[];
+  /**
+   * The `permission` block (P1-5): tool name -> verdict, or, for `bash`, a
+   * map of command-prefix patterns to verdicts. Empty when the key is
+   * absent. Merged on top of the CLI's machine-level config by
+   * `resolvePermissionRules` in `apps/cli/src/permissions.ts` — this repo
+   * layer wins over that one.
+   */
+  readonly permission: Readonly<Record<string, ToolPermissionRule>>;
 }
 
 /** A fully loaded and cross-validated `.agent/` project configuration. */

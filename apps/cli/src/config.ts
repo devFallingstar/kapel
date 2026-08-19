@@ -2,6 +2,8 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { defaultModelCatalog } from "@agent/ai";
+import type { PermissionRuleSet } from "@agent/coding-agent";
+import type { PermissionDecision } from "@agent/core";
 import type { SelectChoice } from "./select-prompt.js";
 
 /**
@@ -37,6 +39,15 @@ export interface KapelConfig {
   readonly backend: KapelBackend;
   readonly models: KapelModels;
   readonly updatedAt: number;
+  /**
+   * The machine-level permission layer (P1-5): tool name -> `"allow" |
+   * "ask" | "deny"`, or, for `bash`, a map of command-prefix patterns to
+   * verdicts — opencode's `{"*": "ask", "git *": "allow"}` syntax. Omitted
+   * when the file has no `permission` block, or when everything in it was
+   * invalid. Hand-edited only — the `/config` wizard never writes this key,
+   * but preserves it across a save (see `saveKapelConfig`).
+   */
+  readonly permission?: PermissionRuleSet;
 }
 
 // --- Location ---------------------------------------------------------------
@@ -69,6 +80,72 @@ function isBackend(value: unknown): value is KapelBackend {
 
 function modelString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPermissionDecision(value: unknown): value is PermissionDecision {
+  return value === "allow" || value === "ask" || value === "deny";
+}
+
+interface ParsedPermission {
+  readonly rules: PermissionRuleSet;
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Parses the optional `permission` block leniently: a malformed entry — the
+ * wrong type, an unrecognised verdict, a `bash` pattern whose value isn't a
+ * verdict — is dropped and its problem collected, but never invalidates the
+ * rest of the block or (unlike every other field here) the config file it
+ * lives in. Backend/model settings are load-bearing enough to justify
+ * `parseConfig` discarding the whole file when they're wrong; a hand-edited
+ * permission typo is not worth losing someone's backend and model choices
+ * over, so the file loads with the bad entries simply ignored and reported.
+ */
+function parsePermissionBlock(raw: unknown): ParsedPermission {
+  if (raw === undefined) return { rules: {}, warnings: [] };
+  if (!isRecord(raw)) {
+    return {
+      rules: {},
+      warnings: ['"permission" must be an object; ignoring it entirely.'],
+    };
+  }
+
+  const rules: Record<string, PermissionRuleSet[string]> = {};
+  const warnings: string[] = [];
+
+  for (const [tool, value] of Object.entries(raw)) {
+    if (isPermissionDecision(value)) {
+      rules[tool] = value;
+      continue;
+    }
+    if (isRecord(value)) {
+      const patterns: Record<string, PermissionDecision> = {};
+      for (const [pattern, verdict] of Object.entries(value)) {
+        if (isPermissionDecision(verdict)) {
+          patterns[pattern] = verdict;
+        } else {
+          warnings.push(
+            `permission.${tool}["${pattern}"]: expected "allow" | "ask" | "deny", got ${JSON.stringify(verdict)} — ignoring.`,
+          );
+        }
+      }
+      if (Object.keys(patterns).length > 0) {
+        rules[tool] = patterns;
+      } else {
+        warnings.push(`permission.${tool}: no valid patterns — ignoring.`);
+      }
+      continue;
+    }
+    warnings.push(
+      `permission.${tool}: expected "allow" | "ask" | "deny" or a pattern map, got ${JSON.stringify(value)} — ignoring.`,
+    );
+  }
+
+  return { rules, warnings };
 }
 
 /**
@@ -128,26 +205,42 @@ function parseV2Models(
   return { orchestrator, complex, middle, low };
 }
 
-function parseConfig(raw: unknown): KapelConfig | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
+interface ParsedConfig {
+  readonly config: KapelConfig | undefined;
+  readonly warnings: readonly string[];
+}
+
+function parseConfig(raw: unknown): ParsedConfig {
+  const none: ParsedConfig = { config: undefined, warnings: [] };
+  if (typeof raw !== "object" || raw === null) return none;
   const record = raw as Record<string, unknown>;
   const version = record.version;
-  if (version !== KAPEL_CONFIG_VERSION && version !== 1) return undefined;
-  if (!isBackend(record.backend)) return undefined;
+  if (version !== KAPEL_CONFIG_VERSION && version !== 1) return none;
+  if (!isBackend(record.backend)) return none;
 
   const models = record.models;
-  if (typeof models !== "object" || models === null) return undefined;
+  if (typeof models !== "object" || models === null) return none;
   const modelRecord = models as Record<string, unknown>;
   const parsed =
     version === 1 ? migrateV1Models(modelRecord) : parseV2Models(modelRecord);
-  if (parsed === undefined) return undefined;
+  if (parsed === undefined) return none;
+
+  // The permission block is version-independent: it was never part of the
+  // models schema, so a migrated version-1 file keeps whatever it had.
+  const { rules: permission, warnings } = parsePermissionBlock(
+    record.permission,
+  );
 
   const updatedAt = record.updatedAt;
   return {
-    version: KAPEL_CONFIG_VERSION,
-    backend: record.backend,
-    models: parsed,
-    updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
+    config: {
+      version: KAPEL_CONFIG_VERSION,
+      backend: record.backend,
+      models: parsed,
+      updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
+      ...(Object.keys(permission).length > 0 ? { permission } : {}),
+    },
+    warnings,
   };
 }
 
@@ -172,11 +265,19 @@ export async function loadKapelConfig(
   } catch {
     return undefined;
   }
+  let parsed: ParsedConfig;
   try {
-    return parseConfig(JSON.parse(text));
+    parsed = parseConfig(JSON.parse(text));
   } catch {
     return undefined;
   }
+  if (parsed.warnings.length > 0) {
+    console.error(
+      `warning: ignoring invalid entries in ${kapelConfigPath(env)}'s "permission" block:`,
+    );
+    for (const warning of parsed.warnings) console.error(`  - ${warning}`);
+  }
+  return parsed.config;
 }
 
 /**
@@ -204,6 +305,11 @@ export async function saveKapelConfig(
       low: config.models.low,
     },
     updatedAt: config.updatedAt ?? Date.now(),
+    // Hand-edited only (see `KapelConfig.permission`) — carried through
+    // verbatim so a `/config` re-save never silently drops it.
+    ...(config.permission === undefined
+      ? {}
+      : { permission: config.permission }),
   };
 
   await writeFile(filePath, `${JSON.stringify(full, null, 2)}\n`, "utf8");

@@ -49,6 +49,24 @@ export const ALLOWED_FOR_SESSION = "allowed for this session";
 const BASH_TOOL = "bash";
 
 /**
+ * A map of `bash` command-prefix patterns to verdicts — opencode's
+ * `{"*": "ask", "git *": "allow"}` syntax. Keys are patterns, matched
+ * against a command's *derived* prefix (the same one {@link bashCommandPrefix}
+ * computes for the session allowlist), not against the raw command string.
+ * See {@link matchBashPermission} for exactly how a pattern matches.
+ */
+export type BashPermissionRules = Readonly<Record<string, PermissionDecision>>;
+
+/**
+ * One tool's permission rule: a flat verdict for any tool, or — `bash` only
+ * — a {@link BashPermissionRules} pattern map instead of a single verdict.
+ */
+export type ToolPermissionRule = PermissionDecision | BashPermissionRules;
+
+/** A full rule set, as fed to {@link PermissionEngine}: tool name -> rule. */
+export type PermissionRuleSet = Readonly<Record<string, ToolPermissionRule>>;
+
+/**
  * Tokens accepted as a subcommand — the second word of a `git log` or
  * `npm test`. A word carrying a `.` or a `/` is a path or a file name, not a
  * subcommand, so `cat src/x.ts` narrows to `cat` rather than to `cat src/x.ts`.
@@ -125,6 +143,107 @@ export function bashCommandPrefix(command: string): string | undefined {
 }
 
 /**
+ * One `BashPermissionRules` pattern, decomposed into the tokens before a
+ * trailing `*` (if any) and whether that `*` was there.
+ *
+ * - `"*"` -> `{ tokens: [], headOnly: false }` — matches anything.
+ * - `"git *"` -> `{ tokens: ["git"], headOnly: true }` — matches any command
+ *   whose derived prefix's first token is `git`.
+ * - `"git log *"` / bare `"git log"` -> `{ tokens: ["git", "log"], headOnly:
+ *   false }` — matches only a derived prefix that equals `"git log"` exactly
+ *   (a trailing `*` after two or more tokens changes nothing: a derived
+ *   prefix is never more than two tokens long, so there is nothing further
+ *   for it to wildcard).
+ * - bare `"git"` -> `{ tokens: ["git"], headOnly: false }` — matches only a
+ *   derived prefix that equals `"git"` exactly, i.e. `git` with no
+ *   subcommand. This is what makes it stricter than `"git *"`.
+ */
+function parseBashPattern(pattern: string): {
+  readonly tokens: readonly string[];
+  readonly headOnly: boolean;
+} {
+  const trimmed = pattern.trim();
+  if (trimmed === "*") return { tokens: [], headOnly: false };
+
+  const tokens = trimmed.split(/\s+/).filter((token) => token !== "");
+  const last = tokens[tokens.length - 1];
+  if (last === "*" && tokens.length >= 2) {
+    const head = tokens.slice(0, -1);
+    return { tokens: head, headOnly: head.length === 1 };
+  }
+  return { tokens, headOnly: false };
+}
+
+/**
+ * How specific a pattern is, for "longest/most specific match wins": the
+ * wildcard (`"*"`) is least specific, a head-only pattern (`"git *"`) beats
+ * it, and an exact-prefix pattern (`"git log"`, `"git log *"`, bare `"git"`)
+ * beats both — the longer the exact prefix, the more specific it is.
+ */
+function bashPatternSpecificity(
+  tokens: readonly string[],
+  headOnly: boolean,
+): number {
+  if (tokens.length === 0) return 0;
+  if (headOnly) return 1;
+  return 10 + tokens.length;
+}
+
+function bashPatternMatches(
+  tokens: readonly string[],
+  headOnly: boolean,
+  derivedPrefix: string | undefined,
+): boolean {
+  if (tokens.length === 0) return true;
+  if (derivedPrefix === undefined) return false;
+  if (headOnly) return derivedPrefix.split(" ")[0] === tokens[0];
+  return derivedPrefix === tokens.join(" ");
+}
+
+/** The pattern and verdict a {@link BashPermissionRules} map resolved a command to. */
+export interface BashPermissionMatch {
+  readonly pattern: string;
+  readonly decision: PermissionDecision;
+}
+
+/**
+ * Resolves which entry of a `bash` pattern map governs `command`, by
+ * specificity (see {@link bashPatternSpecificity}); ties are broken in favour
+ * of `deny`, so a `deny` pattern is never quietly outranked by an `allow` or
+ * `ask` at the same specificity. Returns `undefined` when nothing matches —
+ * only possible when the map has no `"*"` entry and either `command` has no
+ * derivable prefix (a compound shell command) or no pattern's prefix matches
+ * it.
+ */
+export function matchBashPermission(
+  patterns: BashPermissionRules,
+  command: string | undefined,
+): BashPermissionMatch | undefined {
+  const derivedPrefix =
+    command === undefined ? undefined : bashCommandPrefix(command);
+
+  let best: BashPermissionMatch | undefined;
+  let bestSpecificity = -1;
+  for (const [pattern, decision] of Object.entries(patterns)) {
+    const { tokens, headOnly } = parseBashPattern(pattern);
+    if (!bashPatternMatches(tokens, headOnly, derivedPrefix)) continue;
+
+    const specificity = bashPatternSpecificity(tokens, headOnly);
+    const beatsCurrentBest =
+      best === undefined ||
+      specificity > bestSpecificity ||
+      (specificity === bestSpecificity &&
+        decision === "deny" &&
+        best.decision !== "deny");
+    if (beatsCurrentBest) {
+      best = { pattern, decision };
+      bestSpecificity = specificity;
+    }
+  }
+  return best;
+}
+
+/**
  * The rule an "always allow" answer would add for this request: a command
  * prefix for `bash`, the tool name for everything else. `undefined` means the
  * request cannot be generalised (a compound shell command) and can only ever
@@ -192,25 +311,36 @@ export class SessionAllowlist implements PermissionOverlay {
   }
 }
 
+function ruleFor(
+  rules: Readonly<Record<string, ToolPermissionRule>>,
+  tool: string,
+): ToolPermissionRule | undefined {
+  return Object.hasOwn(rules, tool) ? rules[tool] : undefined;
+}
+
 /**
  * Resolves `allow | ask | deny` decisions for tool invocations.
  *
  * Rules are matched by exact tool name; anything unmatched falls back to
- * `options.defaultDecision` (itself defaulting to `"ask"`).
+ * `options.defaultDecision` (itself defaulting to `"ask"`). `bash` is the one
+ * tool whose rule may be a {@link BashPermissionRules} pattern map instead of
+ * a flat verdict — see {@link matchBashPermission} for how a request's
+ * command resolves against it.
  *
- * Precedence, highest first: a static `allow` or `deny` rule, then the
- * session {@link PermissionOverlay}, then the prompter. The overlay only ever
- * gets a say on requests that were going to be prompted anyway, which is what
- * keeps an explicit `deny` rule un-overridable by anything a session learned.
+ * Precedence, highest first: a static `allow` or `deny` rule (or, for `bash`,
+ * the pattern match), then the session {@link PermissionOverlay}, then the
+ * prompter. The overlay only ever gets a say on requests that were going to
+ * be prompted anyway, which is what keeps an explicit `deny` — static or
+ * pattern-matched — un-overridable by anything a session learned.
  */
 export class PermissionEngine {
-  readonly #rules: Readonly<Record<string, PermissionDecision>>;
+  readonly #rules: Readonly<Record<string, ToolPermissionRule>>;
   readonly #defaultDecision: PermissionDecision;
   readonly #prompter: PermissionPrompter | undefined;
   readonly #overlay: PermissionOverlay | undefined;
 
   constructor(
-    rules: Readonly<Record<string, PermissionDecision>>,
+    rules: Readonly<Record<string, ToolPermissionRule>>,
     options: PermissionEngineOptions = {},
   ) {
     this.#rules = { ...rules };
@@ -219,13 +349,32 @@ export class PermissionEngine {
     this.#overlay = options.overlay;
   }
 
+  /**
+   * The verdict for a bare tool name, with no request to match a `bash`
+   * pattern map against — equivalent to asking what governs that tool by
+   * default, i.e. only the map's `"*"` entry (if any) can answer.
+   */
   decisionFor(tool: string): PermissionDecision {
-    if (!Object.hasOwn(this.#rules, tool)) return this.#defaultDecision;
-    return this.#rules[tool] ?? this.#defaultDecision;
+    const rule = ruleFor(this.#rules, tool);
+    if (rule === undefined) return this.#defaultDecision;
+    if (typeof rule === "string") return rule;
+    return (
+      matchBashPermission(rule, undefined)?.decision ?? this.#defaultDecision
+    );
+  }
+
+  #decisionForRequest(request: PermissionRequest): PermissionDecision {
+    const rule = ruleFor(this.#rules, request.tool);
+    if (rule === undefined) return this.#defaultDecision;
+    if (typeof rule === "string") return rule;
+    return (
+      matchBashPermission(rule, commandOf(request.input))?.decision ??
+      this.#defaultDecision
+    );
   }
 
   async authorize(request: PermissionRequest): Promise<PermissionResult> {
-    const decision = this.decisionFor(request.tool);
+    const decision = this.#decisionForRequest(request);
 
     if (decision === "allow") return { allowed: true, decision };
     if (decision === "deny")

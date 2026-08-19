@@ -10,6 +10,7 @@ import type {
 } from "@agent/ai";
 import type {
   AgentDefinition,
+  AgentImageAttachment,
   AgentRunInput,
   AgentRunResult,
   Tool,
@@ -222,9 +223,17 @@ export class AgentLoopEngine {
 
   /** The fresh-conversation seed: the agent's system prompt plus the user turn. */
   seed(input: AgentRunInput): ModelMessage[] {
+    const images: readonly AgentImageAttachment[] = input.images ?? [];
     return [
       { role: "system", content: this.#options.agent.systemPrompt },
-      { role: "user", content: buildUserContent(input) },
+      {
+        role: "user",
+        content: buildUserContent(input),
+        // `AgentImageAttachment` is a superset of `ImagePart` (it also
+        // carries the source `path` delegated backends want), so it rides
+        // straight through onto the wire message unchanged.
+        ...(images.length > 0 ? { images } : {}),
+      },
     ];
   }
 
@@ -414,7 +423,7 @@ export class AgentLoopEngine {
             calls.push({ id: event.id, name: event.name, input: event.input });
             break;
           case "usage":
-            this.#recordUsage(event);
+            this.#recordUsage(event, context);
             break;
           case "done":
             finishReason = event.finishReason;
@@ -430,7 +439,10 @@ export class AgentLoopEngine {
     return { text, calls, finishReason };
   }
 
-  #recordUsage(event: Extract<ModelEvent, { type: "usage" }>): void {
+  #recordUsage(
+    event: Extract<ModelEvent, { type: "usage" }>,
+    context: AgentLoopRunContext,
+  ): void {
     const recorder = this.#options.usage;
     if (recorder === undefined) return;
 
@@ -441,7 +453,10 @@ export class AgentLoopEngine {
         ? {}
         : { cachedInputTokens: event.cachedInputTokens }),
     };
-    recorder.record(this.#options.agent.model, usage);
+    recorder.record(this.#options.agent.model, usage, {
+      agent: this.#options.agent.name,
+      ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
+    });
   }
 
   /**

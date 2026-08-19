@@ -38,7 +38,7 @@ function finishTuiState(state, outcome) {
 }
 function reduceTuiEvent(state, event2) {
   const base = adoptEnvelope(state, event2);
-  const data = isRecord9(event2.data) ? event2.data : {};
+  const data = isRecord10(event2.data) ? event2.data : {};
   const tasks = reduceTasks(base.tasks, event2, data);
   const line = formatEventLine(event2);
   const log = line === void 0 ? base.log : appendLog(base.log, line);
@@ -47,7 +47,7 @@ function reduceTuiEvent(state, event2) {
   return { ...base, tasks, log };
 }
 function formatEventLine(event2) {
-  const data = isRecord9(event2.data) ? event2.data : {};
+  const data = isRecord10(event2.data) ? event2.data : {};
   if (event2.type.startsWith("codex."))
     return formatCodexLine(data);
   const taskId = taskIdOf2(event2, data);
@@ -71,7 +71,7 @@ function formatEventLine(event2) {
       return `\u25B6 ${taskId} \u2192 ${agent} (attempt ${num2(data.attempt) ?? 1})`;
     }
     case "task.completed": {
-      const result = isRecord9(data.result) ? data.result : {};
+      const result = isRecord10(data.result) ? data.result : {};
       const glyph2 = result.status === "success" ? "\u2714" : "\u2716";
       const suffix = data.final === false ? " (retrying)" : "";
       return `${glyph2} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
@@ -148,7 +148,7 @@ function reduceTasks(tasks, event2, data) {
         break;
       }
       case "task.completed": {
-        const result = isRecord9(data.result) ? data.result : {};
+        const result = isRecord10(data.result) ? data.result : {};
         const summary = str2(result.summary);
         if (summary !== void 0)
           draft.summary = firstLine3(summary);
@@ -190,8 +190,8 @@ function reduceTasks(tasks, event2, data) {
       case "validation.completed": {
         if (data.passed === true)
           break;
-        const failure = `\u2717 ${str2(data.name) ?? "?"}`;
-        draft.note = draft.note === void 0 ? failure : `${draft.note} \xB7 ${failure}`;
+        const failure2 = `\u2717 ${str2(data.name) ?? "?"}`;
+        draft.note = draft.note === void 0 ? failure2 : `${draft.note} \xB7 ${failure2}`;
         break;
       }
       default:
@@ -240,7 +240,7 @@ function appendLog(log, line) {
   const next = [...log, line];
   return next.length <= MAX_LOG_LINES ? next : next.slice(next.length - MAX_LOG_LINES);
 }
-function isRecord9(value) {
+function isRecord10(value) {
   return typeof value === "object" && value !== null;
 }
 function str2(value) {
@@ -300,9 +300,9 @@ function formatCodexLine(data) {
   }
 }
 function codexItem(data) {
-  if (isRecord9(data.item))
+  if (isRecord10(data.item))
     return data.item;
-  if (isRecord9(data.msg) && isRecord9(data.msg.item))
+  if (isRecord10(data.msg) && isRecord10(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -315,7 +315,7 @@ function codexMessageText2(item) {
     return str2(content);
   if (!Array.isArray(content))
     return void 0;
-  const joined = content.map((part) => typeof part === "string" ? part : isRecord9(part) ? str2(part.text) ?? "" : "").join("");
+  const joined = content.map((part) => typeof part === "string" ? part : isRecord10(part) ? str2(part.text) ?? "" : "").join("");
   return str2(joined);
 }
 function codexCommandText2(item) {
@@ -336,10 +336,10 @@ function codexFileText(item) {
   for (const change of changes) {
     if (typeof change === "string")
       paths.push(change);
-    else if (isRecord9(change)) {
-      const path15 = str2(change.path) ?? str2(change.file);
-      if (path15 !== void 0)
-        paths.push(path15);
+    else if (isRecord10(change)) {
+      const path19 = str2(change.path) ?? str2(change.file);
+      if (path19 !== void 0)
+        paths.push(path19);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -547,7 +547,7 @@ var init_dist = __esm({
 });
 
 // apps/cli/dist/index.js
-import path14 from "node:path";
+import path18 from "node:path";
 import { Command } from "commander";
 
 // apps/cli/dist/backend.js
@@ -677,6 +677,51 @@ function defaultModelCatalog() {
       capabilities: FULL_CAPABILITIES
     }
   };
+}
+
+// packages/ai/dist/image.js
+function matchesMagic(bytes, offset, magic) {
+  if (bytes.length < offset + magic.length)
+    return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (bytes[offset + i] !== magic[i])
+      return false;
+  }
+  return true;
+}
+var PNG_MAGIC = [137, 80, 78, 71, 13, 10, 26, 10];
+var JPEG_MAGIC = [255, 216, 255];
+var GIF87_MAGIC = [71, 73, 70, 56, 55, 97];
+var GIF89_MAGIC = [71, 73, 70, 56, 57, 97];
+var RIFF_MAGIC = [82, 73, 70, 70];
+var WEBP_MAGIC = [87, 69, 66, 80];
+function sniffImageMediaType(bytes) {
+  if (matchesMagic(bytes, 0, PNG_MAGIC))
+    return "image/png";
+  if (matchesMagic(bytes, 0, JPEG_MAGIC))
+    return "image/jpeg";
+  if (matchesMagic(bytes, 0, GIF87_MAGIC) || matchesMagic(bytes, 0, GIF89_MAGIC)) {
+    return "image/gif";
+  }
+  if (matchesMagic(bytes, 0, RIFF_MAGIC) && matchesMagic(bytes, 8, WEBP_MAGIC)) {
+    return "image/webp";
+  }
+  return void 0;
+}
+var EXTENSION_MEDIA_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+};
+function mediaTypeFromExtension(filePath) {
+  const match = /\.[^./\\]+$/.exec(filePath);
+  const ext = match?.[0]?.toLowerCase();
+  return ext === void 0 ? void 0 : EXTENSION_MEDIA_TYPES[ext];
+}
+function resolveImageMediaType(bytes, filePath) {
+  return sniffImageMediaType(bytes) ?? mediaTypeFromExtension(filePath);
 }
 
 // packages/ai/dist/sse.js
@@ -824,9 +869,25 @@ function mapMessages(messages) {
         if (message.content !== "")
           systemParts.push(message.content);
         break;
-      case "user":
-        wire.push({ role: "user", content: message.content });
+      case "user": {
+        const images = message.images ?? [];
+        if (images.length === 0) {
+          wire.push({ role: "user", content: message.content });
+          break;
+        }
+        const blocks = images.map((image) => ({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: image.mediaType,
+            data: image.base64
+          }
+        }));
+        if (message.content !== "")
+          blocks.push({ type: "text", text: message.content });
+        wire.push({ role: "user", content: blocks });
         break;
+      }
       case "tool": {
         const block = {
           type: "tool_result",
@@ -1094,6 +1155,21 @@ function toWireMessage(message) {
         }))
       };
     }
+    case "user": {
+      const images = message.images ?? [];
+      if (images.length === 0)
+        return { role: "user", content: message.content };
+      const blocks = [];
+      if (message.content !== "")
+        blocks.push({ type: "text", text: message.content });
+      for (const image of images) {
+        blocks.push({
+          type: "image_url",
+          image_url: { url: `data:${image.mediaType};base64,${image.base64}` }
+        });
+      }
+      return { role: "user", content: blocks };
+    }
     default:
       return { role: message.role, content: message.content };
   }
@@ -1305,7 +1381,9 @@ var StaticModelRegistry = class {
 };
 
 // packages/ai/dist/usage.js
+var UNATTRIBUTED = "(unattributed)";
 var PER_MILLION = 1e6;
+var CELL_SEPARATOR = "\0";
 function newBucket() {
   return {
     inputTokens: 0,
@@ -1330,25 +1408,59 @@ function toUsage(bucket) {
     ...bucket.hasCached ? { cachedInputTokens: bucket.cachedInputTokens } : {}
   };
 }
+function addInto(target, usage, cost) {
+  target.inputTokens += usage.inputTokens;
+  target.outputTokens += usage.outputTokens;
+  target.cachedInputTokens += usage.cachedInputTokens ?? 0;
+  target.hasCached = target.hasCached || usage.cachedInputTokens !== void 0;
+  target.costUsd += cost;
+}
+function pricingOf(priced, unpriced) {
+  if (unpriced === 0)
+    return "known";
+  return priced === 0 ? "unknown" : "partial";
+}
 var UsageTracker = class {
   #byModel = /* @__PURE__ */ new Map();
+  #cells = /* @__PURE__ */ new Map();
   #total = newBucket();
-  record(model, usage) {
+  /**
+   * Folds one model turn in.
+   *
+   * `tags` is optional and purely additive: an untagged call still lands in
+   * {@link totals} and {@link byModel} exactly as before, and shows up under
+   * {@link UNATTRIBUTED} in the agent and task breakdowns.
+   */
+  record(model, usage, tags) {
     const key = `${model.provider}/${model.id}`;
     let bucket = this.#byModel.get(key);
     if (bucket === void 0) {
       bucket = newBucket();
       this.#byModel.set(key, bucket);
     }
-    const cached = usage.cachedInputTokens ?? 0;
     const cost = usageCostUsd(model.pricing, usage);
-    for (const target of [bucket, this.#total]) {
-      target.inputTokens += usage.inputTokens;
-      target.outputTokens += usage.outputTokens;
-      target.cachedInputTokens += cached;
-      target.hasCached = target.hasCached || usage.cachedInputTokens !== void 0;
-      target.costUsd += cost;
+    addInto(bucket, usage, cost);
+    addInto(this.#total, usage, cost);
+    const cell = this.#cellFor(model, tags);
+    addInto(cell.bucket, usage, cost);
+    if (model.pricing === void 0)
+      cell.unpriced += 1;
+    else
+      cell.priced += 1;
+  }
+  #cellFor(model, tags) {
+    const attribution = {
+      model: tags?.model ?? model.id,
+      agent: tags?.agent ?? UNATTRIBUTED,
+      task: tags?.taskId ?? UNATTRIBUTED
+    };
+    const key = [attribution.model, attribution.agent, attribution.task].join(CELL_SEPARATOR);
+    let cell = this.#cells.get(key);
+    if (cell === void 0) {
+      cell = { ...attribution, bucket: newBucket(), priced: 0, unpriced: 0 };
+      this.#cells.set(key, cell);
     }
+    return cell;
   }
   totals() {
     return { usage: toUsage(this.#total), costUsd: this.#total.costUsd };
@@ -1360,7 +1472,80 @@ var UsageTracker = class {
     }
     return out;
   }
+  /**
+   * Usage grouped along one attribution axis.
+   *
+   * Every sample lands in exactly one bucket of every dimension, so summing
+   * any breakdown reproduces {@link totals} — that invariant is what makes the
+   * per-model rollup in a run summary trustworthy. Buckets come back in
+   * first-seen order.
+   */
+  totalsBy(dimension) {
+    const out = /* @__PURE__ */ new Map();
+    for (const [key, entry] of this.breakdownBy(dimension)) {
+      out.set(key, { usage: entry.usage, costUsd: entry.costUsd });
+    }
+    return out;
+  }
+  /** {@link totalsBy} plus what each bucket is made of — see {@link UsageBreakdown}. */
+  breakdownBy(dimension) {
+    const groups = /* @__PURE__ */ new Map();
+    for (const cell of this.#cells.values()) {
+      const key = dimension === "model" ? cell.model : dimension === "agent" ? cell.agent : cell.task;
+      let group = groups.get(key);
+      if (group === void 0) {
+        group = {
+          bucket: newBucket(),
+          models: /* @__PURE__ */ new Set(),
+          agents: /* @__PURE__ */ new Set(),
+          tasks: /* @__PURE__ */ new Set(),
+          priced: 0,
+          unpriced: 0
+        };
+        groups.set(key, group);
+      }
+      addInto(group.bucket, toUsage(cell.bucket), cell.bucket.costUsd);
+      group.models.add(cell.model);
+      group.agents.add(cell.agent);
+      group.tasks.add(cell.task);
+      group.priced += cell.priced;
+      group.unpriced += cell.unpriced;
+    }
+    const out = /* @__PURE__ */ new Map();
+    for (const [key, group] of groups) {
+      out.set(key, {
+        key,
+        usage: toUsage(group.bucket),
+        costUsd: group.bucket.costUsd,
+        pricing: pricingOf(group.priced, group.unpriced),
+        models: [...group.models].sort(),
+        agents: [...group.agents].sort(),
+        tasks: [...group.tasks].sort(),
+        samples: group.priced + group.unpriced
+      });
+    }
+    return out;
+  }
 };
+async function* teeUsage(source, model, recorder, tags) {
+  for await (const event2 of source) {
+    if (event2.type === "usage") {
+      recorder.record(model, {
+        inputTokens: event2.inputTokens,
+        outputTokens: event2.outputTokens,
+        ...event2.cachedInputTokens === void 0 ? {} : { cachedInputTokens: event2.cachedInputTokens }
+      }, tags);
+    }
+    yield event2;
+  }
+}
+function usageRecordingProvider(provider, recorder, tags) {
+  return {
+    id: provider.id,
+    supports: (model) => provider.supports(model),
+    stream: (request, signal) => teeUsage(provider.stream(request, signal), request.model, recorder, tags)
+  };
+}
 
 // apps/cli/dist/config.js
 var KAPEL_CONFIG_VERSION = 1;
@@ -1381,30 +1566,78 @@ function isBackend(value) {
 function modelString(value) {
   return typeof value === "string" && value !== "" ? value : void 0;
 }
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isPermissionDecision(value) {
+  return value === "allow" || value === "ask" || value === "deny";
+}
+function parsePermissionBlock(raw) {
+  if (raw === void 0)
+    return { rules: {}, warnings: [] };
+  if (!isRecord3(raw)) {
+    return {
+      rules: {},
+      warnings: ['"permission" must be an object; ignoring it entirely.']
+    };
+  }
+  const rules = {};
+  const warnings = [];
+  for (const [tool, value] of Object.entries(raw)) {
+    if (isPermissionDecision(value)) {
+      rules[tool] = value;
+      continue;
+    }
+    if (isRecord3(value)) {
+      const patterns = {};
+      for (const [pattern, verdict] of Object.entries(value)) {
+        if (isPermissionDecision(verdict)) {
+          patterns[pattern] = verdict;
+        } else {
+          warnings.push(`permission.${tool}["${pattern}"]: expected "allow" | "ask" | "deny", got ${JSON.stringify(verdict)} \u2014 ignoring.`);
+        }
+      }
+      if (Object.keys(patterns).length > 0) {
+        rules[tool] = patterns;
+      } else {
+        warnings.push(`permission.${tool}: no valid patterns \u2014 ignoring.`);
+      }
+      continue;
+    }
+    warnings.push(`permission.${tool}: expected "allow" | "ask" | "deny" or a pattern map, got ${JSON.stringify(value)} \u2014 ignoring.`);
+  }
+  return { rules, warnings };
+}
 function parseConfig(raw) {
+  const none = { config: void 0, warnings: [] };
   if (typeof raw !== "object" || raw === null)
-    return void 0;
+    return none;
   const record = raw;
   if (record.version !== KAPEL_CONFIG_VERSION)
-    return void 0;
+    return none;
   if (!isBackend(record.backend))
-    return void 0;
+    return none;
   const models = record.models;
   if (typeof models !== "object" || models === null)
-    return void 0;
+    return none;
   const modelRecord = models;
   const orchestrator = modelString(modelRecord.orchestrator);
   const worker = modelString(modelRecord.worker);
   const cheap = modelString(modelRecord.cheap);
   if (orchestrator === void 0 || worker === void 0 || cheap === void 0) {
-    return void 0;
+    return none;
   }
+  const { rules: permission, warnings } = parsePermissionBlock(record.permission);
   const updatedAt = record.updatedAt;
   return {
-    version: KAPEL_CONFIG_VERSION,
-    backend: record.backend,
-    models: { orchestrator, worker, cheap },
-    updatedAt: typeof updatedAt === "number" ? updatedAt : 0
+    config: {
+      version: KAPEL_CONFIG_VERSION,
+      backend: record.backend,
+      models: { orchestrator, worker, cheap },
+      updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
+      ...Object.keys(permission).length > 0 ? { permission } : {}
+    },
+    warnings
   };
 }
 async function loadKapelConfig(env) {
@@ -1414,11 +1647,18 @@ async function loadKapelConfig(env) {
   } catch {
     return void 0;
   }
+  let parsed;
   try {
-    return parseConfig(JSON.parse(text2));
+    parsed = parseConfig(JSON.parse(text2));
   } catch {
     return void 0;
   }
+  if (parsed.warnings.length > 0) {
+    console.error(`warning: ignoring invalid entries in ${kapelConfigPath(env)}'s "permission" block:`);
+    for (const warning of parsed.warnings)
+      console.error(`  - ${warning}`);
+  }
+  return parsed.config;
 }
 async function saveKapelConfig(config, env) {
   const filePath = kapelConfigPath(env);
@@ -1431,7 +1671,10 @@ async function saveKapelConfig(config, env) {
       worker: config.models.worker,
       cheap: config.models.cheap
     },
-    updatedAt: config.updatedAt ?? Date.now()
+    updatedAt: config.updatedAt ?? Date.now(),
+    // Hand-edited only (see `KapelConfig.permission`) — carried through
+    // verbatim so a `/config` re-save never silently drops it.
+    ...config.permission === void 0 ? {} : { permission: config.permission }
   };
   await writeFile(filePath, `${JSON.stringify(full, null, 2)}
 `, "utf8");
@@ -2568,6 +2811,145 @@ ${formatIssues2(lastIssues)}`}`,
   }
 };
 
+// packages/policy/dist/diff.js
+function valuesEqual(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length)
+      return false;
+    const left = a.map((value) => String(value)).sort();
+    const right = b.map((value) => String(value)).sort();
+    return left.every((value, index2) => value === right[index2]);
+  }
+  return a === b;
+}
+function fieldChanges(before, after) {
+  const keys = /* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)]);
+  keys.delete("id");
+  const changes = [];
+  for (const field of [...keys].sort()) {
+    const beforeValue = before[field];
+    const afterValue = after[field];
+    if (!valuesEqual(beforeValue, afterValue)) {
+      changes.push({ field, before: beforeValue, after: afterValue });
+    }
+  }
+  return changes;
+}
+function diffRules(before, after) {
+  const beforeById = new Map(before.map((rule) => [rule.id, rule]));
+  const afterById = new Map(after.map((rule) => [rule.id, rule]));
+  const diffs = [];
+  for (const [id, beforeRule] of beforeById) {
+    const afterRule = afterById.get(id);
+    if (afterRule === void 0) {
+      diffs.push({ id, kind: "removed", before: beforeRule });
+      continue;
+    }
+    const changes = fieldChanges(beforeRule, afterRule);
+    if (changes.length > 0) {
+      diffs.push({
+        id,
+        kind: "changed",
+        before: beforeRule,
+        after: afterRule,
+        changes
+      });
+    }
+  }
+  for (const [id, afterRule] of afterById) {
+    if (!beforeById.has(id))
+      diffs.push({ id, kind: "added", after: afterRule });
+  }
+  return diffs.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+var DEFAULT_FIELDS = [
+  "orchestrator",
+  "maxConcurrency",
+  "parallelizeIndependentTasks",
+  "defaultMaxAttempts"
+];
+function diffDefaults(before, after) {
+  const changes = [];
+  for (const field of DEFAULT_FIELDS) {
+    if (before[field] !== after[field]) {
+      changes.push({ field, before: before[field], after: after[field] });
+    }
+  }
+  return changes;
+}
+function diffPolicies(before, after) {
+  const defaults = diffDefaults(before, after);
+  const routing = diffRules(before.routing, after.routing);
+  const review = diffRules(before.review, after.review);
+  const escalation = diffRules(before.escalation, after.escalation);
+  return {
+    defaults,
+    routing,
+    review,
+    escalation,
+    unchanged: defaults.length === 0 && routing.length === 0 && review.length === 0 && escalation.length === 0
+  };
+}
+function fmtValue(value) {
+  if (value === void 0)
+    return "(none)";
+  if (Array.isArray(value))
+    return value.length === 0 ? "[]" : value.join(", ");
+  return String(value);
+}
+function summarizeRouting(rule) {
+  return `${rule.agent} (${rule.strength}, weight ${rule.weight})`;
+}
+function summarizeReview(rule) {
+  return `${rule.reviewer} (${rule.strength}, ${rule.blocking ? "blocking" : "advisory"})`;
+}
+function summarizeEscalation(rule) {
+  return `${rule.fromAgent} -> ${rule.toAgent}`;
+}
+function renderRuleSection(title, diffs, summarize) {
+  if (diffs.length === 0)
+    return [];
+  const lines = [`${title}:`];
+  for (const diff of diffs) {
+    if (diff.kind === "added") {
+      lines.push(`  + ${diff.id}: ${summarize(diff.after)}`);
+    } else if (diff.kind === "removed") {
+      lines.push(`  - ${diff.id}: ${summarize(diff.before)}`);
+    } else {
+      lines.push(`  ~ ${diff.id}: ${summarize(diff.before)} -> ${summarize(diff.after)}`);
+      for (const change of diff.changes) {
+        lines.push(`      ${change.field}: ${fmtValue(change.before)} -> ${fmtValue(change.after)}`);
+      }
+    }
+  }
+  return lines;
+}
+function renderDefaults(defaults) {
+  if (defaults.length === 0)
+    return [];
+  return [
+    "Defaults:",
+    ...defaults.map((change) => `  ${change.field}: ${fmtValue(change.before)} -> ${fmtValue(change.after)}`)
+  ];
+}
+function formatPolicyDiff(diff) {
+  if (diff.unchanged)
+    return ["No changes."];
+  const sections = [
+    renderDefaults(diff.defaults),
+    renderRuleSection("Routing rules", diff.routing, summarizeRouting),
+    renderRuleSection("Review rules", diff.review, summarizeReview),
+    renderRuleSection("Escalation rules", diff.escalation, summarizeEscalation)
+  ].filter((section2) => section2.length > 0);
+  const lines = [];
+  sections.forEach((section2, index2) => {
+    if (index2 > 0)
+      lines.push("");
+    lines.push(...section2);
+  });
+  return lines;
+}
+
 // packages/policy/dist/explain.js
 function joinList(values) {
   if (values.length <= 1)
@@ -2679,8 +3061,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path15 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path15}: ${issue.message}`;
+    const path19 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path19}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -2721,6 +3103,129 @@ function checkLock(markdown, lockContent) {
     };
   }
   return { fresh: true, lock };
+}
+
+// packages/policy/dist/source-span.js
+var FILE_NAME = "orchestration.md";
+var MIN_FRAGMENT_LENGTH = 4;
+var QUOTE_PATTERNS = [
+  /"([^"]+)"/g,
+  /'([^']+)'/g,
+  /`([^`]+)`/g,
+  /“([^”]+)”/g,
+  /‘([^’]+)’/g
+];
+function extractQuotedFragments(text2) {
+  const fragments = [];
+  for (const pattern of QUOTE_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match = pattern.exec(text2);
+    while (match !== null) {
+      const fragment = (match[1] ?? "").trim();
+      if (fragment.length >= MIN_FRAGMENT_LENGTH)
+        fragments.push(fragment);
+      match = pattern.exec(text2);
+    }
+  }
+  return [...fragments].sort((a, b) => b.length - a.length);
+}
+function buildLineStarts(markdown) {
+  const starts = [0];
+  for (let i = 0; i < markdown.length; i += 1) {
+    if (markdown[i] === "\n")
+      starts.push(i + 1);
+  }
+  return starts;
+}
+function lineForOffset(lineStarts, offset) {
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if ((lineStarts[mid] ?? 0) <= offset)
+      lo = mid;
+    else
+      hi = mid - 1;
+  }
+  return lo + 1;
+}
+function toLocation(lineStarts, startOffset, length) {
+  const line = lineForOffset(lineStarts, startOffset);
+  const endLine = lineForOffset(lineStarts, startOffset + length - 1);
+  return endLine === line ? { file: FILE_NAME, line } : { file: FILE_NAME, line, endLine };
+}
+function locateExact(markdown, fragment, lineStarts) {
+  const index2 = markdown.indexOf(fragment);
+  return index2 === -1 ? void 0 : toLocation(lineStarts, index2, fragment.length);
+}
+function collapseWhitespace(text2) {
+  return text2.trim().replace(/\s+/g, " ").toLowerCase();
+}
+function buildNormalizedSource(markdown) {
+  const chars = [];
+  const lineOf = [];
+  let line = 1;
+  let pendingSpace = false;
+  let started = false;
+  for (const ch of markdown) {
+    if (ch === "\n") {
+      line += 1;
+      pendingSpace = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      pendingSpace = true;
+      continue;
+    }
+    if (pendingSpace && started) {
+      chars.push(" ");
+      lineOf.push(line);
+    }
+    chars.push(ch.toLowerCase());
+    lineOf.push(line);
+    started = true;
+    pendingSpace = false;
+  }
+  return { text: chars.join(""), lineOf };
+}
+function locateNormalized(source, fragment) {
+  const needle = collapseWhitespace(fragment);
+  if (needle === "")
+    return void 0;
+  const at = source.text.indexOf(needle);
+  if (at === -1)
+    return void 0;
+  const line = source.lineOf[at] ?? 1;
+  const endLine = source.lineOf[at + needle.length - 1] ?? line;
+  return endLine === line ? { file: FILE_NAME, line } : { file: FILE_NAME, line, endLine };
+}
+function locateSourceText(markdown, text2) {
+  const fragments = extractQuotedFragments(text2);
+  if (fragments.length === 0)
+    return void 0;
+  const lineStarts = buildLineStarts(markdown);
+  for (const fragment of fragments) {
+    const exact = locateExact(markdown, fragment, lineStarts);
+    if (exact !== void 0)
+      return exact;
+  }
+  const normalized = buildNormalizedSource(markdown);
+  for (const fragment of fragments) {
+    const found = locateNormalized(normalized, fragment);
+    if (found !== void 0)
+      return found;
+  }
+  return void 0;
+}
+function locateIssue(message, markdown) {
+  const location = locateSourceText(markdown, message);
+  return location === void 0 ? { message } : { message, location };
+}
+function locateIssues(messages, markdown) {
+  return messages.map((message) => locateIssue(message, markdown));
+}
+function formatSourceLocation(location) {
+  return location.endLine === void 0 ? `${location.file}:${location.line}` : `${location.file}:${location.line}-${location.endLine}`;
 }
 
 // packages/policy/dist/index.js
@@ -3072,7 +3577,7 @@ var PROBE_TIMEOUT_MS = 5e3;
 var PROBE_MAX_BUFFER = 512 * 1024;
 var INSTALL_HINT = "Install the Claude Code CLI with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription (no API key required).";
 var LOGIN_HINT = "Run `claude` and log in with your Claude subscription (no API key required).";
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstString(...values) {
@@ -3213,6 +3718,9 @@ var ClaudeCodeBackend = class {
     if (signal?.aborted === true) {
       return finish(settle("failed", "Claude Code run cancelled before it started.", null));
     }
+    if ((input.images?.length ?? 0) > 0) {
+      return finish(settle("failed", "Claude Code's headless -p mode has no documented flag for attaching images, so kapel cannot send them through this backend. Use `--backend codex` or the native backend to attach images.", null));
+    }
     const candidates = executableCandidates(binary);
     let spawnOutcome = await this.#spawnClaude(candidates[0] ?? binary, args, context.workspacePath, signal, timeoutSignal, state, emit2);
     for (const candidate of candidates.slice(1)) {
@@ -3304,7 +3812,7 @@ var ClaudeCodeBackend = class {
           pushRawLine(state, trimmed);
           return;
         }
-        if (!isRecord3(parsed)) {
+        if (!isRecord4(parsed)) {
           pushRawLine(state, trimmed);
           return;
         }
@@ -3409,7 +3917,7 @@ function failureReason(state) {
   return "no error details were reported";
 }
 function isFinalResult(line) {
-  return typeof line.result === "string" && !isRecord3(line.event);
+  return typeof line.result === "string" && !isRecord4(line.event);
 }
 function applyLine(line, state, emit2) {
   if (isFinalResult(line)) {
@@ -3417,7 +3925,7 @@ function applyLine(line, state, emit2) {
     applyResult(line, state);
     return;
   }
-  const event2 = isRecord3(line.event) ? line.event : line;
+  const event2 = isRecord4(line.event) ? line.event : line;
   const kind = firstString(event2.type, line.type) ?? "unknown";
   emit2(`claude-code.${kind}`, line);
   applyStreamEvent(kind, event2, state, emit2);
@@ -3434,7 +3942,7 @@ function applyResult(line, state) {
   if (line.is_error === true) {
     state.errors.push(firstString(line.result, line.subtype) ?? "Claude Code reported an error with no message");
   }
-  const usage = isRecord3(line.usage) ? line.usage : void 0;
+  const usage = isRecord4(line.usage) ? line.usage : void 0;
   if (usage !== void 0 && !state.sawUsage) {
     state.sawUsage = true;
     state.inputTokens += toCount(usage.input_tokens) + toCount(usage.cache_read_input_tokens);
@@ -3444,9 +3952,9 @@ function applyResult(line, state) {
 function applyStreamEvent(kind, event2, state, emit2) {
   switch (kind) {
     case "message_start": {
-      const message = isRecord3(event2.message) ? event2.message : void 0;
+      const message = isRecord4(event2.message) ? event2.message : void 0;
       const rawUsage = message === void 0 ? void 0 : message.usage;
-      const usage = isRecord3(rawUsage) ? rawUsage : void 0;
+      const usage = isRecord4(rawUsage) ? rawUsage : void 0;
       if (usage !== void 0) {
         state.sawUsage = true;
         state.inputTokens += toCount(usage.input_tokens) + toCount(usage.cache_read_input_tokens);
@@ -3459,7 +3967,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "content_block_start": {
-      const block = isRecord3(event2.content_block) ? event2.content_block : void 0;
+      const block = isRecord4(event2.content_block) ? event2.content_block : void 0;
       if (block?.type !== "tool_use")
         return;
       const name = firstString(block.name) ?? "unknown";
@@ -3471,7 +3979,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "content_block_delta": {
-      const delta = isRecord3(event2.delta) ? event2.delta : void 0;
+      const delta = isRecord4(event2.delta) ? event2.delta : void 0;
       if (delta?.type !== "text_delta")
         return;
       if (typeof delta.text === "string")
@@ -3479,11 +3987,11 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "message_delta": {
-      const delta = isRecord3(event2.delta) ? event2.delta : void 0;
+      const delta = isRecord4(event2.delta) ? event2.delta : void 0;
       const stopReason = firstString(delta?.stop_reason);
       if (stopReason !== void 0)
         state.stopReason = stopReason;
-      const usage = isRecord3(event2.usage) ? event2.usage : void 0;
+      const usage = isRecord4(event2.usage) ? event2.usage : void 0;
       if (usage !== void 0 && typeof usage.output_tokens === "number") {
         const output = toCount(usage.output_tokens);
         if (output >= state.messageOutputTokens) {
@@ -3495,7 +4003,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "error": {
-      const error = isRecord3(event2.error) ? event2.error : event2;
+      const error = isRecord4(event2.error) ? event2.error : event2;
       state.errors.push(firstString(error.message, error.type, event2.message) ?? "Claude Code reported an error with no message");
       return;
     }
@@ -3515,7 +4023,7 @@ var MAX_RAW_LINE_CHARS2 = 500;
 var PROBE_TIMEOUT_MS2 = 5e3;
 var PROBE_MAX_BUFFER2 = 512 * 1024;
 var INSTALL_HINT2 = "Install the Codex CLI with `npm install -g @openai/codex`, then authenticate with `codex login`.";
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstString2(...values) {
@@ -3538,7 +4046,7 @@ function extractMessageText(item) {
     for (const part of content) {
       if (typeof part === "string")
         parts.push(part);
-      else if (isRecord4(part) && typeof part.text === "string")
+      else if (isRecord5(part) && typeof part.text === "string")
         parts.push(part.text);
     }
     const joined = parts.join("");
@@ -3602,7 +4110,7 @@ var CodexBackend = class {
   async run(input, context) {
     const binary = this.#options.binaryPath ?? DEFAULT_BINARY2;
     const timeoutMs = this.#options.timeoutMs;
-    const args = this.#buildArgs(buildPrompt2(input), context.workspacePath);
+    const args = this.#buildArgs(input, context.workspacePath);
     const signals = [];
     if (context.signal !== void 0)
       signals.push(context.signal);
@@ -3693,7 +4201,7 @@ var CodexBackend = class {
     const reason = failureReason2(state);
     return finish(settle("failed", `Codex exited with code ${String(exitCode)}: ${reason}`, exitCode));
   }
-  #buildArgs(prompt, workspacePath) {
+  #buildArgs(input, workspacePath) {
     const sandbox = this.#options.sandbox ?? DEFAULT_SANDBOX;
     const fullAuto = this.#options.fullAuto ?? true;
     const args = ["exec", "--json", "--cd", workspacePath];
@@ -3704,10 +4212,13 @@ var CodexBackend = class {
     const model = this.#options.model;
     if (model !== void 0)
       args.push("-m", model);
+    const images = input.images ?? [];
+    for (const image of images)
+      args.push("-i", image.path);
     const extra = this.#options.extraArgs;
     if (extra !== void 0)
       args.push(...extra);
-    args.push(prompt);
+    args.push(buildPrompt2(input));
     return args;
   }
   #spawnCodex(binary, args, workspacePath, signal, timeoutSignal, state, emit2) {
@@ -3749,7 +4260,7 @@ var CodexBackend = class {
             state.rawLines.shift();
           return;
         }
-        if (!isRecord4(parsed)) {
+        if (!isRecord5(parsed)) {
           state.rawLines.push(trimmed.slice(0, MAX_RAW_LINE_CHARS2));
           if (state.rawLines.length > MAX_RAW_LINES2)
             state.rawLines.shift();
@@ -3839,10 +4350,10 @@ function failureReason2(state) {
   return "no error details were reported";
 }
 function applyEvent(event2, state, emit2) {
-  const source = isRecord4(event2.msg) && typeof event2.msg.type === "string" ? event2.msg : event2;
+  const source = isRecord5(event2.msg) && typeof event2.msg.type === "string" ? event2.msg : event2;
   const kind = typeof source.type === "string" ? source.type : "unknown";
   emit2(`codex.${kind}`, event2);
-  const item = isRecord4(source.item) ? source.item : void 0;
+  const item = isRecord5(source.item) ? source.item : void 0;
   if (item !== void 0 && item.type === "agent_message") {
     const text2 = extractMessageText(item);
     if (text2 !== void 0)
@@ -3855,7 +4366,7 @@ function applyEvent(event2, state, emit2) {
   if (kind === "error") {
     state.errors.push(firstString2(source.message, source.error, source.detail) ?? "Codex reported an error with no message");
   }
-  const usage = isRecord4(source.usage) ? source.usage : void 0;
+  const usage = isRecord5(source.usage) ? source.usage : void 0;
   if (usage !== void 0) {
     const inputTokens = toCount2(usage.input_tokens ?? usage.inputTokens);
     const outputTokens = toCount2(usage.output_tokens ?? usage.outputTokens);
@@ -3964,9 +4475,17 @@ var AgentLoopEngine = class {
   }
   /** The fresh-conversation seed: the agent's system prompt plus the user turn. */
   seed(input) {
+    const images = input.images ?? [];
     return [
       { role: "system", content: this.#options.agent.systemPrompt },
-      { role: "user", content: buildUserContent(input) }
+      {
+        role: "user",
+        content: buildUserContent(input),
+        // `AgentImageAttachment` is a superset of `ImagePart` (it also
+        // carries the source `path` delegated backends want), so it rides
+        // straight through onto the wire message unchanged.
+        ...images.length > 0 ? { images } : {}
+      }
     ];
   }
   /**
@@ -4104,7 +4623,7 @@ var AgentLoopEngine = class {
             calls.push({ id: event2.id, name: event2.name, input: event2.input });
             break;
           case "usage":
-            this.#recordUsage(event2);
+            this.#recordUsage(event2, context);
             break;
           case "done":
             finishReason = event2.finishReason;
@@ -4117,7 +4636,7 @@ var AgentLoopEngine = class {
     }
     return { text: text2, calls, finishReason };
   }
-  #recordUsage(event2) {
+  #recordUsage(event2, context) {
     const recorder = this.#options.usage;
     if (recorder === void 0)
       return;
@@ -4126,7 +4645,10 @@ var AgentLoopEngine = class {
       outputTokens: event2.outputTokens,
       ...event2.cachedInputTokens === void 0 ? {} : { cachedInputTokens: event2.cachedInputTokens }
     };
-    recorder.record(this.#options.agent.model, usage);
+    recorder.record(this.#options.agent.model, usage, {
+      agent: this.#options.agent.name,
+      ...context.taskId === void 0 ? {} : { taskId: context.taskId }
+    });
   }
   /**
    * Deterministic context compaction, run at the start of every iteration
@@ -4402,11 +4924,11 @@ var ALLOWED_FOR_SESSION = "allowed for this session";
 var BASH_TOOL = "bash";
 var SUBCOMMAND = /^[A-Za-z][A-Za-z0-9_:-]*$/;
 var SHELL_OPERATORS = /[;&|<>`$(){}\n\r]/;
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function commandOf(input) {
-  if (!isRecord5(input))
+  if (!isRecord6(input))
     return void 0;
   const command = input.command;
   return typeof command === "string" ? command : void 0;
@@ -4426,6 +4948,51 @@ function bashCommandPrefix(command) {
   if (argument === void 0 || !SUBCOMMAND.test(argument))
     return head;
   return `${head} ${argument}`;
+}
+function parseBashPattern(pattern) {
+  const trimmed = pattern.trim();
+  if (trimmed === "*")
+    return { tokens: [], headOnly: false };
+  const tokens = trimmed.split(/\s+/).filter((token) => token !== "");
+  const last = tokens[tokens.length - 1];
+  if (last === "*" && tokens.length >= 2) {
+    const head = tokens.slice(0, -1);
+    return { tokens: head, headOnly: head.length === 1 };
+  }
+  return { tokens, headOnly: false };
+}
+function bashPatternSpecificity(tokens, headOnly) {
+  if (tokens.length === 0)
+    return 0;
+  if (headOnly)
+    return 1;
+  return 10 + tokens.length;
+}
+function bashPatternMatches(tokens, headOnly, derivedPrefix) {
+  if (tokens.length === 0)
+    return true;
+  if (derivedPrefix === void 0)
+    return false;
+  if (headOnly)
+    return derivedPrefix.split(" ")[0] === tokens[0];
+  return derivedPrefix === tokens.join(" ");
+}
+function matchBashPermission(patterns, command) {
+  const derivedPrefix = command === void 0 ? void 0 : bashCommandPrefix(command);
+  let best;
+  let bestSpecificity = -1;
+  for (const [pattern, decision] of Object.entries(patterns)) {
+    const { tokens, headOnly } = parseBashPattern(pattern);
+    if (!bashPatternMatches(tokens, headOnly, derivedPrefix))
+      continue;
+    const specificity = bashPatternSpecificity(tokens, headOnly);
+    const beatsCurrentBest = best === void 0 || specificity > bestSpecificity || specificity === bestSpecificity && decision === "deny" && best.decision !== "deny";
+    if (beatsCurrentBest) {
+      best = { pattern, decision };
+      bestSpecificity = specificity;
+    }
+  }
+  return best;
 }
 function sessionRuleFor(request) {
   if (request.tool !== BASH_TOOL) {
@@ -4472,6 +5039,9 @@ var SessionAllowlist = class {
     ];
   }
 };
+function ruleFor(rules, tool) {
+  return Object.hasOwn(rules, tool) ? rules[tool] : void 0;
+}
 var PermissionEngine = class {
   #rules;
   #defaultDecision;
@@ -4483,13 +5053,29 @@ var PermissionEngine = class {
     this.#prompter = options.prompter;
     this.#overlay = options.overlay;
   }
+  /**
+   * The verdict for a bare tool name, with no request to match a `bash`
+   * pattern map against — equivalent to asking what governs that tool by
+   * default, i.e. only the map's `"*"` entry (if any) can answer.
+   */
   decisionFor(tool) {
-    if (!Object.hasOwn(this.#rules, tool))
+    const rule = ruleFor(this.#rules, tool);
+    if (rule === void 0)
       return this.#defaultDecision;
-    return this.#rules[tool] ?? this.#defaultDecision;
+    if (typeof rule === "string")
+      return rule;
+    return matchBashPermission(rule, void 0)?.decision ?? this.#defaultDecision;
+  }
+  #decisionForRequest(request) {
+    const rule = ruleFor(this.#rules, request.tool);
+    if (rule === void 0)
+      return this.#defaultDecision;
+    if (typeof rule === "string")
+      return rule;
+    return matchBashPermission(rule, commandOf(request.input))?.decision ?? this.#defaultDecision;
   }
   async authorize(request) {
-    const decision = this.decisionFor(request.tool);
+    const decision = this.#decisionForRequest(request);
     if (decision === "allow")
       return { allowed: true, decision };
     if (decision === "deny")
@@ -4522,8 +5108,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path15 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path15}: ${issue.message}`;
+    const path19 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path19}: ${issue.message}`;
   });
 }
 
@@ -4671,15 +5257,24 @@ var ValidatorSchema = z7.object({
   command: z7.string().min(1, "must not be empty"),
   timeoutSeconds: z7.number().int().positive().optional()
 }).strict();
+var PermissionDecisionSchema = z7.enum(["allow", "ask", "deny"]);
+var BashPermissionRulesSchema = z7.record(z7.string(), PermissionDecisionSchema);
+var ToolPermissionRuleSchema = z7.union([
+  PermissionDecisionSchema,
+  BashPermissionRulesSchema
+]);
+var PermissionSchema = z7.record(z7.string(), ToolPermissionRuleSchema);
 var ConfigFileSchema = z7.object({
   models: z7.record(z7.string(), ModelRefSchema).optional(),
   agents: z7.record(z7.string(), z7.string().min(1, "must not be empty")).optional(),
-  validation: z7.array(ValidatorSchema).optional()
+  validation: z7.array(ValidatorSchema).optional(),
+  permission: PermissionSchema.optional()
 }).strict();
 var EMPTY_CONFIG = {
   models: {},
   agentSlots: {},
-  validators: []
+  validators: [],
+  permission: {}
 };
 async function loadProjectConfig(agentDir) {
   const filePath = join2(agentDir, "config.yaml");
@@ -4717,7 +5312,8 @@ async function loadProjectConfig(agentDir) {
   return {
     models,
     agentSlots: { ...result.data.agents ?? {} },
-    validators
+    validators,
+    permission: { ...result.data.permission ?? {} }
   };
 }
 
@@ -5839,9 +6435,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path15 = record.slice(3);
-    if (path15 !== "")
-      paths.add(path15);
+    const path19 = record.slice(3);
+    if (path19 !== "")
+      paths.add(path19);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -6476,20 +7072,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path15;
+  let path19;
   let branch;
   const flush = () => {
-    if (path15 !== void 0) {
-      entries.push({ path: path15, branch });
+    if (path19 !== void 0) {
+      entries.push({ path: path19, branch });
     }
-    path15 = void 0;
+    path19 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path15 = value.slice("worktree ".length);
+      path19 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -6497,11 +7093,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path15) {
+async function realPathOrSelf(path19) {
   try {
-    return await realpath(path15);
+    return await realpath(path19);
   } catch {
-    return resolve2(path15);
+    return resolve2(path19);
   }
 }
 function isUnder(parent, child) {
@@ -6540,16 +7136,16 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path15 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path19 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path15, branch, signal);
-    await mkdir3(dirname2(path15), { recursive: true });
-    await runGit2(["worktree", "add", path15, "-b", branch, baseCommit], {
+    await this.#removeLeftovers(path19, branch, signal);
+    await mkdir3(dirname2(path19), { recursive: true });
+    await runGit2(["worktree", "add", path19, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
       signal
     });
-    return { path: path15, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    return { path: path19, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -6797,13 +7393,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path15, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path15], {
+  async #removeLeftovers(path19, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path19], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path15, { recursive: true, force: true });
+    await rm(path19, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -6824,11 +7420,11 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path15 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path15.startsWith(ignored)) {
+      const path19 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path19.startsWith(ignored)) {
         continue;
       }
-      paths.push(path15);
+      paths.push(path19);
     }
     return paths;
   }
@@ -7121,12 +7717,18 @@ async function runConfigWizard(deps) {
     version: KAPEL_CONFIG_VERSION,
     backend,
     models,
-    updatedAt: (deps.now ?? Date.now)()
+    updatedAt: (deps.now ?? Date.now)(),
+    ...deps.current?.permission === void 0 ? {} : { permission: deps.current.permission }
   };
   for (const line of describeConfig(config))
     deps.write(line);
   if (deps.save !== false) {
-    const filePath = await saveKapelConfig({ backend, models, updatedAt: config.updatedAt }, deps.env);
+    const filePath = await saveKapelConfig({
+      backend,
+      models,
+      updatedAt: config.updatedAt,
+      ...config.permission === void 0 ? {} : { permission: config.permission }
+    }, deps.env);
     deps.write(`saved to ${filePath}`);
   }
   return config;
@@ -7163,9 +7765,9 @@ async function resolveAnthropicCredential(env, opts) {
   }
   if (opts?.allowProfile === false)
     return void 0;
-  const execFile9 = opts?.execFile ?? defaultExecFile;
+  const execFile11 = opts?.execFile ?? defaultExecFile;
   try {
-    const { stdout } = await execFile9("ant", ["auth", "print-credentials", "--access-token"], { timeout: OAUTH_TIMEOUT_MS, env });
+    const { stdout } = await execFile11("ant", ["auth", "print-credentials", "--access-token"], { timeout: OAUTH_TIMEOUT_MS, env });
     const token = stdout.trim();
     if (token === "" || token.includes("\n"))
       return void 0;
@@ -7745,6 +8347,46 @@ var DEFAULT_PERMISSIONS = {
   edit_file: "ask",
   bash: "ask"
 };
+function isPatternMap(rule) {
+  return typeof rule === "object" && rule !== null;
+}
+function mergePermissionLayer(base, layer) {
+  const merged = { ...base };
+  for (const [tool, rule] of Object.entries(layer)) {
+    const existing = merged[tool];
+    merged[tool] = isPatternMap(existing) && isPatternMap(rule) ? { ...existing, ...rule } : rule;
+  }
+  return merged;
+}
+function resolvePermissionRules(defaults, ...layers) {
+  let merged = defaults;
+  for (const layer of layers) {
+    if (layer === void 0)
+      continue;
+    merged = mergePermissionLayer(merged, layer);
+  }
+  return merged;
+}
+function errorMessage7(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function loadRepoPermissionRules(workspacePath) {
+  let agentDir;
+  try {
+    agentDir = await findAgentDir(workspacePath);
+  } catch {
+    return void 0;
+  }
+  if (agentDir === void 0)
+    return void 0;
+  try {
+    const config = await loadProjectConfig(agentDir);
+    return Object.keys(config.permission).length > 0 ? config.permission : void 0;
+  } catch (error) {
+    console.error(`warning: ignoring .agent/config.yaml permission rules: ${errorMessage7(error)}`);
+    return void 0;
+  }
+}
 
 // apps/cli/dist/prompter.js
 import * as readline2 from "node:readline";
@@ -7761,11 +8403,11 @@ var DIM = "2";
 function ansi2(code, text2, enabled) {
   return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
 }
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringField(input, key) {
-  if (!isRecord6(input))
+  if (!isRecord7(input))
     return void 0;
   const value = input[key];
   return typeof value === "string" ? value : void 0;
@@ -7886,20 +8528,20 @@ function previewBash(input, options = {}) {
   return capLines(lines, options.color === true).join("\n");
 }
 function previewEdit(input, options = {}) {
-  const path15 = stringField(input, "path");
+  const path19 = stringField(input, "path");
   const oldText = stringField(input, "oldText");
   const newText = stringField(input, "newText");
-  if (path15 === void 0 || oldText === void 0 || newText === void 0) {
+  if (path19 === void 0 || oldText === void 0 || newText === void 0) {
     return void 0;
   }
-  const replaceAll = isRecord6(input) && input.replaceAll === true ? " (all occurrences)" : "";
-  const header = ansi2(DIM, `  ${path15}${replaceAll}`, options.color === true);
+  const replaceAll = isRecord7(input) && input.replaceAll === true ? " (all occurrences)" : "";
+  const header = ansi2(DIM, `  ${path19}${replaceAll}`, options.color === true);
   return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
 }
 function previewWrite(input, options = {}) {
-  const path15 = stringField(input, "path");
+  const path19 = stringField(input, "path");
   const content = stringField(input, "content");
-  if (path15 === void 0 || content === void 0)
+  if (path19 === void 0 || content === void 0)
     return void 0;
   const color = options.color === true;
   const lines = content.split("\n");
@@ -7908,7 +8550,7 @@ function previewWrite(input, options = {}) {
   if (lines.length > shown.length) {
     body.push(moreTail(lines.length - shown.length, color));
   }
-  const header = ansi2(DIM, `  ${path15} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
+  const header = ansi2(DIM, `  ${path19} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
   return [header, ...body].join("\n");
 }
 function formatToolPreview(tool, input, options = {}) {
@@ -8131,7 +8773,38 @@ var StatusLine = class {
 };
 
 // apps/cli/dist/render.js
-function isRecord7(value) {
+function formatTokenCount2(tokens) {
+  if (tokens < 1e3)
+    return String(tokens);
+  if (tokens < 1e6)
+    return `${(tokens / 1e3).toFixed(1)}k`;
+  return `${(tokens / 1e6).toFixed(1)}M`;
+}
+function formatCostUsd(costUsd, pricing) {
+  if (pricing === "unknown")
+    return "n/a";
+  const amount = costUsd >= 0.01 ? costUsd.toFixed(2) : costUsd.toFixed(4);
+  return pricing === "partial" ? `$${amount}+` : `$${amount}`;
+}
+function formatTokenFlow(usage) {
+  const cached = usage.cachedInputTokens;
+  const input = cached === void 0 || cached === 0 ? `${formatTokenCount2(usage.inputTokens)} in` : `${formatTokenCount2(usage.inputTokens)} in (${formatTokenCount2(cached)} cached)`;
+  return `${input} / ${formatTokenCount2(usage.outputTokens)} out`;
+}
+function usageBreakdownLine(entry, options = {}) {
+  const parts = [];
+  if (options.countTasks === true) {
+    const tasks = entry.tasks.filter((id) => id !== UNATTRIBUTED).length;
+    parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`);
+  }
+  parts.push(formatTokenFlow(entry.usage));
+  parts.push(formatCostUsd(entry.costUsd, entry.pricing));
+  return `${entry.key}: ${parts.join(" \xB7 ")}`;
+}
+function usageRollupLines(breakdown, options = {}) {
+  return [...breakdown.values()].sort((a, b) => b.costUsd - a.costUsd || b.usage.inputTokens + b.usage.outputTokens - (a.usage.inputTokens + a.usage.outputTokens) || a.key.localeCompare(b.key)).map((entry) => usageBreakdownLine(entry, options));
+}
+function isRecord8(value) {
   return typeof value === "object" && value !== null;
 }
 function isDelegatedResult(result) {
@@ -8147,9 +8820,9 @@ function firstNonEmptyString(...values) {
   return void 0;
 }
 function codexItemFrom(data) {
-  if (isRecord7(data.item))
+  if (isRecord8(data.item))
     return data.item;
-  if (isRecord7(data.msg) && isRecord7(data.msg.item))
+  if (isRecord8(data.msg) && isRecord8(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -8165,7 +8838,7 @@ function codexMessageText(item) {
     for (const part of content) {
       if (typeof part === "string")
         parts.push(part);
-      else if (isRecord7(part) && typeof part.text === "string") {
+      else if (isRecord8(part) && typeof part.text === "string") {
         parts.push(part.text);
       }
     }
@@ -8197,7 +8870,7 @@ function codexFileChangeText(item) {
     for (const change of changes) {
       if (typeof change === "string")
         paths.push(change);
-      else if (isRecord7(change)) {
+      else if (isRecord8(change)) {
         const p = firstNonEmptyString(change.path, change.file);
         if (p !== void 0)
           paths.push(p);
@@ -8218,7 +8891,7 @@ function stringOrUndefined(value) {
   return typeof value === "string" && value !== "" ? value : void 0;
 }
 function routingLabel(routing) {
-  if (!isRecord7(routing))
+  if (!isRecord8(routing))
     return void 0;
   const rule = stringOrUndefined(routing.rule);
   switch (routing.reason) {
@@ -8342,7 +9015,7 @@ var TextRenderer = class {
     return ansi3("1", text2, this.#color);
   }
   emit(event2) {
-    const data = isRecord7(event2.data) ? event2.data : {};
+    const data = isRecord8(event2.data) ? event2.data : {};
     const single = event2.taskId === void 0;
     if (event2.type.startsWith(CODEX_PREFIX)) {
       this.#emitCodex(data);
@@ -8441,7 +9114,7 @@ var TextRenderer = class {
         break;
       }
       case "task.completed": {
-        const result = isRecord7(data.result) ? data.result : {};
+        const result = isRecord8(data.result) ? data.result : {};
         const ok = result.status === "success";
         const retrying = data.final === false;
         const suffix = retrying ? this.#dim(" (retrying)") : "";
@@ -8590,7 +9263,7 @@ var TextRenderer = class {
    * native renderer does for unknown types.
    */
   #emitClaudeCode(kind, data, single) {
-    const event2 = isRecord7(data.event) ? data.event : data;
+    const event2 = isRecord8(data.event) ? data.event : data;
     switch (kind) {
       case "tool_use": {
         const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
@@ -8599,7 +9272,7 @@ var TextRenderer = class {
         break;
       }
       case "content_block_delta": {
-        const delta = isRecord7(event2.delta) ? event2.delta : void 0;
+        const delta = isRecord8(event2.delta) ? event2.delta : void 0;
         if (delta?.type !== "text_delta")
           break;
         if (typeof delta.text !== "string")
@@ -8677,6 +9350,43 @@ var JsonRenderer = class {
 };
 
 // apps/cli/dist/run.js
+var MAX_PIPED_STDIN_BYTES = 1024 * 1024;
+var PIPED_STDIN_TRUNCATION_MARKER = "\n[stdin truncated]";
+var PIPED_STDIN_DELIMITER = "\n\n--- piped input ---\n";
+async function readPipedStdin(input, maxBytes = MAX_PIPED_STDIN_BYTES) {
+  const chunks = [];
+  let total = 0;
+  let truncated = false;
+  for await (const chunk of input) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (total >= maxBytes) {
+      truncated = true;
+      continue;
+    }
+    const remaining = maxBytes - total;
+    if (buf.length > remaining) {
+      chunks.push(buf.subarray(0, remaining));
+      total = maxBytes;
+      truncated = true;
+      continue;
+    }
+    chunks.push(buf);
+    total += buf.length;
+  }
+  const text2 = Buffer.concat(chunks).toString("utf8");
+  return truncated ? `${text2}${PIPED_STDIN_TRUNCATION_MARKER}` : text2;
+}
+function composeObjectiveWithStdin(objective, pipedStdin) {
+  if (pipedStdin === "")
+    return objective;
+  return `${objective}${PIPED_STDIN_DELIMITER}${pipedStdin}`;
+}
+async function objectiveWithPipedStdin(objective, input) {
+  if (input.isTTY === true)
+    return objective;
+  const piped = await readPipedStdin(input);
+  return composeObjectiveWithStdin(objective, piped);
+}
 var DEFAULT_COMPACTION = {};
 function agentLoopOptions(args) {
   return {
@@ -8706,7 +9416,7 @@ function defaultSystemPrompt(workspaceRoot) {
     "- Finish by giving a short summary of what changed and why."
   ].join("\n");
 }
-function errorMessage7(error) {
+function errorMessage8(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function resolveModelAndProvider(env, alias) {
@@ -8715,7 +9425,7 @@ async function resolveModelAndProvider(env, alias) {
   try {
     model = registry.get(alias);
   } catch (error) {
-    return { error: errorMessage7(error) };
+    return { error: errorMessage8(error) };
   }
   try {
     const provider = registry.providerFor(model);
@@ -8754,7 +9464,9 @@ async function runObjective(objective, options) {
     state: promptState,
     allowlist: sessionAllowlist
   });
-  const permissions = new PermissionEngine(DEFAULT_PERMISSIONS, {
+  const repoPermission = await loadRepoPermissionRules(workspacePath);
+  const permissionRules = resolvePermissionRules(DEFAULT_PERMISSIONS, options.config?.permission, repoPermission);
+  const permissions = new PermissionEngine(permissionRules, {
     defaultDecision: "ask",
     overlay: sessionAllowlist,
     ...prompter === void 0 ? {} : { prompter }
@@ -8785,7 +9497,10 @@ async function runObjective(objective, options) {
       maxIterations: options.maxIterations,
       ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
     }));
-    const result = await loop.run({ instruction: objective }, {
+    const result = await loop.run({
+      instruction: objective,
+      ...options.images !== void 0 && options.images.length > 0 ? { images: options.images } : {}
+    }, {
       runId: crypto.randomUUID(),
       workspacePath,
       signal: controller.signal
@@ -8819,7 +9534,7 @@ function fail(output, json, message, extra = {}) {
     output.error(message);
   return { exitCode: 1 };
 }
-function errorMessage8(error) {
+function errorMessage9(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function readOptionalFile(filePath) {
@@ -8852,7 +9567,7 @@ async function resolvePlannerModel(project, policy, options, output) {
       const resolved = resolve5(orchestrator.modelAlias);
       return { model: resolved.model, provider: resolved.provider };
     } catch (error) {
-      output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage8(error)}`);
+      output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage9(error)}`);
     }
   }
   const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
@@ -8992,18 +9707,120 @@ function renderPlan(prepared, output, json) {
     printBulletList(output, "Notes", prepared.notes);
   }
 }
+function explainTaskRoute(task, policy, project) {
+  const decision = new PolicyRouter().decide(task, policy);
+  const rule = decision.rule === void 0 ? void 0 : policy.routing.find((candidate) => candidate.id === decision.rule);
+  const modelAlias = project.agent(decision.agent)?.modelAlias;
+  return {
+    taskId: task.id,
+    title: task.title,
+    type: task.type,
+    complexity: task.complexity,
+    agent: decision.agent,
+    reason: decision.reason,
+    ...modelAlias === void 0 ? {} : { modelAlias },
+    ...rule === void 0 ? {} : { rule }
+  };
+}
+function routeReasonSentence(explanation) {
+  if (explanation.rule !== void 0) {
+    const rule = explanation.rule;
+    const criteria = [];
+    if (rule.taskTypes.length > 0)
+      criteria.push(`taskTypes=${rule.taskTypes.join(",")}`);
+    if (rule.riskCategories.length > 0) {
+      criteria.push(`riskCategories=${rule.riskCategories.join(",")}`);
+    }
+    if (rule.complexity.length > 0)
+      criteria.push(`complexity=${rule.complexity.join(",")}`);
+    const on = criteria.length === 0 ? "any task" : criteria.join(", ");
+    return `rule ${rule.id} (${rule.strength}, weight ${rule.weight}) matched on ${on}`;
+  }
+  if (explanation.reason === "suggestedAgent") {
+    return "no routing rule matched \u2014 used the plan's suggestedAgent";
+  }
+  return "no routing rule matched and no suggestedAgent \u2014 fell back to the policy's orchestrator";
+}
+function renderWhy(explanations, output) {
+  output.log("Routing rationale:");
+  for (const explanation of explanations) {
+    const modelSuffix = explanation.modelAlias === void 0 ? "" : ` [${explanation.modelAlias}]`;
+    output.log(`${explanation.taskId} (${explanation.type}, ${explanation.complexity}) -> ${explanation.agent}${modelSuffix}`);
+    output.log(`    ${routeReasonSentence(explanation)}`);
+  }
+}
 async function runPlan(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const prepared = await preparePlan(objective, options, deps);
   if ("exitCode" in prepared)
     return prepared.exitCode;
-  renderPlan(prepared, output, options.json);
+  if (options.why === void 0) {
+    renderPlan(prepared, output, options.json);
+    return 0;
+  }
+  const tasks = options.why === true ? prepared.plan.tasks : prepared.plan.tasks.filter((task) => task.id === options.why);
+  if (tasks.length === 0) {
+    const known = prepared.plan.tasks.map((task) => task.id).join(", ");
+    return fail(output, options.json, `No task ${options.why} in this plan.${known === "" ? "" : ` Known tasks: ${known}.`}`).exitCode;
+  }
+  const explanations = tasks.map((task) => explainTaskRoute(task, prepared.policy, prepared.project));
+  if (options.json) {
+    jsonLine(output, {
+      plan: prepared.plan,
+      injectedReviews: prepared.injectedReviews,
+      notes: prepared.notes,
+      routes: prepared.routes,
+      why: explanations
+    });
+    return 0;
+  }
+  renderPlan(prepared, output, false);
+  output.log("");
+  renderWhy(explanations, output);
   return 0;
 }
 
 // apps/cli/dist/sessions.js
 import { existsSync } from "node:fs";
 import path6 from "node:path";
+
+// packages/session/dist/resolve.js
+var SHORT_ID_LENGTH = 8;
+function shortId(id) {
+  return id.slice(0, SHORT_ID_LENGTH);
+}
+function availableSessionsHint(records) {
+  if (records.length === 0)
+    return "";
+  const listed = records.slice(0, 20).map((record) => shortId(record.id));
+  return ` Available: ${listed.join(", ")}.`;
+}
+function resolveChatSessionReference(records, reference, options = {}) {
+  const exactId = records.find((record) => record.id === reference);
+  if (exactId !== void 0)
+    return { record: exactId };
+  const idPrefixMatches = records.filter((record) => record.id.startsWith(reference));
+  if (idPrefixMatches.length === 1) {
+    return { record: idPrefixMatches[0] };
+  }
+  if (idPrefixMatches.length > 1) {
+    const ids = idPrefixMatches.map((record) => shortId(record.id));
+    return {
+      error: `"${reference}" matches ${idPrefixMatches.length} sessions: ${ids.join(", ")}. Use a longer prefix.`
+    };
+  }
+  const nameMatches = records.filter((record) => record.name === reference);
+  const first = nameMatches[0];
+  if (first !== void 0) {
+    if (nameMatches.length > 1) {
+      options.onNote?.(`Multiple sessions are named "${reference}"; using the most recently updated one (${shortId(first.id)}).`);
+    }
+    return { record: first };
+  }
+  return {
+    error: `No chat session matches "${reference}".${availableSessionsHint(records)}`
+  };
+}
 
 // packages/session/dist/schema.js
 import { sql } from "drizzle-orm";
@@ -9059,13 +9876,23 @@ var chatSessions = sqliteTable("chat_sessions", {
   id: text("id").primaryKey(),
   workspacePath: text("workspace_path").notNull(),
   title: text("title").notNull(),
+  /**
+   * User-given label, set via `/name` or `--name`, distinct from `title`
+   * (which is auto-derived from the first message). Nullable, and added
+   * after the table's original release: `BOOTSTRAP_DDL` below only creates
+   * it for a brand new database, so a v0.5.0 database (created before this
+   * column existed) needs the `ALTER TABLE` migration `SqliteSessionStore`
+   * runs on open — see `ensureChatSessionsNameColumn` in `sqlite.ts`.
+   */
+  name: text("name"),
   modelAlias: text("model_alias"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
   messageCount: integer("message_count").notNull().default(0)
 }, (table) => [
   index("chat_sessions_workspace_path_idx").on(table.workspacePath),
-  index("chat_sessions_updated_at_idx").on(table.updatedAt)
+  index("chat_sessions_updated_at_idx").on(table.updatedAt),
+  index("chat_sessions_name_idx").on(table.name)
 ]);
 var chatMessages = sqliteTable("chat_messages", {
   sessionId: text("session_id").notNull(),
@@ -9117,6 +9944,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   id TEXT PRIMARY KEY,
   workspace_path TEXT NOT NULL,
   title TEXT NOT NULL,
+  name TEXT,
   model_alias TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -9227,6 +10055,14 @@ function taskResultPatchFor(event2) {
       return void 0;
   }
 }
+function ensureChatSessionsNameColumn(sqlite) {
+  const columns = sqlite.pragma("table_info(chat_sessions)");
+  const hasName = columns.some((column) => column.name === "name");
+  if (!hasName) {
+    sqlite.exec("ALTER TABLE chat_sessions ADD COLUMN name TEXT");
+  }
+  sqlite.exec("CREATE INDEX IF NOT EXISTS chat_sessions_name_idx ON chat_sessions (name)");
+}
 var SqliteSessionStore = class {
   #sqlite;
   #db;
@@ -9236,6 +10072,7 @@ var SqliteSessionStore = class {
       this.#sqlite.pragma("journal_mode = WAL");
     }
     this.#sqlite.exec(BOOTSTRAP_DDL);
+    ensureChatSessionsNameColumn(this.#sqlite);
     this.#db = drizzle(this.#sqlite);
   }
   // --- SessionStore -------------------------------------------------------
@@ -9376,6 +10213,7 @@ var SqliteSessionStore = class {
       id: session.id,
       workspacePath: session.workspacePath,
       title: session.title,
+      name: session.name ?? null,
       modelAlias: session.modelAlias ?? null,
       createdAt: session.createdAt,
       updatedAt: session.createdAt,
@@ -9414,9 +10252,18 @@ var SqliteSessionStore = class {
       tx.update(chatSessions).set({ updatedAt: now, messageCount: (highest?.maxSeq ?? -1) + 1 }).where(eq(chatSessions.id, sessionId)).run();
     });
   }
-  /** Renames a session and marks it as freshly touched. */
+  /** Rewrites the auto-derived title and marks the session as freshly touched. */
   async setChatSessionTitle(sessionId, title) {
     this.#db.update(chatSessions).set({ title, updatedAt: Date.now() }).where(eq(chatSessions.id, sessionId)).run();
+  }
+  /**
+   * Sets a session's user-given `name` (`/name`, `kapel sessions rename` —
+   * whatever the caller spells it as) and marks it as freshly touched.
+   * Renaming a session that is not there is a silent no-op, like
+   * {@link setChatSessionTitle}.
+   */
+  async renameChatSession(sessionId, name) {
+    this.#db.update(chatSessions).set({ name, updatedAt: Date.now() }).where(eq(chatSessions.id, sessionId)).run();
   }
   /**
    * Sessions newest-touched first. `workspacePath` is compared verbatim —
@@ -9457,6 +10304,52 @@ var SqliteSessionStore = class {
       tx.delete(chatSessions).where(eq(chatSessions.id, sessionId)).run();
     });
   }
+  /**
+   * Copies a session — its metadata (workspace, title, model) and its whole
+   * transcript as of now — into a brand new session, and returns the new
+   * session's id.
+   *
+   * The fork is independent from the moment it is created: it does not carry
+   * the source id forward anywhere, so appending to either session afterwards
+   * never touches the other. `options.name` labels the new session; leaving
+   * it out leaves the fork unnamed even if the source had a name, since a
+   * name is a label the user chose for one specific conversation branch, not
+   * a property that should silently propagate to every copy of it.
+   *
+   * Throws if `sessionId` does not name an existing session — unlike the
+   * read paths, a fork has nothing useful to return for a source that isn't
+   * there.
+   */
+  async forkChatSession(sessionId, options = {}) {
+    const newId = crypto.randomUUID();
+    const now = Date.now();
+    this.#db.transaction((tx) => {
+      const source = tx.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).limit(1).get();
+      if (source === void 0) {
+        throw new Error(`Chat session ${sessionId} not found`);
+      }
+      tx.insert(chatSessions).values({
+        id: newId,
+        workspacePath: source.workspacePath,
+        title: source.title,
+        name: options.name ?? null,
+        modelAlias: source.modelAlias,
+        createdAt: now,
+        updatedAt: now,
+        messageCount: source.messageCount
+      }).run();
+      const sourceMessages = tx.select().from(chatMessages).where(eq(chatMessages.sessionId, sessionId)).all();
+      for (const message of sourceMessages) {
+        tx.insert(chatMessages).values({
+          sessionId: newId,
+          seq: message.seq,
+          messageJson: message.messageJson,
+          createdAt: now
+        }).run();
+      }
+    });
+    return newId;
+  }
   close() {
     this.#sqlite.close();
   }
@@ -9469,6 +10362,7 @@ function toChatSessionRecord(row) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     messageCount: row.messageCount,
+    ...row.name === null ? {} : { name: row.name },
     ...row.modelAlias === null ? {} : { modelAlias: row.modelAlias }
   };
 }
@@ -9580,9 +10474,94 @@ function closeRunStore(store) {
 function isoTime(epochMs) {
   return new Date(epochMs).toISOString();
 }
+var SHORT_ID = 8;
+function shortSessionId(id) {
+  return id.slice(0, SHORT_ID);
+}
+var DEFAULT_SESSIONS_LIST_LIMIT = 20;
+function sessionRow(record, showName) {
+  const base = [shortSessionId(record.id)];
+  if (showName)
+    base.push(record.name ?? "");
+  base.push(isoTime(record.updatedAt), String(record.messageCount), record.title === "" ? "(untitled)" : record.title);
+  return base;
+}
+async function runSessionsListCommand(options, deps = {}) {
+  const output = deps.output ?? consoleOutput;
+  const store = openExistingRunStore(options.cwd);
+  if (store === void 0) {
+    if (options.json)
+      output.log(JSON.stringify([]));
+    else {
+      output.log(`No chat sessions recorded yet \u2014 nothing at ${sessionDbPathFor(options.cwd)}.`);
+    }
+    return 0;
+  }
+  try {
+    const records = await store.listChatSessions(path6.resolve(options.cwd), {
+      limit: options.limit ?? DEFAULT_SESSIONS_LIST_LIMIT
+    });
+    if (options.json) {
+      output.log(JSON.stringify(records.map((record) => ({
+        id: record.id,
+        ...record.name === void 0 ? {} : { name: record.name },
+        title: record.title,
+        ...record.modelAlias === void 0 ? {} : { modelAlias: record.modelAlias },
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        messageCount: record.messageCount
+      }))));
+      return 0;
+    }
+    if (records.length === 0) {
+      output.log("No chat sessions recorded yet.");
+      return 0;
+    }
+    const showName = records.some((record) => record.name !== void 0);
+    const headers = showName ? ["ID", "NAME", "UPDATED", "MSGS", "TITLE"] : ["ID", "UPDATED", "MSGS", "TITLE"];
+    for (const line of formatTable(headers, records.map((record) => sessionRow(record, showName)))) {
+      output.log(line);
+    }
+    return 0;
+  } finally {
+    closeRunStore(store);
+  }
+}
+async function runSessionsForkCommand(options, deps = {}) {
+  const output = deps.output ?? consoleOutput;
+  const store = openExistingRunStore(options.cwd);
+  if (store === void 0) {
+    output.error(`No chat sessions recorded yet \u2014 nothing at ${sessionDbPathFor(options.cwd)}.`);
+    return 1;
+  }
+  try {
+    const records = await store.listChatSessions(path6.resolve(options.cwd));
+    const resolved = resolveChatSessionReference(records, options.session, {
+      onNote: (note) => output.error(note)
+    });
+    if ("error" in resolved) {
+      output.error(resolved.error);
+      return 1;
+    }
+    const newId = await store.forkChatSession(resolved.record.id, options.name === void 0 ? {} : { name: options.name });
+    if (options.json) {
+      output.log(JSON.stringify({
+        id: newId,
+        forkedFrom: resolved.record.id,
+        ...options.name === void 0 ? {} : { name: options.name }
+      }));
+    } else {
+      const label = options.name === void 0 ? "" : ` "${options.name}"`;
+      output.log(`Forked ${shortSessionId(resolved.record.id)} \u2192 ${shortSessionId(newId)}${label}`);
+    }
+    return 0;
+  } finally {
+    closeRunStore(store);
+  }
+}
 
 // apps/cli/dist/explain-cmd.js
-function isRecord8(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null;
 }
 function str(value) {
@@ -9614,7 +10593,7 @@ function routeSentence(route) {
   return route.fallback === "suggestedAgent" ? `routed to ${route.agent} \u2014 no routing rule matched, so the plan's suggestedAgent was used` : `routed to ${route.agent} \u2014 no routing rule matched and the task suggested no agent, so it fell back to the policy's orchestrator`;
 }
 function digestEvent(event2) {
-  const data = isRecord8(event2.data) ? event2.data : {};
+  const data = isRecord9(event2.data) ? event2.data : {};
   switch (event2.type) {
     case "task.held": {
       const blocker = str(data.conflictsWith);
@@ -9645,7 +10624,7 @@ function digestEvent(event2) {
       return files.length === 0 ? `not merged \u2014 ${str(data.reason) ?? "unknown reason"}` : `not merged \u2014 conflicts in ${files.join(", ")}`;
     }
     case "task.completed": {
-      const result = isRecord8(data.result) ? data.result : {};
+      const result = isRecord9(data.result) ? data.result : {};
       const status = str(result.status) ?? "?";
       const retrying = data.final === false ? " (retrying)" : "";
       return `completed \u2014 ${status}: ${firstLine2(result.summary)}${retrying}`;
@@ -9738,9 +10717,78 @@ async function runExplainCommand(taskId, options, deps = {}) {
   }
 }
 
-// apps/cli/dist/init.js
-import { cp, readFile as readFile10, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+// apps/cli/dist/images.js
+import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
 import path7 from "node:path";
+var MAX_IMAGE_COUNT = 4;
+var MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+var MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
+function formatBytes(n) {
+  if (n < 1024 * 1024)
+    return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+}
+async function resolveImageAttachments(paths, cwd) {
+  if (paths.length === 0)
+    return { ok: true, images: [] };
+  if (paths.length > MAX_IMAGE_COUNT) {
+    return {
+      ok: false,
+      error: `Too many images: got ${paths.length}, but at most ${MAX_IMAGE_COUNT} are allowed per run.`
+    };
+  }
+  const images = [];
+  let totalBytes = 0;
+  for (const raw of paths) {
+    const resolved = path7.resolve(cwd, raw);
+    let info;
+    try {
+      info = await stat4(resolved);
+    } catch {
+      return { ok: false, error: `Image not found: "${raw}"` };
+    }
+    if (!info.isFile()) {
+      return { ok: false, error: `Not a file: "${raw}"` };
+    }
+    if (info.size > MAX_IMAGE_BYTES) {
+      return {
+        ok: false,
+        error: `Image "${raw}" is ${formatBytes(info.size)}, over the ${formatBytes(MAX_IMAGE_BYTES)} per-image limit.`
+      };
+    }
+    totalBytes += info.size;
+    if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+      return {
+        ok: false,
+        error: `Attached images total ${formatBytes(totalBytes)}, over the ${formatBytes(MAX_TOTAL_IMAGE_BYTES)} combined limit.`
+      };
+    }
+    let bytes;
+    try {
+      bytes = await readFile10(resolved);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `Could not read image "${raw}": ${detail}` };
+    }
+    const mediaType = resolveImageMediaType(bytes, resolved);
+    if (mediaType === void 0) {
+      return {
+        ok: false,
+        error: `Unrecognized image format for "${raw}": expected PNG, JPEG, GIF or WEBP.`
+      };
+    }
+    images.push({
+      mediaType,
+      base64: bytes.toString("base64"),
+      path: resolved
+    });
+  }
+  return { ok: true, images };
+}
+
+// apps/cli/dist/init.js
+import { cp, readFile as readFile11, rm as rm2, stat as stat5, writeFile as writeFile4 } from "node:fs/promises";
+import path8 from "node:path";
 import { fileURLToPath } from "node:url";
 var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
 var MAX_WALK_LEVELS = 6;
@@ -9791,7 +10839,7 @@ function seedModelsInto(templateYaml, config) {
 }
 async function pathExists(candidate) {
   try {
-    await stat4(candidate);
+    await stat5(candidate);
     return true;
   } catch {
     return false;
@@ -9800,10 +10848,10 @@ async function pathExists(candidate) {
 async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   let dir = startDir;
   for (let level = 0; level <= maxLevels; level += 1) {
-    const candidate = path7.join(dir, ...TEMPLATE_RELATIVE);
+    const candidate = path8.join(dir, ...TEMPLATE_RELATIVE);
     if (await pathExists(candidate))
       return candidate;
-    const parent = path7.dirname(dir);
+    const parent = path8.dirname(dir);
     if (parent === dir)
       break;
     dir = parent;
@@ -9811,7 +10859,7 @@ async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   throw new Error(`Could not find ${TEMPLATE_RELATIVE.join("/")} by walking up from ${startDir} (searched ${maxLevels} levels up). Is this CLI running from within the multi-model-orchestration-agent repo?`);
 }
 async function runInit(options) {
-  const entryDir = path7.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
+  const entryDir = path8.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
   let templateDir;
   try {
     templateDir = await locateTemplate(entryDir);
@@ -9819,7 +10867,7 @@ async function runInit(options) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const target = path7.join(options.cwd, ".agent");
+  const target = path8.join(options.cwd, ".agent");
   const exists = await pathExists(target);
   if (exists && options.force !== true) {
     console.error(`${target} already exists. Re-run with --force to overwrite it.`);
@@ -9832,9 +10880,9 @@ async function runInit(options) {
   console.log(`  (from ${templateDir})`);
   const config = options.config;
   if (config !== void 0) {
-    const configPath = path7.join(target, "config.yaml");
+    const configPath = path8.join(target, "config.yaml");
     try {
-      const template = await readFile10(configPath, "utf8");
+      const template = await readFile11(configPath, "utf8");
       await writeFile4(configPath, seedModelsInto(template, config), "utf8");
       console.log("  (models seeded from your kapel configuration)");
     } catch {
@@ -9844,9 +10892,412 @@ async function runInit(options) {
 }
 
 // apps/cli/dist/interactive.js
-import { mkdir as mkdir5 } from "node:fs/promises";
-import path9 from "node:path";
+import { mkdir as mkdir6 } from "node:fs/promises";
+import path13 from "node:path";
 import * as readline4 from "node:readline";
+
+// apps/cli/dist/checkpoint.js
+import { execFile as execFile8 } from "node:child_process";
+import { copyFile, mkdir as mkdir4, mkdtemp, rm as rm3, rmdir as rmdir2, stat as stat6, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path9 from "node:path";
+import { promisify as promisify5 } from "node:util";
+var execFileAsync5 = promisify5(execFile8);
+var MAX_BUFFER_BYTES4 = 64 * 1024 * 1024;
+var MAX_CHECKPOINTS = 20;
+var MAX_LABEL_CHARS = 48;
+var EXCLUDED_DIR = ".agent";
+var CHECKPOINT_IDENTITY = {
+  GIT_AUTHOR_NAME: "kapel",
+  GIT_AUTHOR_EMAIL: "kapel@localhost",
+  GIT_COMMITTER_NAME: "kapel",
+  GIT_COMMITTER_EMAIL: "kapel@localhost"
+};
+var RACY_MARGIN_MS = 1e3;
+var RESTORE_BATCH = 200;
+var IN_PROGRESS = [
+  ["MERGE_HEAD", "a merge"],
+  ["rebase-merge", "a rebase"],
+  ["rebase-apply", "a rebase"],
+  ["CHERRY_PICK_HEAD", "a cherry-pick"],
+  ["REVERT_HEAD", "a revert"],
+  ["BISECT_LOG", "a bisect"]
+];
+function checkpointLabel(prompt) {
+  const line = prompt.split("\n").map((value) => value.trim()).find((value) => value.length > 0) ?? "";
+  const collapsed = line.replace(/\s+/g, " ");
+  return collapsed.length > MAX_LABEL_CHARS ? `${collapsed.slice(0, MAX_LABEL_CHARS - 1).trimEnd()}\u2026` : collapsed;
+}
+function formatAge(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1e3));
+  if (seconds < 5)
+    return "just now";
+  if (seconds < 90)
+    return `${seconds} sec ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90)
+    return `${minutes} min ago`;
+  return `${Math.round(minutes / 60)} hr ago`;
+}
+function undoLines(outcome) {
+  if (!outcome.ok)
+    return [outcome.reason];
+  const age = formatAge(outcome.ageMs);
+  const quoted = outcome.label === "" ? "the last prompt" : `"${outcome.label}"`;
+  if (outcome.restored === 0) {
+    return [`\u21A9 nothing had changed since ${quoted} (${age})`];
+  }
+  const plural = outcome.restored === 1 ? "" : "s";
+  return [
+    `\u21A9 restored ${outcome.restored} file${plural} to before ${quoted} (${age})`,
+    "  every edit since then is gone, including ones made by shell commands or other programs \u2014 undo is one-way"
+  ];
+}
+async function git(args, cwd, env) {
+  try {
+    const result = await execFileAsync5("git", [...args], {
+      cwd,
+      ...env === void 0 ? {} : { env },
+      maxBuffer: MAX_BUFFER_BYTES4,
+      windowsHide: true
+    });
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+  } catch (error) {
+    const value = error;
+    return {
+      stdout: value.stdout ?? "",
+      stderr: value.stderr ?? String(error),
+      exitCode: typeof value.code === "number" ? value.code : 127
+    };
+  }
+}
+function failure(operation, result) {
+  const detail = result.stderr.trim().split("\n")[0] ?? "";
+  return new Error(detail === "" ? `git ${operation} failed (exit ${result.exitCode})` : `git ${operation} failed: ${detail}`);
+}
+async function detectRepo(workspacePath) {
+  const root = await git(["rev-parse", "--show-toplevel"], workspacePath);
+  if (root.exitCode !== 0)
+    return void 0;
+  const gitDir = await git(["rev-parse", "--absolute-git-dir"], workspacePath);
+  if (gitDir.exitCode !== 0)
+    return void 0;
+  const top = root.stdout.trim();
+  const dir = gitDir.stdout.trim();
+  if (top === "" || dir === "")
+    return void 0;
+  return { root: top, gitDir: dir };
+}
+async function tempRoot() {
+  const root = process.env.AGENT_TEST_TMPDIR || tmpdir();
+  await mkdir4(root, { recursive: true });
+  return root;
+}
+async function withTempIndex(repo, seed, fn) {
+  const dir = await mkdtemp(path9.join(await tempRoot(), "kapel-checkpoint-"));
+  try {
+    const indexPath = path9.join(dir, "index");
+    if (seed) {
+      const source = path9.join(repo.gitDir, "index");
+      try {
+        const original = await stat6(source);
+        await copyFile(source, indexPath);
+        const asOf = new Date(original.mtimeMs - RACY_MARGIN_MS);
+        await utimes(indexPath, asOf, asOf);
+      } catch {
+      }
+    }
+    return await fn({ ...process.env, GIT_INDEX_FILE: indexPath });
+  } finally {
+    await rm3(dir, { recursive: true, force: true });
+  }
+}
+async function snapshotTree(repo) {
+  return await withTempIndex(repo, true, async (env) => {
+    const added = await git(["add", "-A", "--", ".", `:(exclude)${EXCLUDED_DIR}`], repo.root, env);
+    if (added.exitCode !== 0)
+      throw failure("add", added);
+    const written = await git(["write-tree"], repo.root, env);
+    if (written.exitCode !== 0)
+      throw failure("write-tree", written);
+    const tree = written.stdout.trim();
+    if (tree === "")
+      throw new Error("git write-tree produced no tree");
+    return tree;
+  });
+}
+async function commitSnapshot(repo, tree, label) {
+  const head = await git(["rev-parse", "--verify", "--quiet", "HEAD"], repo.root);
+  const parent = head.exitCode === 0 ? head.stdout.trim() : "";
+  const result = await git([
+    "commit-tree",
+    tree,
+    ...parent === "" ? [] : ["-p", parent],
+    "--no-gpg-sign",
+    "-m",
+    `kapel checkpoint: ${label}`
+  ], repo.root, { ...process.env, ...CHECKPOINT_IDENTITY });
+  if (result.exitCode !== 0)
+    throw failure("commit-tree", result);
+  return result.stdout.trim();
+}
+function isExcluded(relativePath) {
+  return relativePath === EXCLUDED_DIR || relativePath.startsWith(`${EXCLUDED_DIR}/`);
+}
+async function diffTrees(repo, from, to) {
+  const result = await git(["diff", "--raw", "-z", "--no-renames", from, to], repo.root);
+  if (result.exitCode !== 0)
+    throw failure("diff", result);
+  const fields = result.stdout.split("\0");
+  const changes = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const meta = fields[i];
+    if (meta === void 0 || !meta.startsWith(":"))
+      continue;
+    const target = fields[i + 1];
+    i += 1;
+    if (target === void 0 || target === "" || isExcluded(target))
+      continue;
+    const parts = meta.slice(1).split(" ");
+    const srcMode = parts[0] ?? "";
+    const dstMode = parts[1] ?? "";
+    const status = parts[4] ?? "";
+    if (srcMode === "160000" || dstMode === "160000")
+      continue;
+    changes.push({ status, path: target });
+  }
+  return changes;
+}
+async function pruneEmptyParents(root, filePath) {
+  let dir = path9.dirname(path9.join(root, filePath));
+  while (dir !== root && dir.startsWith(`${root}${path9.sep}`)) {
+    try {
+      await rmdir2(dir);
+    } catch {
+      return;
+    }
+    dir = path9.dirname(dir);
+  }
+}
+async function checkoutPaths(repo, tree, paths) {
+  if (paths.length === 0)
+    return;
+  await withTempIndex(repo, false, async (env) => {
+    const read = await git(["read-tree", tree], repo.root, env);
+    if (read.exitCode !== 0)
+      throw failure("read-tree", read);
+    for (let i = 0; i < paths.length; i += RESTORE_BATCH) {
+      const batch = paths.slice(i, i + RESTORE_BATCH);
+      const checkedOut = await git(["checkout-index", "-f", "--", ...batch], repo.root, env);
+      if (checkedOut.exitCode !== 0)
+        throw failure("checkout-index", checkedOut);
+    }
+  });
+}
+async function inProgressOperation(gitDir) {
+  for (const [entry, description] of IN_PROGRESS) {
+    try {
+      await stat6(path9.join(gitDir, entry));
+      return description;
+    } catch {
+    }
+  }
+  return void 0;
+}
+function notARepositoryReason(workspacePath) {
+  return `/undo needs a git repository \u2014 ${workspacePath} is not inside one, so nothing was checkpointed. Run \`git init\` to get undo.`;
+}
+function createCheckpointStore(options) {
+  const now = options.now ?? (() => Date.now());
+  const limit = options.limit ?? MAX_CHECKPOINTS;
+  const stack = [];
+  let repo;
+  let warned = false;
+  const resolveRepo = async () => {
+    if (repo !== void 0)
+      return repo;
+    repo = await detectRepo(options.workspacePath);
+    return repo;
+  };
+  const capture = async (prompt) => {
+    const info = await resolveRepo();
+    if (info === void 0)
+      return void 0;
+    try {
+      const tree = await snapshotTree(info);
+      const label = checkpointLabel(prompt);
+      const commit = await commitSnapshot(info, tree, label);
+      stack.push({ commit, tree, createdAt: now(), label });
+      while (stack.length > limit)
+        stack.shift();
+      return void 0;
+    } catch (error) {
+      if (warned)
+        return void 0;
+      warned = true;
+      const message = error instanceof Error ? error.message : String(error);
+      return `(checkpoint failed, /undo will not cover this turn: ${message})`;
+    }
+  };
+  const undo = async () => {
+    const info = await resolveRepo();
+    if (info === void 0) {
+      return { ok: false, reason: notARepositoryReason(options.workspacePath) };
+    }
+    const entry = stack[stack.length - 1];
+    if (entry === void 0) {
+      return {
+        ok: false,
+        reason: "nothing to undo \u2014 no checkpoint has been taken in this session yet."
+      };
+    }
+    const busy = await inProgressOperation(info.gitDir);
+    if (busy !== void 0) {
+      return {
+        ok: false,
+        reason: `/undo is unavailable while ${busy} is in progress \u2014 finish or abort it first, then try again. The checkpoint is kept.`
+      };
+    }
+    try {
+      const current = await snapshotTree(info);
+      const changes = await diffTrees(info, current, entry.tree);
+      const removals = changes.filter((change) => change.status === "D");
+      const writes = changes.filter((change) => change.status !== "D");
+      await checkoutPaths(info, entry.tree, writes.map((change) => change.path));
+      for (const change of removals) {
+        await rm3(path9.join(info.root, change.path), { force: true });
+        await pruneEmptyParents(info.root, change.path);
+      }
+      stack.pop();
+      return {
+        ok: true,
+        restored: changes.length,
+        label: entry.label,
+        ageMs: Math.max(0, now() - entry.createdAt)
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        reason: `/undo could not restore the working tree: ${message}`
+      };
+    }
+  };
+  return {
+    capture,
+    undo,
+    entries: () => stack.slice()
+  };
+}
+
+// apps/cli/dist/commands.js
+import { readdir as readdir4, readFile as readFile12 } from "node:fs/promises";
+import path10 from "node:path";
+import { parse as parseYaml3 } from "yaml";
+var CUSTOM_COMMAND_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+var ARGUMENTS_PLACEHOLDER = "$ARGUMENTS";
+function splitFrontMatter2(raw) {
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  if (lines[0] !== "---")
+    return void 0;
+  let closingIndex = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") {
+      closingIndex = i;
+      break;
+    }
+  }
+  if (closingIndex === -1)
+    return void 0;
+  return {
+    frontMatter: lines.slice(1, closingIndex).join("\n"),
+    body: lines.slice(closingIndex + 1).join("\n")
+  };
+}
+function asRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+function asOptionalString(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : void 0;
+}
+function errorMessage10(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function parseCustomCommandFile(filePath, name, raw) {
+  const split = splitFrontMatter2(raw);
+  if (split === void 0) {
+    return { command: { name, template: raw.trim(), sourcePath: filePath } };
+  }
+  let value;
+  try {
+    value = parseYaml3(split.frontMatter);
+  } catch (error) {
+    return {
+      warning: `skipping ${filePath}: front matter YAML parse error: ${errorMessage10(error)}`
+    };
+  }
+  const record = asRecord2(value);
+  const description = asOptionalString(record?.description);
+  const model = asOptionalString(record?.model);
+  return {
+    command: {
+      name,
+      ...description === void 0 ? {} : { description },
+      ...model === void 0 ? {} : { model },
+      template: split.body.trim(),
+      sourcePath: filePath
+    }
+  };
+}
+async function loadCustomCommands(workspacePath, builtinNames) {
+  const agentDir = await findAgentDir(workspacePath);
+  if (agentDir === void 0)
+    return { commands: [], warnings: [] };
+  const commandsDir = path10.join(agentDir, "commands");
+  let entryNames;
+  try {
+    const entries = await readdir4(commandsDir, { withFileTypes: true });
+    entryNames = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => entry.name).sort();
+  } catch {
+    return { commands: [], warnings: [] };
+  }
+  const commands = [];
+  const warnings = [];
+  for (const fileName of entryNames) {
+    const displayPath = `.agent/commands/${fileName}`;
+    const stem = path10.basename(fileName, ".md");
+    if (!CUSTOM_COMMAND_NAME_PATTERN.test(stem)) {
+      warnings.push(`skipping ${displayPath}: "${stem}" is not a valid command name (expected ${CUSTOM_COMMAND_NAME_PATTERN.source})`);
+      continue;
+    }
+    if (builtinNames.has(stem)) {
+      warnings.push(`skipping ${displayPath}: "/${stem}" is a built-in command and cannot be overridden`);
+      continue;
+    }
+    const filePath = path10.join(commandsDir, fileName);
+    let raw;
+    try {
+      raw = await readFile12(filePath, "utf8");
+    } catch (error) {
+      warnings.push(`skipping ${displayPath}: ${errorMessage10(error)}`);
+      continue;
+    }
+    const parsed = parseCustomCommandFile(displayPath, stem, raw);
+    if ("warning" in parsed)
+      warnings.push(parsed.warning);
+    else
+      commands.push(parsed.command);
+  }
+  return { commands, warnings };
+}
+function expandCustomCommand(command, argumentsText) {
+  if (command.template.includes(ARGUMENTS_PLACEHOLDER)) {
+    return command.template.split(ARGUMENTS_PLACEHOLDER).join(argumentsText);
+  }
+  return argumentsText === "" ? command.template : `${command.template}
+
+${argumentsText}`;
+}
 
 // apps/cli/dist/delegated-chat.js
 var DelegatedUsage = class {
@@ -9910,17 +11361,17 @@ function createDelegatedChatSession(options) {
 }
 
 // apps/cli/dist/history.js
-import { mkdir as mkdir4, readFile as readFile11, writeFile as writeFile5 } from "node:fs/promises";
-import path8 from "node:path";
+import { mkdir as mkdir5, readFile as readFile13, writeFile as writeFile5 } from "node:fs/promises";
+import path11 from "node:path";
 var HISTORY_LIMIT = 1e3;
 var TRIM_THRESHOLD = HISTORY_LIMIT * 2;
 function historyFilePath(env) {
-  return path8.join(kapelConfigDir(env), "history");
+  return path11.join(kapelConfigDir(env), "history");
 }
 async function loadHistory(env) {
   let raw;
   try {
-    raw = await readFile11(historyFilePath(env), "utf8");
+    raw = await readFile13(historyFilePath(env), "utf8");
   } catch {
     return [];
   }
@@ -9937,12 +11388,12 @@ function createHistoryAppender(env) {
   async function ensureDir() {
     if (dirEnsured)
       return;
-    await mkdir4(path8.dirname(filePath), { recursive: true });
+    await mkdir5(path11.dirname(filePath), { recursive: true });
     dirEnsured = true;
   }
   async function currentLineCount() {
     try {
-      const raw = await readFile11(filePath, "utf8");
+      const raw = await readFile13(filePath, "utf8");
       return raw.split("\n").filter((line) => line.trim() !== "").length;
     } catch {
       return 0;
@@ -9963,7 +11414,7 @@ function createHistoryAppender(env) {
   async function trim() {
     let raw;
     try {
-      raw = await readFile11(filePath, "utf8");
+      raw = await readFile13(filePath, "utf8");
     } catch {
       return;
     }
@@ -10008,6 +11459,24 @@ function historyEntryFor(message) {
   return message.replace(/\n/g, " ").trim();
 }
 var INPUT_SIGINT = /* @__PURE__ */ Symbol("input-sigint");
+function isPromise(value) {
+  return typeof value?.then === "function";
+}
+function toReadlineCompleter(completer) {
+  return (line, callback) => {
+    const empty = [[], line];
+    try {
+      const result = completer(line);
+      if (isPromise(result)) {
+        result.then((value) => callback(null, value), () => callback(null, empty));
+        return;
+      }
+      callback(null, result);
+    } catch {
+      callback(null, empty);
+    }
+  };
+}
 var DEFAULT_PASTE_WINDOW_MS = 15;
 function rlHistory(rl) {
   const history = rl.history;
@@ -10021,7 +11490,7 @@ function createInputManager(options) {
     terminal: true,
     history: options.history ? [...options.history] : [],
     historySize: 200,
-    ...options.completer ? { completer: options.completer } : {}
+    ...options.completer ? { completer: toReadlineCompleter(options.completer) } : {}
   });
   let closed = false;
   let readPending;
@@ -10172,11 +11641,237 @@ ${action.text}`;
   };
 }
 
+// apps/cli/dist/mention.js
+import { execFile as execFile9 } from "node:child_process";
+import { readdir as readdir5, stat as stat7 } from "node:fs/promises";
+import path12 from "node:path";
+import { promisify as promisify6 } from "node:util";
+var execFileAsync6 = promisify6(execFile9);
+var MATCH_BONUS = 4;
+var CONSECUTIVE_BONUS = 8;
+var BOUNDARY_BONUS = 6;
+var GAP_START_PENALTY = -3;
+var GAP_EXTRA_PENALTY = -1;
+var GAP_MAX_PENALTY = -10;
+var BOUNDARY_CHARS = /* @__PURE__ */ new Set(["/", "\\", "-", "_", ".", " "]);
+function isBoundary(candidate, index2) {
+  if (index2 === 0)
+    return true;
+  const previous = candidate[index2 - 1];
+  return previous !== void 0 && BOUNDARY_CHARS.has(previous);
+}
+function gapPenalty(gap) {
+  if (gap <= 0)
+    return 0;
+  return Math.max(GAP_START_PENALTY + (gap - 1) * GAP_EXTRA_PENALTY, GAP_MAX_PENALTY);
+}
+function fuzzyScore(candidate, query) {
+  if (query === "")
+    return 0;
+  const haystack = candidate.toLowerCase();
+  const needle = query.toLowerCase();
+  let score = 0;
+  let previous = -1;
+  for (const character of needle) {
+    const index2 = haystack.indexOf(character, previous + 1);
+    if (index2 === -1)
+      return void 0;
+    if (index2 === previous + 1 && previous !== -1) {
+      score += CONSECUTIVE_BONUS;
+    } else {
+      score += MATCH_BONUS;
+      if (previous !== -1)
+        score += gapPenalty(index2 - previous - 1);
+    }
+    if (isBoundary(candidate, index2))
+      score += BOUNDARY_BONUS;
+    previous = index2;
+  }
+  return score;
+}
+function rankMentionMatches(paths, query, limit = MENTION_LIMIT) {
+  const scored = [];
+  for (const candidate of paths) {
+    const score = fuzzyScore(candidate, query);
+    if (score === void 0)
+      continue;
+    scored.push({ path: candidate, score });
+  }
+  scored.sort((a, b) => {
+    if (a.score !== b.score)
+      return b.score - a.score;
+    if (a.path.length !== b.path.length)
+      return a.path.length - b.path.length;
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  });
+  return scored.slice(0, limit).map((entry) => entry.path);
+}
+function mentionTokenAt(line) {
+  const boundary = Math.max(line.lastIndexOf(" "), line.lastIndexOf("	"));
+  const token = line.slice(boundary + 1);
+  if (!token.startsWith("@"))
+    return void 0;
+  return token;
+}
+var MENTION_LIMIT = 20;
+var FILE_LIST_TTL_MS = 5e3;
+var MAX_LISTED_FILES2 = 2e3;
+var MAX_WALK_DEPTH = 4;
+var SKIPPED_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", "dist"]);
+var MAX_BUFFER_BYTES5 = 32 * 1024 * 1024;
+async function gitListFiles(workspacePath) {
+  try {
+    const { stdout } = await execFileAsync6("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: workspacePath, maxBuffer: MAX_BUFFER_BYTES5 });
+    return stdout.split("\n").filter((line) => line !== "");
+  } catch {
+    return void 0;
+  }
+}
+function toPosix(relativePath) {
+  return relativePath.split(path12.sep).join("/");
+}
+async function walkFiles(workspacePath, maxEntries) {
+  const found = [];
+  let level = [""];
+  for (let depth = 0; depth <= MAX_WALK_DEPTH && level.length > 0; depth += 1) {
+    const next = [];
+    for (const relativeDir of level) {
+      if (found.length >= maxEntries)
+        return found;
+      let entries;
+      try {
+        entries = await readdir5(path12.join(workspacePath, relativeDir), {
+          withFileTypes: true
+        });
+      } catch {
+        continue;
+      }
+      const sorted = [...entries].sort((a, b) => a.name < b.name ? -1 : 1);
+      for (const entry of sorted) {
+        if (found.length >= maxEntries)
+          return found;
+        const relative4 = relativeDir === "" ? entry.name : `${relativeDir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          if (SKIPPED_DIRS.has(entry.name))
+            continue;
+          if (depth < MAX_WALK_DEPTH)
+            next.push(relative4);
+          continue;
+        }
+        if (entry.isFile())
+          found.push(toPosix(relative4));
+      }
+    }
+    level = next;
+  }
+  return found;
+}
+function createFileLister(options) {
+  const ttlMs = options.ttlMs ?? FILE_LIST_TTL_MS;
+  const now = options.now ?? (() => Date.now());
+  const maxEntries = options.maxEntries ?? MAX_LISTED_FILES2;
+  const listTracked = options.listTracked ?? gitListFiles;
+  let cached;
+  let inFlight;
+  const load = async () => {
+    const tracked = await listTracked(options.workspacePath);
+    const paths = tracked === void 0 ? await walkFiles(options.workspacePath, maxEntries) : tracked.slice(0, maxEntries);
+    cached = { paths, at: now() };
+    return paths;
+  };
+  return {
+    async list() {
+      const fresh = cached;
+      if (fresh !== void 0 && now() - fresh.at < ttlMs)
+        return fresh.paths;
+      if (inFlight !== void 0)
+        return await inFlight;
+      inFlight = load().catch(() => []);
+      try {
+        return await inFlight;
+      } finally {
+        inFlight = void 0;
+      }
+    },
+    invalidate() {
+      cached = void 0;
+    }
+  };
+}
+async function completeMention(files, token, limit = MENTION_LIMIT) {
+  const paths = await files.list();
+  const hits = rankMentionMatches(paths, token.slice(1), limit);
+  return [hits.map((hit) => `@${hit}`), token];
+}
+var TRAILING_PUNCTUATION = /* @__PURE__ */ new Set([
+  ".",
+  ",",
+  ";",
+  ":",
+  "!",
+  "?",
+  ")",
+  "]",
+  "}",
+  '"',
+  "'"
+]);
+var MENTION_PATTERN = /(?:^|[^\w@])@([^\s]+)/g;
+function workspaceFileExists(workspacePath, relativePath) {
+  const root = path12.resolve(workspacePath);
+  const resolved = path12.resolve(root, relativePath);
+  const inside = resolved === root || resolved.startsWith(root + path12.sep);
+  if (!inside)
+    return Promise.resolve(false);
+  return stat7(resolved).then((stats) => stats.isFile(), () => false);
+}
+function mentionCandidates(text2) {
+  const out = [];
+  for (const match of text2.matchAll(MENTION_PATTERN)) {
+    const raw = match[1];
+    if (raw === void 0 || raw === "")
+      continue;
+    const forms = [raw];
+    let trimmed = raw;
+    while (trimmed.length > 1 && TRAILING_PUNCTUATION.has(trimmed.slice(-1))) {
+      trimmed = trimmed.slice(0, -1);
+      forms.push(trimmed);
+    }
+    out.push(forms);
+  }
+  return out;
+}
+async function resolveMentions(text2, exists) {
+  const found = [];
+  for (const forms of mentionCandidates(text2)) {
+    for (const form of forms) {
+      if (found.includes(form))
+        break;
+      if (await exists(form)) {
+        found.push(form);
+        break;
+      }
+    }
+  }
+  return found;
+}
+function mentionAnnotation(paths) {
+  return `[mentioned files: ${paths.join(", ")}]`;
+}
+async function annotateMentions(text2, exists) {
+  const paths = await resolveMentions(text2, exists);
+  if (paths.length === 0)
+    return text2;
+  return `${text2}
+
+${mentionAnnotation(paths)}`;
+}
+
 // apps/cli/dist/orchestrate.js
-import { execFile as execFile8 } from "node:child_process";
+import { execFile as execFile10 } from "node:child_process";
 import { resolve as resolve4 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { promisify as promisify5 } from "node:util";
+import { promisify as promisify7 } from "node:util";
 var WORKER_MODES = ["in-process", "child"];
 var DEFAULT_WORKER_MODE = "in-process";
 function validateWorkerMode(raw) {
@@ -10191,10 +11886,10 @@ function validateIsolation(raw) {
     return raw;
   throw new Error(`Invalid --isolation value "${raw}": expected one of ${ISOLATION_MODES.join(", ")}.`);
 }
-var execFileAsync5 = promisify5(execFile8);
+var execFileAsync7 = promisify7(execFile10);
 async function worktreeIsolationError(workspacePath) {
   try {
-    await execFileAsync5("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
+    await execFileAsync7("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
     return void 0;
   } catch {
     return `--isolation worktree needs ${workspacePath} to be a git repository with at least one commit, and \`git rev-parse HEAD\` failed there. Commit something first, or re-run with --isolation none.`;
@@ -10296,42 +11991,73 @@ function usageLine(totals) {
   const line = `tokens \u2014 ${parts.join(", ")}`;
   return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
 }
-function summaryRow(task) {
+function summaryRow(task, spent) {
   return [
     task.status,
     task.spec.id,
     task.assignedAgent ?? "-",
     String(task.attempts),
+    spent === void 0 ? "-" : spent.models.join("+"),
+    spent === void 0 ? "-" : `${formatTokenCount2(spent.usage.inputTokens)}/${formatTokenCount2(spent.usage.outputTokens)}`,
+    spent === void 0 ? "-" : formatCostUsd(spent.costUsd, spent.pricing),
     task.spec.title
   ];
 }
-function renderRunSummary(runId, tasks, totals, output, json) {
+function runSummaryLines(tasks, usage) {
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  const byTask = usage.breakdownBy("task");
+  return [
+    "",
+    ...formatTable(["STATUS", "ID", "AGENT", "TRIES", "MODEL", "TOKENS", "$", "TITLE"], tasks.map((task) => summaryRow(task, byTask.get(task.spec.id)))),
+    "",
+    `${completed}/${tasks.length} tasks completed`,
+    ...usageRollupLines(usage.breakdownBy("model"), { countTasks: true }),
+    usageLine(usage.totals())
+  ];
+}
+function modelRollupJson(usage) {
+  return [...usage.breakdownBy("model").values()].map((entry) => ({
+    model: entry.key,
+    tasks: entry.tasks.filter((id) => id !== UNATTRIBUTED).length,
+    usage: entry.usage,
+    // Never 0 for an unpriced model: 0 would read as "this was free".
+    costUsd: entry.pricing === "unknown" ? null : entry.costUsd,
+    pricing: entry.pricing
+  }));
+}
+function renderRunSummary(runId, tasks, usage, output, json) {
   const completed = tasks.filter((task) => task.status === "completed").length;
   const ok = completed === tasks.length;
   if (json) {
+    const totals = usage.totals();
+    const byTask = usage.breakdownBy("task");
     jsonLine2(output, {
       type: "run.summary",
       runId,
       ok,
-      tasks: tasks.map((task) => ({
-        id: task.spec.id,
-        status: task.status,
-        agent: task.assignedAgent,
-        attempts: task.attempts,
-        ...task.result === void 0 ? {} : { result: task.result }
-      })),
+      tasks: tasks.map((task) => {
+        const spent = byTask.get(task.spec.id);
+        return {
+          id: task.spec.id,
+          status: task.status,
+          agent: task.assignedAgent,
+          attempts: task.attempts,
+          ...spent === void 0 ? {} : {
+            models: spent.models,
+            usage: spent.usage,
+            costUsd: spent.pricing === "unknown" ? null : spent.costUsd
+          },
+          ...task.result === void 0 ? {} : { result: task.result }
+        };
+      }),
+      models: modelRollupJson(usage),
       usage: totals.usage,
       costUsd: totals.costUsd
     });
     return ok ? 0 : 1;
   }
-  output.log("");
-  for (const line of formatTable(["STATUS", "ID", "AGENT", "TRIES", "TITLE"], tasks.map(summaryRow))) {
+  for (const line of runSummaryLines(tasks, usage))
     output.log(line);
-  }
-  output.log("");
-  output.log(`${completed}/${tasks.length} tasks completed`);
-  output.log(usageLine(totals));
   return ok ? 0 : 1;
 }
 function outcomeLine(tasks) {
@@ -10378,7 +12104,7 @@ async function executePreparedPlan(request, deps = {}) {
   }
   const renderer = tui !== void 0 ? void 0 : deps.renderer ?? (options.json ? new JsonRenderer() : new TextRenderer());
   const events2 = fanOutSink(renderer, tui?.sink, store === void 0 ? void 0 : storeSink(store));
-  const usage = new UsageTracker();
+  const usage = request.usage ?? new UsageTracker();
   const taskTimeoutMs = options.timeoutSeconds === void 0 ? void 0 : options.timeoutSeconds * 1e3;
   const fail2 = async (message) => {
     await closeTui(tui, "failed to run");
@@ -10427,7 +12153,17 @@ async function executePreparedPlan(request, deps = {}) {
   const tasks = graph.all();
   await recordRunStatus(store, runId, runStatusFor(tasks, controller.signal.aborted));
   await closeTui(tui, outcomeLine(tasks));
-  return renderRunSummary(runId, tasks, usage.totals(), output, options.json);
+  return renderRunSummary(runId, tasks, usage, output, options.json);
+}
+var PLANNER_AGENT = "planner";
+function planningThrough(usage, inner) {
+  const factory = inner ?? ((args) => new LlmPlanner(args));
+  return (args) => factory({
+    ...args,
+    provider: usageRecordingProvider(args.provider, usage, {
+      agent: PLANNER_AGENT
+    })
+  });
 }
 async function runOrchestrate(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
@@ -10447,7 +12183,11 @@ async function runOrchestrate(objective, options, deps = {}) {
       return 1;
     }
   }
-  const prepared = await preparePlan(objective, options, deps);
+  const usage = new UsageTracker();
+  const prepared = await preparePlan(objective, options, {
+    ...deps,
+    plannerFactory: planningThrough(usage, deps.plannerFactory)
+  });
   if ("exitCode" in prepared)
     return prepared.exitCode;
   if (options.dryRun) {
@@ -10474,6 +12214,7 @@ async function runOrchestrate(objective, options, deps = {}) {
       policy: prepared.policy,
       plan: prepared.plan,
       graph: new TaskGraph(prepared.plan),
+      usage,
       options: {
         json: options.json,
         workerMode: options.workerMode,
@@ -10492,11 +12233,11 @@ async function runOrchestrate(objective, options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.5.0";
-var SHORT_ID = 8;
+var CLI_VERSION = "0.6.0";
+var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
-function shortId(id) {
-  return id.slice(0, SHORT_ID);
+function shortId2(id) {
+  return id.slice(0, SHORT_ID2);
 }
 function toChatLike(session) {
   if ("toModelMessages" in session)
@@ -10512,37 +12253,24 @@ function toChatLike(session) {
     }
   };
 }
-function availableSessionsHint(records) {
-  if (records.length === 0)
-    return "";
-  const listed = records.slice(0, SESSIONS_LIMIT).map((record) => shortId(record.id)).join(", ");
-  return ` Available: ${listed}.`;
-}
-function matchChatSession(records, reference) {
-  const exact = records.find((record) => record.id === reference);
-  if (exact !== void 0)
-    return { record: exact };
-  const matches2 = records.filter((record) => record.id.startsWith(reference));
-  const first = matches2[0];
-  if (first === void 0) {
-    return {
-      error: `No chat session matches "${reference}".${availableSessionsHint(records)}`
-    };
-  }
-  if (matches2.length > 1) {
-    const ids = matches2.map((record) => shortId(record.id)).join(", ");
-    return {
-      error: `"${reference}" matches ${matches2.length} sessions: ${ids}. Use a longer prefix.`
-    };
-  }
-  return { record: first };
+function resolveSessionReference(records, reference) {
+  let note;
+  const resolved = resolveChatSessionReference(records, reference, {
+    onNote: (found) => {
+      note = found;
+    }
+  });
+  if ("error" in resolved)
+    return { error: resolved.error };
+  return note === void 0 ? { record: resolved.record } : { record: resolved.record, note };
 }
 function startFrom(transcript) {
   return {
     sessionId: transcript.record.id,
     title: transcript.record.title,
     persisted: true,
-    messages: transcript.messages
+    messages: transcript.messages,
+    ...transcript.record.name === void 0 ? {} : { name: transcript.record.name }
   };
 }
 async function resolveStartSession(store, workspacePath, selector, newId = () => crypto.randomUUID()) {
@@ -10559,14 +12287,14 @@ async function resolveStartSession(store, workspacePath, selector, newId = () =>
   }
   const records = await store.listChatSessions(workspacePath);
   if (selector.session !== void 0) {
-    const matched = matchChatSession(records, selector.session);
+    const matched = resolveSessionReference(records, selector.session);
     if ("error" in matched)
       return { error: matched.error };
     const transcript2 = await store.loadChatSession(matched.record.id);
     if (transcript2 === void 0) {
       return { error: `Chat session ${matched.record.id} could not be read.` };
     }
-    return { start: startFrom(transcript2) };
+    return matched.note === void 0 ? { start: startFrom(transcript2) } : { start: startFrom(transcript2), note: matched.note };
   }
   const latest = records[0];
   if (latest === void 0) {
@@ -10614,12 +12342,35 @@ function usageTotalsLine(totals) {
   const line = `tokens \u2014 ${parts.join(", ")}`;
   return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
 }
+function chatUsageBreakdown(native, delegated) {
+  const out = new Map(native);
+  for (const { label, totals } of delegated) {
+    const { inputTokens, outputTokens } = totals.usage;
+    if (inputTokens === 0 && outputTokens === 0 && totals.costUsd === 0) {
+      continue;
+    }
+    out.set(label, {
+      key: label,
+      usage: totals.usage,
+      costUsd: totals.costUsd,
+      pricing: totals.costUsd > 0 ? "known" : "unknown",
+      models: [label],
+      agents: [UNATTRIBUTED],
+      tasks: [UNATTRIBUTED],
+      samples: 1
+    });
+  }
+  return out;
+}
 function usageDeltaLine(before, after) {
   const input = after.usage.inputTokens - before.usage.inputTokens;
   const output = after.usage.outputTokens - before.usage.outputTokens;
   const cost = after.costUsd - before.costUsd;
   const line = `tokens +${input} in, +${output} out`;
   return cost > 0 ? `${line}  (~$${cost.toFixed(4)})` : line;
+}
+function modelAliases() {
+  return Object.keys(defaultModelCatalog()).sort();
 }
 var SLASH_COMMANDS = [
   { name: "help", usage: "/help", help: "show this list" },
@@ -10632,13 +12383,24 @@ var SLASH_COMMANDS = [
   },
   {
     name: "resume",
-    usage: "/resume <id>",
+    usage: "/resume <id|name>",
     help: "switch to a stored conversation"
+  },
+  {
+    name: "name",
+    usage: "/name [name]",
+    help: "show, or set, this conversation's name"
+  },
+  {
+    name: "fork",
+    usage: "/fork [name]",
+    help: "branch this conversation into a new session"
   },
   {
     name: "model",
     usage: "/model [alias]",
-    help: "show or switch the model for future turns"
+    help: "show or switch the model for future turns",
+    args: modelAliases()
   },
   {
     name: "config",
@@ -10652,17 +12414,46 @@ var SLASH_COMMANDS = [
     help: "compact the conversation history now"
   },
   {
+    name: "undo",
+    usage: "/undo",
+    help: "restore the files to before the last prompt"
+  },
+  {
     name: "orchestrate",
     usage: "/orchestrate <objective>",
     help: "run the multi-agent pipeline on an objective"
   }
 ];
-function slashCompleter(line) {
+function slashCompleter(line, customNames = []) {
   if (!line.startsWith("/"))
     return [[], line];
-  const names = SLASH_COMMANDS.map((command) => `/${command.name}`);
-  const hits = names.filter((name) => name.startsWith(line));
-  return [hits.length > 0 ? hits : names, line];
+  const space = line.indexOf(" ");
+  if (space === -1) {
+    const names = [
+      ...SLASH_COMMANDS.map((command) => `/${command.name}`),
+      ...customNames.map((name2) => `/${name2}`)
+    ];
+    const hits2 = names.filter((name2) => name2.startsWith(line));
+    return [hits2.length > 0 ? hits2 : names, line];
+  }
+  const name = line.slice(1, space).toLowerCase();
+  const values = SLASH_COMMANDS.find((command) => command.name === name)?.args;
+  if (values === void 0 || values.length === 0)
+    return [[], line];
+  const argument = line.slice(space + 1);
+  const partial = argument.slice(argument.lastIndexOf(" ") + 1);
+  const hits = values.filter((value) => value.startsWith(partial));
+  return [hits.length > 0 ? [...hits] : [...values], partial];
+}
+function createReplCompleter(files, customNames) {
+  return (line) => {
+    if (files !== void 0) {
+      const token = mentionTokenAt(line);
+      if (token !== void 0)
+        return completeMention(files, token);
+    }
+    return slashCompleter(line, customNames?.() ?? []);
+  };
 }
 function errorText2(error) {
   return error instanceof Error ? error.message : String(error);
@@ -10679,16 +12470,27 @@ function instructionsBannerLine(sources) {
     return void 0;
   return `instructions: ${sources.join(", ")}`;
 }
+function invalidSessionName(candidate) {
+  if (candidate === "")
+    return "a name cannot be empty.";
+  if (candidate.startsWith("/")) {
+    return 'a name cannot start with "/" \u2014 that would be ambiguous with slash commands.';
+  }
+  return void 0;
+}
 async function createInteractiveController(deps) {
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const now = deps.now ?? (() => Date.now());
   const resolveModel = deps.resolveModel ?? ((alias) => resolveModelAndProvider(process.env, alias));
+  const builtinCommandNames = new Set(SLASH_COMMANDS.map((command) => command.name));
+  const loadCommands = deps.customCommands ?? (() => loadCustomCommands(deps.workspacePath, builtinCommandNames));
   let backend = deps.backend ?? "native";
   let modelAlias = deps.modelAlias;
   let model = deps.model;
   let provider = deps.provider;
   let sessionId = deps.start.sessionId;
   let title = deps.start.title;
+  let sessionName = deps.start.name;
   let persisted = deps.start.persisted;
   let titleDirty = false;
   const factoryArgs = (messages, sessionRef) => ({
@@ -10705,6 +12507,14 @@ async function createInteractiveController(deps) {
   const build = async (messages, sessionRef) => {
     session = await deps.createSession(factoryArgs(messages, sessionRef));
     chat = toChatLike(session);
+  };
+  let customCommands = [];
+  let customCommandWarnings = [];
+  const refreshCustomCommands = async () => {
+    const result = await loadCommands();
+    customCommands = result.commands;
+    customCommandWarnings = result.warnings;
+    deps.onCustomCommandsChanged?.(customCommands.map((command) => command.name));
   };
   const lines = [];
   const emit2 = (line) => {
@@ -10747,15 +12557,20 @@ async function createInteractiveController(deps) {
     const sessionRef = keepSessionRef ? chat.sessionRef?.() : void 0;
     await build(chat.toModelMessages(), sessionRef);
   };
+  const fileExists = deps.fileExists ?? ((relativePath) => workspaceFileExists(deps.workspacePath, relativePath));
   const handleMessage = async (text2, signal) => {
+    const checkpointWarning = await deps.checkpoints?.capture(text2);
+    if (checkpointWarning !== void 0)
+      emit2(checkpointWarning);
     if (title === "") {
       title = chatTitleFrom(text2);
       titleDirty = true;
     }
+    const instruction = await annotateMentions(text2, fileExists);
     const before = deps.usage.totals();
     let result;
     try {
-      result = await chat.send(text2, {
+      result = await chat.send(instruction, {
         runId: sessionId,
         workspacePath: deps.workspacePath,
         ...signal === void 0 ? {} : { signal }
@@ -10778,13 +12593,26 @@ async function createInteractiveController(deps) {
       limit: SESSIONS_LIMIT
     });
   };
-  const slashHelp = () => {
+  const slashHelp = async () => {
+    await refreshCustomCommands();
     emit2("commands:");
     const width = Math.max(...SLASH_COMMANDS.map((command) => command.usage.length));
     for (const command of SLASH_COMMANDS) {
       emit2(`  ${command.usage.padEnd(width)}  ${command.help}`);
     }
     emit2("anything else is sent to the agent.");
+    if (customCommands.length > 0) {
+      emit2("");
+      emit2("custom commands (.agent/commands/):");
+      const customWidth = Math.max(...customCommands.map((command) => command.name.length + 1));
+      for (const command of customCommands) {
+        const usage = `/${command.name}`.padEnd(customWidth);
+        emit2(`  ${usage}  ${command.description ?? "(no description)"}`);
+      }
+    }
+    for (const warning of customCommandWarnings) {
+      emit2(`warning: ${warning}`);
+    }
     return drain();
   };
   const slashNew = async () => {
@@ -10794,7 +12622,7 @@ async function createInteractiveController(deps) {
     persisted = false;
     titleDirty = false;
     await build([]);
-    emit2(`started a new session ${shortId(sessionId)}`);
+    emit2(`started a new session ${shortId2(sessionId)}`);
     return drain("new-session");
   };
   const slashSessions = async () => {
@@ -10807,16 +12635,16 @@ async function createInteractiveController(deps) {
       emit2(`No chat sessions recorded for ${deps.workspacePath} yet.`);
       return drain();
     }
-    const rows = records.map((record) => [
-      // The conversation this REPL is on gets a marker of its own column, so
-      // the ids stay in one straight line.
-      record.id === sessionId ? "*" : "",
-      shortId(record.id),
-      isoTime(record.updatedAt),
-      String(record.messageCount),
-      record.title === "" ? "(untitled)" : record.title
-    ]);
-    for (const line of formatTable(["", "ID", "UPDATED", "MSGS", "TITLE"], rows)) {
+    const showName = records.some((record) => record.name !== void 0);
+    const rows = records.map((record) => {
+      const row = [record.id === sessionId ? "*" : "", shortId2(record.id)];
+      if (showName)
+        row.push(record.name ?? "");
+      row.push(isoTime(record.updatedAt), String(record.messageCount), record.title === "" ? "(untitled)" : record.title);
+      return row;
+    });
+    const headers = showName ? ["", "ID", "NAME", "UPDATED", "MSGS", "TITLE"] : ["", "ID", "UPDATED", "MSGS", "TITLE"];
+    for (const line of formatTable(headers, rows)) {
       emit2(line);
     }
     return drain();
@@ -10827,17 +12655,19 @@ async function createInteractiveController(deps) {
       return drain();
     }
     if (argument === "") {
-      emit2("usage: /resume <id>  \u2014 see /sessions");
+      emit2("usage: /resume <id|name>  \u2014 see /sessions");
       return drain();
     }
     const records = await listRecords();
-    const matched = matchChatSession(records, argument);
+    const matched = resolveChatSessionReference(records, argument, {
+      onNote: (note) => emit2(note)
+    });
     if ("error" in matched) {
       emit2(matched.error);
       return drain();
     }
     if (matched.record.id === sessionId) {
-      emit2(`already on ${shortId(sessionId)}`);
+      emit2(`already on ${shortId2(sessionId)}`);
       return drain();
     }
     const transcript = await deps.store.loadChatSession(matched.record.id);
@@ -10848,11 +12678,83 @@ async function createInteractiveController(deps) {
     await persist();
     sessionId = transcript.record.id;
     title = transcript.record.title;
+    sessionName = transcript.record.name;
     persisted = true;
     titleDirty = false;
     await build(transcript.messages);
-    emit2(`resumed ${title === "" ? shortId(sessionId) : title} (${transcript.messages.length} messages)`);
+    emit2(`resumed ${title === "" ? shortId2(sessionId) : title} (${transcript.messages.length} messages)`);
     return drain("resumed");
+  };
+  const slashName = async (argument) => {
+    if (argument === "") {
+      emit2(sessionName === void 0 ? "(unnamed)" : sessionName);
+      return drain();
+    }
+    const problem = invalidSessionName(argument);
+    if (problem !== void 0) {
+      emit2(problem);
+      return drain();
+    }
+    sessionName = argument;
+    if (deps.store === void 0) {
+      emit2(`named "${sessionName}" for this run (not persisted \u2014 sessions are not being recorded, --no-save).`);
+      return drain();
+    }
+    try {
+      if (!persisted) {
+        await deps.store.createChatSession({
+          id: sessionId,
+          workspacePath: deps.workspacePath,
+          title,
+          name: sessionName,
+          modelAlias,
+          createdAt: now()
+        });
+        persisted = true;
+        titleDirty = false;
+      } else {
+        await deps.store.renameChatSession(sessionId, sessionName);
+      }
+    } catch (error) {
+      emit2(`(not saved: ${errorText2(error)})`);
+      return drain();
+    }
+    emit2(`named "${sessionName}"`);
+    return drain("renamed");
+  };
+  const slashFork = async (argument) => {
+    if (deps.store === void 0) {
+      emit2("sessions are not being recorded (--no-save), so there is nothing to fork.");
+      return drain();
+    }
+    if (argument !== "") {
+      const problem = invalidSessionName(argument);
+      if (problem !== void 0) {
+        emit2(problem);
+        return drain();
+      }
+    }
+    await persist();
+    if (!persisted) {
+      emit2("nothing to fork yet \u2014 say something first.");
+      return drain();
+    }
+    const forkName = argument === "" ? void 0 : argument;
+    let newSessionId;
+    try {
+      newSessionId = await deps.store.forkChatSession(sessionId, forkName === void 0 ? {} : { name: forkName });
+    } catch (error) {
+      emit2(`could not fork: ${errorText2(error)}`);
+      return drain();
+    }
+    const messages = chat.toModelMessages();
+    sessionId = newSessionId;
+    sessionName = forkName;
+    persisted = true;
+    titleDirty = false;
+    await build(messages);
+    emit2(`forked to ${shortId2(sessionId)}${forkName === void 0 ? "" : ` (${forkName})`} \u2014 now on the new session.`);
+    return drain("forked");
   };
   const modelLine = () => {
     if (provider === void 0 || model === void 0) {
@@ -10931,6 +12833,15 @@ async function createInteractiveController(deps) {
     emit2(result.elided === 0 ? "nothing to compact." : `compacted: elided ${result.elided} tool result${result.elided === 1 ? "" : "s"}, saved ~${result.savedChars} chars`);
     return drain();
   };
+  const slashUndo = async () => {
+    if (deps.checkpoints === void 0) {
+      emit2("/undo is not available here.");
+      return drain();
+    }
+    for (const line of undoLines(await deps.checkpoints.undo()))
+      emit2(line);
+    return drain();
+  };
   const slashOrchestrate = async (objective) => {
     if (deps.orchestrate === void 0) {
       emit2("/orchestrate is not available here.");
@@ -10949,14 +12860,44 @@ async function createInteractiveController(deps) {
     }
     return drain();
   };
-  const handleSlash = async (line) => {
+  const dispatchCustomCommand = async (command, argument, signal) => {
+    const instruction = expandCustomCommand(command, argument);
+    if (command.model === void 0) {
+      return await handleMessage(instruction, signal);
+    }
+    if (backend !== "native") {
+      emit2(`note: /${command.name} asks for model "${command.model}", but the ${backend} backend has no per-command model to switch \u2014 running on the session's current model.`);
+      return await handleMessage(instruction, signal);
+    }
+    const resolved = await resolveModel(command.model);
+    if ("error" in resolved) {
+      emit2(`note: /${command.name} asks for model "${command.model}": ${resolved.error} \u2014 running on the session's current model.`);
+      return await handleMessage(instruction, signal);
+    }
+    const savedAlias = modelAlias;
+    const savedModel = model;
+    const savedProvider = provider;
+    modelAlias = command.model;
+    model = resolved.model;
+    provider = resolved.provider;
+    await rebuildSession(true);
+    try {
+      return await handleMessage(instruction, signal);
+    } finally {
+      modelAlias = savedAlias;
+      model = savedModel;
+      provider = savedProvider;
+      await rebuildSession(true);
+    }
+  };
+  const handleSlash = async (line, signal) => {
     const space = line.indexOf(" ");
     const name = (space === -1 ? line : line.slice(0, space)).slice(1).toLowerCase();
     const argument = space === -1 ? "" : line.slice(space + 1).trim();
     switch (name) {
       case "help":
       case "?":
-        return slashHelp();
+        return await slashHelp();
       case "exit":
       case "quit":
         return drain("exit");
@@ -10966,34 +12907,50 @@ async function createInteractiveController(deps) {
         return await slashSessions();
       case "resume":
         return await slashResume(argument);
+      case "name":
+        return await slashName(argument);
+      case "fork":
+        return await slashFork(argument);
       case "model":
         return await slashModel(argument);
       case "config":
         return await slashConfig();
       case "usage":
         emit2(usageTotalsLine(deps.usage.totals()));
+        for (const line2 of usageRollupLines(deps.usage.breakdownBy?.("model") ?? /* @__PURE__ */ new Map())) {
+          emit2(`  ${line2}`);
+        }
         return drain();
       case "compact":
         return await slashCompact();
+      case "undo":
+        return await slashUndo();
       case "orchestrate":
         return await slashOrchestrate(argument);
-      default:
+      default: {
+        const custom = customCommands.find((c) => c.name === name);
+        if (custom !== void 0) {
+          return await dispatchCustomCommand(custom, argument, signal);
+        }
         emit2(`Unknown command "/${name}". Type /help for the list.`);
         return drain();
+      }
     }
   };
+  await refreshCustomCommands();
   return {
     sessionId: () => sessionId,
     title: () => title,
+    name: () => sessionName,
     modelAlias: () => modelAlias,
     backend: () => backend,
     session: () => session,
     banner: (cwd) => [
-      `kapel v${CLI_VERSION}  ${bannerModel(backend, modelAlias)}  session ${shortId(sessionId)}`,
+      `kapel v${CLI_VERSION}  ${bannerModel(backend, modelAlias)}  session ${shortId2(sessionId)}`,
       cwd,
       ...isDelegatedBackend(backend) ? [approvalsLine(backend)] : [],
       "type /help for commands, /exit to quit",
-      "\\ + Enter for multiline input, \u2191/\u2193 to recall, tab-complete /commands",
+      "\\ + Enter for multiline input, \u2191/\u2193 to recall, tab-complete /commands and @files",
       ""
     ],
     handleLine: async (line, signal) => {
@@ -11001,15 +12958,15 @@ async function createInteractiveController(deps) {
       if (trimmed === "")
         return { output: [] };
       if (trimmed.startsWith("/"))
-        return await handleSlash(trimmed);
+        return await handleSlash(trimmed, signal);
       return await handleMessage(trimmed, signal);
     }
   };
 }
 async function openChatStore(workspacePath) {
-  const agentDir = path9.join(workspacePath, ".agent");
+  const agentDir = path13.join(workspacePath, ".agent");
   try {
-    await mkdir5(agentDir, { recursive: true });
+    await mkdir6(agentDir, { recursive: true });
     return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
   } catch {
     return void 0;
@@ -11095,9 +13052,11 @@ async function runInteractive(options) {
     console.error('--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".');
     return 1;
   }
-  const workspacePath = path9.resolve(options.cwd);
+  const workspacePath = path13.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
+  const repoPermission = await loadRepoPermissionRules(workspacePath);
+  const permissionRules = resolvePermissionRules(DEFAULT_PERMISSIONS, options.config?.permission, repoPermission);
   const backend = resolveBackendSetting(options.backend, process.env, options.config).value;
   const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config);
   const alias = modelSetting.value;
@@ -11122,8 +13081,22 @@ async function runInteractive(options) {
     const promptState = createPromptState();
     const sessionAllowlist = new SessionAllowlist();
     const nativeUsage = new UsageTracker();
-    const delegatedUsage = new DelegatedUsage();
-    const usage = { totals: () => sumTotals(nativeUsage, delegatedUsage) };
+    const delegatedUsage = /* @__PURE__ */ new Map();
+    const delegatedUsageFor = (target) => {
+      const existing = delegatedUsage.get(target);
+      if (existing !== void 0)
+        return existing;
+      const created = new DelegatedUsage();
+      delegatedUsage.set(target, created);
+      return created;
+    };
+    const usage = {
+      totals: () => sumTotals(nativeUsage, ...delegatedUsage.values()),
+      breakdownBy: (dimension) => chatUsageBreakdown(nativeUsage.breakdownBy(dimension), [...delegatedUsage].map(([label, ledger]) => ({
+        label,
+        totals: ledger.totals()
+      })))
+    };
     const renderer = new TextRenderer(process.stdout, {
       tokens: () => {
         const totals = usage.totals().usage;
@@ -11135,12 +13108,14 @@ async function runInteractive(options) {
     const activeTurn = {
       current: void 0
     };
+    const mentionFiles = createFileLister({ workspacePath });
+    const customCommandNames = { current: [] };
     const inputManager = interactiveTty ? createInputManager({
       input: process.stdin,
       output: process.stdout,
       history: await loadHistory(),
       onHistoryAppend: createHistoryAppender(),
-      completer: slashCompleter,
+      completer: createReplCompleter(mentionFiles, () => customCommandNames.current),
       onIdleSigint: () => activeTurn.current?.abort()
     }) : void 0;
     const prompter = createPrompter({
@@ -11168,7 +13143,7 @@ async function runInteractive(options) {
           const result = await chat.send(instruction, {
             ...context.signal === void 0 ? {} : { signal: context.signal }
           });
-          delegatedUsage.add(result);
+          delegatedUsageFor(target).add(result);
           return result;
         },
         toModelMessages: () => chat.toModelMessages(),
@@ -11190,7 +13165,7 @@ async function runInteractive(options) {
       return AgentChatSession.restore(agentLoopOptions({
         agent,
         provider: args.provider,
-        permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
+        permissions: new PermissionEngine(permissionRules, {
           defaultDecision: "ask",
           overlay: sessionAllowlist,
           ...prompter === void 0 ? {} : { prompter }
@@ -11219,6 +13194,12 @@ async function runInteractive(options) {
       ...startup.provider === void 0 ? {} : { provider: startup.provider },
       start: started.start,
       usage,
+      // One store for the whole REPL: the checkpoints outlive `/new`,
+      // `/resume` and `/model`, because the working tree does too.
+      checkpoints: createCheckpointStore({ workspacePath }),
+      onCustomCommandsChanged: (names) => {
+        customCommandNames.current = names;
+      },
       orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias)),
       ...wizardTty ? {
         configure: () => runConfigWizard({
@@ -11241,8 +13222,11 @@ async function runInteractive(options) {
     if (instructionsLine !== void 0)
       console.log(dim2(instructionsLine, color));
     if (started.start.persisted) {
-      const label = started.start.title === "" ? shortId(started.start.sessionId) : started.start.title;
+      const label = started.start.title === "" ? shortId2(started.start.sessionId) : started.start.title;
       console.log(dim2(`resumed ${label} (${started.start.messages.length} messages)`, color));
+    }
+    if ("note" in started && started.note !== void 0) {
+      console.log(dim2(started.note, color));
     }
     const lineSource = inputManager === void 0 ? pipedLineSource() : inputManagerLineSource(inputManager);
     try {
@@ -11324,8 +13308,8 @@ function orchestrateOptionsFor(options, alias) {
 }
 
 // apps/cli/dist/policy.js
-import { readFile as readFile12, writeFile as writeFile6 } from "node:fs/promises";
-import path10 from "node:path";
+import { readFile as readFile14, writeFile as writeFile6 } from "node:fs/promises";
+import path14 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
@@ -11337,17 +13321,22 @@ function jsonLine3(output, value) {
 }
 async function readOptionalFile2(filePath) {
   try {
-    return await readFile12(filePath, "utf8");
+    return await readFile14(filePath, "utf8");
   } catch {
     return void 0;
   }
 }
-function printBulletList2(output, label, items) {
-  if (items.length === 0)
+function printLocatedList(output, label, located) {
+  if (located.length === 0)
     return;
   output.log(`${label}:`);
-  for (const item of items)
-    output.log(`  - ${item}`);
+  for (const item of located) {
+    const suffix = item.location === void 0 ? "" : ` [${formatSourceLocation(item.location)}]`;
+    output.log(`  - ${item.message}${suffix}`);
+  }
+}
+function jsonLocations(messages, markdown) {
+  return locateIssues(messages, markdown).map((issue) => issue.location ?? null);
 }
 async function loadProjectForPolicy(workspacePath, output, json) {
   let project;
@@ -11390,7 +13379,7 @@ async function loadProjectForPolicy(workspacePath, output, json) {
 }
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path10.resolve(options.cwd);
+  const workspacePath = path14.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
@@ -11406,9 +13395,14 @@ async function runPolicyCompile(options, deps = {}) {
     return 1;
   }
   const { model, provider } = resolved;
+  const usage = new UsageTracker();
   const knownAgents = [...project.knownAgentNames()];
   const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-  const compiler = compilerFactory({ provider, model, knownAgents });
+  const compiler = compilerFactory({
+    provider: usageRecordingProvider(provider, usage, { agent: "policy" }),
+    model,
+    knownAgents
+  });
   let result;
   try {
     result = await compiler.compile(markdown);
@@ -11446,7 +13440,7 @@ async function runPolicyCompile(options, deps = {}) {
   }
   const lock = createLockfile({ markdown, result, model: model.id });
   const serialized = serializeLockfile(lock);
-  const lockPath = path10.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
   await writeFile6(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
@@ -11459,26 +13453,36 @@ async function runPolicyCompile(options, deps = {}) {
       lockPath,
       policy: result.policy,
       warnings,
-      ambiguities
+      ambiguities,
+      // Best-effort `.agent/orchestration.md` locations for each warning/
+      // ambiguity above, one entry per index (`null` when unresolved). See
+      // `locateIssues` in `@agent/policy`.
+      warningLocations: jsonLocations(warnings, markdown),
+      ambiguityLocations: jsonLocations(ambiguities, markdown)
     });
     return 0;
   }
   output.log(`Compiled policy using ${model.id} (${model.provider})`);
   output.log(`Lock written to ${lockPath}`);
   output.log(`Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`);
-  printBulletList2(output, "Warnings", warnings);
-  printBulletList2(output, "Ambiguities", ambiguities);
+  output.log(policyUsageLine(usage.totals()));
+  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
   return 0;
+}
+function policyUsageLine(totals) {
+  const line = `tokens \u2014 input: ${totals.usage.inputTokens}, output: ${totals.usage.outputTokens}`;
+  return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
 }
 async function runPolicyCheck(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path10.resolve(options.cwd);
+  const workspacePath = path14.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path10.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   if (!status.fresh) {
@@ -11522,13 +13526,13 @@ async function runPolicyCheck(options, deps = {}) {
 }
 async function runPolicyExplain(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path10.resolve(options.cwd);
+  const workspacePath = path14.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path10.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   let lock;
@@ -11561,23 +13565,115 @@ async function runPolicyExplain(options, deps = {}) {
       description,
       warnings: lock.warnings,
       ambiguities: lock.ambiguities,
+      // Located against the *current* orchestration.md — when the lock is
+      // stale (`fresh: false` above) these are still best-effort against
+      // text that may have moved since the lock was compiled.
+      warningLocations: jsonLocations(lock.warnings, markdown),
+      ambiguityLocations: jsonLocations(lock.ambiguities, markdown),
       fresh: status.fresh
     });
     return 0;
   }
   output.log(description);
-  printBulletList2(output, "Warnings", lock.warnings);
-  printBulletList2(output, "Ambiguities", lock.ambiguities);
+  printLocatedList(output, "Warnings", locateIssues(lock.warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(lock.ambiguities, markdown));
+  return 0;
+}
+async function runPolicyDiff(options, deps = {}) {
+  const output = deps.output ?? consoleOutput2;
+  const workspacePath = path14.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  const lockContent = await readOptionalFile2(lockPath);
+  if (lockContent === void 0 || lockContent.trim() === "") {
+    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` first \u2014 there is nothing to diff against.`;
+    if (options.json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return 1;
+  }
+  let existingLock;
+  try {
+    existingLock = parseLockfile(lockContent);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (options.json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return 1;
+  }
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
+  const resolved = await resolveModelAndProvider(process.env, alias);
+  if ("error" in resolved) {
+    if (options.json)
+      jsonLine3(output, { ok: false, error: resolved.error });
+    else
+      output.error(resolved.error);
+    return 1;
+  }
+  const { model, provider } = resolved;
+  const knownAgents = [...project.knownAgentNames()];
+  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
+  const compiler = compilerFactory({ provider, model, knownAgents });
+  let result;
+  try {
+    result = await compiler.compile(markdown);
+  } catch (error) {
+    if (error instanceof PolicyCompileError) {
+      if (options.json) {
+        jsonLine3(output, {
+          ok: false,
+          error: error.message,
+          attempts: error.attempts,
+          issues: (error.lastIssues ?? []).map((issue) => `${issue.path}: ${issue.message}`)
+        });
+      } else {
+        output.error(error.message);
+      }
+      return 1;
+    }
+    throw error;
+  }
+  const diff = diffPolicies(existingLock.policy, result.policy);
+  if (options.json) {
+    jsonLine3(output, {
+      ok: true,
+      unchanged: diff.unchanged,
+      defaults: diff.defaults,
+      routing: diff.routing,
+      review: diff.review,
+      escalation: diff.escalation,
+      warnings: result.warnings,
+      ambiguities: result.ambiguities
+    });
+    return 0;
+  }
+  output.log(diff.unchanged ? "No changes from the locked policy." : "Policy diff (locked -> recompiled):");
+  if (!diff.unchanged) {
+    output.log("");
+    for (const line of formatPolicyDiff(diff))
+      output.log(line);
+  }
+  printLocatedList(output, "Warnings", locateIssues(result.warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(result.ambiguities, markdown));
+  output.log("");
+  output.log("Run `kapel policy compile` to update the lock.");
   return 0;
 }
 
 // apps/cli/dist/resume-cmd.js
-import { readFile as readFile13 } from "node:fs/promises";
-import path11 from "node:path";
+import { readFile as readFile15 } from "node:fs/promises";
+import path15 from "node:path";
 var LOCK_FILE_NAME3 = "orchestration.lock.json";
 async function readOptionalFile3(filePath) {
   try {
-    return await readFile13(filePath, "utf8");
+    return await readFile15(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -11598,7 +13694,7 @@ function stableJson(value) {
 }
 async function policyDriftWarning(project, snapshot) {
   const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile3(path11.join(project.root, LOCK_FILE_NAME3));
+  const raw = await readOptionalFile3(path15.join(project.root, LOCK_FILE_NAME3));
   const status = checkLock(markdown, raw);
   const tail4 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
   if (!status.fresh) {
@@ -11629,7 +13725,7 @@ async function rebuildGraph(store, runId, plan, completed) {
 }
 async function runResume(runId, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
-  const workspacePath = path11.resolve(options.cwd);
+  const workspacePath = path15.resolve(options.cwd);
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
   const fail2 = (message) => {
     if (options.json)
@@ -11714,9 +13810,9 @@ async function runResume(runId, options, deps = {}) {
 }
 
 // apps/cli/dist/run-claude-code.js
-import path12 from "node:path";
+import path16 from "node:path";
 async function runClaudeCodeObjective(objective, options) {
-  const workspacePath = path12.resolve(options.cwd);
+  const workspacePath = path16.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await ClaudeCodeBackend.checkAvailability();
   if (!availability.installed) {
@@ -11737,7 +13833,10 @@ async function runClaudeCodeObjective(objective, options) {
   const onSigint = () => controller.abort();
   process.on("SIGINT", onSigint);
   try {
-    const result = await backend.run({ instruction: objective }, {
+    const result = await backend.run({
+      instruction: objective,
+      ...options.images !== void 0 && options.images.length > 0 ? { images: options.images } : {}
+    }, {
       runId: crypto.randomUUID(),
       workspacePath,
       signal: controller.signal
@@ -11754,9 +13853,9 @@ async function runClaudeCodeObjective(objective, options) {
 }
 
 // apps/cli/dist/run-codex.js
-import path13 from "node:path";
+import path17 from "node:path";
 async function runCodexObjective(objective, options) {
-  const workspacePath = path13.resolve(options.cwd);
+  const workspacePath = path17.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await CodexBackend.checkAvailability();
   if (!availability.installed) {
@@ -11779,7 +13878,10 @@ async function runCodexObjective(objective, options) {
   const onSigint = () => controller.abort();
   process.on("SIGINT", onSigint);
   try {
-    const result = await backend.run({ instruction: objective }, {
+    const result = await backend.run({
+      instruction: objective,
+      ...options.images !== void 0 && options.images.length > 0 ? { images: options.images } : {}
+    }, {
       runId: crypto.randomUUID(),
       workspacePath,
       signal: controller.signal
@@ -11900,9 +14002,9 @@ async function runWorkerCommand(deps = {}) {
       };
       error(`worker: ${task.spec.id} as ${request.agent}`);
       return await executor.execute(task, request.agent, void 0, toWorkerExecutionContext(request));
-    } catch (failure) {
-      error(`worker: ${failure instanceof Error ? failure.message : String(failure)}`);
-      throw failure;
+    } catch (failure2) {
+      error(`worker: ${failure2 instanceof Error ? failure2.message : String(failure2)}`);
+      throw failure2;
     }
   });
 }
@@ -11921,7 +14023,11 @@ function parsePositive(raw, flag, integer2) {
   }
   return value;
 }
-function toRunOptions(raw, config) {
+function collectImage(value, previous) {
+  previous.push(value);
+  return previous;
+}
+function toRunOptions(raw, config, images) {
   const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   return {
@@ -11932,13 +14038,14 @@ function toRunOptions(raw, config) {
     ...raw.model === void 0 ? {} : { model: raw.model },
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
     ...raw.system === void 0 ? {} : { system: raw.system },
-    ...config === void 0 ? {} : { config }
+    ...config === void 0 ? {} : { config },
+    ...images.length === 0 ? {} : { images }
   };
 }
 function delegatedModel(raw, config) {
   return delegatedModelOverride(resolveOrchestratorModel(raw.model, process.env, config));
 }
-function toCodexRunOptions(raw, config) {
+function toCodexRunOptions(raw, config, images) {
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   const sandbox = validateSandboxMode(raw.sandbox);
   const model = delegatedModel(raw, config);
@@ -11948,17 +14055,19 @@ function toCodexRunOptions(raw, config) {
     sandbox,
     fullAuto: fullAutoForSandbox(sandbox),
     ...model === void 0 ? {} : { model },
-    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
+    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
+    ...images.length === 0 ? {} : { images }
   };
 }
-function toClaudeCodeRunOptions(raw, config) {
+function toClaudeCodeRunOptions(raw, config, images) {
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   const model = delegatedModel(raw, config);
   return {
     cwd: raw.cwd,
     json: raw.json,
     ...model === void 0 ? {} : { model },
-    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
+    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
+    ...images.length === 0 ? {} : { images }
   };
 }
 function toInteractiveOptions(raw, chat = {}, config) {
@@ -11996,24 +14105,32 @@ async function runAndExit(objectiveParts, raw) {
     return;
   }
   try {
+    const objectiveWithStdin = await objectiveWithPipedStdin(objective, process.stdin);
+    const resolvedImages = await resolveImageAttachments(raw.image, raw.cwd);
+    if (!resolvedImages.ok) {
+      console.error(resolvedImages.error);
+      process.exitCode = 1;
+      return;
+    }
+    const images = resolvedImages.images;
     const config = await runtimeConfig(raw);
     const backend = resolveBackendSetting(raw.backend, process.env, config).value;
     if (backend === "codex") {
-      process.exitCode = await runCodexObjective(objective, toCodexRunOptions(raw, config));
+      process.exitCode = await runCodexObjective(objectiveWithStdin, toCodexRunOptions(raw, config, images));
       return;
     }
     if (backend === "claude-code") {
-      process.exitCode = await runClaudeCodeObjective(objective, toClaudeCodeRunOptions(raw, config));
+      process.exitCode = await runClaudeCodeObjective(objectiveWithStdin, toClaudeCodeRunOptions(raw, config, images));
       return;
     }
-    process.exitCode = await runObjective(objective, toRunOptions(raw, config));
+    process.exitCode = await runObjective(objectiveWithStdin, toRunOptions(raw, config, images));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
 }
 var program = new Command();
-program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version(CLI_VERSION).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", `execution backend to use: ${BACKEND_NAMES.join(" | ")} (default: native, or AGENT_BACKEND, or your \`kapel config\`)`).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults");
+program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version(CLI_VERSION).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", `execution backend to use: ${BACKEND_NAMES.join(" | ")} (default: native, or AGENT_BACKEND, or your \`kapel config\`)`).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE).option("-i, --image <path>", "attach an image (PNG/JPEG/GIF/WEBP; repeatable, up to 4, 5 MiB each) \u2014 supported by the native and codex backends, not claude-code", collectImage, []).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults");
 program.argument("[objective...]", 'the coding objective to work on, e.g. "fix the failing test"').action(async (objective, opts) => {
   if (objective.length === 0) {
     if (process.stdin.isTTY === true) {
@@ -12025,7 +14142,7 @@ program.argument("[objective...]", 'the coding objective to work on, e.g. "fix t
   }
   await runAndExit(objective, opts);
 });
-program.command("chat").description("Open an interactive conversation with the coding agent in this directory").option("-c, --continue", "resume this directory's most recent conversation").option("--session <id>", "resume a specific conversation (id or prefix)").option("--no-save", "do not record this conversation in .agent/sessions.db").action(async (opts, command) => {
+program.command("chat").description("Open an interactive conversation with the coding agent in this directory").option("-c, --continue", "resume this directory's most recent conversation").option("--session <id>", "resume a specific conversation (id, id prefix, or /name)").option("--no-save", "do not record this conversation in .agent/sessions.db").action(async (opts, command) => {
   await chatAndExit(command.optsWithGlobals(), opts);
 });
 program.command("exec").description("Run the coding agent loop (same as the default command)").argument("<objective...>", "the coding objective to work on").action(async (objective, _opts, command) => {
@@ -12035,7 +14152,7 @@ program.command("init").description("Create a .agent configuration in the curren
   const cwd = command.optsWithGlobals().cwd;
   const config = await loadKapelConfig();
   process.exitCode = await runInit({
-    cwd: path14.resolve(cwd),
+    cwd: path18.resolve(cwd),
     force: opts.force,
     ...config === void 0 ? {} : { config }
   });
@@ -12053,7 +14170,7 @@ program.command("config").description("Configure which backend and models kapel 
 });
 program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
-  await loadDotEnvFile(path14.resolve(cwd));
+  await loadDotEnvFile(path18.resolve(cwd));
   const entries = await listModels(process.env);
   if (entries.length === 0) {
     console.log("(no models registered)");
@@ -12124,9 +14241,12 @@ async function objectiveCommand(parts, usage, run) {
     process.exitCode = 1;
   }
 }
-program.command("plan").description("Plan an objective into a task graph and print it, without executing anything").argument("<objective...>", "the objective to plan").action(async (objective, _opts, command) => {
+program.command("plan").description("Plan an objective into a task graph and print it, without executing anything").argument("<objective...>", "the objective to plan").option("--why [taskId]", "print routing rationale for one task, or every task if no id is given").action(async (objective, opts, command) => {
   const config = await runtimeConfig(command.optsWithGlobals());
-  await objectiveCommand(objective, 'Usage: kapel plan "<objective>"', (text2) => runPlan(text2, planOptions(command, config)));
+  await objectiveCommand(objective, 'Usage: kapel plan "<objective>"', (text2) => runPlan(text2, {
+    ...planOptions(command, config),
+    ...typeof opts.why === "string" ? { why: opts.why } : opts.why === true ? { why: true } : {}
+  }));
 });
 withExecutionOptions(program.command("orchestrate").description("Plan an objective and execute the resulting task graph across routed workers").argument("<objective...>", "the objective to orchestrate")).option("--dry-run", "plan only \u2014 same output as `kapel plan`", false).option("--no-save", "do not record this run in .agent/sessions.db").action(async (objective, opts, command) => {
   const config = await runtimeConfig(command.optsWithGlobals());
@@ -12148,6 +14268,33 @@ program.command("runs").description("List orchestration runs recorded in this wo
       cwd: raw.cwd,
       json: raw.json,
       limit: parsePositive(opts.limit, "--limit", true)
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+});
+var sessionsCommand = program.command("sessions").description("List interactive chat sessions recorded in this workspace").option("--limit <n>", "how many sessions to list", String(DEFAULT_SESSIONS_LIST_LIMIT)).action(async (opts, command) => {
+  const raw = command.optsWithGlobals();
+  try {
+    process.exitCode = await runSessionsListCommand({
+      cwd: raw.cwd,
+      json: raw.json,
+      limit: parsePositive(opts.limit, "--limit", true)
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+});
+sessionsCommand.command("fork").description("Copy a chat session's transcript into a new, independent session").argument("<session>", "the session to fork (id, id prefix, or name)").option("--name <name>", "name for the new session").action(async (session, opts, command) => {
+  const raw = command.optsWithGlobals();
+  try {
+    process.exitCode = await runSessionsForkCommand({
+      cwd: raw.cwd,
+      json: raw.json,
+      session,
+      ...opts.name === void 0 ? {} : { name: opts.name }
     });
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -12179,11 +14326,15 @@ function policyOptions(command, config) {
     ...config === void 0 ? {} : { config }
   };
 }
-var POLICY_SUBCOMMANDS = ["compile", "check", "explain"];
-var policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain)").argument("[unknownCommand]", "compile | check | explain");
+var POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"];
+var policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain, diff)").argument("[unknownCommand]", "compile | check | explain | diff");
 policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock using an LLM").action(async (_opts, command) => {
   const config = await runtimeConfig(command.optsWithGlobals());
   process.exitCode = await runPolicyCompile(policyOptions(command, config));
+});
+policyCommand.command("diff").description("Show what would change if the policy lock were recompiled, without writing it").action(async (_opts, command) => {
+  const config = await runtimeConfig(command.optsWithGlobals());
+  process.exitCode = await runPolicyDiff(policyOptions(command, config));
 });
 policyCommand.command("check").description("Check that the policy lock is fresh and valid (no LLM calls)").action(async (_opts, command) => {
   process.exitCode = await runPolicyCheck(policyOptions(command, void 0));

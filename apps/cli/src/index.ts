@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import type { AgentImageAttachment } from "@agent/core";
 import { Command } from "commander";
 import type { BackendName } from "./backend.js";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
 import { runExplainCommand } from "./explain-cmd.js";
+import { resolveImageAttachments } from "./images.js";
 import { runInit } from "./init.js";
 import {
   CLI_VERSION,
@@ -43,13 +45,19 @@ import {
   type PolicyCompileOptions,
   runPolicyCheck,
   runPolicyCompile,
+  runPolicyDiff,
   runPolicyExplain,
 } from "./policy.js";
 import { type ResumeCommandOptions, runResume } from "./resume-cmd.js";
-import { runObjective } from "./run.js";
+import { objectiveWithPipedStdin, runObjective } from "./run.js";
 import { runClaudeCodeObjective } from "./run-claude-code.js";
 import { runCodexObjective } from "./run-codex.js";
 import { DEFAULT_RUNS_LIMIT, runRunsCommand } from "./runs-cmd.js";
+import {
+  DEFAULT_SESSIONS_LIST_LIMIT,
+  runSessionsForkCommand,
+  runSessionsListCommand,
+} from "./sessions.js";
 import { runWorkerCommand } from "./worker-cmd.js";
 
 interface RawRunOpts {
@@ -65,6 +73,8 @@ interface RawRunOpts {
   readonly sandbox: string;
   /** `--no-setup`: commander sets this false when the flag is passed. */
   readonly setup?: boolean;
+  /** Raw `-i/--image` paths, in the order given; see `toResolvedImages` (P1-9). */
+  readonly image: readonly string[];
 }
 
 /**
@@ -99,9 +109,16 @@ function parsePositive(raw: string, flag: string, integer: boolean): number {
   return value;
 }
 
+/** Accumulates repeated `-i/--image <path>` flags into an ordered list. */
+function collectImage(value: string, previous: string[]): string[] {
+  previous.push(value);
+  return previous;
+}
+
 function toRunOptions(
   raw: RawRunOpts,
   config: KapelConfig | undefined,
+  images: readonly AgentImageAttachment[],
 ): Parameters<typeof runObjective>[1] {
   const maxIterations = parsePositive(
     raw.maxIterations,
@@ -122,6 +139,7 @@ function toRunOptions(
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
     ...(raw.system === undefined ? {} : { system: raw.system }),
     ...(config === undefined ? {} : { config }),
+    ...(images.length === 0 ? {} : { images }),
   };
 }
 
@@ -138,6 +156,7 @@ function delegatedModel(
 function toCodexRunOptions(
   raw: RawRunOpts,
   config: KapelConfig | undefined,
+  images: readonly AgentImageAttachment[],
 ): Parameters<typeof runCodexObjective>[1] {
   const timeoutSeconds =
     raw.timeout === undefined
@@ -153,6 +172,7 @@ function toCodexRunOptions(
     fullAuto: fullAutoForSandbox(sandbox),
     ...(model === undefined ? {} : { model }),
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    ...(images.length === 0 ? {} : { images }),
   };
 }
 
@@ -166,6 +186,7 @@ interface RawChatOpts {
 function toClaudeCodeRunOptions(
   raw: RawRunOpts,
   config: KapelConfig | undefined,
+  images: readonly AgentImageAttachment[],
 ): Parameters<typeof runClaudeCodeObjective>[1] {
   const timeoutSeconds =
     raw.timeout === undefined
@@ -178,6 +199,7 @@ function toClaudeCodeRunOptions(
     json: raw.json,
     ...(model === undefined ? {} : { model }),
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    ...(images.length === 0 ? {} : { images }),
   };
 }
 
@@ -240,6 +262,24 @@ async function runAndExit(
   }
 
   try {
+    const objectiveWithStdin = await objectiveWithPipedStdin(
+      objective,
+      process.stdin,
+    );
+
+    // Resolved once regardless of backend: codex forwards the original
+    // paths as `-i <path>` flags, the native path sends the same base64
+    // bytes read here, and claude-code fails fast on whatever comes through
+    // (see `ClaudeCodeBackend.run`) — either way the file only needs to be
+    // read and validated once.
+    const resolvedImages = await resolveImageAttachments(raw.image, raw.cwd);
+    if (!resolvedImages.ok) {
+      console.error(resolvedImages.error);
+      process.exitCode = 1;
+      return;
+    }
+    const images = resolvedImages.images;
+
     const config = await runtimeConfig(raw);
     const backend = resolveBackendSetting(
       raw.backend,
@@ -248,19 +288,22 @@ async function runAndExit(
     ).value;
     if (backend === "codex") {
       process.exitCode = await runCodexObjective(
-        objective,
-        toCodexRunOptions(raw, config),
+        objectiveWithStdin,
+        toCodexRunOptions(raw, config, images),
       );
       return;
     }
     if (backend === "claude-code") {
       process.exitCode = await runClaudeCodeObjective(
-        objective,
-        toClaudeCodeRunOptions(raw, config),
+        objectiveWithStdin,
+        toClaudeCodeRunOptions(raw, config, images),
       );
       return;
     }
-    process.exitCode = await runObjective(objective, toRunOptions(raw, config));
+    process.exitCode = await runObjective(
+      objectiveWithStdin,
+      toRunOptions(raw, config, images),
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -300,6 +343,13 @@ program
     DEFAULT_SANDBOX_MODE,
   )
   .option(
+    "-i, --image <path>",
+    "attach an image (PNG/JPEG/GIF/WEBP; repeatable, up to 4, 5 MiB each) " +
+      "— supported by the native and codex backends, not claude-code",
+    collectImage,
+    [] as string[],
+  )
+  .option(
     "--no-setup",
     "skip the first-run setup wizard and use environment variables and defaults",
   );
@@ -330,7 +380,10 @@ program
     "Open an interactive conversation with the coding agent in this directory",
   )
   .option("-c, --continue", "resume this directory's most recent conversation")
-  .option("--session <id>", "resume a specific conversation (id or prefix)")
+  .option(
+    "--session <id>",
+    "resume a specific conversation (id, id prefix, or /name)",
+  )
   .option("--no-save", "do not record this conversation in .agent/sessions.db")
   .action(async (opts: RawChatOpts, command: Command) => {
     await chatAndExit(command.optsWithGlobals() as RawRunOpts, opts);
@@ -553,14 +606,34 @@ program
     "Plan an objective into a task graph and print it, without executing anything",
   )
   .argument("<objective...>", "the objective to plan")
-  .action(async (objective: string[], _opts: unknown, command: Command) => {
-    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
-    await objectiveCommand(
-      objective,
-      'Usage: kapel plan "<objective>"',
-      (text) => runPlan(text, planOptions(command, config)),
-    );
-  });
+  .option(
+    "--why [taskId]",
+    "print routing rationale for one task, or every task if no id is given",
+  )
+  .action(
+    async (
+      objective: string[],
+      opts: { why?: string | boolean },
+      command: Command,
+    ) => {
+      const config = await runtimeConfig(
+        command.optsWithGlobals() as RawRunOpts,
+      );
+      await objectiveCommand(
+        objective,
+        'Usage: kapel plan "<objective>"',
+        (text) =>
+          runPlan(text, {
+            ...planOptions(command, config),
+            ...(typeof opts.why === "string"
+              ? { why: opts.why }
+              : opts.why === true
+                ? { why: true }
+                : {}),
+          }),
+      );
+    },
+  );
 
 withExecutionOptions(
   program
@@ -622,6 +695,52 @@ program
     }
   });
 
+const sessionsCommand = program
+  .command("sessions")
+  .description("List interactive chat sessions recorded in this workspace")
+  .option(
+    "--limit <n>",
+    "how many sessions to list",
+    String(DEFAULT_SESSIONS_LIST_LIMIT),
+  )
+  .action(async (opts: { limit: string }, command: Command) => {
+    const raw = command.optsWithGlobals() as RawRunOpts;
+    try {
+      process.exitCode = await runSessionsListCommand({
+        cwd: raw.cwd,
+        json: raw.json,
+        limit: parsePositive(opts.limit, "--limit", true),
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+sessionsCommand
+  .command("fork")
+  .description(
+    "Copy a chat session's transcript into a new, independent session",
+  )
+  .argument("<session>", "the session to fork (id, id prefix, or name)")
+  .option("--name <name>", "name for the new session")
+  .action(
+    async (session: string, opts: { name?: string }, command: Command) => {
+      const raw = command.optsWithGlobals() as RawRunOpts;
+      try {
+        process.exitCode = await runSessionsForkCommand({
+          cwd: raw.cwd,
+          json: raw.json,
+          session,
+          ...(opts.name === undefined ? {} : { name: opts.name }),
+        });
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+      }
+    },
+  );
+
 program
   .command("explain")
   .description(
@@ -670,6 +789,10 @@ function policyOptions(
  * resolves it: compiling the policy is a model conversation, and under
  * `--backend codex`/`claude-code` it is delegated to that CLI, which is what
  * keeps `kapel policy compile` working with no API key at all.
+ *
+ * `policy diff` recompiles too — the same LLM call, just thrown away instead
+ * of written — so it takes the same options rather than the API-key-only
+ * ones.
  */
 function policyCompileOptions(
   command: Command,
@@ -682,12 +805,12 @@ function policyCompileOptions(
   };
 }
 
-const POLICY_SUBCOMMANDS = ["compile", "check", "explain"] as const;
+const POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"] as const;
 
 const policyCommand = program
   .command("policy")
-  .description("Manage orchestration policies (compile, check, explain)")
-  .argument("[unknownCommand]", "compile | check | explain");
+  .description("Manage orchestration policies (compile, check, explain, diff)")
+  .argument("[unknownCommand]", "compile | check | explain | diff");
 
 policyCommand
   .command("compile")
@@ -697,6 +820,18 @@ policyCommand
   .action(async (_opts: unknown, command: Command) => {
     const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
     process.exitCode = await runPolicyCompile(
+      policyCompileOptions(command, config),
+    );
+  });
+
+policyCommand
+  .command("diff")
+  .description(
+    "Show what would change if the policy lock were recompiled, without writing it",
+  )
+  .action(async (_opts: unknown, command: Command) => {
+    const config = await runtimeConfig(command.optsWithGlobals() as RawRunOpts);
+    process.exitCode = await runPolicyDiff(
       policyCompileOptions(command, config),
     );
   });
@@ -719,7 +854,7 @@ policyCommand
 
 policyCommand.action((unknownCommand: string | undefined) => {
   // Reached only when `policy` is run with no subcommand, or with a first
-  // token that doesn't match `compile` | `check` | `explain` (commander
+  // token that doesn't match `compile` | `check` | `explain` | `diff` (commander
   // dispatches recognized subcommands to their own `.action()` above
   // without ever reaching this one).
   if (unknownCommand === undefined) {

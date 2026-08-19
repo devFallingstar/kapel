@@ -15,6 +15,13 @@ export interface SessionStore {
 }
 
 export {
+  type ChatSessionMatch,
+  type ChatSessionResolution,
+  type ChatSessionResolutionError,
+  type ResolveChatSessionOptions,
+  resolveChatSessionReference,
+} from "./resolve.js";
+export {
   BOOTSTRAP_DDL,
   chatMessages,
   chatSessions,
@@ -29,6 +36,7 @@ export {
   type ChatSessionTranscript,
   chatTitleFrom,
   defaultSessionDbPath,
+  type ForkChatSessionOptions,
   type ListChatSessionsOptions,
   type ListRunsOptions,
   type NewChatSession,
