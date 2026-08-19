@@ -1,16 +1,18 @@
 name: Release
 
-# Publishes to npm when a version tag (v1.2.3) is pushed.
-# Requires the NPM_TOKEN repository secret (npm access token with publish
-# rights). Flow: bump "version" in package.json, commit, then
-#   git tag v<version> && git push origin v<version>
+# Publishes to npm. Two ways to run it:
+#  - push a version tag (v1.2.3) matching package.json's "version", or
+#  - trigger manually (workflow_dispatch) — the workflow then creates and
+#    pushes the v<version> tag itself before publishing.
+# Requires the NPM_TOKEN repository secret (npm automation token).
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # tag creation on manual dispatch
   id-token: write # npm provenance
 
 jobs:
@@ -27,13 +29,29 @@ jobs:
       - run: npm run build
       - run: npm run bundle
       - run: npm test
-      - name: Check tag matches package version
+      - name: Resolve release version
+        id: version
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package version $PKG_VERSION" >&2
-            exit 1
+          echo "pkg=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match package version $PKG_VERSION" >&2
+              exit 1
+            fi
+          fi
+      - name: Create tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="v${{ steps.version.outputs.pkg }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — publishing that version."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "refs/tags/$TAG"
           fi
       - run: npm publish --provenance
         env:
