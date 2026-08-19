@@ -55,7 +55,7 @@ describe("loadHistory", () => {
     append("second");
     append("third");
     // Let the serialized append chain settle.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(async () => (await loadHistory(env)).length === 3);
 
     await expect(loadHistory(env)).resolves.toEqual([
       "third",
@@ -95,7 +95,13 @@ describe("createHistoryAppender", () => {
   it("creates the config dir on first append", async () => {
     const append = createHistoryAppender(env);
     append("hello");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(async () => {
+      try {
+        return (await readFile(historyFilePath(env), "utf8")).includes("hello");
+      } catch {
+        return false;
+      }
+    });
 
     const raw = await readFile(historyFilePath(env), "utf8");
     expect(raw).toBe("hello\n");
@@ -107,7 +113,7 @@ describe("createHistoryAppender", () => {
     append("a");
     append("b");
     append("a");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitUntil(async () => (await loadHistory(env)).length === 3);
 
     await expect(loadHistory(env)).resolves.toEqual(["a", "b", "a"]);
   });

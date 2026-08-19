@@ -379,7 +379,10 @@ program
     "Open an interactive conversation with the coding agent in this directory",
   )
   .option("-c, --continue", "resume this directory's most recent conversation")
-  .option("--session <id>", "resume a specific conversation (id or prefix)")
+  .option(
+    "--session <id>",
+    "resume a specific conversation (id, id prefix, or /name)",
+  )
   .option("--no-save", "do not record this conversation in .agent/sessions.db")
   .action(async (opts: RawChatOpts, command: Command) => {
     await chatAndExit(command.optsWithGlobals() as RawRunOpts, opts);

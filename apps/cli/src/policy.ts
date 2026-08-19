@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ModelDefinition, ModelProvider } from "@agent/ai";
+import type { ModelDefinition, ModelProvider, UsageTotals } from "@agent/ai";
+import { UsageTracker, usageRecordingProvider } from "@agent/ai";
 import type {
   AgentProject,
   LocatedIssue,
@@ -196,9 +197,19 @@ export async function runPolicyCompile(
   }
   const { model, provider } = resolved;
 
+  // P1-1 (leftover): the compile call is a model turn like any other, but it
+  // runs outside the agent loop and its `UsageTracker`, so it spends nothing
+  // anyone sees unless the provider handed to the compiler is itself wrapped
+  // to record what streams through it — the same technique `orchestrate`
+  // uses for the planner (`planningThrough` in `orchestrate.ts`).
+  const usage = new UsageTracker();
   const knownAgents = [...project.knownAgentNames()];
   const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-  const compiler = compilerFactory({ provider, model, knownAgents });
+  const compiler = compilerFactory({
+    provider: usageRecordingProvider(provider, usage, { agent: "policy" }),
+    model,
+    knownAgents,
+  });
 
   let result: Awaited<ReturnType<PolicyCompiler["compile"]>>;
   try {
@@ -276,9 +287,18 @@ export async function runPolicyCompile(
   output.log(
     `Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`,
   );
+  output.log(policyUsageLine(usage.totals()));
   printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
   return 0;
+}
+
+/** `tokens — input: N, output: N  (~$X)` — what `kapel policy compile` spent. */
+function policyUsageLine(totals: UsageTotals): string {
+  const line = `tokens — input: ${totals.usage.inputTokens}, output: ${totals.usage.outputTokens}`;
+  return totals.costUsd > 0
+    ? `${line}  (~$${totals.costUsd.toFixed(4)})`
+    : line;
 }
 
 /** Implements `kapel policy check`: validates the policy lock's freshness without calling an LLM. */

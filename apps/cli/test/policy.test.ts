@@ -173,6 +173,15 @@ describe("kapel policy", () => {
       expect(text).toContain("assumed default retry policy");
       expect(text).toContain("Ambiguities:");
       expect(text).toContain('"as needed" review cadence was not mapped');
+      // P1-1 (leftover): the compile call's own spend is attributed and
+      // printed, same shape as `orchestrate`'s usage line. The fixed fake
+      // compiler above never touches the provider it's handed, so the
+      // figures are zero here — `usageRecordingProvider` wrapping the
+      // provider that streams the tokens is already covered offline in
+      // `packages/ai/test/usage.test.ts`; a compiler that actually drained a
+      // real streamed provider here would have to reach the network to do
+      // it, which these tests must not depend on.
+      expect(text).toMatch(/tokens — input: 0, output: 0/);
     });
 
     it("annotates a warning/ambiguity with its orchestration.md line when the quoted phrase resolves", async () => {

@@ -129,7 +129,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 
 ### P0 — 다음 릴리스
 
-**P0-1. 입력기 교체 (single long-lived readline + 영속 히스토리 + 멀티라인)** — **M**
+**P0-1. 입력기 교체 (single long-lived readline + 영속 히스토리 + 멀티라인)** — **M** — ✅ shipped (v0.4.0)
 - *무엇*: 프롬프트마다 인터페이스를 새로 만드는 대신 REPL 수명 전체에 하나의 readline을
   유지하고, `history` 배열을 `~/.kapel/history`(또는 `.agent/history`)에 영속화한다.
   `\` + `Enter`로 이어쓰기, 여러 줄 붙여넣기는 하나의 메시지로 취합(짧은 idle 타이머).
@@ -144,7 +144,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
   (c) 40줄 텍스트 붙여넣기가 메시지 1개가 된다. (d) 턴 중 `allow …? [y/N]`이 여전히
   정상 동작하고 Ctrl-C가 "no"로 읽힌다 (기존 `interactive.test.ts` 전부 통과).
 
-**P0-2. 턴 스트리밍 + 진행 표시** — **M**
+**P0-2. 턴 스트리밍 + 진행 표시** — **M** — ✅ shipped (v0.5.0)
 - *무엇*: `text.delta`를 이벤트로 흘려보내고, 도구 실행 중에는 스피너 + 경과 초 + 누적
   토큰을 한 줄 상태로 갱신한다.
 - *왜*: ②. 지금은 응답이 오기 전까지 kapel이 살아 있는지조차 알 수 없다. peer 3종 모두
@@ -157,7 +157,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
   `--json` 출력의 기존 라인 형태가 바뀌지 않는다(신규 타입만 추가). 파이프/리다이렉트
   시 제어문자가 섞이지 않는다.
 
-**P0-3. 컨텍스트 압축 배선 + `/compact`** — **S**
+**P0-3. 컨텍스트 압축 배선 + `/compact`** — **S** — ✅ shipped (v0.5.0)
 - *무엇*: 이미 있는 `CompactionOptions`를 대화형·one-shot 양쪽에 주입하고, 수동
   `/compact` 슬래시 명령과 `context.compacted` 한 줄 표시를 붙인다.
 - *왜*: ④ 후반. **버그에 가까운 미배선**이다. 긴 세션이 조용히 실패한다. 비용도 상한 없이 는다.
@@ -167,7 +167,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 - *수용 기준*: 60메시지 초과 대화가 압축 로그 한 줄을 남기고 계속된다. `/compact` 직후
   `/usage`의 다음 턴 input 토큰이 유의미하게 줄어든다.
 
-**P0-4. 승인 UX 3택 + 세션 범위 기억 + 진짜 diff** — **M**
+**P0-4. 승인 UX 3택 + 세션 범위 기억 + 진짜 diff** — **M** — ✅ shipped (v0.5.0)
 - *무엇*: `[y/N]` → `[y/n/a]` (a = 이 세션 동안 이 도구/이 명령 프리픽스 항상 허용).
   `edit_file`/`write_file`은 JSON 대신 유니파이드 diff 몇 줄을 보여준다. `bash`는 명령
   전문을 보여준다.
@@ -181,7 +181,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 - *수용 기준*: `bash npm test`를 `a`로 승인하면 같은 세션에서 다시 묻지 않고, `npm publish`는
   다시 묻는다. `edit_file` 프롬프트에 `-`/`+` 줄이 보인다.
 
-**P0-5. 프로젝트/사용자 지시 파일(`AGENTS.md`) 로딩** — **S**
+**P0-5. 프로젝트/사용자 지시 파일(`AGENTS.md`) 로딩** — **S** — ✅ shipped (v0.5.0)
 - *무엇*: `~/.kapel/AGENTS.md` → repo root `AGENTS.md` → `.agent/AGENTS.md` 순으로 읽어
   시스템 프롬프트 뒤에 이어 붙이고, 배너에 어떤 파일이 로드됐는지 한 줄 표시.
 - *왜*: ④ 전반. peer 3종 공통의 최소 기대치이고, 이미 `AGENTS.md`를 갖고 있는 저장소가
@@ -195,7 +195,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 - *수용 기준*: repo에 `AGENTS.md`를 두면 배너에 `instructions: AGENTS.md`가 뜨고,
   거기 적은 규칙(예: "always run npm run typecheck")을 첫 턴부터 따른다.
 
-**P0-6. 라우팅 근거·모델을 실행 중에 노출** — **S**
+**P0-6. 라우팅 근거·모델을 실행 중에 노출** — **S** — ✅ shipped (v0.5.0)
 - *무엇*: `▶ T02 → coder (attempt 1)` → `▶ T02 → coder [claude-haiku-4-5] (rule: implementation)`.
   즉 **어떤 모델**로 갔고 **어떤 정책 규칙**이 그렇게 만들었는지를 그 자리에서 보여준다.
 - *왜*: ⑤. 이 제품을 쓰는 이유 자체가 이 줄이다. 지금 이 정보는 `kapel explain`이
@@ -210,7 +210,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 
 ### P1
 
-**P1-1. 워커/모델별 비용 귀속과 `/cost` 분해** — **M**
+**P1-1. 워커/모델별 비용 귀속과 `/cost` 분해** — **M** — ✅ shipped (v0.6.0)
 - 런 요약 표에 태스크별 `MODEL / TOKENS / $` 열 추가, 마지막에 모델별 롤업
   (`orchestrator 1 task $0.42 · coder 3 tasks $0.03`). 대화형에는 `/usage`를 모델별로 쪼갠다.
 - *왜*: "비싼 모델이 계획하고 싼 워커가 실행한다"의 **유일한 증명 수단**. 이게 없으면
@@ -222,7 +222,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
   토큰만 표시하고 `$ n/a`로 명시.
 - *수용*: 3태스크 런에서 모델별 토큰·비용 합이 전체 합과 일치한다.
 
-**P1-2. `/undo` — 대화형 체크포인트** — **M**
+**P1-2. `/undo` — 대화형 체크포인트** — **M** — ✅ shipped (v0.6.0)
 - 매 사용자 프롬프트 직전에 작업 트리 스냅샷(git repo면 `git stash create` 기반 오브젝트,
   아니면 `.agent/checkpoints/<n>/` 복사)을 남기고 `/undo`로 되돌린다. bash가 만든 변경은
   추적하지 않음을 명시(Claude Code도 동일한 한계를 문서화한다,
@@ -231,30 +231,30 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 - *파일*: 신규 `apps/cli/src/checkpoint.ts`, `interactive.ts`의 `handleMessage` 진입점,
   `SLASH_COMMANDS`. `@agent/workspace`의 git 헬퍼 재사용.
 
-**P1-3. `@` 파일 멘션과 `/` 자동완성** — **M** (P0-1 선행)
+**P1-3. `@` 파일 멘션과 `/` 자동완성** — **M** (P0-1 선행) — ✅ shipped (v0.6.0)
 - `@`에서 `glob` 기반 퍼지 목록, `/`에서 `SLASH_COMMANDS` 목록. 이미 있는
   `apps/cli/src/select-prompt.ts`의 화살표 선택 UI를 재사용한다.
 - *파일*: `apps/cli/src/input.ts`(P0-1 산출물), `select-prompt.ts`, `interactive.ts`.
 
-**P1-4. 커스텀 슬래시 명령 `.agent/commands/*.md`** — **S**
+**P1-4. 커스텀 슬래시 명령 `.agent/commands/*.md`** — **S** — ✅ shipped (v0.6.0)
 - frontmatter로 `model`/`agent`를 지정할 수 있게 하면 **kapel에서만 의미 있는 형태**가 된다
   (`/review-pr`를 항상 orchestrator 모델로). Claude Code는 이를 skills로 통합했고
   ([skills](https://code.claude.com/docs/en/skills)), opencode는 `command` 키를 쓴다.
 - *파일*: `apps/cli/src/interactive.ts`의 `handleSlash` 앞단에 파일 기반 조회,
   `apps/cli/src/init.ts` 템플릿에 예시 1개.
 
-**P1-5. 권한 규칙을 설정 파일로 노출** — **M**
+**P1-5. 권한 규칙을 설정 파일로 노출** — **M** — ✅ shipped (v0.6.0)
 - `~/.kapel/config.json`(P0-4의 세션 allowlist를 영속화)과 `.agent/config.yaml`에
   `permission:` 블록. opencode 문법(`{"bash": {"*": "ask", "git *": "allow"}}`)을 그대로 차용.
 - *파일*: `apps/cli/src/config.ts`(스키마 확장), `apps/cli/src/permissions.ts`,
   `packages/coding-agent`의 `PermissionEngine`.
 
-**P1-6. 파이프 입력과 비대화형 정합** — **S**
+**P1-6. 파이프 입력과 비대화형 정합** — **S** — ✅ shipped (v0.6.0)
 - `cat log.txt | kapel "설명해줘"`가 stdin을 프롬프트에 합치도록. 현재는 objective가 있으면
   stdin이 버려진다(`index.ts`의 기본 액션). CI에서 실제로 쓰이는 형태다.
 - *파일*: `apps/cli/src/index.ts`, `apps/cli/src/run.ts`.
 
-**P1-7. 정책 저작 UX** — **M**
+**P1-7. 정책 저작 UX** — **M** — ✅ shipped (v0.6.0)
 - `kapel policy compile`이 지금 warnings/ambiguities를 출력하지만, 고치는 루프가 없다.
   (a) ambiguity가 가리키는 `orchestration.md`의 원문 줄 번호를 찍고,
   (b) `kapel policy diff`로 lock 변경 전후를 보여주고,
@@ -263,7 +263,7 @@ repo root + cwd 3단 병합, opencode는 `AGENTS.md` + `instructions` 키
 - *파일*: `apps/cli/src/policy.ts`, `apps/cli/src/plan.ts`, `@agent/policy`의 컴파일 결과에
   source span 보존.
 
-**P1-8. 세션 이름·포크** — **S** / **P1-9. 이미지 첨부** — **M**
+**P1-8. 세션 이름·포크** — **S** — ✅ shipped (v0.6.0) / **P1-9. 이미지 첨부** — **M** — ✅ shipped (v0.6.0)
 - 전자는 `NewChatSession`에 `name` 추가 + `/name`; 후자는 `@agent/ai`의 메시지 파트에
   이미지 지원이 있는지 먼저 확인 필요.
 

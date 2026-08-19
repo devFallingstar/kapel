@@ -91,16 +91,33 @@ Commands available at the prompt:
 | `/help` | list these commands |
 | `/exit`, `/quit` | leave the session |
 | `/new` | start a fresh conversation in this directory |
-| `/sessions` | list this directory's conversations (id, last touched, messages, title) |
-| `/resume <id>` | switch to a stored conversation — a unique id prefix is enough |
+| `/sessions` | list this directory's conversations (id, name, last touched, messages, title) |
+| `/resume <id\|name>` | switch to a stored conversation — a unique id prefix or a `/name` both work |
+| `/name` / `/name <name>` | show, or set, this conversation's name — persists immediately |
+| `/fork` / `/fork <name>` | branch this conversation (everything said so far) into a new session and switch to it |
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
 | `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
 | `/usage` | tokens and cost so far |
 | `/compact` | compact the conversation history now (native backend only) |
 | `/undo` | put the files back the way they were before the last prompt |
 | `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
+| `/<name>` (custom) | run a command from `.agent/commands/<name>.md`; see below |
 
 Anything else you type is a message to the agent.
+
+**Custom commands from `.agent/commands/*.md`.** A file there defines `/<name>` (the name is the filename, lowercase letters/digits/hyphens only — e.g. `.agent/commands/review.md` becomes `/review`). The file is an optional YAML front matter block followed by a prompt template:
+
+```markdown
+---
+description: Review the current diff for bugs, then summarize risk
+model: claude-haiku-4-5
+---
+Review the current diff for bugs, correctness issues, and anything unfinished.
+
+$ARGUMENTS
+```
+
+`description` shows up in `/help`. `model` pins *this one turn* to that model (native backend only — on a delegated backend, or an alias that doesn't resolve, kapel prints one line saying the pin was skipped and runs on the session's current model instead); the session's own model is unaffected before or after. `agent` is parsed but reserved for a future sub-agent dispatch and does nothing yet. Whatever you type after the command name replaces every `$ARGUMENTS` in the template, or — if the template has no placeholder — gets appended after a blank line. The expanded text is sent exactly like a typed message: checkpoints, `@` mentions and history all apply normally. A file whose name collides with a built-in command (`/help.md`, say) is skipped in favor of the built-in, with a warning printed by `/help`; commands are scanned once at startup and rescanned on every `/help`, so adding a file mid-session doesn't need a restart. `kapel init` ships one example, `.agent/commands/review.md`.
 
 On the native backend, a long conversation compacts itself automatically once it passes 60 messages — old tool results get elided (kept ones are marked, nothing is dropped from the transcript), leaving one dim `≈ context compacted: …` line — so it keeps going instead of eventually blowing the model's context window. `/compact` does the same thing on demand, useful right before a turn you want as much context budget for as possible. Under `--backend codex` or `--backend claude-code` the external CLI manages its own context, so `/compact` there just says it isn't supported.
 
@@ -118,7 +135,7 @@ Read the fine print before you rely on it:
 
 ```bash
 kapel chat --continue           # the most recent conversation here
-kapel chat --session 0f3c9a2b   # a specific one (id or unique prefix)
+kapel chat --session 0f3c9a2b   # a specific one (id, unique prefix, or /name)
 kapel chat --no-save            # …or don't record this one at all
 ```
 
@@ -163,7 +180,7 @@ Interactive mode (`kapel chat`) does not accept `-i/--image` yet.
 
 Useful commands and flags:
 
-- `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id>`, `--no-save`
+- `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id|name>`, `--no-save`
 - `kapel init` — copy the default `.agent/` configuration template into the current repo
 - `kapel models` — list available model aliases and their credential status
 - `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
@@ -437,7 +454,9 @@ kapel sessions fork 0f3c…                     # copy a conversation into a new
 kapel sessions fork 0f3c… --name "plan b"     # …and name the copy
 ```
 
-`kapel sessions` shows a `NAME` column once any listed session has one; a session picks up a name by being forked with `--name`, or from `/name` at the prompt once that lands (see the roadmap). `kapel sessions fork`'s `<id|name>` argument resolves in this order: an exact id, then a unique id prefix, then an exact name — if two sessions share a name the most recently touched one is used and a note is printed to stderr. `--json` on either command emits the same fields as an array/object instead of a table/line.
+`kapel sessions` shows a `NAME` column once any listed session has one; a session picks up a name by being forked with `--name`, or from `/name` at the prompt (see the command table above — it persists immediately, no need to wait for the next message). `kapel sessions fork` and `--session` everywhere they appear (`kapel chat --session`, `/resume`) resolve `<id|name>` in this order: an exact id, then a unique id prefix, then an exact name — if two sessions share a name the most recently touched one is used and a note is printed to stderr. `--json` on either `sessions` command emits the same fields as an array/object instead of a table/line.
+
+`/fork [name]` at the prompt does the same copy `kapel sessions fork` does, but from inside the REPL and on the conversation you're already in: it branches everything said so far into a new session and switches you onto it immediately (the original stays put, unaffected, with its own history up to the fork point). Useful for "let me try a different approach without losing where I was" — `/fork before-refactor`, try the risky thing, `/resume` back to the original if it doesn't pan out.
 
 `--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 

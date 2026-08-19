@@ -16,6 +16,10 @@ import type { ChatTurnResult } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  CustomCommand,
+  LoadCustomCommandsResult,
+} from "../src/commands.js";
 import type { InputManager } from "../src/input.js";
 import { INPUT_SIGINT } from "../src/input.js";
 import type {
@@ -32,7 +36,7 @@ import {
   createReplCompleter,
   inputManagerLineSource,
   instructionsBannerLine,
-  matchChatSession,
+  invalidSessionName,
   openChatStore,
   resolveStartSession,
   runInteractive,
@@ -680,6 +684,327 @@ describe("interactive controller — slash commands", () => {
   });
 });
 
+// --- P1-8 (leftover): /name and /fork ----------------------------------------
+
+describe("interactive controller — /name", () => {
+  it("with no argument, reports (unnamed) for a session that has never been named", async () => {
+    const h = await harness();
+    expect((await h.controller.handleLine("/name")).output).toEqual([
+      "(unnamed)",
+    ]);
+    expect(h.controller.name()).toBeUndefined();
+  });
+
+  it("names an unpersisted session immediately, creating its row", async () => {
+    const h = await harness();
+    const result = await h.controller.handleLine("/name my-project");
+    expect(result.effect).toBe("renamed");
+    expect(result.output).toEqual(['named "my-project"']);
+    expect(h.controller.name()).toBe("my-project");
+
+    const loaded = await h.store.loadChatSession(h.controller.sessionId());
+    expect(loaded?.record.name).toBe("my-project");
+
+    expect((await h.controller.handleLine("/name")).output).toEqual([
+      "my-project",
+    ]);
+  });
+
+  it("renames an already-persisted session", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    await h.controller.handleLine("/name second-try");
+
+    const loaded = await h.store.loadChatSession(h.controller.sessionId());
+    expect(loaded?.record.name).toBe("second-try");
+  });
+
+  it("treats a whitespace-only argument as no argument at all", async () => {
+    // `handleSlash` already trims the argument before any command sees it,
+    // so "/name   " and bare "/name" are indistinguishable by the time
+    // `invalidSessionName` would run — both just show the current name.
+    const h = await harness();
+    expect((await h.controller.handleLine("/name   ")).output).toEqual([
+      "(unnamed)",
+    ]);
+  });
+
+  it("rejects a name starting with /", async () => {
+    const h = await harness();
+    const slashy = await h.controller.handleLine("/name /resume");
+    expect(slashy.output[0]).toContain('cannot start with "/"');
+    expect(h.controller.name()).toBeUndefined();
+  });
+
+  it("reports the name without persisting when there is no store", async () => {
+    const h = await harness({ store: undefined });
+    const result = await h.controller.handleLine("/name offline");
+    expect(result.output[0]).toContain('named "offline"');
+    expect(result.output[0]).toContain("not persisted");
+    expect(h.controller.name()).toBe("offline");
+  });
+});
+
+describe("interactive controller — /fork", () => {
+  it("forks the current session and switches the REPL onto it", async () => {
+    const h = await harness();
+    await h.controller.handleLine("first objective");
+    const sourceId = h.controller.sessionId();
+
+    const result = await h.controller.handleLine("/fork");
+    expect(result.effect).toBe("forked");
+    expect(h.controller.sessionId()).not.toBe(sourceId);
+    expect(h.controller.name()).toBeUndefined();
+    // The fork carried the whole transcript over as the new session's start.
+    expect(h.restored.at(-1)).toHaveLength(3);
+
+    // The source session is untouched, still on disk under its own id.
+    const source = await h.store.loadChatSession(sourceId);
+    expect(source?.messages).toHaveLength(3);
+    const fork = await h.store.loadChatSession(h.controller.sessionId());
+    expect(fork?.messages).toHaveLength(3);
+  });
+
+  it("names the fork when given a name, independent of the source's own name", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    await h.controller.handleLine("/name source-name");
+
+    const result = await h.controller.handleLine("/fork fork-name");
+    expect(result.output[0]).toContain("fork-name");
+    expect(h.controller.name()).toBe("fork-name");
+
+    const fork = await h.store.loadChatSession(h.controller.sessionId());
+    expect(fork?.record.name).toBe("fork-name");
+  });
+
+  it("refuses to fork a session that has never said anything", async () => {
+    const h = await harness();
+    const result = await h.controller.handleLine("/fork");
+    expect(result.output).toEqual([
+      "nothing to fork yet — say something first.",
+    ]);
+    expect(result.effect).toBeUndefined();
+  });
+
+  it("rejects an invalid fork name without forking", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    const sourceId = h.controller.sessionId();
+
+    const result = await h.controller.handleLine("/fork /nope");
+    expect(result.output[0]).toContain('cannot start with "/"');
+    expect(h.controller.sessionId()).toBe(sourceId);
+  });
+
+  it("says so when sessions are not being recorded", async () => {
+    const h = await harness({ store: undefined });
+    const result = await h.controller.handleLine("/fork");
+    expect(result.output).toEqual([
+      "sessions are not being recorded (--no-save), so there is nothing to fork.",
+    ]);
+  });
+});
+
+// --- P1-4: custom slash commands ---------------------------------------------
+
+function customCommandsFixture(result: LoadCustomCommandsResult): {
+  load: () => Promise<LoadCustomCommandsResult>;
+  calls: number;
+} {
+  const source = {
+    calls: 0,
+    load: async (): Promise<LoadCustomCommandsResult> => {
+      source.calls += 1;
+      return result;
+    },
+  };
+  return source;
+}
+
+describe("interactive controller — custom commands", () => {
+  const reviewCommand: CustomCommand = {
+    name: "review",
+    description: "Review the current diff",
+    template: "Review the diff.\n\n$ARGUMENTS",
+    sourcePath: ".agent/commands/review.md",
+  };
+
+  it("expands the template and sends it like a typed message", async () => {
+    const source = customCommandsFixture({
+      commands: [reviewCommand],
+      warnings: [],
+    });
+    const h = await harness({ customCommands: source.load });
+
+    const result = await h.controller.handleLine("/review focus on auth.js");
+    expect(h.session().sends[0]?.instruction).toBe(
+      "Review the diff.\n\nfocus on auth.js",
+    );
+    // Dispatch goes through the normal message path: a usage delta line
+    // closes it out, same as any other turn.
+    expect(result.output.at(-1)).toMatch(/^tokens /);
+    expect(result.effect).toBeUndefined();
+  });
+
+  it("scans once at controller start, so a command works before /help", async () => {
+    const source = customCommandsFixture({
+      commands: [reviewCommand],
+      warnings: [],
+    });
+    await harness({ customCommands: source.load });
+    expect(source.calls).toBe(1);
+  });
+
+  it("/help lists custom commands in their own section, with descriptions", async () => {
+    const source = customCommandsFixture({
+      commands: [reviewCommand],
+      warnings: [],
+    });
+    const h = await harness({ customCommands: source.load });
+
+    const help = await h.controller.handleLine("/help");
+    const text = help.output.join("\n");
+    expect(text).toContain("custom commands (.agent/commands/):");
+    expect(text).toContain("/review");
+    expect(text).toContain("Review the current diff");
+    // /help rescans on top of the one at controller start.
+    expect(source.calls).toBe(2);
+  });
+
+  it("/help surfaces load warnings (invalid names, YAML errors, collisions)", async () => {
+    const source = customCommandsFixture({
+      commands: [],
+      warnings: [
+        'skipping .agent/commands/help.md: "/help" is a built-in command and cannot be overridden',
+      ],
+    });
+    const h = await harness({ customCommands: source.load });
+
+    const help = await h.controller.handleLine("/help");
+    expect(help.output).toContain(
+      'warning: skipping .agent/commands/help.md: "/help" is a built-in command and cannot be overridden',
+    );
+  });
+
+  it("says nothing extra in /help when there are no custom commands", async () => {
+    const source = customCommandsFixture({ commands: [], warnings: [] });
+    const h = await harness({ customCommands: source.load });
+
+    const help = await h.controller.handleLine("/help");
+    expect(help.output.join("\n")).not.toContain("custom commands");
+  });
+
+  it("a name that matches neither a built-in nor a custom command still errors", async () => {
+    const source = customCommandsFixture({
+      commands: [reviewCommand],
+      warnings: [],
+    });
+    const h = await harness({ customCommands: source.load });
+
+    const result = await h.controller.handleLine("/nope");
+    expect(result.output).toEqual([
+      'Unknown command "/nope". Type /help for the list.',
+    ]);
+  });
+
+  it("appends the arguments when the template has no $ARGUMENTS placeholder", async () => {
+    const noPlaceholder: CustomCommand = {
+      name: "ping",
+      template: "Say pong back.",
+      sourcePath: ".agent/commands/ping.md",
+    };
+    const source = customCommandsFixture({
+      commands: [noPlaceholder],
+      warnings: [],
+    });
+    const h = await harness({ customCommands: source.load });
+
+    await h.controller.handleLine("/ping loudly");
+    expect(h.session().sends[0]?.instruction).toBe("Say pong back.\n\nloudly");
+  });
+
+  it("with no arguments, leaves a placeholder-free template untouched", async () => {
+    const noPlaceholder: CustomCommand = {
+      name: "ping",
+      template: "Say pong back.",
+      sourcePath: ".agent/commands/ping.md",
+    };
+    const source = customCommandsFixture({
+      commands: [noPlaceholder],
+      warnings: [],
+    });
+    const h = await harness({ customCommands: source.load });
+
+    await h.controller.handleLine("/ping");
+    expect(h.session().sends[0]?.instruction).toBe("Say pong back.");
+  });
+
+  describe("model pinning", () => {
+    const pinned: CustomCommand = {
+      name: "review",
+      model: "gpt-mini",
+      template: "Review $ARGUMENTS",
+      sourcePath: ".agent/commands/review.md",
+    };
+
+    it("runs the one turn on the pinned model, then reverts", async () => {
+      const source = customCommandsFixture({
+        commands: [pinned],
+        warnings: [],
+      });
+      const h = await harness({ customCommands: source.load });
+      expect(h.controller.modelAlias()).toBe("claude-sonnet-5");
+
+      const result = await h.controller.handleLine("/review auth.js");
+      expect(result.effect).toBeUndefined();
+      // Two extra builds around the one turn: switch to the pin, switch back
+      // — the turn itself ran on the middle one.
+      expect(h.built).toHaveLength(3);
+      expect(h.built[1]?.sends[0]?.instruction).toBe("Review auth.js");
+      // Reverted for every future turn.
+      expect(h.controller.modelAlias()).toBe("claude-sonnet-5");
+
+      await h.controller.handleLine("plain turn");
+      expect(h.controller.modelAlias()).toBe("claude-sonnet-5");
+    });
+
+    it("warns and runs on the session model when the alias does not resolve", async () => {
+      const badModel: CustomCommand = { ...pinned, model: "nonsense" };
+      const source = customCommandsFixture({
+        commands: [badModel],
+        warnings: [],
+      });
+      const h = await harness({ customCommands: source.load });
+      const builtBefore = h.built.length;
+
+      const result = await h.controller.handleLine("/review auth.js");
+      expect(result.output[0]).toContain('/review asks for model "nonsense"');
+      expect(result.output[0]).toContain('Unknown model alias "nonsense"');
+      expect(h.session().sends[0]?.instruction).toBe("Review auth.js");
+      expect(h.controller.modelAlias()).toBe("claude-sonnet-5");
+      // No rebuild happened at all — the pin never took effect.
+      expect(h.built).toHaveLength(builtBefore);
+    });
+
+    it("warns and runs on the session model when the backend is delegated", async () => {
+      const source = customCommandsFixture({
+        commands: [pinned],
+        warnings: [],
+      });
+      const h = await harness({
+        customCommands: source.load,
+        backend: "claude-code",
+      });
+
+      const result = await h.controller.handleLine("/review auth.js");
+      expect(result.output[0]).toContain('/review asks for model "gpt-mini"');
+      expect(result.output[0]).toContain("claude-code backend");
+      expect(h.session().sends[0]?.instruction).toBe("Review auth.js");
+    });
+  });
+});
+
 // --- start selection --------------------------------------------------------
 
 describe("resolveStartSession", () => {
@@ -779,6 +1104,52 @@ describe("resolveStartSession", () => {
       continue: true,
     });
     expect("error" in resolved && resolved.error).toContain("--no-save");
+  });
+
+  // P1-8: `--session` resolves through `resolveChatSessionReference`
+  // (`@agent/session`), so a `/name`d session works as a `--session`
+  // argument exactly as an id or an id prefix does.
+  it("--session accepts a /name'd session", async () => {
+    const store = newStore();
+    await store.createChatSession({
+      id: "cafe1234-0000",
+      workspacePath: "/repo",
+      title: "stored chat",
+      name: "my-project",
+      createdAt: Date.now(),
+    });
+
+    const found = await resolveStartSession(store, "/repo", {
+      session: "my-project",
+    });
+    expect("start" in found && found.start.sessionId).toBe("cafe1234-0000");
+    expect("start" in found && found.start.name).toBe("my-project");
+  });
+
+  it("--session surfaces a note when a name is shared by more than one session", async () => {
+    const store = newStore();
+    await store.createChatSession({
+      id: "older-0000",
+      workspacePath: "/repo",
+      title: "older",
+      name: "dup",
+      createdAt: Date.now() - 1000,
+    });
+    await store.createChatSession({
+      id: "newer-0000",
+      workspacePath: "/repo",
+      title: "newer",
+      name: "dup",
+      createdAt: Date.now(),
+    });
+
+    const found = await resolveStartSession(store, "/repo", {
+      session: "dup",
+    });
+    expect("start" in found && found.start.sessionId).toBe("newer-0000");
+    expect("note" in found && found.note).toContain(
+      'Multiple sessions are named "dup"',
+    );
   });
 });
 
@@ -898,6 +1269,40 @@ describe("slashCompleter", () => {
     const [hits] = slashCompleter("/model zzz");
     expect(hits).toContain("claude-sonnet-5");
   });
+
+  it("appends custom command names after the built-ins", () => {
+    const [bare] = slashCompleter("/", ["review", "ship-it"]);
+    expect(bare).toEqual([
+      "/help",
+      "/exit",
+      "/new",
+      "/sessions",
+      "/resume",
+      "/name",
+      "/fork",
+      "/model",
+      "/config",
+      "/usage",
+      "/compact",
+      "/undo",
+      "/orchestrate",
+      "/review",
+      "/ship-it",
+    ]);
+  });
+
+  it("narrows to a custom command name matching the typed prefix", () => {
+    const [hits, matched] = slashCompleter("/rev", ["review"]);
+    expect(matched).toBe("/rev");
+    expect(hits).toEqual(["/review"]);
+  });
+
+  it("offers nothing for a custom command's arguments — free-form text", () => {
+    expect(slashCompleter("/review foc", ["review"])).toEqual([
+      [],
+      "/review foc",
+    ]);
+  });
 });
 
 describe("createReplCompleter", () => {
@@ -920,6 +1325,18 @@ describe("createReplCompleter", () => {
   it("routes a slash line to the slash completer, synchronously", () => {
     const completer = createReplCompleter(files);
     expect(completer("/mo")).toEqual([["/model"], "/mo"]);
+  });
+
+  it("reads custom command names through the getter, live on every call", () => {
+    let names: readonly string[] = [];
+    const completer = createReplCompleter(files, () => names);
+    const [before] = completer("/rev") as [string[], string];
+    expect(before).not.toContain("/review");
+
+    // Names added after the completer was built (e.g. by a `/help` rescan)
+    // are picked up on the next call, since the getter is re-read each time.
+    names = ["review"];
+    expect(completer("/rev")).toEqual([["/review"], "/rev"]);
   });
 
   it("lets @ win inside a slash command's arguments", async () => {
@@ -947,27 +1364,10 @@ describe("createReplCompleter", () => {
 // --- small pure helpers -----------------------------------------------------
 
 describe("interactive helpers", () => {
-  it("matchChatSession prefers an exact id over a prefix", () => {
-    const records = [
-      {
-        id: "ab",
-        workspacePath: "/r",
-        title: "short",
-        createdAt: 1,
-        updatedAt: 1,
-        messageCount: 0,
-      },
-      {
-        id: "abc",
-        workspacePath: "/r",
-        title: "long",
-        createdAt: 1,
-        updatedAt: 1,
-        messageCount: 0,
-      },
-    ];
-    const matched = matchChatSession(records, "ab");
-    expect("record" in matched && matched.record.title).toBe("short");
+  it("invalidSessionName rejects empty and slash-prefixed names, accepts the rest", () => {
+    expect(invalidSessionName("")).toContain("cannot be empty");
+    expect(invalidSessionName("/resume")).toContain('cannot start with "/"');
+    expect(invalidSessionName("my-project")).toBeUndefined();
   });
 
   it("formats cumulative and per-turn usage", () => {

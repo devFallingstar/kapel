@@ -229,12 +229,31 @@ kapel> /undo
 kapel chat --continue     # 방금 그 대화를 그대로 이어받음 ("resumed … (N messages)")
 ```
 
-`kapel chat --help`로 `--session <id>`(특정 대화, 접두사 가능)와 `--no-save`도
-확인할 수 있습니다. 프롬프트에서 `/new`(새 대화), `/resume <id>`(전환),
+`kapel chat --help`로 `--session <id|name>`(특정 대화, id·접두사·`/name`으로
+붙인 이름 모두 가능)와 `--no-save`도 확인할 수 있습니다. 프롬프트에서
+`/new`(새 대화), `/resume <id|name>`(전환), `/name`(이 대화 이름 보기/짓기),
+`/fork [name]`(지금까지 대화를 새 세션으로 복제하고 그쪽으로 전환),
 `/model <alias>`(이후 턴부터 모델 교체), `/config`(설정 마법사를 다시 돌려
 백엔드·모델을 이 대화에 바로 적용 — 대화 내용은 유지됨), `/compact`(지금 바로
 컨텍스트 압축), `/undo`(직전 프롬프트 이전으로 파일 복구), `/help`도 함께 눌러 보세요. `/config`는 터미널에서만 동작하며,
 파이프로 실행 중이면 `/config needs a terminal —` 안내가 나옵니다.
+
+**`/name`·`/fork` (P1-8 나머지)** 확인:
+
+```text
+kapel> /name                    ← 아직 이름이 없으면 "(unnamed)"
+kapel> /name calc-실험           ← 이름을 붙임 — 즉시 .agent/sessions.db에 반영
+kapel> /name                    ← "calc-실험"
+kapel> /fork before-refactor    ← 지금까지 대화를 새 세션으로 복제하고 그쪽으로 전환
+```
+
+**기대 동작**: `/fork`는 `forked to <newId8> (before-refactor) — now on the new
+session.`을 출력하고, 이후 프롬프트는 새 세션 위에서 이어집니다 — 원본
+(`calc-실험`)은 `/fork` 시점까지의 이력을 그대로 간직한 채 그 자리에 남아
+있고, `/sessions`에 둘 다 별도 행으로 보입니다. `--session calc-실험`으로
+원본을 다시 열 수 있습니다(이름이 여러 세션에 걸치면 가장 최근 것이 선택되고
+그렇다는 안내가 한 줄 뜹니다). 이름은 빈 문자열이거나 `/`로 시작할 수 없습니다
+(슬래시 명령과 헷갈리므로) — `/name /oops`는 즉시 거부됩니다.
 
 추가 확인: 턴 진행 중 Ctrl-C(해당 턴만 취소, 대화는 유지), 프롬프트에서 Ctrl-C
 두 번(종료), Ctrl-D(종료).
@@ -321,6 +340,54 @@ kapel --backend claude-code -i ./screenshot.png "이 화면에서 뭐가 문제�
 **기대 동작**: `claude` 프로세스를 아예 스폰하지 않고, "Claude Code's headless
 -p mode has no documented flag for attaching images…" 취지의 메시지와 함께
 종료 코드 1로 즉시 끝납니다.
+
+## 2.7. 시나리오 A-3 — 커스텀 슬래시 명령 (P1-4)
+
+`kapel init`이 만든 `.agent/commands/review.md`가 이미 예시로 들어 있습니다
+(`kapel init`을 아직 안 했다면 시나리오 C에서 먼저 실행). 대화형으로 확인:
+
+```bash
+cd /tmp/agent-fixture
+kapel init          # 아직 안 했다면 — .agent/commands/review.md 포함
+kapel
+```
+
+```text
+kapel> /help                    ← "custom commands (.agent/commands/):" 아래
+                                    "/review  Review the current diff for bugs..." 확인
+kapel> /review calc.js의 add 함수만 집중해서 봐줘
+```
+
+**기대 동작**: `/review`는 `.agent/commands/review.md`의 본문(`$ARGUMENTS`
+자리에 방금 입력한 "calc.js의 add 함수만 집중해서 봐줘"가 들어간 것)을 그대로
+사용자 메시지로 보낸 것처럼 동작합니다 — 체크포인트가 찍히고, 응답 뒤 토큰
+사용량 한 줄이 붙는 등 일반 메시지와 동일합니다.
+
+새 명령을 직접 만들어 봅니다:
+
+```bash
+mkdir -p .agent/commands
+cat > .agent/commands/tests.md <<'EOF'
+---
+description: Run the project's tests and summarize failures
+model: claude-haiku-4-5
+---
+Run `node calc.test.js` via the bash tool and summarize any failures.
+
+$ARGUMENTS
+EOF
+```
+
+```text
+kapel> /help          ← 다시 확인하면 /tests가 새로 나타남 (재시작 없이 즉시 반영)
+kapel> /tests
+```
+
+**기대 동작**: `model:` 프론트매터가 있으므로 이 한 턴만 `claude-haiku-4-5`로
+실행되고(배너/`\`/model\`` 상으로는 원래 모델로 바로 돌아옵니다), 나머지는 위와
+동일합니다. 이름이 `^[a-z][a-z0-9-]{0,31}$`에 맞지 않는 파일(`Foo.md` 등)이나
+내장 명령과 이름이 겹치는 파일(`help.md`)을 넣으면 `/help`에 `warning: skipping
+…`이 한 줄 뜨고 해당 파일은 무시됩니다 — 내장 명령이 항상 우선합니다.
 
 ## 3. 시나리오 B — Codex 백엔드 (OpenAI OAuth)
 
