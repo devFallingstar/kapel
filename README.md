@@ -21,6 +21,7 @@ Useful commands and flags:
 - `agent init` — copy the default `.agent/` configuration template into the current repo
 - `agent models` — list available model aliases and their credential status
 - `agent plan "<objective>"` / `agent orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
+- `agent runs` / `agent explain <taskId>` / `agent resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
 - `--json` — newline-delimited JSON events for scripting/CI
@@ -98,6 +99,8 @@ Execution options:
 - `--worker-mode child` — each task runs in a separate `agent worker` process, isolated from the orchestrator and killable on timeout or Ctrl-C. This re-executes the *built* CLI (`apps/cli/dist/index.js`), so run `npm run build` first; the child inherits the current environment, so credentials carry over.
 - `--backend codex` — delegate every task to the Codex CLI instead of the native loop (see [Codex backend](#codex-backend)).
 - `--isolation worktree` (default) / `--isolation none` — see [Worktree isolation](#worktree-isolation) below.
+- `--tui` — replace the streaming event lines with a live dashboard (task table, worker log, elapsed time). Text mode only: combining it with `--json` is an error, since the dashboard owns the terminal. The final status table and token totals are printed as usual once it comes down.
+- `--no-save` — don't record this run in `.agent/sessions.db`; see [Sessions](#sessions).
 - `--timeout <seconds>` applies **per task**, not to the run as a whole; `--max-iterations <n>` bounds each in-process worker's tool loop. `--json` turns the whole run into JSONL (worker events, task events, then a final `run.summary` line).
 
 #### Worktree isolation
@@ -126,6 +129,23 @@ validation:
 ```
 
 Each command runs via `bash -lc` **inside the task's own worktree, before it is merged back**; a failing command fails the task (and cancels its dependents) instead of merging broken work, and its output streams as `validation.started`/`validation.completed` events. Failed and low-confidence results are retried per the policy's `escalation`/`defaultMaxAttempts` rules, rerouting to another agent when configured. `--no-validate` skips validators for one run; they're skipped under `--backend codex` regardless, since Codex reports one result per task with no hook to run a separate suite against. Separately, a policy's `review:` rules inject **blocking** review tasks for matching risk categories — a rejected verdict fails the task (and the run) the same way a failed validator does.
+
+#### Sessions
+
+Every `agent orchestrate` run records itself in a SQLite database at **`.agent/sessions.db`**: the objective, the policy snapshot it executed under, the post-rewrite plan, every event it emitted, and a rolling per-task summary. The run id is printed as the run starts (`Run 0f3c… — 3 tasks, up to 4 at a time`) — that is what the three commands below take.
+
+```bash
+agent runs                     # what has been run here, newest first
+agent explain T03              # why T03 ran where it ran, and what happened to it
+agent explain T03 --run 0f3c…  # …in a specific run (default: the most recent)
+agent resume 0f3c…             # finish the tasks that never succeeded
+```
+
+- **`agent runs`** lists id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` emits the same as an array. A workspace with no database yet just says so.
+- **`agent explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
+- **`agent resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `agent orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
+
+`--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 
 `agent worker` is the child endpoint of that protocol — it reads one JSON task request on stdin and writes events plus one result line to stdout. It exists for `--worker-mode child` to call; you don't run it by hand.
 
@@ -161,8 +181,8 @@ Validation / review / merge
 - TypeScript, strict mode, ESM
 - npm workspaces
 - Zod for runtime schemas
-- SQLite + Drizzle planned for durable sessions
-- Ink/React planned for the TUI
+- SQLite + Drizzle for durable sessions (`.agent/sessions.db`)
+- Ink/React for the terminal dashboard (`--tui`)
 - Git worktrees for parallel worker isolation
 - JSONL events / JSON-RPC for integrations
 
@@ -174,7 +194,7 @@ Validation / review / merge
 - `@agent/orchestration` — task DAG, router and deterministic scheduler
 - `@agent/workspace` — local/worktree execution isolation
 - `@agent/protocol` — typed runtime events
-- `@agent/session` — session persistence contracts
+- `@agent/session` — session persistence contracts and the SQLite/Drizzle store
 - `@agent/plugin` — extension API contracts
 - `@agent/coding-agent` — top-level runtime facade
 - `@agent/tui` — terminal UI shell

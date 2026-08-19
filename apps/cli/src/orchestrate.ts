@@ -6,6 +6,8 @@ import type { UsageRecorder, UsageTotals } from "@agent/ai";
 import { UsageTracker } from "@agent/ai";
 import type {
   AgentProject,
+  ExecutionPlan,
+  OrchestrationPolicy,
   RuntimeTask,
   WorkerExecutor,
   WorkspaceExecutorFactory,
@@ -22,6 +24,8 @@ import {
   WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
 import type { EventSink } from "@agent/protocol";
+import type { SqliteSessionStore } from "@agent/session";
+import type { TuiController, TuiInit } from "@agent/tui";
 import type { BackendName } from "./backend.js";
 import { codexInstallGuidance, codexLoginGuidance } from "./backend.js";
 import type {
@@ -32,6 +36,15 @@ import type {
 import { consoleOutput, formatTable, preparePlan, renderPlan } from "./plan.js";
 import { createProjectModelResolver } from "./project-models.js";
 import { JsonRenderer, type Renderer, TextRenderer } from "./render.js";
+import {
+  bestEffort,
+  closeRunStore,
+  fanOutSink,
+  openRunStore,
+  recordRunStatus,
+  runStatusFor,
+  storeSink,
+} from "./sessions.js";
 
 /** Where the scheduler's workers run. */
 export const WORKER_MODES = ["in-process", "child"] as const;
@@ -111,6 +124,13 @@ export interface OrchestrateCommandOptions extends PlanCommandOptions {
    * {@link shouldRunValidators}.
    */
   readonly validate?: boolean;
+  /**
+   * Record the run in `.agent/sessions.db` so it can be listed, explained and
+   * resumed later. Defaults to `true`; `--no-save` sets this to `false`.
+   */
+  readonly save?: boolean;
+  /** Show the Ink dashboard instead of streaming event lines. Text mode only. */
+  readonly tui?: boolean;
 }
 
 export interface ExecutorFactoryArgs {
@@ -296,14 +316,52 @@ export const defaultExecutorFactory: ExecutorFactory = async (args) => {
   });
 };
 
+/** Mounts the orchestration dashboard. Overridable in tests. */
+export type TuiFactory = (
+  init: TuiInit,
+) => Promise<TuiController> | TuiController;
+
+/**
+ * Loads the Ink dashboard only when a run actually asks for one.
+ *
+ * `@agent/tui` pulls in ink and react; a dynamic import keeps that cost off
+ * every `agent` invocation that is not `--tui`.
+ */
+const defaultTuiFactory: TuiFactory = async (init) => {
+  const { startOrchestrationTui } = await import("@agent/tui");
+  return startOrchestrationTui(init);
+};
+
 export interface RunOrchestrateDeps extends PreparePlanDeps {
   readonly executorFactory?: ExecutorFactory;
   /** The event sink task/worker events are rendered through. */
   readonly renderer?: Renderer;
+  /** Builds the `--tui` dashboard. Overridable in tests. */
+  readonly tuiFactory?: TuiFactory;
 }
 
 function jsonLine(output: OrchestrationOutput, value: unknown): void {
   output.log(JSON.stringify(value));
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The reason `--tui` and `--json` cannot be combined, or `undefined` when they
+ * were not combined.
+ *
+ * The dashboard repaints the whole screen; JSONL output is a stream something
+ * else parses. Silently dropping one of them would be worse than saying so.
+ */
+export function tuiJsonConflict(options: {
+  readonly tui?: boolean;
+  readonly json: boolean;
+}): string | undefined {
+  return options.tui === true && options.json
+    ? "--tui cannot be combined with --json: the dashboard owns the terminal, so there is nowhere for the JSON stream to go. Pick one."
+    : undefined;
 }
 
 function usageLine(totals: UsageTotals): string {
@@ -376,6 +434,195 @@ function renderRunSummary(
   return ok ? 0 : 1;
 }
 
+/** One-line verdict for the dashboard's footer once the scheduler is done. */
+export function outcomeLine(tasks: readonly RuntimeTask[]): string {
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  if (completed === tasks.length) {
+    return `completed ${completed}/${tasks.length} tasks`;
+  }
+  const failed = tasks.filter((task) => task.status === "failed").length;
+  const cancelled = tasks.filter((task) => task.status === "cancelled").length;
+  const parts: string[] = [];
+  if (failed > 0) parts.push(`${failed} task${failed === 1 ? "" : "s"} failed`);
+  if (cancelled > 0) parts.push(`${cancelled} cancelled`);
+  if (parts.length === 0) parts.push(`${completed}/${tasks.length} completed`);
+  return `failed: ${parts.join(", ")}`;
+}
+
+/** Paints a final frame and tears the dashboard down, if one is mounted. */
+async function closeTui(
+  tui: TuiController | undefined,
+  outcome: string,
+): Promise<void> {
+  if (tui === undefined) return;
+  try {
+    tui.finish(outcome);
+    await tui.unmount();
+  } catch {
+    // A dashboard that fails to come down cleanly must not change the run's
+    // exit code; the summary below is printed either way.
+  }
+}
+
+/** Execution knobs {@link executePreparedPlan} needs, shared by orchestrate and resume. */
+export interface ExecuteRunOptions {
+  readonly json: boolean;
+  readonly workerMode: WorkerMode;
+  readonly backend: BackendName;
+  readonly isolation: IsolationMode;
+  /** Whether the run wants the project's validators; see {@link shouldRunValidators}. */
+  readonly validate: boolean;
+  /** Mount the Ink dashboard instead of streaming event lines. */
+  readonly tui: boolean;
+  readonly timeoutSeconds?: number;
+  readonly maxIterations?: number;
+}
+
+export interface ExecuteRunRequest {
+  readonly runId: string;
+  readonly objective: string;
+  readonly project: AgentProject;
+  readonly workspacePath: string;
+  readonly policy: OrchestrationPolicy;
+  readonly plan: ExecutionPlan;
+  /**
+   * The graph to execute. Built by the caller so a resumed run can pre-mark
+   * the tasks it already has results for before the scheduler sees them.
+   */
+  readonly graph: TaskGraph;
+  /** Where events are teed, or `undefined` when the run is not being recorded. */
+  readonly store?: SqliteSessionStore;
+  /** Replaces the default `Run <id> — …` header line (text mode only). */
+  readonly leadLine?: string;
+  readonly options: ExecuteRunOptions;
+}
+
+/**
+ * Executes a prepared plan: everything `agent orchestrate` does once the plan
+ * exists, which is also everything `agent resume` does.
+ *
+ * The event stream is fanned out rather than handed to one renderer: the
+ * renderer (or the dashboard, which replaces it — it owns the screen and
+ * per-event lines would fight it for the cursor) and the session store all see
+ * the same events, and neither observer can fail the run.
+ */
+export async function executePreparedPlan(
+  request: ExecuteRunRequest,
+  deps: RunOrchestrateDeps = {},
+): Promise<number> {
+  const output = deps.output ?? consoleOutput;
+  const { runId, plan, policy, graph, store, options } = request;
+
+  let tui: TuiController | undefined;
+  if (options.tui && !options.json) {
+    try {
+      tui = await (deps.tuiFactory ?? defaultTuiFactory)({
+        objective: request.objective,
+        taskIds: plan.tasks.map((task) => ({
+          id: task.id,
+          title: task.title,
+        })),
+      });
+    } catch (error) {
+      output.error(
+        `Note: showing plain output — the dashboard could not start (${errorText(error)})`,
+      );
+    }
+  }
+
+  // With the dashboard up there is no renderer at all: suppressing its writes
+  // is the same thing as not having one.
+  const renderer =
+    tui !== undefined
+      ? undefined
+      : (deps.renderer ??
+        (options.json ? new JsonRenderer() : new TextRenderer()));
+  const events = fanOutSink(
+    renderer,
+    tui?.sink,
+    store === undefined ? undefined : storeSink(store),
+  );
+
+  const usage = new UsageTracker();
+  const taskTimeoutMs =
+    options.timeoutSeconds === undefined
+      ? undefined
+      : options.timeoutSeconds * 1000;
+
+  const fail = async (message: string): Promise<number> => {
+    await closeTui(tui, "failed to run");
+    if (options.json) jsonLine(output, { ok: false, error: message });
+    else output.error(message);
+    await recordRunStatus(store, runId, "failed");
+    return 1;
+  };
+
+  let executor: WorkerExecutor;
+  try {
+    executor = await (deps.executorFactory ?? defaultExecutorFactory)({
+      project: request.project,
+      workspacePath: request.workspacePath,
+      runId,
+      events,
+      usage,
+      workerMode: options.workerMode,
+      backend: options.backend,
+      isolation: options.isolation,
+      validate: options.validate,
+      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+      ...(options.maxIterations === undefined
+        ? {}
+        : { maxIterations: options.maxIterations }),
+    });
+  } catch (error) {
+    return await fail(errorText(error));
+  }
+
+  const controller = new AbortController();
+  const onSigint = (): void => controller.abort();
+  process.on("SIGINT", onSigint);
+
+  if (!options.json && tui === undefined) {
+    output.log(
+      request.leadLine ??
+        `Run ${runId} — ${plan.tasks.length} tasks, up to ${policy.maxConcurrency} at a time`,
+    );
+    if (
+      shouldRunValidators(request.project, options.backend, options.validate)
+    ) {
+      const names = request.project.config.validators
+        .map((validator) => validator.name)
+        .join(", ");
+      output.log(`validators: ${names}`);
+    }
+  }
+
+  try {
+    await new DeterministicScheduler(new PolicyRouter(), executor, events).run(
+      runId,
+      graph,
+      policy,
+      controller.signal,
+    );
+  } catch (error) {
+    return await fail(errorText(error));
+  } finally {
+    process.off("SIGINT", onSigint);
+  }
+
+  const tasks = graph.all();
+  await recordRunStatus(
+    store,
+    runId,
+    runStatusFor(tasks, controller.signal.aborted),
+  );
+  // The dashboard comes down before the summary is printed: the table below is
+  // what survives in the scrollback, so it must not land inside a live frame.
+  await closeTui(tui, outcomeLine(tasks));
+
+  return renderRunSummary(runId, tasks, usage.totals(), output, options.json);
+}
+
 /**
  * Implements `agent orchestrate`: plan the objective, rewrite the plan through
  * the policy, then run the resulting task graph across routed workers.
@@ -387,6 +634,12 @@ export async function runOrchestrate(
 ): Promise<number> {
   const output = deps.output ?? consoleOutput;
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
+
+  const conflict = tuiJsonConflict(options);
+  if (conflict !== undefined) {
+    output.error(conflict);
+    return 1;
+  }
 
   // Checked before planning: a plan costs a model call, and a workspace that
   // cannot host task worktrees would fail on the first mutating task anyway.
@@ -408,78 +661,57 @@ export async function runOrchestrate(
     return 0;
   }
 
-  const renderer =
-    deps.renderer ?? (options.json ? new JsonRenderer() : new TextRenderer());
   const runId = crypto.randomUUID();
-  const usage = new UsageTracker();
-  const taskTimeoutMs =
-    options.timeoutSeconds === undefined
+  // `--no-save` opts out; otherwise the run is recorded next to the rest of
+  // `.agent`, which is what makes `agent runs`/`explain`/`resume` possible.
+  const store =
+    options.save === false
       ? undefined
-      : options.timeoutSeconds * 1000;
+      : await openRunStore(prepared.workspacePath);
 
-  const validate = options.validate ?? true;
-
-  let executor: WorkerExecutor;
   try {
-    executor = await (deps.executorFactory ?? defaultExecutorFactory)({
-      project: prepared.project,
-      workspacePath: prepared.workspacePath,
-      runId,
-      events: renderer,
-      usage,
-      workerMode: options.workerMode,
-      backend: options.backend,
-      isolation,
-      validate,
-      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-      ...(options.maxIterations === undefined
-        ? {}
-        : { maxIterations: options.maxIterations }),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (options.json) jsonLine(output, { ok: false, error: message });
-    else output.error(message);
-    return 1;
-  }
-
-  const graph = new TaskGraph(prepared.plan);
-  const controller = new AbortController();
-  const onSigint = (): void => controller.abort();
-  process.on("SIGINT", onSigint);
-
-  if (!options.json) {
-    output.log(
-      `Run ${runId} — ${prepared.plan.tasks.length} tasks, up to ${prepared.policy.maxConcurrency} at a time`,
-    );
-    if (shouldRunValidators(prepared.project, options.backend, validate)) {
-      const names = prepared.project.config.validators
-        .map((validator) => validator.name)
-        .join(", ");
-      output.log(`validators: ${names}`);
+    if (store !== undefined) {
+      await bestEffort(() =>
+        store.createRun({
+          id: runId,
+          objective,
+          createdAt: Date.now(),
+          policySnapshot: prepared.policy,
+        }),
+      );
+      // The plan is saved post-rewrite: injected reviews and dropped agents
+      // are part of what a resume has to reproduce.
+      await bestEffort(() => store.savePlan(runId, prepared.plan));
     }
-  }
 
-  try {
-    await new DeterministicScheduler(
-      new PolicyRouter(),
-      executor,
-      renderer,
-    ).run(runId, graph, prepared.policy, controller.signal);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (options.json) jsonLine(output, { ok: false, error: message });
-    else output.error(message);
-    return 1;
+    return await executePreparedPlan(
+      {
+        runId,
+        objective,
+        project: prepared.project,
+        workspacePath: prepared.workspacePath,
+        policy: prepared.policy,
+        plan: prepared.plan,
+        graph: new TaskGraph(prepared.plan),
+        options: {
+          json: options.json,
+          workerMode: options.workerMode,
+          backend: options.backend,
+          isolation,
+          validate: options.validate ?? true,
+          tui: options.tui === true,
+          ...(options.timeoutSeconds === undefined
+            ? {}
+            : { timeoutSeconds: options.timeoutSeconds }),
+          ...(options.maxIterations === undefined
+            ? {}
+            : { maxIterations: options.maxIterations }),
+        },
+        ...(store === undefined ? {} : { store }),
+      },
+      deps,
+    );
   } finally {
-    process.off("SIGINT", onSigint);
+    closeRunStore(store);
   }
-
-  return renderRunSummary(
-    runId,
-    graph.all(),
-    usage.totals(),
-    output,
-    options.json,
-  );
 }

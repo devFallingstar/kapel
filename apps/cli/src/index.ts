@@ -11,6 +11,7 @@ import {
   validateSandboxMode,
 } from "./backend.js";
 import { loadDotEnvFile } from "./env.js";
+import { runExplainCommand } from "./explain-cmd.js";
 import { runInit } from "./init.js";
 import { listModels } from "./models.js";
 import {
@@ -30,8 +31,10 @@ import {
   runPolicyCompile,
   runPolicyExplain,
 } from "./policy.js";
+import { type ResumeCommandOptions, runResume } from "./resume-cmd.js";
 import { runObjective } from "./run.js";
 import { runCodexObjective } from "./run-codex.js";
+import { DEFAULT_RUNS_LIMIT, runRunsCommand } from "./runs-cmd.js";
 import { runWorkerCommand } from "./worker-cmd.js";
 
 interface RawRunOpts {
@@ -227,17 +230,23 @@ function planOptions(command: Command): PlanCommandOptions {
   };
 }
 
-interface RawOrchestrateOpts {
+interface RawExecutionOpts {
   readonly workerMode: string;
   readonly isolation: string;
-  readonly dryRun: boolean;
   readonly validate: boolean;
+  readonly tui: boolean;
 }
 
-function orchestrateOptions(
+interface RawOrchestrateOpts extends RawExecutionOpts {
+  readonly dryRun: boolean;
+  readonly save: boolean;
+}
+
+/** The execution flags `orchestrate` and `resume` share, validated. */
+function executionOptions(
   command: Command,
-  opts: RawOrchestrateOpts,
-): OrchestrateCommandOptions {
+  opts: RawExecutionOpts,
+): Omit<ResumeCommandOptions, "cwd" | "json"> {
   const raw = command.optsWithGlobals() as RawRunOpts;
   const timeoutSeconds =
     raw.timeout === undefined
@@ -250,15 +259,62 @@ function orchestrateOptions(
   );
 
   return {
-    ...planOptions(command),
-    dryRun: opts.dryRun,
     workerMode: validateWorkerMode(opts.workerMode),
     isolation: validateIsolation(opts.isolation),
     backend: validateBackendName(raw.backend),
     maxIterations,
     validate: opts.validate,
+    tui: opts.tui,
     ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
   };
+}
+
+function orchestrateOptions(
+  command: Command,
+  opts: RawOrchestrateOpts,
+): OrchestrateCommandOptions {
+  return {
+    ...planOptions(command),
+    ...executionOptions(command, opts),
+    dryRun: opts.dryRun,
+    save: opts.save,
+  };
+}
+
+function resumeOptions(
+  command: Command,
+  opts: RawExecutionOpts,
+): ResumeCommandOptions {
+  const raw = command.optsWithGlobals() as RawRunOpts;
+  return {
+    cwd: raw.cwd,
+    json: raw.json,
+    ...executionOptions(command, opts),
+  };
+}
+
+/** The execution flags registered on both `orchestrate` and `resume`. */
+function withExecutionOptions(command: Command): Command {
+  return command
+    .option(
+      "--worker-mode <mode>",
+      `where workers run: ${WORKER_MODES.join(" | ")}`,
+      DEFAULT_WORKER_MODE,
+    )
+    .option(
+      "--isolation <mode>",
+      `how mutating tasks are kept apart: ${ISOLATION_MODES.join(" | ")}`,
+      DEFAULT_ISOLATION,
+    )
+    .option(
+      "--no-validate",
+      "skip the project's configured validators for this run",
+    )
+    .option(
+      "--tui",
+      "show the live orchestration dashboard instead of event lines (not with --json)",
+      false,
+    );
 }
 
 async function objectiveCommand(
@@ -294,27 +350,16 @@ program
     );
   });
 
-program
-  .command("orchestrate")
-  .description(
-    "Plan an objective and execute the resulting task graph across routed workers",
-  )
-  .argument("<objective...>", "the objective to orchestrate")
-  .option(
-    "--worker-mode <mode>",
-    `where workers run: ${WORKER_MODES.join(" | ")}`,
-    DEFAULT_WORKER_MODE,
-  )
-  .option(
-    "--isolation <mode>",
-    `how mutating tasks are kept apart: ${ISOLATION_MODES.join(" | ")}`,
-    DEFAULT_ISOLATION,
-  )
+withExecutionOptions(
+  program
+    .command("orchestrate")
+    .description(
+      "Plan an objective and execute the resulting task graph across routed workers",
+    )
+    .argument("<objective...>", "the objective to orchestrate"),
+)
   .option("--dry-run", "plan only — same output as `agent plan`", false)
-  .option(
-    "--no-validate",
-    "skip the project's configured validators for this run",
-  )
+  .option("--no-save", "do not record this run in .agent/sessions.db")
   .action(
     async (objective: string[], opts: RawOrchestrateOpts, command: Command) => {
       await objectiveCommand(
@@ -324,6 +369,59 @@ program
       );
     },
   );
+
+withExecutionOptions(
+  program
+    .command("resume")
+    .description("Re-execute the unfinished tasks of a recorded run")
+    .argument("<runId>", "the run to resume (see `agent runs`)"),
+).action(async (runId: string, opts: RawExecutionOpts, command: Command) => {
+  try {
+    process.exitCode = await runResume(runId, resumeOptions(command, opts));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+});
+
+program
+  .command("runs")
+  .description("List orchestration runs recorded in this workspace")
+  .option("--limit <n>", "how many runs to list", String(DEFAULT_RUNS_LIMIT))
+  .action(async (opts: { limit: string }, command: Command) => {
+    const raw = command.optsWithGlobals() as RawRunOpts;
+    try {
+      process.exitCode = await runRunsCommand({
+        cwd: raw.cwd,
+        json: raw.json,
+        limit: parsePositive(opts.limit, "--limit", true),
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("explain")
+  .description(
+    "Explain how one task of a recorded run was routed, scheduled and finished",
+  )
+  .argument("<taskId>", "the task to explain, e.g. T03")
+  .option("--run <runId>", "which run to read (default: the most recent)")
+  .action(async (taskId: string, opts: { run?: string }, command: Command) => {
+    const raw = command.optsWithGlobals() as RawRunOpts;
+    try {
+      process.exitCode = await runExplainCommand(taskId, {
+        cwd: raw.cwd,
+        json: raw.json,
+        ...(opts.run === undefined ? {} : { run: opts.run }),
+      });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command("worker")

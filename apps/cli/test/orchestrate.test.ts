@@ -35,6 +35,7 @@ import {
   makeWorkspace,
   ROUTING_POLICY,
   SAMPLE_PLAN,
+  ScriptedExecutor,
   successResult,
   task,
   writeLock,
@@ -93,42 +94,6 @@ async function appendValidatorsConfig(
     `\nvalidation:\n${lines.join("\n")}\n`,
     "utf8",
   );
-}
-
-/**
- * A worker that never touches a model: it records who was asked to run what,
- * tracks how many tasks were in flight at once, and fails exactly the task ids
- * it was told to fail.
- */
-class ScriptedExecutor implements WorkerExecutor {
-  readonly calls: { taskId: string; agent: string }[] = [];
-  maxInFlight = 0;
-  #inFlight = 0;
-
-  constructor(private readonly failing: ReadonlySet<string> = new Set()) {}
-
-  async execute(task: RuntimeTask, agent: string): Promise<TaskResult> {
-    const taskId = task.spec.id;
-    this.calls.push({ taskId, agent });
-    this.#inFlight += 1;
-    this.maxInFlight = Math.max(this.maxInFlight, this.#inFlight);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    this.#inFlight -= 1;
-
-    if (this.failing.has(taskId)) {
-      return {
-        taskId,
-        status: "failed",
-        summary: `${taskId} blew up`,
-        decisions: [],
-        changedFiles: [],
-        tests: { passed: 0, failed: 0, commands: [] },
-        unresolvedIssues: [],
-        confidence: 0.1,
-      };
-    }
-    return successResult(taskId, `${taskId} done by ${agent}`);
-  }
 }
 
 function options(

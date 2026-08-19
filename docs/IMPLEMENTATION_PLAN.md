@@ -98,11 +98,31 @@ Acceptance: a risky task cannot complete without required review, and failed wor
 
 ## M6 — Persistence and TUI
 
-- [ ] SQLite + Drizzle session store
-- [ ] resume
-- [ ] context compaction
-- [ ] Ink task/worker/event UI
-- [ ] JSONL output mode
-- [ ] explain routing/scheduling decisions
+- [x] SQLite + Drizzle session store (`@agent/session`: runs, events and a
+      rolling per-task summary in `.agent/sessions.db`, WAL, `reconstructRun`;
+      CLI wiring: every `orchestrate` run creates its run, saves the
+      post-rewrite plan, tees every event to the store beside the renderer and
+      records a final `completed`/`failed`/`cancelled` status, `--no-save` to
+      opt out, `agent runs` to list)
+- [x] resume (`agent resume <runId>`: rebuilds the task graph from the stored
+      plan, pre-marks stored successes as completed so only unfinished tasks
+      re-execute, appends to the same run id, and runs under the run's own
+      policy snapshot rather than the current lock — drift is reported, not
+      applied)
+- [x] context compaction (deterministic, non-LLM transcript compaction in the
+      agent loop — oldest tool results elided first, `context.compacted`
+      events; opt-in via the loop's `compaction` options, already landed
+      before this milestone's CLI work)
+- [x] Ink task/worker/event UI (`@agent/tui`: task table, worker log, elapsed
+      header, coalesced repaints; CLI wiring: `--tui` on `orchestrate` and
+      `resume` replaces the per-event renderer, and the final table is printed
+      after the dashboard unmounts — mutually exclusive with `--json`)
+- [x] JSONL output mode (already shipped in M1/M3: `--json` emits one JSON
+      event per line plus a final `run.summary`)
+- [x] explain routing/scheduling decisions (`agent explain <taskId> [--run]`:
+      assigned agent and attempts, plus a chronological digest of held /
+      started / escalated / low-confidence / failed-validator / merge /
+      completed / cancelled events, with the routing decision re-derived by
+      running the router over the run's stored policy snapshot)
 
 Acceptance: a run can be resumed and its orchestration decisions can be inspected after completion.

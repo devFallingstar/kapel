@@ -1,12 +1,14 @@
 import { execFile } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
   ExecutionPlan,
   OrchestrationPolicy,
   PlannedTask,
+  RuntimeTask,
   TaskResult,
+  WorkerExecutor,
 } from "@agent/coding-agent";
 import { createLockfile, serializeLockfile } from "@agent/coding-agent";
 import type { OrchestrationOutput, PlannerFactory } from "../src/plan.js";
@@ -48,6 +50,18 @@ export async function initRepo(workspacePath: string): Promise<void> {
   await writeFile(path.join(workspacePath, "README.md"), "base\n", "utf8");
   await run("add", "-A");
   await run("commit", "-q", "-m", "initial");
+}
+
+/**
+ * A throwaway workspace that already has an (empty) `.agent` directory — the
+ * only thing the session store needs to live somewhere.
+ */
+export async function makeWorkspaceWithAgentDir(
+  prefix: string,
+): Promise<string> {
+  const workspacePath = await makeWorkspace(prefix);
+  await mkdir(path.join(workspacePath, ".agent"), { recursive: true });
+  return workspacePath;
 }
 
 /** Copies the repo's `templates/default/.agent` fixture into `<workspacePath>/.agent`. */
@@ -177,6 +191,47 @@ export function throwingPlannerFactory(error: Error): PlannerFactory {
       throw error;
     },
   });
+}
+
+/**
+ * A worker that never touches a model: it records who was asked to run what,
+ * tracks how many tasks were in flight at once, and fails exactly the task ids
+ * it was told to fail.
+ */
+export class ScriptedExecutor implements WorkerExecutor {
+  readonly calls: { taskId: string; agent: string }[] = [];
+  maxInFlight = 0;
+  #inFlight = 0;
+
+  constructor(private readonly failing: ReadonlySet<string> = new Set()) {}
+
+  async execute(task: RuntimeTask, agent: string): Promise<TaskResult> {
+    const taskId = task.spec.id;
+    this.calls.push({ taskId, agent });
+    this.#inFlight += 1;
+    this.maxInFlight = Math.max(this.maxInFlight, this.#inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    this.#inFlight -= 1;
+
+    if (this.failing.has(taskId)) {
+      return {
+        taskId,
+        status: "failed",
+        summary: `${taskId} blew up`,
+        decisions: [],
+        changedFiles: [],
+        tests: { passed: 0, failed: 0, commands: [] },
+        unresolvedIssues: [],
+        confidence: 0.1,
+      };
+    }
+    return successResult(taskId, `${taskId} done by ${agent}`);
+  }
+
+  /** The task ids this executor was asked to run, in dispatch order. */
+  get taskIds(): readonly string[] {
+    return this.calls.map((call) => call.taskId);
+  }
 }
 
 export function successResult(taskId: string, summary: string): TaskResult {
