@@ -23,6 +23,7 @@
     "@agent/protocol": "0.1.0",
     "@agent/session": "0.1.0",
     "@agent/workspace": "0.1.0",
+    "yaml": "^2",
     "zod": "^4"
   }
 }
