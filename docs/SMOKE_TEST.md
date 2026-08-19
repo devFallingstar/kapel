@@ -12,14 +12,14 @@
 빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/kapel-0.1.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.1.0.tgz
 kapel --version
 ```
 
-npm 레지스트리 배포 후에는 `npm install -g kapel` 로 대체됩니다.
+npm 레지스트리 배포 후에는 `npm install -g @devfallingstar/kapel` 로 대체됩니다.
 URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
-`npm install -g ./kapel/release/kapel-0.1.0.tgz`. 제거는
-`npm uninstall -g kapel`.
+`npm install -g ./kapel/release/devfallingstar-kapel-0.1.0.tgz`. 제거는
+`npm uninstall -g @devfallingstar/kapel`.
 
 > `npm install -g github:...` 형태는 쓰지 마세요 — npm의 워크스페이스
 > git 의존성 처리 버그로 설치가 깨집니다(빈 명령어 증상). 이전에 그렇게
