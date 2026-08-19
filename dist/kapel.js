@@ -337,9 +337,9 @@ function codexFileText(item) {
     if (typeof change === "string")
       paths.push(change);
     else if (isRecord6(change)) {
-      const path10 = str2(change.path) ?? str2(change.file);
-      if (path10 !== void 0)
-        paths.push(path10);
+      const path11 = str2(change.path) ?? str2(change.file);
+      if (path11 !== void 0)
+        paths.push(path11);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -547,7 +547,7 @@ var init_dist = __esm({
 });
 
 // apps/cli/dist/index.js
-import path9 from "node:path";
+import path10 from "node:path";
 import { Command } from "commander";
 
 // apps/cli/dist/backend.js
@@ -1760,8 +1760,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path10 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path10}: ${issue.message}`;
+    const path11 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path11}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -2307,6 +2307,40 @@ var DEFAULT_COMPACTION_MIN_CONTENT_CHARS = 400;
 function elisionMarker(originalLength) {
   return `${ELISION_PREFIX}${originalLength} chars]`;
 }
+var CANCELLED_TOOL_RESULT = "[cancelled before execution]";
+function sealUnansweredToolCalls(messages) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message === void 0)
+      continue;
+    if (message.role === "tool")
+      continue;
+    if (message.role !== "assistant")
+      return;
+    const calls = message.toolCalls ?? [];
+    if (calls.length === 0)
+      return;
+    const answered = /* @__PURE__ */ new Set();
+    for (let j = i + 1; j < messages.length; j += 1) {
+      const result = messages[j];
+      if (result?.role !== "tool")
+        continue;
+      if (result.toolCallId !== void 0)
+        answered.add(result.toolCallId);
+    }
+    for (const call of calls) {
+      if (answered.has(call.id))
+        continue;
+      messages.push({
+        role: "tool",
+        toolCallId: call.id,
+        isError: true,
+        content: CANCELLED_TOOL_RESULT
+      });
+    }
+    return;
+  }
+}
 function buildUserContent(input) {
   const context = input.context ?? [];
   if (context.length === 0)
@@ -2320,12 +2354,24 @@ ${entry}
 ${blocks.join("\n")}
 </additional-context>`;
 }
-var AgentLoop = class {
+var AgentLoopEngine = class {
   #options;
   constructor(options) {
     this.#options = options;
   }
-  async run(input, context) {
+  /** The fresh-conversation seed: the agent's system prompt plus the user turn. */
+  seed(input) {
+    return [
+      { role: "system", content: this.#options.agent.systemPrompt },
+      { role: "user", content: buildUserContent(input) }
+    ];
+  }
+  /**
+   * Drives `messages` until the model stops requesting tools, the iteration
+   * budget runs out, or the run aborts/fails. Appends every assistant turn and
+   * tool result to the array it was given.
+   */
+  async drive(messages, context) {
     const { agent, tools } = this.#options;
     const maxIterations = this.#options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const timeoutMs = this.#options.timeoutMs;
@@ -2344,14 +2390,10 @@ var AgentLoop = class {
       signal,
       ...context.taskId === void 0 ? {} : { taskId: context.taskId }
     };
-    const messages = [
-      { role: "system", content: agent.systemPrompt },
-      { role: "user", content: buildUserContent(input) }
-    ];
     let iterations = 0;
     let toolCalls = 0;
     let lastNonEmptyText = "";
-    await this.#emit(context, "loop.started", {
+    await this.emit(context, "loop.started", {
       agent: agent.name,
       model: agent.model.id,
       maxIterations
@@ -2375,7 +2417,7 @@ var AgentLoop = class {
           content: turn.text,
           ...turn.calls.length === 0 ? {} : { toolCalls: turn.calls }
         });
-        await this.#emit(context, "model.turn.completed", {
+        await this.emit(context, "model.turn.completed", {
           ...turn.text === "" ? {} : { text: turn.text },
           toolCallCount: turn.calls.length,
           ...turn.finishReason === void 0 ? {} : { finishReason: turn.finishReason }
@@ -2403,6 +2445,7 @@ var AgentLoop = class {
         toolCalls
       });
     } catch (error) {
+      sealUnansweredToolCalls(messages);
       if (error instanceof LoopAbortedError || signal.aborted) {
         const timedOut = timeoutSignal?.aborted === true || signal.reason instanceof Error && signal.reason.name === "TimeoutError";
         const summary = timedOut ? `Run timed out after ${String(timeoutMs)}ms.` : "Run cancelled before completion.";
@@ -2512,7 +2555,7 @@ var AgentLoop = class {
       savedChars += originalLength - elidedContent.length;
     }
     if (elided > 0) {
-      await this.#emit(context, "context.compacted", {
+      await this.emit(context, "context.compacted", {
         elided,
         savedChars,
         messages: messages.length
@@ -2520,13 +2563,13 @@ var AgentLoop = class {
     }
   }
   async #executeCall(call, toolsByName, toolContext, context, signal) {
-    await this.#emit(context, "tool.execution.started", {
+    await this.emit(context, "tool.execution.started", {
       tool: call.name,
       input: call.input
     });
     const tool = toolsByName.get(call.name);
     if (tool === void 0) {
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false
       });
@@ -2544,7 +2587,7 @@ var AgentLoop = class {
     });
     if (!verdict.allowed) {
       const reason = verdict.reason ?? "denied by policy";
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false,
         denied: true
@@ -2558,7 +2601,7 @@ var AgentLoop = class {
     }
     try {
       const output = await raceWithAbort(Promise.resolve(tool.execute(call.input, toolContext)), signal);
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: true
       });
@@ -2570,7 +2613,7 @@ var AgentLoop = class {
     } catch (error) {
       if (error instanceof LoopAbortedError)
         throw error;
-      await this.#emit(context, "tool.execution.completed", {
+      await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false
       });
@@ -2583,14 +2626,20 @@ var AgentLoop = class {
     }
   }
   async #complete(context, result) {
-    await this.#emit(context, "loop.completed", {
+    await this.emit(context, "loop.completed", {
       status: result.status,
       iterations: result.iterations,
       toolCalls: result.toolCalls
     });
     return result;
   }
-  async #emit(context, type, data) {
+  /**
+   * Best-effort event emission on the configured sink. Public so a session
+   * wrapping this engine can emit its own turn events on the same sink.
+   *
+   * @internal
+   */
+  async emit(context, type, data) {
     const sink = this.#options.events;
     if (sink === void 0)
       return;
@@ -2606,6 +2655,83 @@ var AgentLoop = class {
       await sink.emit(event2);
     } catch {
     }
+  }
+};
+var AgentLoop = class {
+  #engine;
+  constructor(options) {
+    this.#engine = new AgentLoopEngine(options);
+  }
+  async run(input, context) {
+    return await this.#engine.drive(this.#engine.seed(input), context);
+  }
+};
+
+// packages/coding-agent/dist/chat.js
+function copyMessage(message) {
+  return {
+    ...message,
+    ...message.toolCalls === void 0 ? {} : { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+  };
+}
+var AgentChatSession = class _AgentChatSession {
+  #engine;
+  #messages = [];
+  #turn = 0;
+  #sending = false;
+  constructor(options) {
+    this.#engine = new AgentLoopEngine(options);
+  }
+  /**
+   * Rebuilds a session from a {@link messages} snapshot. The history is used
+   * as-is — no system prompt is re-seeded on top of it — and the next send
+   * simply appends a user turn. An empty snapshot yields a session that seeds
+   * itself on its first send, exactly like a fresh one.
+   */
+  static restore(options, messages) {
+    const session = new _AgentChatSession(options);
+    for (const message of messages)
+      session.#messages.push(copyMessage(message));
+    return session;
+  }
+  /**
+   * Runs one user turn to completion: the instruction is appended (seeding the
+   * system prompt first if the history is empty) and the loop runs until the
+   * model stops requesting tools or the per-send iteration budget is spent.
+   *
+   * On failure or cancellation the messages produced so far are retained so the
+   * user can follow up; any tool call the loop abandoned mid-batch is answered
+   * with an error result first, keeping the history replayable.
+   *
+   * @throws if another send on this session is still in flight.
+   */
+  async send(instruction, context) {
+    if (this.#sending) {
+      throw new Error("AgentChatSession.send: a send is already in flight; turns must be serialized.");
+    }
+    this.#sending = true;
+    try {
+      if (this.#messages.length === 0) {
+        this.#messages.push(...this.#engine.seed({ instruction }));
+      } else {
+        this.#messages.push({ role: "user", content: instruction });
+      }
+      this.#turn += 1;
+      const turn = this.#turn;
+      await this.#engine.emit(context, "chat.turn.started", { turn });
+      const result = await this.#engine.drive(this.#messages, context);
+      await this.#engine.emit(context, "chat.turn.completed", {
+        turn,
+        status: result.status
+      });
+      return result;
+    } finally {
+      this.#sending = false;
+    }
+  }
+  /** A snapshot of the full history, system message included. */
+  messages() {
+    return this.#messages.map(copyMessage);
   }
 };
 
@@ -2658,8 +2784,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path10 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path10}: ${issue.message}`;
+    const path11 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path11}: ${issue.message}`;
   });
 }
 
@@ -3971,9 +4097,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path10 = record.slice(3);
-    if (path10 !== "")
-      paths.add(path10);
+    const path11 = record.slice(3);
+    if (path11 !== "")
+      paths.add(path11);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -4587,20 +4713,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path10;
+  let path11;
   let branch;
   const flush = () => {
-    if (path10 !== void 0) {
-      entries.push({ path: path10, branch });
+    if (path11 !== void 0) {
+      entries.push({ path: path11, branch });
     }
-    path10 = void 0;
+    path11 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path10 = value.slice("worktree ".length);
+      path11 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -4608,11 +4734,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path10) {
+async function realPathOrSelf(path11) {
   try {
-    return await realpath(path10);
+    return await realpath(path11);
   } catch {
-    return resolve2(path10);
+    return resolve2(path11);
   }
 }
 function isUnder(parent, child) {
@@ -4651,16 +4777,16 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path10 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path11 = join6(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path10, branch, signal);
-    await mkdir2(dirname2(path10), { recursive: true });
-    await runGit2(["worktree", "add", path10, "-b", branch, baseCommit], {
+    await this.#removeLeftovers(path11, branch, signal);
+    await mkdir2(dirname2(path11), { recursive: true });
+    await runGit2(["worktree", "add", path11, "-b", branch, baseCommit], {
       cwd: this.repoRoot,
       operation: "create",
       signal
     });
-    return { path: path10, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    return { path: path11, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -4908,13 +5034,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path10, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path10], {
+  async #removeLeftovers(path11, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path11], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path10, { recursive: true, force: true });
+    await rm(path11, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -4935,11 +5061,11 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path10 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path10.startsWith(ignored)) {
+      const path11 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path11.startsWith(ignored)) {
         continue;
       }
-      paths.push(path10);
+      paths.push(path11);
     }
     return paths;
   }
@@ -6838,6 +6964,27 @@ var taskResults = sqliteTable("task_results", {
   primaryKey({ columns: [table.runId, table.taskId] }),
   index("task_results_run_id_idx").on(table.runId)
 ]);
+var chatSessions = sqliteTable("chat_sessions", {
+  id: text("id").primaryKey(),
+  workspacePath: text("workspace_path").notNull(),
+  title: text("title").notNull(),
+  modelAlias: text("model_alias"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  messageCount: integer("message_count").notNull().default(0)
+}, (table) => [
+  index("chat_sessions_workspace_path_idx").on(table.workspacePath),
+  index("chat_sessions_updated_at_idx").on(table.updatedAt)
+]);
+var chatMessages = sqliteTable("chat_messages", {
+  sessionId: text("session_id").notNull(),
+  seq: integer("seq").notNull(),
+  messageJson: text("message_json").notNull(),
+  createdAt: integer("created_at").notNull()
+}, (table) => [
+  primaryKey({ columns: [table.sessionId, table.seq] }),
+  index("chat_messages_session_id_idx").on(table.sessionId)
+]);
 var BOOTSTRAP_DDL = `
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
@@ -6874,6 +7021,30 @@ CREATE TABLE IF NOT EXISTS task_results (
   PRIMARY KEY (run_id, task_id)
 );
 CREATE INDEX IF NOT EXISTS task_results_run_id_idx ON task_results (run_id);
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id TEXT PRIMARY KEY,
+  workspace_path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  model_alias TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  message_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS chat_sessions_workspace_path_idx
+  ON chat_sessions (workspace_path);
+CREATE INDEX IF NOT EXISTS chat_sessions_updated_at_idx
+  ON chat_sessions (updated_at);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  message_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS chat_messages_session_id_idx
+  ON chat_messages (session_id);
 `;
 var eventRowid = sql`rowid`;
 
@@ -6884,6 +7055,13 @@ import { and, asc, desc, eq, sql as sql2 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 function defaultSessionDbPath(agentDir) {
   return join7(agentDir, "sessions.db");
+}
+var CHAT_TITLE_MAX = 60;
+function chatTitleFrom(instruction) {
+  const firstLine4 = (instruction.split("\n")[0] ?? "").trim();
+  if (firstLine4.length <= CHAT_TITLE_MAX)
+    return firstLine4;
+  return `${firstLine4.slice(0, CHAT_TITLE_MAX - 1).trimEnd()}\u2026`;
 }
 function parseJson(raw) {
   if (raw === null || raw === void 0)
@@ -7096,10 +7274,113 @@ var SqliteSessionStore = class {
     const rows = this.#db.select().from(events).where(and(eq(events.runId, runId), eq(events.taskId, taskId))).orderBy(asc(events.timestamp), asc(eventRowid)).all();
     return rows.map(toAgentEvent);
   }
+  // --- Chat sessions ------------------------------------------------------
+  /**
+   * Registers a new conversation. Idempotent on `id`: re-creating an existing
+   * session leaves the stored row (and its transcript) untouched, so a caller
+   * that cannot tell whether it already started is free to call this anyway.
+   */
+  async createChatSession(session) {
+    this.#db.insert(chatSessions).values({
+      id: session.id,
+      workspacePath: session.workspacePath,
+      title: session.title,
+      modelAlias: session.modelAlias ?? null,
+      createdAt: session.createdAt,
+      updatedAt: session.createdAt,
+      messageCount: 0
+    }).onConflictDoNothing().run();
+  }
+  /**
+   * Writes messages by `(sessionId, seq)` in one transaction, last write
+   * wins. Because identity is the sequence number rather than insertion
+   * order, re-saving an overlapping snapshot of the transcript is safe: it
+   * rewrites those rows instead of duplicating them.
+   *
+   * Afterwards the session's `updatedAt` is bumped and its `messageCount`
+   * recomputed as `max(seq) + 1` over everything stored for the session, so
+   * incremental and whole-transcript saves agree. An empty batch is a no-op —
+   * it does not touch the session.
+   */
+  async appendChatMessages(sessionId, messages) {
+    if (messages.length === 0)
+      return;
+    const now = Date.now();
+    const rows = messages.map((entry) => ({
+      sessionId,
+      seq: entry.seq,
+      messageJson: stringifyJson(entry.message) ?? "null",
+      createdAt: now
+    }));
+    this.#db.transaction((tx) => {
+      for (const row of rows) {
+        tx.insert(chatMessages).values(row).onConflictDoUpdate({
+          target: [chatMessages.sessionId, chatMessages.seq],
+          set: { messageJson: row.messageJson, createdAt: row.createdAt }
+        }).run();
+      }
+      const highest = tx.select({ maxSeq: sql2`max(${chatMessages.seq})` }).from(chatMessages).where(eq(chatMessages.sessionId, sessionId)).get();
+      tx.update(chatSessions).set({ updatedAt: now, messageCount: (highest?.maxSeq ?? -1) + 1 }).where(eq(chatSessions.id, sessionId)).run();
+    });
+  }
+  /** Renames a session and marks it as freshly touched. */
+  async setChatSessionTitle(sessionId, title) {
+    this.#db.update(chatSessions).set({ title, updatedAt: Date.now() }).where(eq(chatSessions.id, sessionId)).run();
+  }
+  /**
+   * Sessions newest-touched first. `workspacePath` is compared verbatim —
+   * the caller is expected to have `path.resolve`d both the value it stored
+   * and the value it filters by; the store does no normalization of its own.
+   */
+  async listChatSessions(workspacePath, options) {
+    const limit = options?.limit;
+    const selection = this.#db.select().from(chatSessions);
+    const filtered = workspacePath === void 0 ? selection : selection.where(eq(chatSessions.workspacePath, workspacePath));
+    const ordered = filtered.orderBy(desc(chatSessions.updatedAt), desc(chatSessions.createdAt), desc(chatSessions.id));
+    const rows = limit === void 0 ? ordered.all() : ordered.limit(Math.max(0, limit)).all();
+    return rows.map(toChatSessionRecord);
+  }
+  /**
+   * Reads a session and its transcript, ordered by `seq`. Messages whose JSON
+   * no longer parses are skipped rather than thrown over: a single corrupt
+   * row must not make a conversation unresumable.
+   */
+  async loadChatSession(sessionId) {
+    const row = this.#db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).limit(1).get();
+    if (row === void 0)
+      return void 0;
+    const messageRows = this.#db.select().from(chatMessages).where(eq(chatMessages.sessionId, sessionId)).orderBy(asc(chatMessages.seq)).all();
+    const messages = [];
+    for (const messageRow of messageRows) {
+      const message = parseJson(messageRow.messageJson);
+      if (message === void 0 || message === null)
+        continue;
+      messages.push(message);
+    }
+    return { record: toChatSessionRecord(row), messages };
+  }
+  /** Drops a session and its transcript together. */
+  async deleteChatSession(sessionId) {
+    this.#db.transaction((tx) => {
+      tx.delete(chatMessages).where(eq(chatMessages.sessionId, sessionId)).run();
+      tx.delete(chatSessions).where(eq(chatSessions.id, sessionId)).run();
+    });
+  }
   close() {
     this.#sqlite.close();
   }
 };
+function toChatSessionRecord(row) {
+  return {
+    id: row.id,
+    workspacePath: row.workspacePath,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    messageCount: row.messageCount,
+    ...row.modelAlias === null ? {} : { modelAlias: row.modelAlias }
+  };
+}
 function toAgentEvent(row) {
   const data = parseJson(row.dataJson);
   return {
@@ -7429,6 +7710,11 @@ async function runInit(options) {
   return 0;
 }
 
+// apps/cli/dist/interactive.js
+import { mkdir as mkdir3 } from "node:fs/promises";
+import path6 from "node:path";
+import * as readline2 from "node:readline";
+
 // apps/cli/dist/orchestrate.js
 import { execFile as execFile7 } from "node:child_process";
 import { resolve as resolve4 } from "node:path";
@@ -7745,9 +8031,620 @@ async function runOrchestrate(objective, options, deps = {}) {
   }
 }
 
+// apps/cli/dist/interactive.js
+var CLI_VERSION = "0.2.0";
+var SHORT_ID = 8;
+var SESSIONS_LIMIT = 20;
+function shortId(id) {
+  return id.slice(0, SHORT_ID);
+}
+function availableSessionsHint(records) {
+  if (records.length === 0)
+    return "";
+  const listed = records.slice(0, SESSIONS_LIMIT).map((record) => shortId(record.id)).join(", ");
+  return ` Available: ${listed}.`;
+}
+function matchChatSession(records, reference) {
+  const exact = records.find((record) => record.id === reference);
+  if (exact !== void 0)
+    return { record: exact };
+  const matches2 = records.filter((record) => record.id.startsWith(reference));
+  const first = matches2[0];
+  if (first === void 0) {
+    return {
+      error: `No chat session matches "${reference}".${availableSessionsHint(records)}`
+    };
+  }
+  if (matches2.length > 1) {
+    const ids = matches2.map((record) => shortId(record.id)).join(", ");
+    return {
+      error: `"${reference}" matches ${matches2.length} sessions: ${ids}. Use a longer prefix.`
+    };
+  }
+  return { record: first };
+}
+function startFrom(transcript) {
+  return {
+    sessionId: transcript.record.id,
+    title: transcript.record.title,
+    persisted: true,
+    messages: transcript.messages
+  };
+}
+async function resolveStartSession(store, workspacePath, selector, newId = () => crypto.randomUUID()) {
+  const wantsResume = selector.continue === true || selector.session !== void 0;
+  if (!wantsResume) {
+    return {
+      start: { sessionId: newId(), title: "", persisted: false, messages: [] }
+    };
+  }
+  if (store === void 0) {
+    return {
+      error: "--continue and --session need the session database, which --no-save disables. Drop --no-save to resume a conversation."
+    };
+  }
+  const records = await store.listChatSessions(workspacePath);
+  if (selector.session !== void 0) {
+    const matched = matchChatSession(records, selector.session);
+    if ("error" in matched)
+      return { error: matched.error };
+    const transcript2 = await store.loadChatSession(matched.record.id);
+    if (transcript2 === void 0) {
+      return { error: `Chat session ${matched.record.id} could not be read.` };
+    }
+    return { start: startFrom(transcript2) };
+  }
+  const latest = records[0];
+  if (latest === void 0) {
+    return {
+      error: `No chat sessions recorded for ${workspacePath} yet \u2014 run \`kapel\` without --continue to start one.`
+    };
+  }
+  const transcript = await store.loadChatSession(latest.id);
+  if (transcript === void 0) {
+    return { error: `Chat session ${latest.id} could not be read.` };
+  }
+  return { start: startFrom(transcript) };
+}
+function usageTotalsLine(totals) {
+  const parts = [
+    `input: ${totals.usage.inputTokens}`,
+    `output: ${totals.usage.outputTokens}`
+  ];
+  if (totals.usage.cachedInputTokens !== void 0) {
+    parts.push(`cached: ${totals.usage.cachedInputTokens}`);
+  }
+  const line = `tokens \u2014 ${parts.join(", ")}`;
+  return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
+}
+function usageDeltaLine(before, after) {
+  const input = after.usage.inputTokens - before.usage.inputTokens;
+  const output = after.usage.outputTokens - before.usage.outputTokens;
+  const cost = after.costUsd - before.costUsd;
+  const line = `tokens +${input} in, +${output} out`;
+  return cost > 0 ? `${line}  (~$${cost.toFixed(4)})` : line;
+}
+var SLASH_COMMANDS = [
+  { name: "help", usage: "/help", help: "show this list" },
+  { name: "exit", usage: "/exit", help: "leave the session (alias: /quit)" },
+  { name: "new", usage: "/new", help: "start a fresh conversation here" },
+  {
+    name: "sessions",
+    usage: "/sessions",
+    help: "list this directory's conversations"
+  },
+  {
+    name: "resume",
+    usage: "/resume <id>",
+    help: "switch to a stored conversation"
+  },
+  {
+    name: "model",
+    usage: "/model [alias]",
+    help: "show or switch the model for future turns"
+  },
+  { name: "usage", usage: "/usage", help: "tokens and cost so far" },
+  {
+    name: "orchestrate",
+    usage: "/orchestrate <objective>",
+    help: "run the multi-agent pipeline on an objective"
+  }
+];
+function errorText2(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function createInteractiveController(deps) {
+  const newId = deps.newId ?? (() => crypto.randomUUID());
+  const now = deps.now ?? (() => Date.now());
+  const resolveModel = deps.resolveModel ?? ((alias) => resolveModelAndProvider(process.env, alias));
+  let modelAlias = deps.modelAlias;
+  let model = deps.model;
+  let provider = deps.provider;
+  let sessionId = deps.start.sessionId;
+  let title = deps.start.title;
+  let persisted = deps.start.persisted;
+  let titleDirty = false;
+  let session = await deps.createSession({
+    modelAlias,
+    model,
+    provider,
+    messages: deps.start.messages
+  });
+  const lines = [];
+  const emit2 = (line) => {
+    lines.push(line);
+    deps.write(line);
+  };
+  const drain = (effect) => {
+    const output = lines.slice();
+    lines.length = 0;
+    return effect === void 0 ? { output } : { output, effect };
+  };
+  const persist = async () => {
+    const store = deps.store;
+    if (store === void 0)
+      return;
+    const snapshot = session.messages();
+    if (snapshot.length === 0)
+      return;
+    try {
+      if (!persisted) {
+        await store.createChatSession({
+          id: sessionId,
+          workspacePath: deps.workspacePath,
+          title,
+          modelAlias,
+          createdAt: now()
+        });
+        persisted = true;
+        titleDirty = false;
+      } else if (titleDirty) {
+        await store.setChatSessionTitle(sessionId, title);
+        titleDirty = false;
+      }
+      await store.appendChatMessages(sessionId, snapshot.map((message, seq) => ({ seq, message })));
+    } catch (error) {
+      emit2(`(not saved: ${errorText2(error)})`);
+    }
+  };
+  const rebuildSession = async () => {
+    session = await deps.createSession({
+      modelAlias,
+      model,
+      provider,
+      messages: session.messages()
+    });
+  };
+  const handleMessage = async (text2, signal) => {
+    if (title === "") {
+      title = chatTitleFrom(text2);
+      titleDirty = true;
+    }
+    const before = deps.usage.totals();
+    let result;
+    try {
+      result = await session.send(text2, {
+        runId: sessionId,
+        workspacePath: deps.workspacePath,
+        ...signal === void 0 ? {} : { signal }
+      });
+    } catch (error) {
+      emit2(`error: ${errorText2(error)}`);
+    }
+    await persist();
+    if (result !== void 0 && result.status !== "success") {
+      emit2(`(${result.status}) ${result.summary}`);
+    }
+    emit2(usageDeltaLine(before, deps.usage.totals()));
+    return drain();
+  };
+  const listRecords = async () => {
+    const store = deps.store;
+    if (store === void 0)
+      return [];
+    return await store.listChatSessions(deps.workspacePath, {
+      limit: SESSIONS_LIMIT
+    });
+  };
+  const slashHelp = () => {
+    emit2("commands:");
+    const width = Math.max(...SLASH_COMMANDS.map((command) => command.usage.length));
+    for (const command of SLASH_COMMANDS) {
+      emit2(`  ${command.usage.padEnd(width)}  ${command.help}`);
+    }
+    emit2("anything else is sent to the agent.");
+    return drain();
+  };
+  const slashNew = async () => {
+    await persist();
+    sessionId = newId();
+    title = "";
+    persisted = false;
+    titleDirty = false;
+    session = await deps.createSession({
+      modelAlias,
+      model,
+      provider,
+      messages: []
+    });
+    emit2(`started a new session ${shortId(sessionId)}`);
+    return drain("new-session");
+  };
+  const slashSessions = async () => {
+    if (deps.store === void 0) {
+      emit2("sessions are not being recorded (--no-save).");
+      return drain();
+    }
+    const records = await listRecords();
+    if (records.length === 0) {
+      emit2(`No chat sessions recorded for ${deps.workspacePath} yet.`);
+      return drain();
+    }
+    const rows = records.map((record) => [
+      // The conversation this REPL is on gets a marker of its own column, so
+      // the ids stay in one straight line.
+      record.id === sessionId ? "*" : "",
+      shortId(record.id),
+      isoTime(record.updatedAt),
+      String(record.messageCount),
+      record.title === "" ? "(untitled)" : record.title
+    ]);
+    for (const line of formatTable(["", "ID", "UPDATED", "MSGS", "TITLE"], rows)) {
+      emit2(line);
+    }
+    return drain();
+  };
+  const slashResume = async (argument) => {
+    if (deps.store === void 0) {
+      emit2("sessions are not being recorded (--no-save), so there is none to resume.");
+      return drain();
+    }
+    if (argument === "") {
+      emit2("usage: /resume <id>  \u2014 see /sessions");
+      return drain();
+    }
+    const records = await listRecords();
+    const matched = matchChatSession(records, argument);
+    if ("error" in matched) {
+      emit2(matched.error);
+      return drain();
+    }
+    if (matched.record.id === sessionId) {
+      emit2(`already on ${shortId(sessionId)}`);
+      return drain();
+    }
+    const transcript = await deps.store.loadChatSession(matched.record.id);
+    if (transcript === void 0) {
+      emit2(`Chat session ${matched.record.id} could not be read.`);
+      return drain();
+    }
+    await persist();
+    sessionId = transcript.record.id;
+    title = transcript.record.title;
+    persisted = true;
+    titleDirty = false;
+    session = await deps.createSession({
+      modelAlias,
+      model,
+      provider,
+      messages: transcript.messages
+    });
+    emit2(`resumed ${title === "" ? shortId(sessionId) : title} (${transcript.messages.length} messages)`);
+    return drain("resumed");
+  };
+  const slashModel = async (argument) => {
+    if (argument === "") {
+      emit2(`model: ${modelAlias} (${provider.id}/${model.id})`);
+      return drain();
+    }
+    const resolved = await resolveModel(argument);
+    if ("error" in resolved) {
+      emit2(resolved.error);
+      return drain();
+    }
+    modelAlias = argument;
+    model = resolved.model;
+    provider = resolved.provider;
+    await rebuildSession();
+    emit2(`model switched to ${modelAlias} \u2014 future turns use it.`);
+    return drain("model-changed");
+  };
+  const slashOrchestrate = async (objective) => {
+    if (deps.orchestrate === void 0) {
+      emit2("/orchestrate is not available here.");
+      return drain();
+    }
+    if (objective === "") {
+      emit2('usage: /orchestrate "<objective>"');
+      return drain();
+    }
+    try {
+      const code = await deps.orchestrate(objective);
+      if (code !== 0)
+        emit2(`orchestrate exited ${code}`);
+    } catch (error) {
+      emit2(errorText2(error));
+    }
+    return drain();
+  };
+  const handleSlash = async (line) => {
+    const space = line.indexOf(" ");
+    const name = (space === -1 ? line : line.slice(0, space)).slice(1).toLowerCase();
+    const argument = space === -1 ? "" : line.slice(space + 1).trim();
+    switch (name) {
+      case "help":
+      case "?":
+        return slashHelp();
+      case "exit":
+      case "quit":
+        return drain("exit");
+      case "new":
+        return await slashNew();
+      case "sessions":
+        return await slashSessions();
+      case "resume":
+        return await slashResume(argument);
+      case "model":
+        return await slashModel(argument);
+      case "usage":
+        emit2(usageTotalsLine(deps.usage.totals()));
+        return drain();
+      case "orchestrate":
+        return await slashOrchestrate(argument);
+      default:
+        emit2(`Unknown command "/${name}". Type /help for the list.`);
+        return drain();
+    }
+  };
+  return {
+    sessionId: () => sessionId,
+    title: () => title,
+    modelAlias: () => modelAlias,
+    session: () => session,
+    banner: (cwd) => [
+      `kapel v${CLI_VERSION}  ${modelAlias}  session ${shortId(sessionId)}`,
+      cwd,
+      "type /help for commands, /exit to quit",
+      ""
+    ],
+    handleLine: async (line, signal) => {
+      const trimmed = line.trim();
+      if (trimmed === "")
+        return { output: [] };
+      if (trimmed.startsWith("/"))
+        return await handleSlash(trimmed);
+      return await handleMessage(trimmed, signal);
+    }
+  };
+}
+async function openChatStore(workspacePath) {
+  const agentDir = path6.join(workspacePath, ".agent");
+  try {
+    await mkdir3(agentDir, { recursive: true });
+    return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
+  } catch {
+    return void 0;
+  }
+}
+var SIGINT_LINE = /* @__PURE__ */ Symbol("sigint");
+function ttyLineSource() {
+  return {
+    next: (promptText) => new Promise((resolve5) => {
+      const rl = readline2.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: true
+      });
+      let settled = false;
+      const finish = (value) => {
+        if (settled)
+          return;
+        settled = true;
+        rl.close();
+        resolve5(value);
+      };
+      rl.on("SIGINT", () => finish(SIGINT_LINE));
+      rl.on("close", () => finish(void 0));
+      rl.question(promptText, (answer) => finish(answer));
+    }),
+    close: () => void 0
+  };
+}
+function pipedLineSource() {
+  const rl = readline2.createInterface({
+    input: process.stdin,
+    terminal: false
+  });
+  const queued = [];
+  let waiting;
+  let ended = false;
+  const deliver = (line) => {
+    const waiter = waiting;
+    if (waiter === void 0)
+      return false;
+    waiting = void 0;
+    waiter(line);
+    return true;
+  };
+  rl.on("line", (line) => {
+    if (!deliver(line))
+      queued.push(line);
+  });
+  rl.on("close", () => {
+    ended = true;
+    deliver(void 0);
+  });
+  return {
+    next: (promptText) => {
+      process.stdout.write(promptText);
+      const next = queued.shift();
+      if (next !== void 0)
+        return Promise.resolve(next);
+      if (ended)
+        return Promise.resolve(void 0);
+      return new Promise((resolve5) => {
+        waiting = resolve5;
+      });
+    },
+    close: () => rl.close()
+  };
+}
+function dim(text2, color) {
+  return color ? `\x1B[2m${text2}\x1B[0m` : text2;
+}
+async function runInteractive(options) {
+  if (options.json) {
+    console.error('--json is not supported in interactive mode: there is no stream to script against until you say something. Use the one-shot form instead: kapel --json "<objective>".');
+    return 1;
+  }
+  const workspacePath = path6.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const alias = resolveModelAlias(process.env, options.model);
+  const resolved = await resolveModelAndProvider(process.env, alias);
+  if ("error" in resolved) {
+    console.error(resolved.error);
+    return 1;
+  }
+  const store = options.save === false ? void 0 : await openChatStore(workspacePath);
+  try {
+    const started = await resolveStartSession(store, workspacePath, {
+      ...options.continue === void 0 ? {} : { continue: options.continue },
+      ...options.session === void 0 ? {} : { session: options.session }
+    });
+    if ("error" in started) {
+      console.error(started.error);
+      return 1;
+    }
+    const interactiveTty = process.stdin.isTTY === true;
+    const renderer = new TextRenderer();
+    const promptState = createPromptState();
+    const prompter = createPrompter({
+      yes: options.yes,
+      interactive: interactiveTty,
+      state: promptState
+    });
+    const usage = new UsageTracker();
+    const createSession = (args) => {
+      const agent = {
+        name: "agent",
+        role: "worker",
+        model: args.model,
+        systemPrompt: options.system ?? defaultSystemPrompt(workspacePath),
+        tools: builtinTools().map((tool) => tool.name),
+        permissions: DEFAULT_PERMISSIONS
+      };
+      return AgentChatSession.restore({
+        agent,
+        provider: args.provider,
+        tools: builtinTools(),
+        permissions: new PermissionEngine(DEFAULT_PERMISSIONS, {
+          defaultDecision: "ask",
+          ...prompter === void 0 ? {} : { prompter }
+        }),
+        usage,
+        events: renderer,
+        maxIterations: options.maxIterations,
+        ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
+      }, args.messages);
+    };
+    const controller = await createInteractiveController({
+      workspacePath,
+      ...store === void 0 ? {} : { store },
+      createSession,
+      write: (line) => {
+        console.log(line);
+      },
+      modelAlias: alias,
+      model: resolved.model,
+      provider: resolved.provider,
+      start: started.start,
+      usage,
+      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias))
+    });
+    const color = process.stdout.isTTY === true;
+    for (const line of controller.banner(workspacePath))
+      console.log(line);
+    if (started.start.persisted) {
+      const label = started.start.title === "" ? shortId(started.start.sessionId) : started.start.title;
+      console.log(dim(`resumed ${label} (${started.start.messages.length} messages)`, color));
+    }
+    const lineSource = interactiveTty ? ttyLineSource() : pipedLineSource();
+    try {
+      return await replLoop({
+        controller,
+        lines: lineSource,
+        promptState,
+        promptText: dim("kapel> ", color),
+        color
+      });
+    } finally {
+      lineSource.close();
+    }
+  } finally {
+    if (store !== void 0) {
+      try {
+        store.close();
+      } catch {
+      }
+    }
+  }
+}
+async function replLoop(args) {
+  const { controller, lines, promptState, promptText, color } = args;
+  let armed = false;
+  for (; ; ) {
+    const line = await lines.next(promptText);
+    if (line === void 0) {
+      console.log("");
+      return 0;
+    }
+    if (line === SIGINT_LINE) {
+      if (armed) {
+        console.log("");
+        return 0;
+      }
+      armed = true;
+      console.log(dim("(/exit to quit, Ctrl-C again to force)", color));
+      continue;
+    }
+    armed = false;
+    const turn = new AbortController();
+    const onSigint = () => {
+      if (promptState.active)
+        return;
+      turn.abort();
+    };
+    process.on("SIGINT", onSigint);
+    let result;
+    try {
+      result = await controller.handleLine(line, turn.signal);
+    } finally {
+      process.off("SIGINT", onSigint);
+    }
+    if (result.effect === "exit")
+      return 0;
+  }
+}
+function orchestrateOptionsFor(options, alias) {
+  return {
+    cwd: options.cwd,
+    json: false,
+    model: alias,
+    dryRun: false,
+    workerMode: DEFAULT_WORKER_MODE,
+    backend: "native",
+    isolation: DEFAULT_ISOLATION,
+    validate: true,
+    save: options.save !== false,
+    tui: false,
+    maxIterations: options.maxIterations,
+    ...options.timeoutSeconds === void 0 ? {} : { timeoutSeconds: options.timeoutSeconds }
+  };
+}
+
 // apps/cli/dist/policy.js
 import { readFile as readFile9, writeFile as writeFile3 } from "node:fs/promises";
-import path6 from "node:path";
+import path7 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
@@ -7812,7 +8709,7 @@ async function loadProjectForPolicy(workspacePath, output, json) {
 }
 async function runPolicyCompile(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path6.resolve(options.cwd);
+  const workspacePath = path7.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
@@ -7868,7 +8765,7 @@ async function runPolicyCompile(options, deps = {}) {
   }
   const lock = createLockfile({ markdown, result, model: model.id });
   const serialized = serializeLockfile(lock);
-  const lockPath = path6.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path7.join(project.root, LOCK_FILE_NAME2);
   await writeFile3(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
@@ -7894,13 +8791,13 @@ async function runPolicyCompile(options, deps = {}) {
 }
 async function runPolicyCheck(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path6.resolve(options.cwd);
+  const workspacePath = path7.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path6.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path7.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   if (!status.fresh) {
@@ -7944,13 +8841,13 @@ async function runPolicyCheck(options, deps = {}) {
 }
 async function runPolicyExplain(options, deps = {}) {
   const output = deps.output ?? consoleOutput2;
-  const workspacePath = path6.resolve(options.cwd);
+  const workspacePath = path7.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
   if ("exitCode" in loaded)
     return loaded.exitCode;
   const { project, markdown } = loaded;
-  const lockPath = path6.join(project.root, LOCK_FILE_NAME2);
+  const lockPath = path7.join(project.root, LOCK_FILE_NAME2);
   const lockContent = await readOptionalFile2(lockPath);
   const status = checkLock(markdown, lockContent);
   let lock;
@@ -7995,7 +8892,7 @@ async function runPolicyExplain(options, deps = {}) {
 
 // apps/cli/dist/resume-cmd.js
 import { readFile as readFile10 } from "node:fs/promises";
-import path7 from "node:path";
+import path8 from "node:path";
 var LOCK_FILE_NAME3 = "orchestration.lock.json";
 async function readOptionalFile3(filePath) {
   try {
@@ -8020,7 +8917,7 @@ function stableJson(value) {
 }
 async function policyDriftWarning(project, snapshot) {
   const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile3(path7.join(project.root, LOCK_FILE_NAME3));
+  const raw = await readOptionalFile3(path8.join(project.root, LOCK_FILE_NAME3));
   const status = checkLock(markdown, raw);
   const tail3 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `kapel orchestrate` to plan under the current one.";
   if (!status.fresh) {
@@ -8051,7 +8948,7 @@ async function rebuildGraph(store, runId, plan, completed) {
 }
 async function runResume(runId, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
-  const workspacePath = path7.resolve(options.cwd);
+  const workspacePath = path8.resolve(options.cwd);
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
   const fail2 = (message) => {
     if (options.json)
@@ -8136,9 +9033,9 @@ async function runResume(runId, options, deps = {}) {
 }
 
 // apps/cli/dist/run-codex.js
-import path8 from "node:path";
+import path9 from "node:path";
 async function runCodexObjective(objective, options) {
-  const workspacePath = path8.resolve(options.cwd);
+  const workspacePath = path9.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const availability = await CodexBackend.checkAvailability();
   if (!availability.installed) {
@@ -8323,6 +9220,30 @@ function toCodexRunOptions(raw) {
     ...timeoutSeconds === void 0 ? {} : { timeoutSeconds }
   };
 }
+function toInteractiveOptions(raw, chat = {}) {
+  const maxIterations = parsePositive(raw.maxIterations, "--max-iterations", true);
+  const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
+  return {
+    cwd: raw.cwd,
+    maxIterations,
+    yes: raw.yes,
+    json: raw.json,
+    save: chat.save !== false,
+    ...raw.model === void 0 ? {} : { model: raw.model },
+    ...timeoutSeconds === void 0 ? {} : { timeoutSeconds },
+    ...raw.system === void 0 ? {} : { system: raw.system },
+    ...chat.continue === void 0 ? {} : { continue: chat.continue },
+    ...chat.session === void 0 ? {} : { session: chat.session }
+  };
+}
+async function chatAndExit(raw, chat = {}) {
+  try {
+    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
 async function runAndExit(objectiveParts, raw) {
   const objective = objectiveParts.join(" ").trim();
   if (objective === "") {
@@ -8345,13 +9266,20 @@ async function runAndExit(objectiveParts, raw) {
   }
 }
 var program = new Command();
-program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version("0.1.0").option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", "execution backend to use: native | codex", resolveBackendName(process.env)).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE);
+program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent: point it at a repository and an objective, and it plans, routes, and edits via LLM tool-call loops.").version(CLI_VERSION).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "model alias to use (see `kapel models`)").option("--max-iterations <n>", "maximum tool-call iterations before giving up", "32").option("--timeout <seconds>", "overall run timeout, in seconds").option("-y, --yes", "auto-approve every permission prompt", false).option("--json", "emit newline-delimited JSON events instead of text", false).option("--system <text>", "override the default system prompt").option("--backend <name>", "execution backend to use: native | codex", resolveBackendName(process.env)).option("--sandbox <mode>", `codex sandbox mode: ${SANDBOX_MODES.join(" | ")}`, DEFAULT_SANDBOX_MODE);
 program.argument("[objective...]", 'the coding objective to work on, e.g. "fix the failing test"').action(async (objective, opts) => {
   if (objective.length === 0) {
+    if (process.stdin.isTTY === true) {
+      await chatAndExit(opts);
+      return;
+    }
     program.help();
     return;
   }
   await runAndExit(objective, opts);
+});
+program.command("chat").description("Open an interactive conversation with the coding agent in this directory").option("-c, --continue", "resume this directory's most recent conversation").option("--session <id>", "resume a specific conversation (id or prefix)").option("--no-save", "do not record this conversation in .agent/sessions.db").action(async (opts, command) => {
+  await chatAndExit(command.optsWithGlobals(), opts);
 });
 program.command("exec").description("Run the coding agent loop (same as the default command)").argument("<objective...>", "the coding objective to work on").action(async (objective, _opts, command) => {
   await runAndExit(objective, command.optsWithGlobals());
@@ -8359,13 +9287,13 @@ program.command("exec").description("Run the coding agent loop (same as the defa
 program.command("init").description("Create a .agent configuration in the current repository").option("--force", "overwrite an existing .agent directory", false).action(async (opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
   process.exitCode = await runInit({
-    cwd: path9.resolve(cwd),
+    cwd: path10.resolve(cwd),
     force: opts.force
   });
 });
 program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
   const cwd = command.optsWithGlobals().cwd;
-  await loadDotEnvFile(path9.resolve(cwd));
+  await loadDotEnvFile(path10.resolve(cwd));
   const entries = await listModels(process.env);
   if (entries.length === 0) {
     console.log("(no models registered)");

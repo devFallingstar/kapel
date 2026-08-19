@@ -13,6 +13,11 @@ import {
 import { loadDotEnvFile } from "./env.js";
 import { runExplainCommand } from "./explain-cmd.js";
 import { runInit } from "./init.js";
+import {
+  CLI_VERSION,
+  type InteractiveOptions,
+  runInteractive,
+} from "./interactive.js";
 import { listModels } from "./models.js";
 import {
   DEFAULT_ISOLATION,
@@ -101,6 +106,54 @@ function toCodexRunOptions(
   };
 }
 
+/** `--continue` / `--session`, as `chat` receives them from commander. */
+interface RawChatOpts {
+  readonly continue?: boolean;
+  readonly session?: string;
+  readonly save?: boolean;
+}
+
+function toInteractiveOptions(
+  raw: RawRunOpts,
+  chat: RawChatOpts = {},
+): InteractiveOptions {
+  const maxIterations = parsePositive(
+    raw.maxIterations,
+    "--max-iterations",
+    true,
+  );
+  const timeoutSeconds =
+    raw.timeout === undefined
+      ? undefined
+      : parsePositive(raw.timeout, "--timeout", false);
+
+  return {
+    cwd: raw.cwd,
+    maxIterations,
+    yes: raw.yes,
+    json: raw.json,
+    save: chat.save !== false,
+    ...(raw.model === undefined ? {} : { model: raw.model }),
+    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
+    ...(raw.system === undefined ? {} : { system: raw.system }),
+    ...(chat.continue === undefined ? {} : { continue: chat.continue }),
+    ...(chat.session === undefined ? {} : { session: chat.session }),
+  };
+}
+
+/** Runs the interactive REPL, turning a setup failure into a printable error. */
+async function chatAndExit(
+  raw: RawRunOpts,
+  chat: RawChatOpts = {},
+): Promise<void> {
+  try {
+    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
 async function runAndExit(
   objectiveParts: readonly string[],
   raw: RawRunOpts,
@@ -135,7 +188,7 @@ program
     "Kapel — a multi-model orchestration coding agent: point it at a repository " +
       "and an objective, and it plans, routes, and edits via LLM tool-call loops.",
   )
-  .version("0.1.0")
+  .version(CLI_VERSION)
   // These run options live on the top-level program (not repeated on `exec`)
   // so both the default command and `exec` share one definition; commander
   // resolves them for subcommands too via Command#optsWithGlobals().
@@ -168,10 +221,29 @@ program
   )
   .action(async (objective: string[], opts: RawRunOpts) => {
     if (objective.length === 0) {
+      // No objective: on a terminal that means "talk to the agent about this
+      // directory". Piped or redirected, there is nobody to talk to, so the
+      // help text stays what a bare `kapel` prints.
+      if (process.stdin.isTTY === true) {
+        await chatAndExit(opts);
+        return;
+      }
       program.help();
       return;
     }
     await runAndExit(objective, opts);
+  });
+
+program
+  .command("chat")
+  .description(
+    "Open an interactive conversation with the coding agent in this directory",
+  )
+  .option("-c, --continue", "resume this directory's most recent conversation")
+  .option("--session <id>", "resume a specific conversation (id or prefix)")
+  .option("--no-save", "do not record this conversation in .agent/sessions.db")
+  .action(async (opts: RawChatOpts, command: Command) => {
+    await chatAndExit(command.optsWithGlobals() as RawRunOpts, opts);
   });
 
 program

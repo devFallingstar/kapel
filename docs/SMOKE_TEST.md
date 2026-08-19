@@ -12,13 +12,13 @@
 빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.1.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.2.0.tgz
 kapel --version
 ```
 
 npm 레지스트리 배포 후에는 `npm install -g @devfallingstar/kapel` 로 대체됩니다.
 URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
-`npm install -g ./kapel/release/devfallingstar-kapel-0.1.0.tgz`. 제거는
+`npm install -g ./kapel/release/devfallingstar-kapel-0.2.0.tgz`. 제거는
 `npm uninstall -g @devfallingstar/kapel`.
 
 > `npm install -g github:...` 형태는 쓰지 마세요 — npm의 워크스페이스
@@ -28,7 +28,7 @@ URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
 
 기여자용(소스 개발): 클론에서 `npm install && npm run build` 후
 `node apps/cli/dist/index.js ...` 또는 `npm install -g .` 사용.
-빠른 자체 점검: `npm test` → 784개 테스트가 통과해야 합니다.
+빠른 자체 점검: `npm test` → 845개 테스트가 통과해야 합니다.
 
 ### Windows 참고
 
@@ -47,7 +47,7 @@ URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
 
 `kapel models` 로 각 모델 별칭의 자격증명 상태를 먼저 확인하세요.
 
-## 2. 시나리오 A — 단일 에이전트 루프 (M1)
+## 2. 시나리오 A — 대화형 에이전트 (M1)
 
 테스트용 저장소를 하나 만들고 (Windows cmd에서는 파일 생성을 메모장 등으로 대체) 그 안에서 실행합니다:
 
@@ -64,13 +64,49 @@ console.log("PASS");
 EOF
 git add -A && git commit -qm init
 
-kapel "calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘."
+kapel                     # 목적을 인자로 주지 않으면 대화형 모드로 진입
+```
+
+배너(`kapel v0.2.0  claude-sonnet-5  session 0f3c9a2b`)와 `kapel>` 프롬프트가
+뜨면 대화로 버그 수정을 지시합니다:
+
+```text
+kapel> calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘.
 ```
 
 **기대 동작**: read/grep은 자동 허용, `edit_file`/`bash` 실행 전에 `allow ...? [y/N]`
-프롬프트 → y 응답 → 수정 후 테스트 통과 요약 + 토큰/비용 출력, 종료 코드 0.
+프롬프트 → y 응답 → 수정 후 요약 + 그 턴의 토큰/비용 한 줄(`tokens +… in, +… out`).
+프롬프트로 돌아오면 대화가 이어집니다:
 
-추가 확인: `-y`(프롬프트 생략), `--json`(JSONL 스트림), Ctrl-C(중단), `--timeout 30`.
+```text
+kapel> sub 함수도 추가하고 테스트도 같이 만들어줘
+kapel> /usage        # 누적 토큰·비용
+kapel> /sessions     # 이 디렉터리의 대화 목록 (id, 마지막 갱신, 메시지 수, 제목)
+kapel> /exit
+```
+
+이어서 **재개**를 확인합니다 — 대화는 `.agent/sessions.db`에 저장되므로
+프로세스를 껐다 켜도 이어집니다:
+
+```bash
+kapel chat --continue     # 방금 그 대화를 그대로 이어받음 ("resumed … (N messages)")
+```
+
+`kapel chat --help`로 `--session <id>`(특정 대화, 접두사 가능)와 `--no-save`도
+확인할 수 있습니다. 프롬프트에서 `/new`(새 대화), `/resume <id>`(전환),
+`/model <alias>`(이후 턴부터 모델 교체), `/help`도 함께 눌러 보세요.
+
+추가 확인: 턴 진행 중 Ctrl-C(해당 턴만 취소, 대화는 유지), 프롬프트에서 Ctrl-C
+두 번(종료), Ctrl-D(종료).
+
+**단발 실행(one-shot)** 형태도 그대로 동작합니다 — CI나 스크립트용:
+
+```bash
+kapel "calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.test.js로 검증까지 해줘."
+```
+
+추가 확인: `-y`(프롬프트 생략), `--json`(JSONL 스트림 — 대화형에서는 지원하지
+않고 안내 후 종료 코드 1), Ctrl-C(중단), `--timeout 30`.
 
 ## 3. 시나리오 B — Codex 백엔드 (OpenAI OAuth)
 
@@ -128,6 +164,12 @@ kapel runs                      # 방금 런이 목록에 표시
 kapel explain T01               # 라우팅 근거 + 이벤트 다이제스트
 kapel resume <runId>            # (실패한 런이 있을 때) 미완료 태스크만 재실행
 ```
+
+대화(시나리오 A)와 오케스트레이션 런은 같은 `.agent/sessions.db`에 각자
+저장됩니다: 대화는 `kapel chat --continue` / 프롬프트의 `/sessions`,
+런은 `kapel runs`로 확인합니다. 대화형 프롬프트에서
+`/orchestrate "<objective>"`로 위 파이프라인을 바로 돌릴 수도 있습니다
+(정책 lock이 최신이어야 하며, 실패해도 대화는 유지됩니다).
 
 ## 6. 검증 게이트 (M5)
 

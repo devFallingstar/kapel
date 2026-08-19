@@ -9,33 +9,98 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.1.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.2.0.tgz
 
 cd /path/to/your/repo
 export ANTHROPIC_API_KEY=...          # see Authentication below for other options
-kapel "fix the failing test"
+kapel                                 # opens an interactive agent for this directory
 ```
 
 Once published to the npm registry this becomes simply `npm install -g @devfallingstar/kapel`.
 If the tarball URL is unreachable from your network, the equivalent two-step
 form is `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.1.0.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.2.0.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
 
 For development, clone and run `npm install && npm run build`, then use `node apps/cli/dist/index.js` or `npm install -g .` from the repo root.
 
+### Interactive mode
+
+`kapel` with no objective opens a conversation with the agent, in the directory you ran it from — the same way `claude`, `codex` or `opencode` do. Type, the agent works with its tools, and the conversation keeps going:
+
+```text
+$ kapel
+kapel v0.2.0  claude-sonnet-5  session 0f3c9a2b
+/path/to/your/repo
+type /help for commands, /exit to quit
+
+kapel> calc.test.js is failing — find out why and fix it
+→ read_file {"path":"calc.test.js"}
+  ✓
+→ grep {"pattern":"function add"}
+  ✓
+allow edit_file? {"path":"calc.js","old":"a - b","new":"a + b"} [y/N] y
+  ✓
+`add` subtracted instead of adding. Fixed and `node calc.test.js` now prints PASS.
+tokens +4210 in, +318 out  (~$0.0138)
+
+kapel> now add a `sub` function next to it, with a test
+…
+kapel> /exit
+```
+
+Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
+
+Commands available at the prompt:
+
+| command | what it does |
+|---|---|
+| `/help` | list these commands |
+| `/exit`, `/quit` | leave the session |
+| `/new` | start a fresh conversation in this directory |
+| `/sessions` | list this directory's conversations (id, last touched, messages, title) |
+| `/resume <id>` | switch to a stored conversation — a unique id prefix is enough |
+| `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
+| `/usage` | tokens and cost so far |
+| `/orchestrate "<objective>"` | run the multi-agent pipeline without leaving the prompt; see [Orchestrate](#orchestrate) |
+
+Anything else you type is a message to the agent.
+
+**Sessions are per directory and survive restarts.** Every conversation is recorded in `.agent/sessions.db` beside the repo (the directory is created on first use — no `kapel init` needed), titled from your first message. Pick one back up with:
+
+```bash
+kapel chat --continue           # the most recent conversation here
+kapel chat --session 0f3c9a2b   # a specific one (id or unique prefix)
+kapel chat --no-save            # …or don't record this one at all
+```
+
+`kapel chat` is the explicit spelling of the default: use it when you want those flags, or in a script. The globals below (`-m/--model`, `--cwd`, `-y`, `--timeout`, `--max-iterations`) work the same here. `--json` does not — there is no event stream to script against until you say something, so use the one-shot form for that.
+
+### One-shot mode
+
+Give `kapel` an objective on the command line and it runs a single agent loop to completion and exits — the shape to reach for in CI, in a script, or when you already know exactly what you want done:
+
+```bash
+kapel "fix the failing test"
+kapel --json "fix the failing test"    # newline-delimited JSON events
+kapel -y "fix the failing test"        # no permission prompts
+```
+
+`kapel exec "<objective>"` is the same thing spelled out.
+
 Useful commands and flags:
 
+- `kapel chat` — the interactive agent (also `kapel` with no objective); `--continue`, `--session <id>`, `--no-save`
 - `kapel init` — copy the default `.agent/` configuration template into the current repo
 - `kapel models` — list available model aliases and their credential status
 - `kapel plan "<objective>"` / `kapel orchestrate "<objective>"` — multi-agent planning and routed parallel execution; see [Orchestrate](#orchestrate)
 - `kapel runs` / `kapel explain <taskId>` / `kapel resume <runId>` — inspect and continue recorded runs; see [Sessions](#sessions)
 - `-m, --model <alias>` — pick the model (default `claude-sonnet-5`, or `AGENT_MODEL`)
 - `-y, --yes` — auto-approve permission prompts; without it, write/edit/bash ask on the terminal
-- `--json` — newline-delimited JSON events for scripting/CI
+- `--json` — newline-delimited JSON events for scripting/CI (one-shot and orchestrate only)
 - `--timeout <seconds>`, `--max-iterations <n>` — run limits
 - `--backend <native|codex>` — execution backend (default `native`, or `AGENT_BACKEND`); see [Codex backend](#codex-backend)
 - `--sandbox <read-only|workspace-write|danger-full-access>` — Codex sandbox mode (default `workspace-write`)
@@ -155,6 +220,8 @@ kapel resume 0f3c…             # finish the tasks that never succeeded
 - **`kapel runs`** lists id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` emits the same as an array. A workspace with no database yet just says so.
 - **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
 - **`kapel resume <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `kapel orchestrate`. `--worker-mode`, `--backend`, `--isolation`, `--no-validate` and `--tui` all work exactly as they do on `orchestrate`.
+
+Interactive conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `kapel runs` reads the orchestration runs above. See [Interactive mode](#interactive-mode).
 
 `--no-save` skips persistence for a run entirely — nothing is written and the run cannot be listed, explained or resumed afterwards. Persistence is also skipped silently in a workspace with no `.agent` directory, and a store that cannot be written to never fails a run: recording a run is an observer of it, not a participant. If you'd rather not commit the database, add `.agent/sessions.db*` to your `.gitignore`.
 
