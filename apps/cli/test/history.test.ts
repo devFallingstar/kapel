@@ -31,7 +31,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  // A second attempt covers any straggling write finishing mid-removal.
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // --- historyFilePath ---------------------------------------------------------
@@ -118,10 +123,21 @@ describe("createHistoryAppender", () => {
     await expect(loadHistory(env)).resolves.toEqual(["a", "b", "a"]);
   });
 
-  it("never throws even if given odd input", () => {
+  it("never throws even if given odd input", async () => {
     const append = createHistoryAppender(env);
     expect(() => append("")).not.toThrow();
     expect(() => append("normal")).not.toThrow();
+    // Wait out the serialized write chain so afterEach's directory removal
+    // can't race a write still in flight (ENOTEMPTY on rmdir).
+    await waitUntil(async () => {
+      try {
+        return (await readFile(historyFilePath(env), "utf8")).includes(
+          "normal",
+        );
+      } catch {
+        return false;
+      }
+    });
   });
 
   it("trims the file back to HISTORY_LIMIT once it exceeds 2x the limit", async () => {

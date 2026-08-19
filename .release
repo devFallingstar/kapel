@@ -1,1 +1,1 @@
-v0.6.0 release — P1 UX: cost attribution, /undo, @ mentions, permission config, custom commands, sessions, images, piped stdin, policy authoring
+v0.6.0 release retry — fix history test teardown race (ENOTEMPTY)
