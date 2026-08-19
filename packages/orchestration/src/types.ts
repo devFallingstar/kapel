@@ -58,6 +58,17 @@ export interface RuntimeTask {
   workerId?: string;
   attempts: number;
   result?: TaskResult;
+  /**
+   * The most recent escalation that rerouted this task, if any. Set whenever
+   * the scheduler dispatches an attempt to a rule's `toAgent` instead of the
+   * router's normal pick, and left in place afterwards as a record of the
+   * last reroute (it is not cleared on a later non-escalated attempt).
+   */
+  lastEscalation?: {
+    readonly rule: string;
+    readonly from: string;
+    readonly to: string;
+  };
 }
 
 /** Results a task's direct dependencies produced, handed to its worker. */

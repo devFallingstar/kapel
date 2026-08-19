@@ -153,8 +153,13 @@ export class DeterministicScheduler {
     task.attempts += 1;
 
     if (escalation !== undefined) {
+      // #escalationFor only returns a rule once `previousAgent` is known to
+      // be defined (it requires task.attempts > 0, which in turn requires a
+      // prior attempt to have set assignedAgent), so this is safe.
+      const from = previousAgent as string;
+      task.lastEscalation = { rule: escalation.id, from, to: agent };
       await this.#emit(runId, "task.escalated", task.spec.id, {
-        from: previousAgent,
+        from,
         to: agent,
         rule: escalation.id,
       });
@@ -168,7 +173,42 @@ export class DeterministicScheduler {
     const result = await this.#execute(task, agent, signal, context);
     task.result = result;
 
+    const maxAttempts = this.#maxAttemptsFor(policy);
+    const canRetry = task.attempts < maxAttempts && signal?.aborted !== true;
+
     if (result.status === "success") {
+      const lowConfidenceRule = this.#lowConfidenceRuleFor(
+        agent,
+        result.confidence,
+        policy,
+      );
+      if (lowConfidenceRule !== undefined) {
+        const accepted = !canRetry;
+        await this.#emit(runId, "task.low_confidence", task.spec.id, {
+          taskId: task.spec.id,
+          agent,
+          confidence: result.confidence,
+          threshold: lowConfidenceRule.confidenceBelow,
+          rule: lowConfidenceRule.id,
+          ...(accepted ? { accepted: true } : {}),
+        });
+        if (!accepted) {
+          // Not accepted: this success is treated as a failed attempt for
+          // scheduling purposes so the retry/escalation flow below picks it
+          // up and reroutes to the rule's toAgent on the next dispatch.
+          task.status = "pending";
+          await this.#emit(runId, "task.completed", task.spec.id, {
+            agent,
+            result,
+            attempt: task.attempts,
+            final: false,
+          });
+          return;
+        }
+        // Attempts are exhausted: accept the low-confidence result rather
+        // than fail a task the policy can no longer improve on. Falls
+        // through to the normal success-completion path below.
+      }
       task.status = "completed";
       await this.#emit(runId, "task.completed", task.spec.id, {
         agent,
@@ -179,8 +219,7 @@ export class DeterministicScheduler {
       return;
     }
 
-    const maxAttempts = this.#maxAttemptsFor(policy);
-    const retry = task.attempts < maxAttempts && signal?.aborted !== true;
+    const retry = canRetry;
     task.status = retry ? "pending" : "failed";
     await this.#emit(runId, "task.completed", task.spec.id, {
       agent,
@@ -248,8 +287,12 @@ export class DeterministicScheduler {
 
   /**
    * The escalation rule that redirects the *next* attempt of `task`, if any:
-   * it must hand off from the agent that just failed and its failure threshold
-   * must already be met.
+   * it must hand off from the agent that just ran, and either its failure
+   * threshold or its confidence threshold must be met — the two conditions
+   * are OR'd, so a rule with only `confidenceBelow` set matches on
+   * confidence alone, with no `afterFailures` required. When several rules
+   * match, the one with the lexicographically lowest `id` wins, so escalation
+   * target selection is deterministic regardless of policy authoring order.
    */
   #escalationFor(
     task: RuntimeTask,
@@ -257,10 +300,42 @@ export class DeterministicScheduler {
   ): EscalationRule | undefined {
     const from = task.assignedAgent;
     if (from === undefined || task.attempts === 0) return undefined;
-    return policy.escalation.find(
+    // The result may be absent in principle (it is always set after a real
+    // attempt, including a thrown-error attempt, which records confidence
+    // 0); the fallback keeps this defensive rather than load-bearing.
+    const confidence = task.result?.confidence ?? 0;
+    const matches = policy.escalation.filter(
       (rule) =>
-        rule.fromAgent === from && task.attempts >= (rule.afterFailures ?? 1),
+        rule.fromAgent === from &&
+        ((rule.afterFailures !== undefined &&
+          task.attempts >= rule.afterFailures) ||
+          (rule.confidenceBelow !== undefined &&
+            confidence < rule.confidenceBelow)),
     );
+    return pickLowestId(matches);
+  }
+
+  /**
+   * The escalation rule that disqualifies a "success" result from being
+   * accepted outright, if any: it must hand off from the agent that just
+   * produced the result and the result's confidence must fall below the
+   * rule's `confidenceBelow` threshold. Unlike `#escalationFor`,
+   * `afterFailures` plays no part here — a rule that only sets
+   * `afterFailures` has nothing to say about a confident-or-not success. Lowest
+   * `id` wins when several rules match, matching `#escalationFor`'s tie-break.
+   */
+  #lowConfidenceRuleFor(
+    agent: string,
+    confidence: number,
+    policy: OrchestrationPolicy,
+  ): EscalationRule | undefined {
+    const matches = policy.escalation.filter(
+      (rule) =>
+        rule.fromAgent === agent &&
+        rule.confidenceBelow !== undefined &&
+        confidence < rule.confidenceBelow,
+    );
+    return pickLowestId(matches);
   }
 
   /** Cancels everything that (transitively) depended on a dead task. */
@@ -305,6 +380,16 @@ export class DeterministicScheduler {
   ): Promise<void> {
     await this.events?.emit(event(runId, type, taskId, data));
   }
+}
+
+/** The rule with the lexicographically lowest `id`, or undefined if empty. */
+function pickLowestId(
+  rules: readonly EscalationRule[],
+): EscalationRule | undefined {
+  return rules.reduce<EscalationRule | undefined>(
+    (best, rule) => (best === undefined || rule.id < best.id ? rule : best),
+    undefined,
+  );
 }
 
 function event(

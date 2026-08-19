@@ -1,0 +1,322 @@
+import type { AgentEvent, EventSink } from "@agent/protocol";
+import { describe, expect, it } from "vitest";
+import {
+  DeterministicScheduler,
+  PolicyRouter,
+  type SchedulerOptions,
+  TaskGraph,
+} from "../src/index.js";
+import {
+  makePlan,
+  makePolicy,
+  makeResult,
+  makeTask,
+  ScriptedWorker,
+} from "./helpers.js";
+
+class RecordingSink implements EventSink {
+  readonly events: AgentEvent[] = [];
+
+  emit(event: AgentEvent): void {
+    this.events.push(event);
+  }
+
+  ofType(type: string): readonly AgentEvent[] {
+    return this.events.filter((event) => event.type === type);
+  }
+
+  types(): readonly string[] {
+    return this.events.map((event) => event.type);
+  }
+}
+
+function scheduler(
+  worker: ScriptedWorker,
+  events?: EventSink,
+  options?: SchedulerOptions,
+): DeterministicScheduler {
+  return new DeterministicScheduler(
+    new PolicyRouter(),
+    worker,
+    events,
+    options,
+  );
+}
+
+describe("DeterministicScheduler / confidence-based escalation", () => {
+  it("redoes a low-confidence success, escalating to the rule's toAgent, and accepts the redo", async () => {
+    const worker = new ScriptedWorker((call) =>
+      call.agent === "implementer"
+        ? makeResult(call.taskId, "success", { confidence: 0.2 })
+        : makeResult(call.taskId, "success", { confidence: 0.95 }),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "low-conf",
+          fromAgent: "implementer",
+          toAgent: "architect",
+          confidenceBelow: 0.5,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    const task = graph.get("T01");
+    expect(task.status).toBe("completed");
+    expect(task.assignedAgent).toBe("architect");
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "implementer",
+      "architect",
+    ]);
+
+    expect(events.types()).toEqual([
+      "task.started",
+      "task.low_confidence",
+      "task.completed",
+      "task.escalated",
+      "task.started",
+      "task.completed",
+    ]);
+
+    expect(events.ofType("task.low_confidence")[0]?.data).toEqual({
+      taskId: "T01",
+      agent: "implementer",
+      confidence: 0.2,
+      threshold: 0.5,
+      rule: "low-conf",
+    });
+    expect(events.ofType("task.completed")[0]?.data).toMatchObject({
+      final: false,
+    });
+    expect(events.ofType("task.escalated")[0]?.data).toEqual({
+      from: "implementer",
+      to: "architect",
+      rule: "low-conf",
+    });
+    expect(events.ofType("task.completed")[1]?.data).toMatchObject({
+      final: true,
+    });
+  });
+
+  it("accepts a low-confidence success once attempts are exhausted, marking the event accepted", async () => {
+    const worker = new ScriptedWorker((call) =>
+      makeResult(call.taskId, "success", { confidence: 0.2 }),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 1,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "low-conf",
+          fromAgent: "implementer",
+          toAgent: "architect",
+          confidenceBelow: 0.5,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    const task = graph.get("T01");
+    expect(task.status).toBe("completed");
+    expect(task.assignedAgent).toBe("implementer");
+    expect(worker.calls).toHaveLength(1);
+    expect(events.ofType("task.escalated")).toHaveLength(0);
+    expect(events.ofType("task.low_confidence")[0]?.data).toEqual({
+      taskId: "T01",
+      agent: "implementer",
+      confidence: 0.2,
+      threshold: 0.5,
+      rule: "low-conf",
+      accepted: true,
+    });
+    expect(events.ofType("task.completed")[0]?.data).toMatchObject({
+      final: true,
+    });
+  });
+
+  it("matches a confidenceBelow-only rule (no afterFailures) on a failed attempt's first retry", async () => {
+    const worker = new ScriptedWorker((call) =>
+      call.agent === "implementer"
+        ? makeResult(call.taskId, "failed", { confidence: 0.1 })
+        : makeResult(call.taskId, "success"),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "low-conf-fail",
+          fromAgent: "implementer",
+          toAgent: "reviewer",
+          confidenceBelow: 0.5,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "implementer",
+      "reviewer",
+    ]);
+    expect(events.ofType("task.escalated")[0]?.data).toEqual({
+      from: "implementer",
+      to: "reviewer",
+      rule: "low-conf-fail",
+    });
+    expect(graph.get("T01").status).toBe("completed");
+  });
+
+  it("escalates on either condition when a rule sets both afterFailures and confidenceBelow (OR semantics)", async () => {
+    // afterFailures requires 3 failures, but confidenceBelow (0.5) is
+    // undercut by the very first failure's confidence (0.1), so the OR
+    // means escalation fires on the first retry rather than waiting for
+    // the third failure.
+    const worker = new ScriptedWorker((call) =>
+      call.agent === "implementer"
+        ? makeResult(call.taskId, "failed", { confidence: 0.1 })
+        : makeResult(call.taskId, "success"),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "either",
+          fromAgent: "implementer",
+          toAgent: "reviewer",
+          afterFailures: 3,
+          confidenceBelow: 0.5,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "implementer",
+      "reviewer",
+    ]);
+    expect(events.ofType("task.escalated")).toHaveLength(1);
+  });
+
+  it("picks the lexicographically lowest rule id when multiple rules match", async () => {
+    const worker = new ScriptedWorker((call) =>
+      call.agent === "implementer"
+        ? makeResult(call.taskId, "failed", { confidence: 0.1 })
+        : makeResult(call.taskId, "success"),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "z-rule",
+          fromAgent: "implementer",
+          toAgent: "reviewer",
+          afterFailures: 1,
+        },
+        {
+          id: "a-rule",
+          fromAgent: "implementer",
+          toAgent: "architect",
+          afterFailures: 1,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "implementer",
+      "architect",
+    ]);
+    expect(events.ofType("task.escalated")[0]?.data).toMatchObject({
+      rule: "a-rule",
+    });
+  });
+
+  it("treats a thrown-error attempt's confidence as 0 for confidenceBelow matching", async () => {
+    const worker = new ScriptedWorker((call) => {
+      if (call.agent === "implementer") throw new Error("boom");
+      return makeResult(call.taskId, "success");
+    });
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "on-throw",
+          fromAgent: "implementer",
+          toAgent: "architect",
+          confidenceBelow: 0.01,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "implementer",
+      "architect",
+    ]);
+    expect(events.ofType("task.escalated")[0]?.data).toMatchObject({
+      rule: "on-throw",
+    });
+  });
+
+  it("records lastEscalation on the runtime task when an escalation reroutes it", async () => {
+    const worker = new ScriptedWorker((call) =>
+      call.agent === "implementer"
+        ? makeResult(call.taskId, "failed")
+        : makeResult(call.taskId, "success"),
+    );
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "stuck",
+          fromAgent: "implementer",
+          toAgent: "architect",
+          afterFailures: 1,
+        },
+      ],
+    });
+
+    await scheduler(worker).run("run-1", graph, policy);
+
+    expect(graph.get("T01").lastEscalation).toEqual({
+      rule: "stuck",
+      from: "implementer",
+      to: "architect",
+    });
+  });
+
+  it("leaves lastEscalation unset when no escalation ever reroutes the task", async () => {
+    const worker = new ScriptedWorker((call) => makeResult(call.taskId));
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+
+    await scheduler(worker).run("run-1", graph, makePolicy());
+
+    expect(graph.get("T01").lastEscalation).toBeUndefined();
+  });
+});
