@@ -13,12 +13,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { KapelConfig } from "../src/config.js";
 import { KAPEL_CONFIG_VERSION } from "../src/config.js";
 import {
+  detectValidatorCommands,
   ensureGitignoreEntries,
   GITIGNORE_ENTRIES,
   locateTemplate,
   providerForModel,
   runInit,
   seedModelsInto,
+  seedValidatorsInto,
 } from "../src/init.js";
 
 describe("locateTemplate", () => {
@@ -95,6 +97,24 @@ const TEMPLATE_YAML = [
   "",
 ].join("\n");
 
+/** The shape of the real template's commented `validation:` example. */
+const TEMPLATE_VALIDATION_YAML = [
+  "agents:",
+  "  orchestrator: lead",
+  "",
+  "# Commands that gate a mutating task's success. Each one runs through",
+  "# `bash -lc` in the task's own workspace after the worker finishes; if any of",
+  "# them fails, the task is reported as failed and its dependents are cancelled.",
+  "# Uncomment and adapt to this repository's actual commands.",
+  "#",
+  "# validation:",
+  "#   - name: typecheck",
+  "#     command: npm run typecheck",
+  "#     timeoutSeconds: 300   # optional, defaults to 600",
+  "#   - name: test",
+  "#     command: npm test",
+].join("\n");
+
 function kapelConfig(overrides: Partial<KapelConfig> = {}): KapelConfig {
   return {
     version: KAPEL_CONFIG_VERSION,
@@ -163,6 +183,108 @@ describe("seedModelsInto", () => {
   it("leaves a template with no models block alone", () => {
     expect(
       seedModelsInto("agents:\n  orchestrator: lead\n", kapelConfig()),
+    ).toBe("agents:\n  orchestrator: lead\n");
+  });
+});
+
+describe("detectValidatorCommands", () => {
+  let dir: string;
+
+  afterEach(async () => {
+    if (dir !== undefined) await rm(dir, { recursive: true, force: true });
+  });
+
+  async function makeDir(): Promise<string> {
+    dir = await mkdtemp(path.join(tmpdir(), "agent-cli-validators-"));
+    return dir;
+  }
+
+  it("detects typecheck/test/lint, in that order, and turns bare test into `npm test`", async () => {
+    const cwd = await makeDir();
+    await writeFile(
+      path.join(cwd, "package.json"),
+      JSON.stringify({
+        scripts: {
+          lint: "biome check .",
+          test: "vitest run",
+          typecheck: "tsc -b",
+          build: "tsc -b --outDir dist",
+        },
+      }),
+    );
+
+    expect(await detectValidatorCommands(cwd)).toEqual([
+      { name: "typecheck", command: "npm run typecheck" },
+      { name: "test", command: "npm test" },
+      { name: "lint", command: "npm run lint" },
+    ]);
+  });
+
+  it("returns only the scripts that exist", async () => {
+    const cwd = await makeDir();
+    await writeFile(
+      path.join(cwd, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+
+    expect(await detectValidatorCommands(cwd)).toEqual([
+      { name: "test", command: "npm test" },
+    ]);
+  });
+
+  it("returns [] when there is no package.json", async () => {
+    const cwd = await makeDir();
+    expect(await detectValidatorCommands(cwd)).toEqual([]);
+  });
+
+  it("returns [] when package.json has no scripts kapel recognizes", async () => {
+    const cwd = await makeDir();
+    await writeFile(
+      path.join(cwd, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc -b", dev: "vite" } }),
+    );
+    expect(await detectValidatorCommands(cwd)).toEqual([]);
+  });
+
+  it("returns [] when package.json does not parse as JSON", async () => {
+    const cwd = await makeDir();
+    await writeFile(path.join(cwd, "package.json"), "{ not json");
+    expect(await detectValidatorCommands(cwd)).toEqual([]);
+  });
+});
+
+describe("seedValidatorsInto", () => {
+  it("replaces the commented example with an enabled block, keeping the explanatory comment", () => {
+    const seeded = seedValidatorsInto(TEMPLATE_VALIDATION_YAML, [
+      { name: "typecheck", command: "npm run typecheck" },
+      { name: "test", command: "npm test" },
+    ]);
+
+    expect(seeded).toContain("# Commands that gate a mutating task's success.");
+    expect(seeded).not.toContain("Uncomment and adapt");
+    expect(seeded).not.toContain("#   - name: typecheck");
+    expect(seeded).toContain(
+      [
+        "validation:",
+        "  - name: typecheck",
+        "    command: npm run typecheck",
+        "  - name: test",
+        "    command: npm test",
+      ].join("\n"),
+    );
+  });
+
+  it("leaves the template untouched when nothing was detected", () => {
+    expect(seedValidatorsInto(TEMPLATE_VALIDATION_YAML, [])).toBe(
+      TEMPLATE_VALIDATION_YAML,
+    );
+  });
+
+  it("leaves a template with no uncomment marker untouched", () => {
+    expect(
+      seedValidatorsInto("agents:\n  orchestrator: lead\n", [
+        { name: "test", command: "npm test" },
+      ]),
     ).toBe("agents:\n  orchestrator: lead\n");
   });
 });
@@ -357,6 +479,49 @@ describe("runInit", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  it("enables validation: from the target repo's package.json scripts", async () => {
+    const { entryUrl, target } = await setup(TEMPLATE_VALIDATION_YAML);
+    await writeFile(
+      path.join(target, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run", typecheck: "tsc -b" } }),
+    );
+
+    const code = await runInit({ cwd: target, entryUrl });
+
+    expect(code).toBe(0);
+    const yaml = await readFile(
+      path.join(target, ".agent", "config.yaml"),
+      "utf8",
+    );
+    expect(yaml).toContain(
+      [
+        "validation:",
+        "  - name: typecheck",
+        "    command: npm run typecheck",
+        "  - name: test",
+        "    command: npm test",
+      ].join("\n"),
+    );
+    expect(yaml).not.toContain("Uncomment and adapt");
+  });
+
+  it("leaves the commented validation: example alone when no package.json scripts match", async () => {
+    const { entryUrl, target } = await setup(TEMPLATE_VALIDATION_YAML);
+    await writeFile(
+      path.join(target, "package.json"),
+      JSON.stringify({ scripts: { build: "tsc -b" } }),
+    );
+
+    const code = await runInit({ cwd: target, entryUrl });
+
+    expect(code).toBe(0);
+    const yaml = await readFile(
+      path.join(target, ".agent", "config.yaml"),
+      "utf8",
+    );
+    expect(yaml).toBe(TEMPLATE_VALIDATION_YAML);
   });
 
   it("copies the template verbatim when nothing is configured", async () => {

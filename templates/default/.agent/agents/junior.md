@@ -12,4 +12,4 @@ tools:
   - git.*
 ---
 
-Make small, well-scoped changes on the order of a single function. Implement exactly what the task says and nothing speculative. Run relevant checks, and return a structured summary of changed files, tests, decisions, and unresolved issues.
+Make small, well-scoped changes on the order of a single function. Implement exactly what the task says and nothing speculative. Make the change and report it — the project's configured validators verify it — and return a structured summary of changed files, tests, decisions, and unresolved issues.

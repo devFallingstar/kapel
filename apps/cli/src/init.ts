@@ -86,6 +86,125 @@ export function seedModelsInto(
   ].join("\n");
 }
 
+/** One `validation:` entry {@link detectValidatorCommands} found in the target repo. */
+export interface DetectedValidator {
+  readonly name: string;
+  readonly command: string;
+}
+
+/**
+ * `scripts` keys recognized as check commands, in the order they are written
+ * into the seeded `validation:` block — deliberately narrow, since any other
+ * npm script the repo happens to define (`build`, `dev`, `release`, …) is not
+ * necessarily a check worth gating a task on.
+ */
+const VALIDATOR_SCRIPT_NAMES: readonly string[] = ["typecheck", "test", "lint"];
+
+/**
+ * Detects check commands from `<cwd>/package.json`'s `scripts`, so a fresh
+ * project's `validation:` block can start enabled instead of commented out
+ * (docs/FUTURE_WORK.md #3). Only {@link VALIDATOR_SCRIPT_NAMES} are
+ * recognized; a bare `test` script becomes `npm test` (npm's own idiom for
+ * it), everything else becomes `npm run <script>`. Returns `[]` — meaning
+ * "leave the template's commented example alone" — when there is no
+ * `package.json`, it doesn't parse as JSON, or none of the recognized
+ * scripts are present.
+ */
+export async function detectValidatorCommands(
+  cwd: string,
+): Promise<DetectedValidator[]> {
+  let raw: string;
+  try {
+    raw = await readFile(path.join(cwd, "package.json"), "utf8");
+  } catch {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+
+  const scripts =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "scripts" in parsed &&
+    typeof (parsed as { scripts?: unknown }).scripts === "object" &&
+    (parsed as { scripts?: unknown }).scripts !== null
+      ? ((parsed as { scripts: Record<string, unknown> }).scripts ?? {})
+      : {};
+
+  const detected: DetectedValidator[] = [];
+  for (const name of VALIDATOR_SCRIPT_NAMES) {
+    const command = scripts[name];
+    if (typeof command !== "string" || command.trim() === "") continue;
+    detected.push({
+      name,
+      command: name === "test" ? "npm test" : `npm run ${name}`,
+    });
+  }
+  return detected;
+}
+
+/** The line marking where the template's commented `validation:` example starts. */
+const VALIDATION_UNCOMMENT_MARKER =
+  "# Uncomment and adapt to this repository's actual commands.";
+
+/** The `validation:` block {@link seedValidatorsInto} splices into `.agent/config.yaml`. */
+export function renderValidationBlock(
+  validators: readonly DetectedValidator[],
+): readonly string[] {
+  const lines = ["validation:"];
+  for (const validator of validators) {
+    lines.push(
+      `  - name: ${validator.name}`,
+      `    command: ${validator.command}`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * Replaces the template's commented `validation:` example with a real,
+ * enabled block naming the commands {@link detectValidatorCommands} found —
+ * same line-splice technique as {@link seedModelsInto}. The explanatory
+ * comment above the example (what `validation:` does, and how it runs)
+ * survives untouched; only the "uncomment this" instruction and the
+ * commented-out example itself are replaced, since they no longer apply once
+ * a real block is in place.
+ *
+ * `validators` empty, or a template that no longer carries the marker line,
+ * both return the template untouched.
+ */
+export function seedValidatorsInto(
+  templateYaml: string,
+  validators: readonly DetectedValidator[],
+): string {
+  if (validators.length === 0) return templateYaml;
+
+  const lines = templateYaml.split("\n");
+  const start = lines.findIndex(
+    (line) => line.trim() === VALIDATION_UNCOMMENT_MARKER,
+  );
+  if (start === -1) return templateYaml;
+
+  // The marker's own commented-out example runs to the end of the
+  // contiguous `#`-prefixed block that follows it.
+  let end = start;
+  while (end < lines.length && (lines[end] ?? "").trimStart().startsWith("#")) {
+    end += 1;
+  }
+
+  return [
+    ...lines.slice(0, start),
+    "",
+    ...renderValidationBlock(validators),
+    ...lines.slice(end),
+  ].join("\n");
+}
+
 /**
  * The `.gitignore` entries `kapel init` guarantees.
  *
@@ -218,17 +337,33 @@ export async function runInit(options: InitOptions): Promise<number> {
   console.log(`  (from ${templateDir})`);
 
   const config = options.config;
-  if (config !== undefined) {
+  try {
     const configPath = path.join(target, "config.yaml");
-    try {
-      const template = await readFile(configPath, "utf8");
-      await writeFile(configPath, seedModelsInto(template, config), "utf8");
+    let seeded = await readFile(configPath, "utf8");
+    let changed = false;
+
+    if (config !== undefined) {
+      seeded = seedModelsInto(seeded, config);
+      changed = true;
       console.log("  (models seeded from your kapel configuration)");
-    } catch {
-      // Seeding is a convenience on top of a copy that already succeeded:
-      // a template without a readable config.yaml still leaves a usable
-      // project behind, so this never fails `kapel init`.
     }
+
+    const validators = await detectValidatorCommands(options.cwd);
+    if (validators.length > 0) {
+      seeded = seedValidatorsInto(seeded, validators);
+      changed = true;
+      console.log(
+        `  (validation enabled from package.json: ${validators
+          .map((validator) => validator.name)
+          .join(", ")})`,
+      );
+    }
+
+    if (changed) await writeFile(configPath, seeded, "utf8");
+  } catch {
+    // Seeding is a convenience on top of a copy that already succeeded:
+    // a template without a readable config.yaml still leaves a usable
+    // project behind, so this never fails `kapel init`.
   }
 
   try {

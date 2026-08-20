@@ -77,11 +77,14 @@ const VALID_POLICY: OrchestrationPolicy = {
       strength: "hard",
     },
   ],
+  // "senior" (a worker-role agent) is deliberate: an orchestrator-role
+  // target like "lead" now triggers the compile-time warning covered below,
+  // and this fixture is reused by every "clean success" test in the file.
   escalation: [
     {
       id: "esc-retry",
       fromAgent: "coder",
-      toAgent: "lead",
+      toAgent: "senior",
       afterFailures: 2,
     },
   ],
@@ -300,6 +303,117 @@ describe("kapel policy", () => {
 
       const lockPath = path.join(workspace, ".agent", LOCK_FILE_NAME);
       await expect(readFile(lockPath, "utf8")).rejects.toThrow();
+    });
+
+    it("warns (but does not block) when an escalation rule targets an orchestrator-role agent", async () => {
+      // The template's "lead" is role: orchestrator; escalating to it is
+      // legal but stalls under a delegated backend (item 4).
+      const policy: OrchestrationPolicy = {
+        ...VALID_POLICY,
+        escalation: [
+          { id: "senior-to-lead", fromAgent: "senior", toAgent: "lead" },
+        ],
+      };
+      const { output, lines } = capture();
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain(
+        'warning: escalation rule senior-to-lead targets "lead", an orchestrator-role agent — under codex/claude-code backends it runs without tool scoping',
+      );
+      // A warning, not a rejection: the lock is still written.
+      const lockPath = path.join(workspace, ".agent", LOCK_FILE_NAME);
+      await expect(readFile(lockPath, "utf8")).resolves.toBeDefined();
+    });
+
+    it("warns when a routing rule targets an orchestrator-role agent", async () => {
+      const policy: OrchestrationPolicy = {
+        ...VALID_POLICY,
+        routing: [
+          {
+            id: "route-lead",
+            taskTypes: [],
+            riskCategories: [],
+            complexity: [],
+            agent: "lead",
+            strength: "hard",
+            weight: 1,
+          },
+        ],
+      };
+      const { output, lines } = capture();
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain(
+        'warning: routing rule route-lead targets "lead", an orchestrator-role agent — under codex/claude-code backends it runs without tool scoping',
+      );
+    });
+
+    it("does not warn about the designated orchestrator field itself, only routing/escalation targets", async () => {
+      // VALID_POLICY.orchestrator is "lead" (role: orchestrator) but names no
+      // orchestrator-role agent as a routing or escalation target.
+      const { output, lines } = capture();
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: true, backend: "native" },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: VALID_POLICY,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      const parsed = JSON.parse(lines[0] ?? "{}");
+      expect(parsed.warnings).toEqual([]);
+    });
+
+    it("does not warn about an escalation target that is not a known agent (validatePolicy already errors on it)", async () => {
+      const policy: OrchestrationPolicy = {
+        ...VALID_POLICY,
+        escalation: [
+          { id: "esc-ghost", fromAgent: "coder", toAgent: "nobody" },
+        ],
+      };
+      const { output, errLines } = capture();
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(1);
+      expect(errLines.join("\n")).not.toContain("orchestrator-role");
     });
 
     it("fails with a friendly message when no .agent directory exists", async () => {
@@ -761,6 +875,35 @@ describe("kapel policy", () => {
       expect(text).toContain("agent: coder -> reviewer");
       expect(text).toContain("+ route-explorer:");
       expect(text).toContain("Run `kapel policy compile` to update the lock.");
+    });
+
+    it("warns about a recompiled policy's orchestrator-role targets, same as compile", async () => {
+      await compileFixture(workspace);
+
+      const recompiled: OrchestrationPolicy = {
+        ...VALID_POLICY,
+        escalation: [
+          { id: "senior-to-lead", fromAgent: "senior", toAgent: "lead" },
+        ],
+      };
+
+      const { output, lines } = capture();
+      const code = await runPolicyDiff(
+        { cwd: workspace, json: false, backend: "native" },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: recompiled,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toContain(
+        'warning: escalation rule senior-to-lead targets "lead", an orchestrator-role agent — under codex/claude-code backends it runs without tool scoping',
+      );
     });
 
     it("emits {ok, unchanged, defaults, routing, review, escalation} in --json mode", async () => {

@@ -12,4 +12,4 @@ tools:
   - git.*
 ---
 
-Implement only the assigned task — normal-complexity implementation work. Keep scope narrow, run relevant checks, and return a structured summary of changed files, tests, decisions, and unresolved issues.
+Implement only the assigned task — normal-complexity implementation work. Keep scope narrow, make the change and report it — the project's configured validators verify it — and return a structured summary of changed files, tests, decisions, and unresolved issues.

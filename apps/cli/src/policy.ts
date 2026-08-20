@@ -5,10 +5,12 @@ import { UsageTracker, usageRecordingProvider } from "@agent/ai";
 import type {
   AgentProject,
   DelegatedUsageSink,
+  EscalationRule,
   LocatedIssue,
   OrchestrationPolicy,
   PolicyCompiler,
   PolicyLockfile,
+  RoutingRule,
   SourceLocation,
 } from "@agent/coding-agent";
 import {
@@ -134,6 +136,45 @@ function jsonLocations(
   return locateIssues(messages, markdown).map(
     (issue) => issue.location ?? null,
   );
+}
+
+/**
+ * Flags routing/escalation rule targets whose project role is `orchestrator`
+ * (e.g. the default template's `lead`).
+ *
+ * Under a delegated backend a worker agent's tools come from its `tools:`
+ * front matter; an orchestrator-role agent's tools (`task.*`, `plan.*`, …)
+ * map to none of that, so dispatching one as a worker runs it with the CLI's
+ * unscoped default toolset instead, where it can stall on an approval
+ * prompt. This is a warning, not a validation error: `validatePolicy` already
+ * rejects a target that isn't a known agent at all, so this only fires for
+ * agents the project *does* define. The policy's own `orchestrator` field
+ * (its planner) is unaffected — only routing/escalation targets are worker
+ * dispatches.
+ */
+function orchestratorTargetWarnings(
+  policy: OrchestrationPolicy,
+  project: AgentProject,
+): string[] {
+  const isOrchestratorRole = (name: string): boolean =>
+    project.agent(name)?.role === "orchestrator";
+
+  const warnings: string[] = [];
+  for (const rule of policy.routing as readonly RoutingRule[]) {
+    if (isOrchestratorRole(rule.agent)) {
+      warnings.push(
+        `warning: routing rule ${rule.id} targets "${rule.agent}", an orchestrator-role agent — under codex/claude-code backends it runs without tool scoping`,
+      );
+    }
+  }
+  for (const rule of policy.escalation as readonly EscalationRule[]) {
+    if (isOrchestratorRole(rule.toAgent)) {
+      warnings.push(
+        `warning: escalation rule ${rule.id} targets "${rule.toAgent}", an orchestrator-role agent — under codex/claude-code backends it runs without tool scoping`,
+      );
+    }
+  }
+  return warnings;
 }
 
 type ProjectLoadResult =
@@ -391,6 +432,7 @@ export async function runPolicyCompile(
   const warnings = [
     ...result.warnings,
     ...validationWarnings.map((issue) => issue.message),
+    ...orchestratorTargetWarnings(result.policy, project),
   ];
   const ambiguities = result.ambiguities;
 
@@ -681,6 +723,10 @@ export async function runPolicyDiff(
   }
 
   const diff = diffPolicies(existingLock.policy, result.policy);
+  const warnings = [
+    ...result.warnings,
+    ...orchestratorTargetWarnings(result.policy, project),
+  ];
 
   if (options.json) {
     jsonLine(output, {
@@ -690,7 +736,7 @@ export async function runPolicyDiff(
       routing: diff.routing,
       review: diff.review,
       escalation: diff.escalation,
-      warnings: result.warnings,
+      warnings,
       ambiguities: result.ambiguities,
     });
     return 0;
@@ -707,7 +753,7 @@ export async function runPolicyDiff(
   }
   // A diff costs a real compile, so it reports its spend like `compile` does.
   output.log(policyUsageLine(usage.totals(), delegatedTo));
-  printLocatedList(output, "Warnings", locateIssues(result.warnings, markdown));
+  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(
     output,
     "Ambiguities",

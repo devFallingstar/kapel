@@ -182,6 +182,7 @@ export function buildTaskBriefing(
   lines.push(
     "",
     "Work directly in the current workspace. Return a short summary of what you changed.",
+    "If this project configures validators (.agent/config.yaml's `validation:` block), they run against your change after you finish — you are not expected to run checks yourself.",
   );
 
   const dependencyResults = context?.dependencyResults ?? [];

@@ -25,6 +25,12 @@ describe("buildTaskBriefing", () => {
     expect(briefing).not.toContain("Results from dependency tasks");
   });
 
+  it("tells the worker that a configured validation: block runs after it, not that it must run checks itself", () => {
+    const briefing = buildTaskBriefing(makePlannedTask(), "coder");
+    expect(briefing).toContain("validation:");
+    expect(briefing).toContain("not expected to run checks yourself");
+  });
+
   it("renders each dependency's id, status, summary and changed files", () => {
     const briefing = buildTaskBriefing(
       makePlannedTask({ dependencies: ["T01", "T02"] }),
