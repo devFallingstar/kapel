@@ -511,6 +511,43 @@ describe("runInit", () => {
     expect(contents).toEqual(["sentinel.txt"]);
   });
 
+  it("fills an existing .agent without deleting what is already in it", async () => {
+    const { entryUrl, target } = await setup();
+    await mkdir(path.join(target, ".agent"));
+    // What the REPL's own chat store leaves behind — automatic onboarding
+    // must not take a project's conversation history with it.
+    await writeFile(path.join(target, ".agent", "sessions.db"), "keep-me");
+
+    const code = await runInit({ cwd: target, entryUrl, fill: true });
+
+    expect(code).toBe(0);
+    const contents = await readdir(path.join(target, ".agent"));
+    expect(contents.sort()).toEqual(["agents", "config.yaml", "sessions.db"]);
+    expect(
+      await readFile(path.join(target, ".agent", "sessions.db"), "utf8"),
+    ).toBe("keep-me");
+  });
+
+  it("reports through an injected output sink instead of the console", async () => {
+    const { entryUrl, target } = await setup();
+    const lines: string[] = [];
+    const errLines: string[] = [];
+    const output = {
+      log: (line: string) => lines.push(line),
+      error: (line: string) => errLines.push(line),
+    };
+
+    expect(await runInit({ cwd: target, entryUrl, output })).toBe(0);
+    expect(lines[0]).toBe(`Created ${path.join(target, ".agent")}`);
+    expect(errLines).toEqual([]);
+
+    // …and the refusal goes to the same sink's error half.
+    expect(await runInit({ cwd: target, entryUrl, output })).toBe(1);
+    expect(errLines).toEqual([
+      `${path.join(target, ".agent")} already exists. Re-run with --force to overwrite it.`,
+    ]);
+  });
+
   it("seeds the project's models from the global configuration", async () => {
     const { entryUrl, target } = await setup(TEMPLATE_YAML);
 

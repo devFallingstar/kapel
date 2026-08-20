@@ -317,9 +317,31 @@ export async function locateTemplate(
   );
 }
 
+/** Where `kapel init` reports what it did. Defaults to the console. */
+export interface InitOutput {
+  readonly log: (line: string) => void;
+  readonly error: (line: string) => void;
+}
+
+const consoleOutput: InitOutput = {
+  log: (line) => console.log(line),
+  error: (line) => console.error(line),
+};
+
 export interface InitOptions {
   readonly cwd: string;
   readonly force?: boolean;
+  /**
+   * Copies the template *beside* whatever `.agent` already holds instead of
+   * refusing, without deleting anything first.
+   *
+   * This is how automatic onboarding (see `onboard.ts`) initializes a
+   * directory whose `.agent/` exists but is not a project: the REPL creates
+   * one to hold `sessions.db` before anything else, and neither refusing
+   * ("already exists") nor `--force` (which would delete that database) is
+   * the right answer there. `force` still wins when both are set.
+   */
+  readonly fill?: boolean;
   /** Override for tests: defaults to this module's own `import.meta.url`. */
   readonly entryUrl?: string;
   /**
@@ -328,10 +350,17 @@ export interface InitOptions {
    * template's defaults; absent, the template is copied verbatim.
    */
   readonly config?: KapelConfig;
+  /**
+   * Where the progress lines go. Absent means the console, which is what the
+   * `kapel init` command wants; the REPL passes its own sink so onboarding
+   * output lands in the conversation's line stream like `/plan`'s does.
+   */
+  readonly output?: InitOutput;
 }
 
 /** Implements `kapel init`: copies the repo's `.agent` template into `cwd`. */
 export async function runInit(options: InitOptions): Promise<number> {
+  const output = options.output ?? consoleOutput;
   const entryDir = path.dirname(
     fileURLToPath(options.entryUrl ?? import.meta.url),
   );
@@ -340,25 +369,28 @@ export async function runInit(options: InitOptions): Promise<number> {
   try {
     templateDir = await locateTemplate(entryDir);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    output.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
 
   const target = path.join(options.cwd, ".agent");
   const exists = await pathExists(target);
-  if (exists && options.force !== true) {
-    console.error(
+  if (exists && options.force !== true && options.fill !== true) {
+    output.error(
       `${target} already exists. Re-run with --force to overwrite it.`,
     );
     return 1;
   }
   // Replace rather than merge on --force, so a stale file that the template
-  // no longer ships doesn't linger in the target.
-  if (exists) await rm(target, { recursive: true, force: true });
+  // no longer ships doesn't linger in the target. `fill` is the opposite
+  // instruction and deletes nothing — see {@link InitOptions.fill}.
+  if (exists && options.force === true) {
+    await rm(target, { recursive: true, force: true });
+  }
 
   await cp(templateDir, target, { recursive: true });
-  console.log(`Created ${target}`);
-  console.log(`  (from ${templateDir})`);
+  output.log(`Created ${target}`);
+  output.log(`  (from ${templateDir})`);
 
   const config = options.config;
   try {
@@ -369,14 +401,14 @@ export async function runInit(options: InitOptions): Promise<number> {
     if (config !== undefined) {
       seeded = seedModelsInto(seeded, config);
       changed = true;
-      console.log("  (models seeded from your kapel configuration)");
+      output.log("  (models seeded from your kapel configuration)");
     }
 
     const validators = await detectValidatorCommands(options.cwd);
     if (validators.length > 0) {
       seeded = seedValidatorsInto(seeded, validators);
       changed = true;
-      console.log(
+      output.log(
         `  (validation enabled from package.json: ${validators
           .map((validator) => validator.name)
           .join(", ")})`,
@@ -393,7 +425,7 @@ export async function runInit(options: InitOptions): Promise<number> {
   try {
     const added = await ensureGitignoreEntries(options.cwd);
     if (added.length > 0) {
-      console.log(`  (added to .gitignore: ${added.join(", ")})`);
+      output.log(`  (added to .gitignore: ${added.join(", ")})`);
     }
   } catch {
     // A read-only or otherwise unwritable .gitignore is not a reason to fail

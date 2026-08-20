@@ -66,6 +66,7 @@ import {
 } from "./delegated-chat.js";
 import { loadDotEnvFile } from "./env.js";
 import { createHistoryAppender, loadHistory } from "./history.js";
+import { runInit } from "./init.js";
 import type { CompleterResult, InputCompleter } from "./input.js";
 import {
   createInputManager,
@@ -83,6 +84,7 @@ import {
   workspaceImagePathReader,
   workspaceImageReader,
 } from "./mention.js";
+import { createProjectSetup } from "./onboard.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import { DEFAULT_ISOLATION, runOrchestrate } from "./orchestrate.js";
 import {
@@ -92,6 +94,8 @@ import {
 } from "./permissions.js";
 import type { OrchestrationOutput, PlanCommandOptions } from "./plan.js";
 import { formatTable, runPlan } from "./plan.js";
+import type { PolicyCompileOptions } from "./policy.js";
+import { runPolicyCompile } from "./policy.js";
 import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
 import { TextRenderer, usageRollupLines } from "./render.js";
@@ -553,6 +557,20 @@ export interface InteractiveControllerDeps {
   ) => Promise<number>;
   /** Runs `/runs` — the recorded orchestration runs of this workspace. */
   readonly runs?: (output: OrchestrationOutput) => Promise<number>;
+  /**
+   * Offers to finish this project's setup before `/plan` or `/orchestrate`
+   * runs — the same offer the REPL makes at startup, re-made here for a
+   * session that declined it (or never saw it, having started
+   * non-interactively). See `onboard.ts`; the object behind this remembers
+   * the answer, so a decline is asked about once and not on every command.
+   *
+   * The returned boolean is deliberately not acted on: a project that is
+   * still not set up falls through to the command's own error, which says
+   * exactly what is missing and how to fix it by hand.
+   */
+  readonly ensureProjectSetup?: (
+    output: OrchestrationOutput,
+  ) => Promise<boolean>;
   /** Runs `/resume-run <runId>` — see `resume-cmd.ts`. */
   readonly resumeRun?: (
     runId: string,
@@ -1627,6 +1645,10 @@ export async function createInteractiveController(
       emit('usage: /plan "<objective>"');
       return drain();
     }
+    // A project that was never set up (or whose policy was never compiled)
+    // gets the offer here instead of the raw "run `kapel init` first" error.
+    // Declining just falls through to that error, one line below.
+    await deps.ensureProjectSetup?.(replOutput);
     try {
       await deps.plan(objective, replOutput);
     } catch (error) {
@@ -1688,6 +1710,8 @@ export async function createInteractiveController(
       emit('usage: /orchestrate "<objective>"');
       return drain();
     }
+    // Same offer `/plan` makes, for the same reason — see `slashPlan`.
+    await deps.ensureProjectSetup?.(replOutput);
     await registerForRun(objective);
     try {
       const code = await deps.orchestrate(objective);
@@ -1878,6 +1902,14 @@ export interface InteractiveOptions {
    * loaded by the caller, which is the layer that knows the cwd.
    */
   readonly projectConfig?: KapelProjectConfig;
+  /**
+   * `--no-setup` (commander sets this `false` when the flag is passed): never
+   * ask a setup question. It already skips the first-run wizard before this
+   * REPL is built; here it also skips the automatic project onboarding offer,
+   * because "don't ask me to set things up" is one promise, not two. Typing
+   * `/config` still runs the wizard — that is a request, not a question.
+   */
+  readonly setup?: boolean;
 }
 
 /**
@@ -2082,6 +2114,91 @@ export async function runInteractive(
     return 1;
   }
 
+  const interactiveTty = process.stdin.isTTY === true;
+  /** True only where a question can actually be asked and answered. */
+  const promptTty = interactiveTty && process.stdout.isTTY === true;
+  /** …and where the user has not said `--no-setup`. */
+  const onboardingTty = promptTty && options.setup !== false;
+  /** The effective (machine + this directory's) configuration, merged once. */
+  const effectiveConfig = mergeKapelConfigs(
+    options.config,
+    options.projectConfig,
+  )?.config;
+
+  // The REPL's persistent stdin owner, once there is one. Declared out here
+  // because `withSuspended` below is used before it exists (the onboarding
+  // question runs before the store is even opened) and after — and with no
+  // manager it is simply "run the thing", which is exactly right when nothing
+  // else holds the terminal.
+  let inputManager: InputManager | undefined;
+
+  // The one seam a spawned `codex login` (and, alongside it, any picker or
+  // yes/no question) hands the terminal through: pause the persistent
+  // `InputManager`'s readline around the call, run it, resume. A no-op when
+  // there is no `InputManager` at all (piped input, or startup), matching
+  // `Suspend`'s own default in `config-runtime.ts`.
+  const withSuspended = <T>(fn: () => Promise<T>): Promise<T> =>
+    inputManager === undefined ? fn() : inputManager.withSuspended(fn);
+
+  /** A yes/no question at the prompt — `/login`'s, and onboarding's. */
+  const confirmAtPrompt = async (
+    question: string,
+    initial: "yes" | "no",
+  ): Promise<boolean> => {
+    const answer = await withSuspended(() =>
+      runSelectPrompt(
+        { input: process.stdin, output: process.stdout },
+        {
+          title: question,
+          choices: [
+            { value: "yes", label: "Yes" },
+            { value: "no", label: "No" },
+          ],
+          initial,
+        },
+      ),
+    );
+    return answer?.[0] === "yes";
+  };
+
+  // Automatic project onboarding (see `onboard.ts`). It has to run before
+  // `openChatStore`, which creates a bare `.agent/` of its own for
+  // `sessions.db` — after that a fresh directory no longer looks fresh, and
+  // `kapel init` would be filling in a directory rather than creating one.
+  const projectSetup = createProjectSetup({
+    workspacePath,
+    init: (output) =>
+      runInit({
+        cwd: workspacePath,
+        // The `.agent/` a previous, declined run left behind holds nothing
+        // but kapel's session database — fill it in, never delete it.
+        fill: true,
+        output,
+        ...(effectiveConfig === undefined ? {} : { config: effectiveConfig }),
+      }),
+    compile: (output) =>
+      runPolicyCompile(policyCompileOptionsFor(options, chatAlias, backend), {
+        output,
+      }),
+    // No question where nobody can answer one — a piped or redirected REPL is
+    // never auto-onboarded, exactly as it is never asked to configure itself
+    // — and none where `--no-setup` has already said not to ask.
+    ...(onboardingTty
+      ? { confirm: (question: string) => confirmAtPrompt(question, "yes") }
+      : {}),
+  });
+  await projectSetup.ensure(
+    {
+      log: (line) => {
+        console.log(line);
+      },
+      error: (line) => {
+        console.error(line);
+      },
+    },
+    "startup",
+  );
+
   const store =
     options.save === false ? undefined : await openChatStore(workspacePath);
 
@@ -2095,7 +2212,6 @@ export async function runInteractive(
       return 1;
     }
 
-    const interactiveTty = process.stdin.isTTY === true;
     const promptState = createPromptState();
     // Approvals answered with "a" are remembered for the life of this REPL,
     // across `/model` and `/config` switches — which is why the allowlist is
@@ -2165,7 +2281,10 @@ export async function runInteractive(
     // controller for its list at build time.
     const customCommandNames: { current: readonly string[] } = { current: [] };
 
-    const inputManager = interactiveTty
+    // Held in a local as well as in the outer `inputManager` (which
+    // `withSuspended` reads, and which had to exist before this point):
+    // narrowing a `let` does not survive into the closures below.
+    const manager = interactiveTty
       ? createInputManager({
           input: process.stdin,
           output: process.stdout,
@@ -2178,6 +2297,7 @@ export async function runInteractive(
           onIdleSigint: () => activeTurn.current?.abort(),
         })
       : undefined;
+    inputManager = manager;
 
     const prompter = createPrompter({
       // There is no `-y` here any more: the REPL is the one place a human is
@@ -2186,9 +2306,9 @@ export async function runInteractive(
       interactive: interactiveTty,
       state: promptState,
       allowlist: sessionAllowlist,
-      ...(inputManager === undefined
+      ...(manager === undefined
         ? {}
-        : { ask: (query: string) => inputManager.question(query) }),
+        : { ask: (query: string) => manager.question(query) }),
     });
     /**
      * The model id to hand the delegating CLI for one build.
@@ -2286,41 +2406,21 @@ export async function runInteractive(
         ? nativeSession(args)
         : delegatedSession(args.backend, args);
 
-    const wizardTty = interactiveTty && process.stdout.isTTY === true;
+    const wizardTty = promptTty;
 
-    // The one seam a spawned `codex login` (and, alongside it, any picker or
-    // yes/no question) hands the terminal through: pause the persistent
-    // `InputManager`'s readline around the call, run it, resume. A no-op when
-    // there is no `InputManager` at all (piped input), matching `Suspend`'s
-    // own default in `config-runtime.ts`.
-    const withSuspended = <T>(fn: () => Promise<T>): Promise<T> =>
-      inputManager === undefined ? fn() : inputManager.withSuspended(fn);
-
-    /** `/login`'s yes/no question — see `slashLogin`. */
-    const loginConfirm = async (question: string): Promise<boolean> => {
-      const answer = await withSuspended(() =>
-        runSelectPrompt(
-          { input: process.stdin, output: process.stdout },
-          {
-            title: question,
-            choices: [
-              { value: "yes", label: "Yes" },
-              { value: "no", label: "No" },
-            ],
-            initial: "no",
-          },
-        ),
-      );
-      return answer?.[0] === "yes";
-    };
+    /**
+     * `/login`'s yes/no question — see `slashLogin`. Defaulted to "no",
+     * unlike onboarding's: spawning a login is a bigger step than accepting
+     * the setup the REPL just offered to do.
+     */
+    const loginConfirm = (question: string): Promise<boolean> =>
+      confirmAtPrompt(question, "no");
 
     // Every backend this machine (and this directory's override) currently
     // allows — `/login` probes all of them, not just the one this
     // conversation happens to be running on.
-    const loginBackends: readonly KapelBackend[] = mergeKapelConfigs(
-      options.config,
-      options.projectConfig,
-    )?.config.backends ?? [DEFAULT_BACKEND];
+    const loginBackends: readonly KapelBackend[] =
+      effectiveConfig?.backends ?? [DEFAULT_BACKEND];
 
     const controller = await createInteractiveController({
       workspacePath,
@@ -2360,6 +2460,10 @@ export async function runInteractive(
         }),
       runs: (output) =>
         runRunsCommand({ cwd: options.cwd, json: false }, { output }),
+      // The same offer startup made, through the same object — so a decline
+      // there is remembered here, and an accept here is not asked about
+      // twice.
+      ensureProjectSetup: (output) => projectSetup.ensure(output, "command"),
       resumeRun: (runId, output) =>
         runResume(runId, resumeOptionsFor(options, backend), { output }),
       login: {
@@ -2370,7 +2474,7 @@ export async function runInteractive(
         // human at a terminal to ask — a piped `kapel < script.txt` has no
         // `InputManager`, and `/login` must report status only there, never
         // spawn anything nobody can answer.
-        ...(inputManager === undefined
+        ...(manager === undefined
           ? {}
           : {
               confirm: loginConfirm,
@@ -2435,9 +2539,9 @@ export async function runInteractive(
     }
 
     const lineSource =
-      inputManager === undefined
+      manager === undefined
         ? pipedLineSource()
-        : inputManagerLineSource(inputManager);
+        : inputManagerLineSource(manager);
     try {
       return await replLoop({
         controller,
@@ -2552,6 +2656,31 @@ function planOptionsFor(
     model: alias,
     backend,
     why: true,
+    ...(options.config === undefined ? {} : { config: options.config }),
+    ...(options.projectConfig === undefined
+      ? {}
+      : { projectConfig: options.projectConfig }),
+  };
+}
+
+/**
+ * The policy compile's options, derived from the REPL's own settings.
+ *
+ * Deliberately the same shape as {@link planOptionsFor}: onboarding's compile
+ * is the very call `/plan` will make one moment later, so it has to resolve
+ * its backend and model the same way — a REPL running on Claude Code compiles
+ * through Claude Code, with no API key involved.
+ */
+function policyCompileOptionsFor(
+  options: InteractiveOptions,
+  alias: string,
+  backend: BackendName,
+): PolicyCompileOptions {
+  return {
+    cwd: options.cwd,
+    json: false,
+    model: alias,
+    backend,
     ...(options.config === undefined ? {} : { config: options.config }),
     ...(options.projectConfig === undefined
       ? {}

@@ -124,6 +124,9 @@ function toInteractiveOptions(
     ...(chat.continue === undefined ? {} : { continue: chat.continue }),
     ...(chat.session === undefined ? {} : { session: chat.session }),
     ...(raw.backend === undefined ? {} : { backend: raw.backend }),
+    // Carried through so the REPL's own setup question — the automatic
+    // project onboarding offer — obeys the same flag the wizard does.
+    ...(raw.setup === undefined ? {} : { setup: raw.setup }),
     ...(config === undefined ? {} : { config }),
     ...(projectConfig === undefined ? {} : { projectConfig }),
   };
