@@ -10,6 +10,7 @@ import type {
 import { UNATTRIBUTED, UsageTracker, usageRecordingProvider } from "@agent/ai";
 import type {
   AgentProject,
+  DelegatedWorkerUsageSink,
   ExecutionPlan,
   OrchestrationPolicy,
   RuntimeTask,
@@ -35,7 +36,7 @@ import {
 import type { EventSink } from "@agent/protocol";
 import type { SqliteSessionStore } from "@agent/session";
 import type { TuiController, TuiInit } from "@agent/tui";
-import type { BackendName } from "./backend.js";
+import type { BackendName, DelegatedBackendName } from "./backend.js";
 import {
   claudeCodeInstallGuidance,
   claudeCodeLoginGuidance,
@@ -169,6 +170,31 @@ export type ExecutorFactory = (
 ) => Promise<WorkerExecutor> | WorkerExecutor;
 
 /**
+ * Builds the usage sink handed to a delegated worker executor
+ * (`CodexWorkerExecutor`/`ClaudeCodeWorkerExecutor`) — `workspaceExecutorFactory`'s
+ * worker-side equivalent of {@link delegatedPlanningThrough}.
+ *
+ * The run's ledger goes in directly, same reason as planning: there is no
+ * `ModelProvider` to tee through under a delegated backend, since the model
+ * call happens inside the CLI's own subprocess. `modelFor` reduces whatever
+ * model a task's agent resolved to (or `undefined`, when none did) to the
+ * same placeholder {@link ModelDefinition} `delegatedPlanningThrough` uses for
+ * planning, so a worker and the planner attribute unpriced, subscription-CLI
+ * spend the same way. Kept as its own function, rather than inlined at both
+ * `workspaceExecutorFactory` call sites, so the wiring can be exercised in a
+ * test without booting either CLI.
+ */
+export function delegatedWorkerUsageSink(
+  backend: DelegatedBackendName,
+  usage: UsageRecorder,
+): DelegatedWorkerUsageSink {
+  return {
+    recorder: usage,
+    modelFor: (model) => delegatedModelIdentity(backend, model),
+  };
+}
+
+/**
  * Builds the "run a task in *this* directory" factory for a run.
  *
  * Everything expensive or fallible — the delegated CLI's availability probe,
@@ -197,6 +223,7 @@ async function workspaceExecutorFactory(
     // the same answers without re-parsing `.agent/` per task.
     const resolveAgentModel = createDelegatedModelResolver(args.project);
     const resolveAgentTools = createDelegatedToolsResolver(args.project);
+    const usage = delegatedWorkerUsageSink("claude-code", args.usage);
     return (workspacePath) =>
       new ClaudeCodeWorkerExecutor({
         workspacePath,
@@ -204,6 +231,7 @@ async function workspaceExecutorFactory(
         events,
         resolveAgentModel,
         resolveAgentTools,
+        usage,
         ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       });
   }
@@ -217,12 +245,14 @@ async function workspaceExecutorFactory(
       throw new Error(codexLoginGuidance(availability));
     }
     const resolveAgentModel = createDelegatedModelResolver(args.project);
+    const usage = delegatedWorkerUsageSink("codex", args.usage);
     return (workspacePath) =>
       new CodexWorkerExecutor({
         workspacePath,
         runId,
         events,
         resolveAgentModel,
+        usage,
         ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       });
   }
@@ -412,13 +442,17 @@ export interface RunUsageView {
  * The per-task columns: which model did the work, what it spent, what that
  * cost.
  *
- * `-` means nothing was recorded against the task at all — a task run by a
- * delegated backend (`--backend codex`, `--backend claude-code`) or in a
- * child worker, none of which report per-task token usage back to this
- * process. (The delegated *planner* does, via `delegatedPlanningThrough`, but
- * planning belongs to no task and lands under `planner` instead.) That is
- * distinct from `n/a` in the `$` column, which means the tokens *are* known
- * and their price is not.
+ * `-` means nothing was recorded against the task at all. Under `--backend
+ * native` that only happens for a task type the loop never billed a model
+ * for; under a delegated backend (`--backend codex`, `--backend claude-code`)
+ * it also covers the honest case where the CLI itself reported no usage for
+ * that attempt — `workspaceExecutorFactory` wires a usage sink into both
+ * worker executors the same way `delegatedPlanningThrough` wires one into
+ * planning, but neither one *invents* a number when the subprocess gave none.
+ * That is distinct from `n/a` in the `$` column, which means the tokens *are*
+ * known and their price is not — the placeholder identity
+ * `delegatedModelIdentity` gives a delegated model always prices `unknown`,
+ * so a delegated task with recorded usage still shows `n/a` there, never `$`.
  */
 function summaryRow(
   task: RuntimeTask,

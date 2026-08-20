@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { UsageTracker } from "@agent/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DelegatedWorkerUsageSink } from "../../src/planning/delegated-cli.js";
 import { CodexWorkerExecutor } from "../../src/workers/codex-executor.js";
 import { NO_VERDICT_SUMMARY } from "../../src/workers/review.js";
 import { writeFakeCodex } from "../backends/test-helpers.js";
@@ -329,6 +331,140 @@ describe("CodexWorkerExecutor", () => {
       expect(result.summary).toBe(
         '{"approved": false, "summary": "not a review"}',
       );
+    });
+  });
+
+  describe("usage reporting", () => {
+    /** A sink whose placeholder identity mirrors `delegatedModelIdentity`. */
+    function fakeSink(recorder: UsageTracker): DelegatedWorkerUsageSink {
+      return {
+        recorder,
+        modelFor: (model) => ({
+          provider: "openai",
+          id: model ?? "<codex default>",
+          capabilities: {
+            tools: false,
+            reasoning: false,
+            vision: false,
+            structuredOutput: false,
+          },
+        }),
+      };
+    }
+
+    it("records what Codex reported, tagged by the routed agent and task", async () => {
+      const binaryPath = await writeFakeCodex(dir, {
+        body: [
+          `printf '%s\\n' '${JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 120, output_tokens: 30 },
+          })}'`,
+          "exit 0",
+        ].join("\n"),
+      });
+      const usage = new UsageTracker();
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+        usage: fakeSink(usage),
+      });
+
+      await executor.execute(makeRuntimeTask(), "coder");
+
+      expect(usage.totals().usage).toEqual({
+        inputTokens: 120,
+        outputTokens: 30,
+      });
+      // No pricing is claimed for a subscription CLI.
+      expect(usage.totals().costUsd).toBe(0);
+      const byTask = usage.breakdownBy("task");
+      expect([...byTask.keys()]).toEqual(["task-1"]);
+      expect(byTask.get("task-1")?.agents).toEqual(["coder"]);
+      expect(byTask.get("task-1")?.pricing).toBe("unknown");
+    });
+
+    it("keys the recorded usage to the model resolved for the task", async () => {
+      const binaryPath = await writeFakeCodex(dir, {
+        body: [
+          `printf '%s\\n' '${JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 10, output_tokens: 5 },
+          })}'`,
+          "exit 0",
+        ].join("\n"),
+      });
+      const usage = new UsageTracker();
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+        resolveAgentModel: () => "gpt-5-codex",
+        usage: fakeSink(usage),
+      });
+
+      await executor.execute(makeRuntimeTask(), "coder");
+
+      expect([...usage.breakdownBy("model").keys()]).toEqual(["gpt-5-codex"]);
+    });
+
+    it("records nothing when Codex reported no usage — not even a zero", async () => {
+      const binaryPath = await writeFakeCodex(dir, {
+        body: [
+          `printf '%s\\n' '${JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text: AGENT_MESSAGE },
+          })}'`,
+          "exit 0",
+        ].join("\n"),
+      });
+      const usage = new UsageTracker();
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+        usage: fakeSink(usage),
+      });
+
+      await executor.execute(makeRuntimeTask(), "coder");
+
+      expect(usage.breakdownBy("task").size).toBe(0);
+    });
+
+    it("records nothing for a crashed attempt", async () => {
+      const usage = new UsageTracker();
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath: join(dir, "definitely-not-here") },
+        usage: fakeSink(usage),
+      });
+
+      await executor.execute(makeRuntimeTask(), "coder");
+
+      expect(usage.breakdownBy("task").size).toBe(0);
+    });
+
+    it("does nothing without a sink", async () => {
+      const binaryPath = await writeFakeCodex(dir, {
+        body: [
+          `printf '%s\\n' '${JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 120, output_tokens: 30 },
+          })}'`,
+          "exit 0",
+        ].join("\n"),
+      });
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+      });
+
+      // Would throw if the executor assumed a sink is always present.
+      await expect(
+        executor.execute(makeRuntimeTask(), "coder"),
+      ).resolves.toMatchObject({ status: "success" });
     });
   });
 

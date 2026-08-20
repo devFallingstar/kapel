@@ -1,3 +1,8 @@
+// Re-exported here rather than only from `planning/index.js`: both worker
+// executors' `usage` option is typed with this, so a caller wiring workers
+// (`workspaceExecutorFactory`) can import it alongside them.
+export type { DelegatedWorkerUsageSink } from "../planning/delegated-cli.js";
+export { recordDelegatedWorkerUsage } from "../planning/delegated-cli.js";
 export type {
   AgentLoopWorkerExecutorOptions,
   ResolvedWorkerModel,

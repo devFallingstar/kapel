@@ -1,3 +1,4 @@
+import type { ModelUsage } from "@agent/ai";
 import type {
   RuntimeTask,
   TaskResult,
@@ -8,6 +9,8 @@ import type {
 import type { EventSink } from "@agent/protocol";
 import type { CodexBackendOptions } from "../backends/codex.js";
 import { CodexBackend } from "../backends/codex.js";
+import type { DelegatedWorkerUsageSink } from "../planning/delegated-cli.js";
+import { recordDelegatedWorkerUsage } from "../planning/delegated-cli.js";
 import { buildTaskBriefing } from "./briefing.js";
 import {
   inspectWorkspaceChanges,
@@ -39,6 +42,13 @@ export interface CodexWorkerExecutorOptions {
    * `backendOptions.model` as the fallback so a run-wide `-m` still applies.
    */
   readonly resolveAgentModel?: (agent: string) => string | undefined;
+  /**
+   * Where to report what Codex said each task attempt spent, when the caller
+   * is keeping a ledger (an orchestration run opens one for the whole run).
+   * Left out, nothing is recorded — which is not the same as recording zero,
+   * mirroring `DelegatedPlannerOptions.usage`.
+   */
+  readonly usage?: DelegatedWorkerUsageSink;
 }
 
 /**
@@ -97,8 +107,11 @@ export class CodexWorkerExecutor implements WorkerExecutor {
     });
 
     let run: NormalizableRun;
+    // Kept separate from `run` (typed to only the fields normalization reads)
+    // so recording usage below does not depend on widening that type.
+    let reportedUsage: ModelUsage | undefined;
     try {
-      run = await backend.run(
+      const backendResult = await backend.run(
         {
           instruction: buildTaskBriefing(task.spec, agent, context, {
             reviewContract: "json-reply",
@@ -111,12 +124,22 @@ export class CodexWorkerExecutor implements WorkerExecutor {
           ...(signal === undefined ? {} : { signal }),
         },
       );
+      run = backendResult;
+      reportedUsage = backendResult.usage;
     } catch (error) {
       run = {
         status: "failed",
         summary: `Codex backend crashed: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+
+    // Recorded regardless of outcome, same as the planner's per-attempt
+    // recording: a failed or partial task still cost whatever Codex reported.
+    recordDelegatedWorkerUsage(
+      this.#options.usage,
+      { agent, taskId, model },
+      reportedUsage,
+    );
 
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
     const result = normalizeTaskResult({ taskId, loop: run, inspection });

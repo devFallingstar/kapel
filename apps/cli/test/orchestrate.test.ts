@@ -20,6 +20,7 @@ import {
   DEFAULT_ISOLATION,
   defaultExecutorFactory,
   delegatedPlanningThrough,
+  delegatedWorkerUsageSink,
   PLANNER_AGENT,
   planningThrough,
   runOrchestrate,
@@ -799,6 +800,29 @@ describe("runSummaryLines", () => {
     expect(lines[lines.length - 1]).toBe("tokens — input: 0, output: 0");
   });
 
+  it("shows real task counts for a delegated worker's recorded usage, not 0 tasks", () => {
+    // What `workspaceExecutorFactory` wires into a `--backend codex` worker:
+    // the sink `delegatedWorkerUsageSink` builds, fed exactly what
+    // `recordDelegatedWorkerUsage` would pass it for one task attempt.
+    const usage = new UsageTracker();
+    const sink = delegatedWorkerUsageSink("codex", usage);
+    sink.recorder.record(
+      sink.modelFor(undefined),
+      { inputTokens: 4_000, outputTokens: 900 },
+      { agent: "coder", taskId: "T01" },
+    );
+    const lines = runSummaryLines([runtimeTask("T01", "coder")], usage);
+
+    expect(lines[2]).toBe(
+      "completed  T01  coder  1      <codex default>  4.0k/900  n/a  Task T01",
+    );
+    // The bug this closes: a completed delegated run no longer rolls up as
+    // "0 tasks" once the worker's usage carries the task id.
+    expect(lines.at(-2)).toBe(
+      "<codex default>: 1 task · 4.0k in / 900 out · n/a",
+    );
+  });
+
   it("reports tokens with n/a cost for a model that ships without prices", () => {
     const usage = new UsageTracker();
     usage.record(
@@ -922,5 +946,40 @@ describe("delegatedPlanningThrough", () => {
     });
 
     expect(handed?.usage?.model.id).toBe("<claude-code default>");
+  });
+});
+
+describe("delegatedWorkerUsageSink", () => {
+  it("records what a worker attempt reported, tagged by agent and task, with no pricing", () => {
+    const usage = new UsageTracker();
+    const sink = delegatedWorkerUsageSink("codex", usage);
+
+    // The worker executor supplies the resolved model (or `undefined`) and the
+    // agent/task tags per attempt — this is what it hands the sink.
+    sink.recorder.record(
+      sink.modelFor("gpt-5-codex"),
+      { inputTokens: 900, outputTokens: 120 },
+      { agent: "coder", taskId: "T01" },
+    );
+
+    expect(usage.totals().usage).toEqual({
+      inputTokens: 900,
+      outputTokens: 120,
+    });
+    // No pricing is claimed for a subscription CLI, same as the planner's.
+    expect(usage.totals().costUsd).toBe(0);
+    const byTask = usage.breakdownBy("task");
+    expect([...byTask.keys()]).toEqual(["T01"]);
+    expect(byTask.get("T01")?.agents).toEqual(["coder"]);
+    expect(byTask.get("T01")?.pricing).toBe("unknown");
+  });
+
+  it("names the CLI's own default when the task resolved no model", () => {
+    const usage = new UsageTracker();
+    const sink = delegatedWorkerUsageSink("claude-code", usage);
+
+    expect(sink.modelFor(undefined).id).toBe("<claude-code default>");
+    expect(sink.modelFor(undefined).provider).toBe("anthropic");
+    expect(sink.modelFor("opus").id).toBe("opus");
   });
 });

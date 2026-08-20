@@ -68,6 +68,55 @@ export function recordDelegatedUsage(
 }
 
 /**
+ * Where a worker executor (`CodexWorkerExecutor`/`ClaudeCodeWorkerExecutor`)
+ * reports what its CLI said one task attempt spent.
+ *
+ * The same idea as {@link DelegatedUsageSink}, but built for a caller that
+ * serves many tasks and agents rather than one fixed step: a run-wide planning
+ * sink is stamped with its model and tags once, at construction, because
+ * planning only ever happens as "the planner". A worker has no such constant —
+ * the resolved model (and so the placeholder identity) and the routed agent
+ * both vary task to task — so {@link modelFor} is a function rather than a
+ * value, and the agent/task tags are supplied per call by
+ * {@link recordDelegatedWorkerUsage} instead of fixed up front.
+ */
+export interface DelegatedWorkerUsageSink {
+  readonly recorder: UsageRecorder;
+  /**
+   * Builds the placeholder {@link ModelDefinition} for one task's resolved
+   * model id (`undefined` when the task ran with no model override, i.e. the
+   * CLI's own default) — the worker-side equivalent of `delegatedModelIdentity`
+   * in the CLI. Supplied by the caller rather than computed here, so this
+   * package never has to know the app-layer mapping from backend name to
+   * provider.
+   */
+  readonly modelFor: (model: string | undefined) => ModelDefinition;
+}
+
+/**
+ * Records what one worker task attempt's CLI reported spending, tagged by
+ * agent and task so it lands in the run's per-task usage breakdown exactly
+ * where the native {@link AgentLoop} usage does. Pass-through only, same rule
+ * as {@link recordDelegatedUsage}: nothing is recorded when `usage` is
+ * `undefined`, because the CLI reported none for that attempt.
+ */
+export function recordDelegatedWorkerUsage(
+  sink: DelegatedWorkerUsageSink | undefined,
+  attempt: {
+    readonly agent: string;
+    readonly taskId: string;
+    readonly model: string | undefined;
+  },
+  usage: ModelUsage | undefined,
+): void {
+  if (sink === undefined || usage === undefined) return;
+  sink.recorder.record(sink.modelFor(attempt.model), usage, {
+    agent: attempt.agent,
+    taskId: attempt.taskId,
+  });
+}
+
+/**
  * The slice of {@link CodexBackend}/{@link ClaudeCodeBackend} these steps
  * use: one prompt in, one result out. Narrow on purpose, so
  * {@link DelegatedBackendFactory} can substitute a stand-in without
