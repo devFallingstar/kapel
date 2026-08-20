@@ -1,1 +1,1 @@
-v0.10.0 release — multiple backends at once: multi-select setup with per-role backend+model pairs and mixed per-agent execution, per-directory config overrides, login checks with on-the-spot codex login and claude auth login plus /login, automatic project setup on first run, and a startup dashboard with /stats backed by persisted usage history
+v0.10.1 release — fresh projects set themselves up without asking: opening the REPL in a repo with no .agent/ runs init and the policy compile immediately with a one-line announcement; --no-setup and piped runs still opt out

@@ -13538,12 +13538,8 @@ async function detectProjectSetup(workspacePath) {
   }
   return "ready";
 }
-function setupQuestion(state) {
-  return state === "needs-init" ? "This project isn't set up for kapel yet. Set it up now? (creates .agent/ with default agents and compiles the orchestration policy \u2014 one model call)" : "This project's orchestration policy isn't compiled yet. Compile it now? (one model call)";
-}
-function setupDeclinedLine(state, context) {
-  const commands = state === "needs-init" ? "`kapel init` and `kapel policy compile`" : "`kapel policy compile`";
-  return context === "startup" ? `ok \u2014 run ${commands} on the shell when you want it, or /plan and /orchestrate will offer again.` : `ok \u2014 run ${commands} on the shell when you want it.`;
+function setupAnnounceLine(state) {
+  return state === "needs-init" ? "setting this project up for kapel \u2014 creating .agent/ and compiling the orchestration policy (one model call)\u2026" : "compiling this project's orchestration policy for kapel (one model call)\u2026";
 }
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
@@ -13565,19 +13561,15 @@ function createProjectSetup(deps) {
     return false;
   };
   return {
-    ensure: async (output, context) => {
+    ensure: async (output) => {
       if (settled)
         return false;
       const state = await detect(deps.workspacePath);
       if (state === "ready")
         return true;
-      if (deps.confirm === void 0)
+      if (deps.interactive !== true)
         return false;
-      if (!await deps.confirm(setupQuestion(state))) {
-        settled = true;
-        output.log(setupDeclinedLine(state, context));
-        return false;
-      }
+      output.log(setupAnnounceLine(state));
       if (state === "needs-init") {
         if (!await step("`kapel init`", deps.init, output)) {
           settled = true;
@@ -14691,7 +14683,7 @@ async function runRunsCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.10.0";
+var CLI_VERSION = "0.10.1";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -15747,8 +15739,10 @@ async function runInteractive(options) {
     workspacePath,
     init: (output) => runInit({
       cwd: workspacePath,
-      // The `.agent/` a previous, declined run left behind holds nothing
-      // but kapel's session database — fill it in, never delete it.
+      // The `.agent/` a previous run left behind (this feature filling in
+      // only part of it before failing, or `openChatStore` reaching it
+      // first on a piped run) holds nothing but kapel's session database —
+      // fill it in, never delete it.
       fill: true,
       output,
       ...effectiveConfig === void 0 ? {} : { config: effectiveConfig }
@@ -15756,10 +15750,10 @@ async function runInteractive(options) {
     compile: (output) => runPolicyCompile(policyCompileOptionsFor(options, chatAlias, backend), {
       output
     }),
-    // No question where nobody can answer one — a piped or redirected REPL is
-    // never auto-onboarded, exactly as it is never asked to configure itself
-    // — and none where `--no-setup` has already said not to ask.
-    ...onboardingTty ? { confirm: (question) => confirmAtPrompt(question, "yes") } : {}
+    // Nothing runs where nobody would see it — a piped or redirected REPL is
+    // never auto-set-up, exactly as it is never asked to configure itself —
+    // and nothing runs where `--no-setup` has already said not to.
+    interactive: onboardingTty
   });
   await projectSetup.ensure({
     log: (line) => {
@@ -15768,7 +15762,7 @@ async function runInteractive(options) {
     error: (line) => {
       console.error(line);
     }
-  }, "startup");
+  });
   const store = options.save === false ? void 0 : await openChatStore(workspacePath);
   try {
     const started = await resolveStartSession(store, workspacePath, {
@@ -15949,10 +15943,9 @@ async function runInteractive(options) {
         output
       }),
       runs: (output) => runRunsCommand({ cwd: options.cwd, json: false }, { output }),
-      // The same offer startup made, through the same object — so a decline
-      // there is remembered here, and an accept here is not asked about
-      // twice.
-      ensureProjectSetup: (output) => projectSetup.ensure(output, "command"),
+      // The same setup startup ran (or tried to), through the same object —
+      // so a failure there is remembered here, and nothing runs twice.
+      ensureProjectSetup: (output) => projectSetup.ensure(output),
       resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), { output }),
       login: {
         backends: loginBackends,
