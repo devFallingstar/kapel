@@ -34,24 +34,26 @@ import {
   resolveChatSessionReference,
   SqliteSessionStore,
 } from "@agent/session";
-import type { BackendName } from "./backend.js";
+import type { BackendName, EnvLike } from "./backend.js";
 import {
   claudeCodeInstallGuidance,
   claudeCodeLoginGuidance,
   codexInstallGuidance,
   codexLoginGuidance,
+  DEFAULT_BACKEND,
   isDelegatedBackend,
 } from "./backend.js";
 import type { CheckpointStore } from "./checkpoint.js";
 import { createCheckpointStore, undoLines } from "./checkpoint.js";
 import type { CustomCommand, LoadCustomCommandsResult } from "./commands.js";
 import { expandCustomCommand, loadCustomCommands } from "./commands.js";
-import type { KapelConfig } from "./config.js";
+import type { KapelBackend, KapelConfig } from "./config.js";
 import { soleExecutionBackend } from "./config.js";
 import type { KapelProjectConfig } from "./config-project.js";
 import { mergeKapelConfigs } from "./config-project.js";
 import {
   checkBackendAvailability,
+  codexLoginRunner,
   delegatedModelOverride,
   detectBackendSetting,
   resolveOrchestratorModel,
@@ -103,6 +105,7 @@ import {
   resolveModelAndProvider,
 } from "./run.js";
 import { runRunsCommand } from "./runs-cmd.js";
+import { runSelectPrompt } from "./select-prompt.js";
 import { isoTime } from "./sessions.js";
 
 /**
@@ -562,6 +565,34 @@ export interface InteractiveControllerDeps {
    */
   readonly configure?: () => Promise<KapelConfig | undefined>;
   /**
+   * Backs `/login`: every backend the effective (machine + project) config
+   * allows, and how to check and fix each one. Absent means `/login` says so
+   * instead of running — same shape of absence as `configure`.
+   */
+  readonly login?: {
+    /** Every backend `mergeKapelConfigs(machine, project)` currently allows. */
+    readonly backends: readonly KapelBackend[];
+    /** The same probe the wizard uses — see `checkBackendAvailability`. */
+    readonly check: (backend: KapelBackend) => Promise<{
+      readonly ok: boolean;
+      readonly installed?: boolean;
+      readonly detail?: string;
+    }>;
+    /** Read for the native backend's credential variables. */
+    readonly env: EnvLike;
+    /**
+     * Asks a yes/no question at the prompt. Absent (along with
+     * `runCodexLogin`) on a non-interactive stdin — `/login` then only ever
+     * reports status, never offers to spawn anything.
+     */
+    readonly confirm?: (question: string) => Promise<boolean>;
+    /** Runs `codex login` and re-probes; see `codexLoginRunner`. */
+    readonly runCodexLogin?: () => Promise<{
+      readonly ok: boolean;
+      readonly detail?: string;
+    }>;
+  };
+  /**
    * Working-tree checkpoints for `/undo`. Absent means the feature is off and
    * `/undo` says so — which is what a caller with no filesystem to snapshot
    * (the tests) gets by simply not passing one.
@@ -685,6 +716,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     name: "config",
     usage: "/config",
     help: "re-run setup (backend and models) and apply it here",
+  },
+  {
+    name: "login",
+    usage: "/login",
+    help: "check every configured backend's login status and help fix it",
   },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
   {
@@ -1425,6 +1461,82 @@ export async function createInteractiveController(
     return drain("config-changed");
   };
 
+  /** Whether an env var actually carries a value — mirrors `present` in `config-runtime.ts`. */
+  const hasValue = (value: string | undefined): boolean =>
+    value !== undefined && value !== "";
+
+  /**
+   * `/login` — one line per backend in the effective config, and for any
+   * that isn't logged in, the same per-backend fix the wizard offers:
+   * codex gets an offer to run `codex login` right here, claude-code gets
+   * guidance (its login lives inside Claude Code, not in kapel), and native
+   * gets the name of the credential variable it's missing.
+   *
+   * `deps.login` is absent from a test double that doesn't wire it, and its
+   * `confirm`/`runCodexLogin` are absent whenever stdin isn't interactive —
+   * both are `/login`'s way of never asking a question, or spawning
+   * anything, nobody can answer.
+   */
+  const slashLogin = async (): Promise<DispatchResult> => {
+    const login = deps.login;
+    if (login === undefined) {
+      emit("/login is not available here.");
+      return drain();
+    }
+
+    for (const target of login.backends) {
+      if (target === "native") {
+        const configured =
+          hasValue(login.env.ANTHROPIC_API_KEY) ||
+          hasValue(login.env.ANTHROPIC_AUTH_TOKEN) ||
+          hasValue(login.env.OPENAI_API_KEY);
+        emit(
+          configured
+            ? "native: credential present"
+            : "native: credential missing — set ANTHROPIC_API_KEY, " +
+                "ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY",
+        );
+        continue;
+      }
+
+      const result = await login.check(target);
+      if (result.installed === false) {
+        const detail = result.detail === undefined ? "" : ` (${result.detail})`;
+        emit(`${target}: not installed${detail}`);
+        continue;
+      }
+      if (result.ok) {
+        emit(`${target}: logged in`);
+        continue;
+      }
+
+      emit(`${target}: not logged in`);
+      if (target === "codex") {
+        if (login.confirm === undefined || login.runCodexLogin === undefined) {
+          continue;
+        }
+        const yes = await login.confirm(
+          "Codex is installed but not logged in — run `codex login` now?",
+        );
+        if (!yes) continue;
+        emit("running `codex login` — follow the prompts in your terminal…");
+        const after = await login.runCodexLogin();
+        emit(
+          after.ok
+            ? "codex: now logged in."
+            : `codex: still not logged in${after.detail === undefined ? "" : `: ${after.detail}`}`,
+        );
+      } else if (target === "claude-code") {
+        emit("Claude Code's login happens inside Claude Code, not here.");
+        emit(
+          "Run `claude` in another terminal and log in there (its own `/login`), " +
+            "then come back and run /login again — or re-run `kapel config`.",
+        );
+      }
+    }
+    return drain();
+  };
+
   /**
    * `/compact` — force an immediate compaction pass over this conversation's
    * history, regardless of the auto-compaction threshold.
@@ -1680,6 +1792,8 @@ export async function createInteractiveController(
         return await slashModel(argument);
       case "config":
         return await slashConfig();
+      case "login":
+        return await slashLogin();
       case "usage":
         emit(usageTotalsLine(deps.usage.totals()));
         // Indented under the total: the same tokens, split by which model
@@ -2174,6 +2288,40 @@ export async function runInteractive(
 
     const wizardTty = interactiveTty && process.stdout.isTTY === true;
 
+    // The one seam a spawned `codex login` (and, alongside it, any picker or
+    // yes/no question) hands the terminal through: pause the persistent
+    // `InputManager`'s readline around the call, run it, resume. A no-op when
+    // there is no `InputManager` at all (piped input), matching `Suspend`'s
+    // own default in `config-runtime.ts`.
+    const withSuspended = <T>(fn: () => Promise<T>): Promise<T> =>
+      inputManager === undefined ? fn() : inputManager.withSuspended(fn);
+
+    /** `/login`'s yes/no question — see `slashLogin`. */
+    const loginConfirm = async (question: string): Promise<boolean> => {
+      const answer = await withSuspended(() =>
+        runSelectPrompt(
+          { input: process.stdin, output: process.stdout },
+          {
+            title: question,
+            choices: [
+              { value: "yes", label: "Yes" },
+              { value: "no", label: "No" },
+            ],
+            initial: "no",
+          },
+        ),
+      );
+      return answer?.[0] === "yes";
+    };
+
+    // Every backend this machine (and this directory's override) currently
+    // allows — `/login` probes all of them, not just the one this
+    // conversation happens to be running on.
+    const loginBackends: readonly KapelBackend[] = mergeKapelConfigs(
+      options.config,
+      options.projectConfig,
+    )?.config.backends ?? [DEFAULT_BACKEND];
+
     const controller = await createInteractiveController({
       workspacePath,
       ...(store === undefined ? {} : { store }),
@@ -2214,6 +2362,21 @@ export async function runInteractive(
         runRunsCommand({ cwd: options.cwd, json: false }, { output }),
       resumeRun: (runId, output) =>
         runResume(runId, resumeOptionsFor(options, backend), { output }),
+      login: {
+        backends: loginBackends,
+        check: (target) => checkBackendAvailability(target),
+        env: process.env,
+        // `confirm`/`runCodexLogin` are only ever wired when there is a
+        // human at a terminal to ask — a piped `kapel < script.txt` has no
+        // `InputManager`, and `/login` must report status only there, never
+        // spawn anything nobody can answer.
+        ...(inputManager === undefined
+          ? {}
+          : {
+              confirm: loginConfirm,
+              runCodexLogin: codexLoginRunner(withSuspended, process.env),
+            }),
+      },
       ...(wizardTty
         ? {
             // `/config` writes the machine-level file, so what this
@@ -2224,18 +2387,15 @@ export async function runInteractive(
             configure: async () => {
               const saved = await runConfigWizard({
                 // `/config` runs while the REPL's own InputManager still owns
-                // stdin — suspend it around the picker so the two don't fight
-                // over raw-mode keypresses.
-                prompt: ttyWizardPrompt(
-                  undefined,
-                  inputManager === undefined
-                    ? undefined
-                    : (fn) => inputManager.withSuspended(fn),
-                ),
+                // stdin — suspend it around the picker (and around a spawned
+                // `codex login`) so the two don't fight over raw-mode
+                // keypresses.
+                prompt: ttyWizardPrompt(undefined, withSuspended),
                 write: (line) => {
                   console.log(line);
                 },
                 checkBackend: (target) => checkBackendAvailability(target),
+                runCodexLogin: codexLoginRunner(withSuspended, process.env),
                 ...(options.config === undefined
                   ? {}
                   : { current: options.config }),

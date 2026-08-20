@@ -539,6 +539,7 @@ describe("interactive controller — slash commands", () => {
       "/sessions",
       "/resume",
       "/model",
+      "/login",
       "/usage",
       "/compact",
       "/plan",
@@ -949,6 +950,146 @@ describe("interactive controller — slash commands", () => {
     const h = await harness();
     expect((await h.controller.handleLine("/resume-run 0f3c")).output).toEqual([
       "/resume-run is not available here.",
+    ]);
+  });
+});
+
+// --- /login -------------------------------------------------------------
+
+describe("interactive controller — /login", () => {
+  it("says so when nothing is wired, like /config with no configure", async () => {
+    const h = await harness();
+    expect((await h.controller.handleLine("/login")).output).toEqual([
+      "/login is not available here.",
+    ]);
+  });
+
+  it("prints one line per backend in the effective config", async () => {
+    const h = await harness({
+      login: {
+        backends: ["claude-code", "codex", "native"],
+        check: async (backend) =>
+          backend === "claude-code"
+            ? { ok: true, installed: true }
+            : { ok: false, installed: false, detail: "not on PATH" },
+        env: {},
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(result.output).toEqual([
+      "claude-code: logged in",
+      "codex: not installed (not on PATH)",
+      "native: credential missing — set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY",
+    ]);
+  });
+
+  it("says the native credential is present when one is set", async () => {
+    const h = await harness({
+      login: {
+        backends: ["native"],
+        check: async () => ({ ok: true }),
+        env: { ANTHROPIC_API_KEY: "sk-x" },
+      },
+    });
+    expect((await h.controller.handleLine("/login")).output).toEqual([
+      "native: credential present",
+    ]);
+  });
+
+  it("points at Claude Code's own login instead of automating it", async () => {
+    const h = await harness({
+      login: {
+        backends: ["claude-code"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(result.output).toEqual([
+      "claude-code: not logged in",
+      "Claude Code's login happens inside Claude Code, not here.",
+      "Run `claude` in another terminal and log in there (its own `/login`), " +
+        "then come back and run /login again — or re-run `kapel config`.",
+    ]);
+  });
+
+  it("reports codex as not logged in and stops there on non-interactive stdin (no confirm wired)", async () => {
+    const h = await harness({
+      login: {
+        backends: ["codex"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        // No `confirm`/`runCodexLogin` — mirrors a piped, non-interactive REPL.
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(result.output).toEqual(["codex: not logged in"]);
+  });
+
+  it("offers to run codex login, and reports success after a clean re-probe", async () => {
+    const questions: string[] = [];
+    let loginCalls = 0;
+    const h = await harness({
+      login: {
+        backends: ["codex"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        confirm: async (question) => {
+          questions.push(question);
+          return true;
+        },
+        runCodexLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(questions).toEqual([
+      "Codex is installed but not logged in — run `codex login` now?",
+    ]);
+    expect(loginCalls).toBe(1);
+    expect(result.output).toEqual([
+      "codex: not logged in",
+      "running `codex login` — follow the prompts in your terminal…",
+      "codex: now logged in.",
+    ]);
+  });
+
+  it("does not spawn codex login when the user declines", async () => {
+    let loginCalls = 0;
+    const h = await harness({
+      login: {
+        backends: ["codex"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        confirm: async () => false,
+        runCodexLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(loginCalls).toBe(0);
+    expect(result.output).toEqual(["codex: not logged in"]);
+  });
+
+  it("reports a codex login attempt that still isn't logged in", async () => {
+    const h = await harness({
+      login: {
+        backends: ["codex"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        confirm: async () => true,
+        runCodexLogin: async () => ({ ok: false, detail: "still no token" }),
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(result.output).toEqual([
+      "codex: not logged in",
+      "running `codex login` — follow the prompts in your terminal…",
+      "codex: still not logged in: still no token",
     ]);
   });
 });
@@ -1639,6 +1780,7 @@ describe("slashCompleter", () => {
       "/fork",
       "/model",
       "/config",
+      "/login",
       "/usage",
       "/compact",
       "/undo",

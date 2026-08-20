@@ -1,8 +1,11 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type {
   ClaudeCodeAvailability,
   CodexAvailability,
 } from "@agent/coding-agent";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   BACKEND_NAMES,
   claudeCodeInstallGuidance,
@@ -14,8 +17,11 @@ import {
   fullAutoForSandbox,
   isDelegatedBackend,
   resolveBackendName,
+  spawnCodexLogin,
   validateBackendName,
 } from "../src/backend.js";
+
+const SCRATCHPAD = process.env.AGENT_TEST_TMPDIR || tmpdir();
 
 describe("resolveBackendName", () => {
   it("prefers an explicit --backend flag over everything else", () => {
@@ -167,5 +173,54 @@ describe("claude code guidance", () => {
     const text = claudeCodeLoginGuidance({ installed: true, loggedIn: false });
     expect(text).toContain("not logged in");
     expect(text).toContain("no Anthropic API key needed");
+  });
+});
+
+describe("spawnCodexLogin", () => {
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(path.join(SCRATCHPAD, "kapel-codex-login-"));
+    originalPath = process.env.PATH;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = originalPath;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  async function installFakeCodex(script: string): Promise<void> {
+    const binPath = path.join(binDir, "codex");
+    await writeFile(binPath, `#!/bin/sh\n${script}\n`);
+    await chmod(binPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  }
+
+  it("resolves with the exit code of a successful login", async () => {
+    await installFakeCodex("exit 0");
+    const result = await spawnCodexLogin(binDir);
+    expect(result).toEqual({ exitCode: 0 });
+  });
+
+  it("resolves with a non-zero exit code when login fails", async () => {
+    await installFakeCodex("exit 1");
+    const result = await spawnCodexLogin(binDir);
+    expect(result).toEqual({ exitCode: 1 });
+  });
+
+  it("reports an error when the codex CLI cannot be found on PATH at all", async () => {
+    process.env.PATH = binDir; // empty directory — nothing named "codex"
+    const result = await spawnCodexLogin(binDir);
+    expect("error" in result).toBe(true);
+  });
+
+  it("runs `codex login` — not exec, not some other subcommand", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const argsFile = path.join(binDir, "args");
+    await installFakeCodex(`echo "$@" > "${argsFile}"`);
+    await spawnCodexLogin(binDir);
+    const recorded = (await readFile(argsFile, "utf8")).trim();
+    expect(recorded).toBe("login");
   });
 });

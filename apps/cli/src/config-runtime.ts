@@ -1,6 +1,10 @@
 import { ClaudeCodeBackend, CodexBackend } from "@agent/coding-agent";
 import type { BackendName, EnvLike } from "./backend.js";
-import { DEFAULT_BACKEND, validateBackendName } from "./backend.js";
+import {
+  DEFAULT_BACKEND,
+  spawnCodexLogin,
+  validateBackendName,
+} from "./backend.js";
 import type {
   KapelBackend,
   KapelConfig,
@@ -329,11 +333,17 @@ export function ttyWizardPrompt(
 export async function checkBackendAvailability(
   backend: KapelBackend,
   env: EnvLike = process.env,
-): Promise<{ readonly ok: boolean; readonly detail?: string }> {
+): Promise<{
+  readonly ok: boolean;
+  /** See `BackendCheckResult.installed` in `config-wizard.ts`. Absent for `native`. */
+  readonly installed?: boolean;
+  readonly detail?: string;
+}> {
   if (backend === "claude-code") {
     const availability = await ClaudeCodeBackend.checkAvailability();
     return {
       ok: availability.installed && availability.loggedIn,
+      installed: availability.installed,
       ...(availability.detail === undefined
         ? {}
         : { detail: availability.detail }),
@@ -343,6 +353,7 @@ export async function checkBackendAvailability(
     const availability = await CodexBackend.checkAvailability();
     return {
       ok: availability.installed && availability.loggedIn,
+      installed: availability.installed,
       ...(availability.detail === undefined
         ? {}
         : { detail: availability.detail }),
@@ -355,6 +366,31 @@ export async function checkBackendAvailability(
   return configured
     ? { ok: true }
     : { ok: false, detail: "no provider credential is set in this shell" };
+}
+
+/**
+ * Composes the wizard's `runCodexLogin` dependency (see `ConfigWizardDeps` in
+ * `config-wizard.ts`): spawns `codex login` interactively — suspended around
+ * whatever else owns the terminal, through the same {@link Suspend} seam
+ * `ttyWizardPrompt` uses for the picker — then re-probes with
+ * {@link checkBackendAvailability} rather than assuming the spawn worked, so
+ * the wizard reports what is actually true afterward.
+ */
+export function codexLoginRunner(
+  suspend: Suspend = noSuspend,
+  env: EnvLike = process.env,
+): () => Promise<{ readonly ok: boolean; readonly detail?: string }> {
+  return async () => {
+    const outcome = await suspend(() => spawnCodexLogin());
+    if ("error" in outcome) return { ok: false, detail: outcome.error };
+    const result = await checkBackendAvailability("codex", env);
+    return result.ok
+      ? { ok: true }
+      : {
+          ok: false,
+          ...(result.detail === undefined ? {} : { detail: result.detail }),
+        };
+  };
 }
 
 /** `ensureKapelConfig`, as the injection point of {@link ensureFirstRunConfig}. */
@@ -419,6 +455,17 @@ export async function ensureFirstRunConfig(
     write,
     checkBackend: (backend) =>
       checkBackendAvailability(backend, options.env ?? process.env),
+    // Only wired when there is actually a human to ask — a non-interactive
+    // run never reaches the wizard at all (see `ensureKapelConfig`), but this
+    // keeps `runCodexLogin` from implying otherwise.
+    ...(interactive
+      ? {
+          runCodexLogin: codexLoginRunner(
+            options.suspend,
+            options.env ?? process.env,
+          ),
+        }
+      : {}),
     ...(options.env === undefined ? {} : { env: options.env }),
   });
 }

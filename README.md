@@ -239,7 +239,15 @@ pre-selected suggestion for each role comes from Claude Code's tiers when it is
 ticked (they are the only defaults that actually differ per tier), otherwise
 Codex's, otherwise the API-key list's. Every ticked backend is probed as you
 go, so a missing or logged-out CLI is reported there and then rather than on
-your first objective.
+your first objective — and when the CLI itself is installed but nobody has
+signed in, the wizard offers to fix it on the spot: for Codex it asks whether
+to run `codex login` right there (suspending the wizard, handing you the
+terminal, then re-checking once it exits); Claude Code's own login lives
+inside Claude Code, so instead of trying to drive it the wizard tells you to
+run `claude` in another terminal and log in there. Either way, setup keeps
+going — nothing here blocks on being fixed. Run `/login` inside the REPL any
+time afterward to re-check every backend the effective config allows and get
+the same offer again for whichever one still needs it.
 
 ```bash
 kapel config              # re-run the wizard at any time

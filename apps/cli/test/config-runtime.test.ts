@@ -1,9 +1,13 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KapelConfig } from "../src/config.js";
 import { KAPEL_CONFIG_VERSION } from "../src/config.js";
 import type { BackendDetectionProbe, Suspend } from "../src/config-runtime.js";
 import {
   checkBackendAvailability,
+  codexLoginRunner,
   defaultBackendDetectionProbe,
   delegatedModelOverride,
   detectBackendSetting,
@@ -17,6 +21,8 @@ import {
 } from "../src/config-runtime.js";
 import type { ConfigWizardDeps } from "../src/config-wizard.js";
 import { DEFAULT_MODEL_ALIAS } from "../src/models.js";
+
+const SCRATCHPAD = process.env.AGENT_TEST_TMPDIR || tmpdir();
 
 const cc = (model: string) => ({ backend: "claude-code", model }) as const;
 
@@ -580,5 +586,54 @@ describe("checkBackendAvailability", () => {
     const result = await checkBackendAvailability("native", {});
     expect(result.ok).toBe(false);
     expect(result.detail).toContain("no provider credential");
+  });
+});
+
+describe("codexLoginRunner", () => {
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(path.join(SCRATCHPAD, "kapel-codex-runner-"));
+    originalPath = process.env.PATH;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = originalPath;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  async function installFakeCodex(script: string): Promise<void> {
+    const binPath = path.join(binDir, "codex");
+    await writeFile(binPath, `#!/bin/sh\n${script}\n`);
+    await chmod(binPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  }
+
+  it("suspends around the spawn and reports success after a clean re-probe", async () => {
+    await installFakeCodex("exit 0");
+
+    const calls: string[] = [];
+    const suspend: Suspend = async (fn) => {
+      calls.push("suspend-start");
+      try {
+        return await fn();
+      } finally {
+        calls.push("suspend-end");
+      }
+    };
+
+    const run = codexLoginRunner(suspend, {});
+    const result = await run();
+    expect(calls).toEqual(["suspend-start", "suspend-end"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports the spawn error, without a suspend, when codex isn't on PATH", async () => {
+    process.env.PATH = binDir; // empty — nothing named "codex"
+    const run = codexLoginRunner();
+    const result = await run();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBeDefined();
   });
 });

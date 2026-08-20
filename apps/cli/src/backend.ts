@@ -1,9 +1,14 @@
+import { spawn } from "node:child_process";
 import type { ModelDefinition } from "@agent/ai";
 import type {
   ClaudeCodeAvailability,
   CodexAvailability,
 } from "@agent/coding-agent";
-import { ClaudeCodeBackend, CodexBackend } from "@agent/coding-agent";
+import {
+  ClaudeCodeBackend,
+  CodexBackend,
+  executableCandidates,
+} from "@agent/coding-agent";
 
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
@@ -219,4 +224,54 @@ export async function delegatedBackendError(
   if (!availability.installed) return codexInstallGuidance(availability);
   if (!availability.loggedIn) return codexLoginGuidance(availability);
   return undefined;
+}
+
+/** What {@link spawnCodexLogin} resolves with. */
+export type SpawnCodexLoginResult =
+  | { readonly exitCode: number | null }
+  | { readonly error: string };
+
+/**
+ * Runs `codex login` as a fully interactive child process — stdio inherited,
+ * so Codex's own prompts (and any browser it opens) happen directly in this
+ * terminal — and resolves once it exits.
+ *
+ * The caller is responsible for suspending whatever else owns the terminal
+ * around this call (the wizard's picker and the REPL's `InputManager` both
+ * have a seam for exactly that — see `Suspend` in `config-runtime.ts`); this
+ * function only does the spawning.
+ *
+ * Retries the platform's shim names on `ENOENT` before giving up, the same
+ * dance every other Codex spawn in this codebase does (see
+ * `executableCandidates`) — an `error` result only happens when none of them
+ * could even start.
+ */
+export function spawnCodexLogin(
+  cwd: string = process.cwd(),
+): Promise<SpawnCodexLoginResult> {
+  const candidates = executableCandidates("codex");
+
+  const attempt = (index: number): Promise<SpawnCodexLoginResult> => {
+    const binary = candidates[index];
+    if (binary === undefined) {
+      return Promise.resolve({
+        error: "could not find the codex CLI on PATH.",
+      });
+    }
+    return new Promise((resolve) => {
+      const child = spawn(binary, ["login"], { cwd, stdio: "inherit" });
+      child.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" && index + 1 < candidates.length) {
+          resolve(attempt(index + 1));
+          return;
+        }
+        resolve({ error: error.message });
+      });
+      child.once("exit", (code) => {
+        resolve({ exitCode: code });
+      });
+    });
+  };
+
+  return attempt(0);
 }

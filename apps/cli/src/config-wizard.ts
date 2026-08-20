@@ -45,6 +45,14 @@ export interface WizardPrompt {
 export interface BackendCheckResult {
   readonly ok: boolean;
   readonly detail?: string;
+  /**
+   * Whether the CLI itself is present, when the backend is a delegating one
+   * (`codex`/`claude-code`) — absent for `native`, which has no install step.
+   * `warnIfUnavailable` uses it to tell "not installed" (today's guidance)
+   * apart from "installed but not logged in" (which gets a per-backend fix
+   * below instead).
+   */
+  readonly installed?: boolean;
 }
 
 /** What {@link runConfigWizard} hands to whoever persists its answers. */
@@ -59,7 +67,22 @@ export interface ConfigWizardDeps {
   /** Optional availability probe for the chosen backend. Warn-only. */
   readonly checkBackend?: (
     backend: KapelBackend,
-  ) => Promise<{ readonly ok: boolean; readonly detail?: string }>;
+  ) => Promise<BackendCheckResult>;
+  /**
+   * Runs `codex login` interactively (inheriting the terminal) and resolves
+   * with the outcome, re-probed rather than assumed. Absent means the wizard
+   * cannot offer to run it here — Codex installed-but-logged-out then falls
+   * back to today's warn-and-continue, exactly like every other backend.
+   *
+   * Only ever consulted when `checkBackend` reports codex as installed but
+   * not logged in; the caller (`config-runtime.ts`'s `codexLoginRunner`) is
+   * the one that knows how to suspend whatever else owns the terminal around
+   * the spawn.
+   */
+  readonly runCodexLogin?: () => Promise<{
+    readonly ok: boolean;
+    readonly detail?: string;
+  }>;
   readonly env?: NodeJS.ProcessEnv;
   /** `false` runs the whole flow without touching disk. Defaults to `true`. */
   readonly save?: boolean;
@@ -149,6 +172,64 @@ function initialFor(
   return encodeRoleModel(defaultRoleModel(backends, role));
 }
 
+const CONTINUING_LINE =
+  "continuing setup — you can fix this later and re-run `kapel config`.";
+
+/**
+ * Claude Code's login lives inside Claude Code itself — there is no
+ * `claude login` to spawn the way there is `codex login`, so this is guidance
+ * rather than automation (see the module doc for why).
+ */
+const CLAUDE_CODE_LOGIN_GUIDANCE: readonly string[] = [
+  "Claude Code's login happens inside Claude Code, not here.",
+  "Run `claude` in another terminal and log in there (its own `/login`), " +
+    "then come back and continue — or re-run `kapel config`.",
+];
+
+/**
+ * Offers to run `codex login` right now, when the wizard can: asks, and on
+ * "yes" runs it (via `deps.runCodexLogin`, which suspends whatever else owns
+ * the terminal and re-probes afterward) and reports the real outcome.
+ *
+ * Resolves `true` only when codex is confirmed logged in afterward — the
+ * caller falls back to the ordinary fix line whenever this is `false`,
+ * whether that is because the user said no, nothing was wired to run it, or
+ * the login attempt itself did not end up logged in.
+ */
+async function offerCodexLogin(deps: ConfigWizardDeps): Promise<boolean> {
+  const runLogin = deps.runCodexLogin;
+  if (runLogin === undefined) return false;
+
+  const answer = await ask(
+    deps,
+    "Codex is installed but not logged in — run `codex login` now?",
+    [
+      { value: "yes", label: "Yes" },
+      { value: "no", label: "No" },
+    ],
+    "no",
+  );
+  if (answer !== "yes") return false;
+
+  deps.write("running `codex login` — follow the prompts in your terminal…");
+  let result: { readonly ok: boolean; readonly detail?: string };
+  try {
+    result = await runLogin();
+  } catch (error) {
+    result = {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (result.ok) {
+    deps.write("codex: now logged in.");
+    return true;
+  }
+  const detail = result.detail === undefined ? "" : `: ${result.detail}`;
+  deps.write(`codex: still not logged in${detail}`);
+  return false;
+}
+
 async function warnIfUnavailable(
   deps: ConfigWizardDeps,
   backend: KapelBackend,
@@ -171,10 +252,27 @@ async function warnIfUnavailable(
 
   const detail = result.detail === undefined ? "" : `: ${result.detail}`;
   deps.write(`warning: ${backend} does not look ready${detail}`);
+
+  // `installed === true` is what tells "not installed" (today's guidance,
+  // below) apart from "installed but not logged in" (each backend's own
+  // fix) — a `checkBackend` that doesn't report it at all (older callers,
+  // and every hand-rolled test fake) falls straight through to today's
+  // behaviour, unchanged.
+  if (backend === "codex" && result.installed === true) {
+    if (await offerCodexLogin(deps)) return;
+    deps.write(BACKEND_FIX.codex);
+    deps.write(CONTINUING_LINE);
+    return;
+  }
+
+  if (backend === "claude-code" && result.installed === true) {
+    for (const line of CLAUDE_CODE_LOGIN_GUIDANCE) deps.write(line);
+    deps.write(CONTINUING_LINE);
+    return;
+  }
+
   deps.write(BACKEND_FIX[backend]);
-  deps.write(
-    "continuing setup — you can fix this later and re-run `kapel config`.",
-  );
+  deps.write(CONTINUING_LINE);
 }
 
 /**

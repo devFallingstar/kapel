@@ -469,6 +469,124 @@ describe("runConfigWizard backend check", () => {
   });
 });
 
+// --- codex: installed but not logged in — the login offer -------------------
+
+describe("runConfigWizard codex login offer", () => {
+  const CODEX_ANSWERS_AFTER_CONFIRM = [
+    "codex:default",
+    "codex:default",
+    "codex:default",
+    "codex:default",
+  ] as const;
+
+  it("skips the offer entirely when nothing can run codex login, same as before", async () => {
+    const prompt = new ScriptedPrompt([
+      ["codex"],
+      ...CODEX_ANSWERS_AFTER_CONFIRM,
+    ]);
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+      }),
+    );
+    // No confirm question was inserted — the five original calls stand.
+    expect(prompt.calls).toHaveLength(5);
+    expect(
+      lines.some((line) => line.includes("npm install -g @openai/codex")),
+    ).toBe(true);
+  });
+
+  it("offers to run codex login, and reports success when it re-probes clean", async () => {
+    const prompt = new ScriptedPrompt([
+      ["codex"],
+      "yes",
+      ...CODEX_ANSWERS_AFTER_CONFIRM,
+    ]);
+    let loginCalls = 0;
+    const config = await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+        runCodexLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      }),
+    );
+    expect(prompt.calls[1]?.title).toBe(
+      "Codex is installed but not logged in — run `codex login` now?",
+    );
+    expect(loginCalls).toBe(1);
+    expect(lines).toContain("codex: now logged in.");
+    expect(
+      lines.some((line) => line.includes("npm install -g @openai/codex")),
+    ).toBe(false);
+    expect(config?.backends).toEqual(["codex"]);
+  });
+
+  it("declines to run codex login and falls back to the fix line", async () => {
+    const prompt = new ScriptedPrompt([
+      ["codex"],
+      "no",
+      ...CODEX_ANSWERS_AFTER_CONFIRM,
+    ]);
+    let loginCalls = 0;
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+        runCodexLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      }),
+    );
+    expect(loginCalls).toBe(0);
+    expect(
+      lines.some((line) => line.includes("npm install -g @openai/codex")),
+    ).toBe(true);
+  });
+
+  it("reports a login attempt that did not end up logged in, then falls back to the fix line", async () => {
+    const prompt = new ScriptedPrompt([
+      ["codex"],
+      "yes",
+      ...CODEX_ANSWERS_AFTER_CONFIRM,
+    ]);
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+        runCodexLogin: async () => ({ ok: false, detail: "still no token" }),
+      }),
+    );
+    expect(lines).toContain("codex: still not logged in: still no token");
+    expect(
+      lines.some((line) => line.includes("npm install -g @openai/codex")),
+    ).toBe(true);
+  });
+});
+
+// --- claude-code: installed but not logged in — guidance, not automation ----
+
+describe("runConfigWizard claude-code login guidance", () => {
+  it("points at Claude Code's own login instead of trying to automate it", async () => {
+    const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+      }),
+    );
+    expect(lines.some((line) => line.includes("inside Claude Code"))).toBe(
+      true,
+    );
+    expect(
+      lines.some((line) =>
+        line.includes("npm install -g @anthropic-ai/claude-code"),
+      ),
+    ).toBe(false);
+    // No confirm question was asked — claude-code is guidance only.
+    expect(prompt.calls).toHaveLength(5);
+  });
+});
+
 // --- first-run detection ----------------------------------------------------
 
 describe("ensureKapelConfig", () => {
