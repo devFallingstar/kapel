@@ -17,6 +17,7 @@ import {
   fullAutoForSandbox,
   isDelegatedBackend,
   resolveBackendName,
+  spawnClaudeCodeLogin,
   spawnCodexLogin,
   validateBackendName,
 } from "../src/backend.js";
@@ -166,12 +167,14 @@ describe("claude code guidance", () => {
   it("names the install command and the login step", () => {
     const text = claudeCodeInstallGuidance(missing);
     expect(text).toContain("npm install -g @anthropic-ai/claude-code");
+    expect(text).toContain("claude auth login");
     expect(text).toContain('Could not run "claude".');
   });
 
   it("asks for a login when the CLI is there but nobody is signed in", () => {
     const text = claudeCodeLoginGuidance({ installed: true, loggedIn: false });
     expect(text).toContain("not logged in");
+    expect(text).toContain("claude auth login");
     expect(text).toContain("no Anthropic API key needed");
   });
 });
@@ -222,5 +225,54 @@ describe("spawnCodexLogin", () => {
     await spawnCodexLogin(binDir);
     const recorded = (await readFile(argsFile, "utf8")).trim();
     expect(recorded).toBe("login");
+  });
+});
+
+describe("spawnClaudeCodeLogin", () => {
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(path.join(SCRATCHPAD, "kapel-claude-login-"));
+    originalPath = process.env.PATH;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = originalPath;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  async function installFakeClaude(script: string): Promise<void> {
+    const binPath = path.join(binDir, "claude");
+    await writeFile(binPath, `#!/bin/sh\n${script}\n`);
+    await chmod(binPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  }
+
+  it("resolves with the exit code of a successful login", async () => {
+    await installFakeClaude("exit 0");
+    const result = await spawnClaudeCodeLogin(binDir);
+    expect(result).toEqual({ exitCode: 0 });
+  });
+
+  it("resolves with a non-zero exit code when login fails", async () => {
+    await installFakeClaude("exit 1");
+    const result = await spawnClaudeCodeLogin(binDir);
+    expect(result).toEqual({ exitCode: 1 });
+  });
+
+  it("reports an error when the claude CLI cannot be found on PATH at all", async () => {
+    process.env.PATH = binDir; // empty directory — nothing named "claude"
+    const result = await spawnClaudeCodeLogin(binDir);
+    expect("error" in result).toBe(true);
+  });
+
+  it("runs `claude auth login` — not exec, not some other subcommand", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const argsFile = path.join(binDir, "args");
+    await installFakeClaude(`echo "$@" > "${argsFile}"`);
+    await spawnClaudeCodeLogin(binDir);
+    const recorded = (await readFile(argsFile, "utf8")).trim();
+    expect(recorded).toBe("auth login");
   });
 });

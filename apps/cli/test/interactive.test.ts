@@ -998,20 +998,86 @@ describe("interactive controller — /login", () => {
     ]);
   });
 
-  it("points at Claude Code's own login instead of automating it", async () => {
+  it("reports claude-code as not logged in and stops there on non-interactive stdin (no confirm wired)", async () => {
     const h = await harness({
       login: {
         backends: ["claude-code"],
         check: async () => ({ ok: false, installed: true }),
         env: {},
+        // No `confirm`/`runClaudeCodeLogin` — mirrors a piped, non-interactive REPL.
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(result.output).toEqual(["claude-code: not logged in"]);
+  });
+
+  it("offers to run claude auth login, and reports success after a clean re-probe", async () => {
+    const questions: string[] = [];
+    let loginCalls = 0;
+    const h = await harness({
+      login: {
+        backends: ["claude-code"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        confirm: async (question) => {
+          questions.push(question);
+          return true;
+        },
+        runClaudeCodeLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(questions).toEqual([
+      "Claude Code is installed but not logged in — run `claude auth login` now?",
+    ]);
+    expect(loginCalls).toBe(1);
+    expect(result.output).toEqual([
+      "claude-code: not logged in",
+      "running `claude auth login` — follow the prompts in your terminal…",
+      "claude-code: now logged in.",
+    ]);
+  });
+
+  it("does not spawn claude auth login when the user declines", async () => {
+    let loginCalls = 0;
+    const h = await harness({
+      login: {
+        backends: ["claude-code"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        confirm: async () => false,
+        runClaudeCodeLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      },
+    });
+    const result = await h.controller.handleLine("/login");
+    expect(loginCalls).toBe(0);
+    expect(result.output).toEqual(["claude-code: not logged in"]);
+  });
+
+  it("reports a claude auth login attempt that still isn't logged in", async () => {
+    const h = await harness({
+      login: {
+        backends: ["claude-code"],
+        check: async () => ({ ok: false, installed: true }),
+        env: {},
+        confirm: async () => true,
+        runClaudeCodeLogin: async () => ({
+          ok: false,
+          detail: "still no token",
+        }),
       },
     });
     const result = await h.controller.handleLine("/login");
     expect(result.output).toEqual([
       "claude-code: not logged in",
-      "Claude Code's login happens inside Claude Code, not here.",
-      "Run `claude` in another terminal and log in there (its own `/login`), " +
-        "then come back and run /login again — or re-run `kapel config`.",
+      "running `claude auth login` — follow the prompts in your terminal…",
+      "claude-code: still not logged in: still no token",
     ]);
   });
 

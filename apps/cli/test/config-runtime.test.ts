@@ -7,6 +7,7 @@ import { KAPEL_CONFIG_VERSION } from "../src/config.js";
 import type { BackendDetectionProbe, Suspend } from "../src/config-runtime.js";
 import {
   checkBackendAvailability,
+  claudeCodeLoginRunner,
   codexLoginRunner,
   defaultBackendDetectionProbe,
   delegatedModelOverride,
@@ -632,6 +633,55 @@ describe("codexLoginRunner", () => {
   it("reports the spawn error, without a suspend, when codex isn't on PATH", async () => {
     process.env.PATH = binDir; // empty — nothing named "codex"
     const run = codexLoginRunner();
+    const result = await run();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBeDefined();
+  });
+});
+
+describe("claudeCodeLoginRunner", () => {
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(path.join(SCRATCHPAD, "kapel-claude-runner-"));
+    originalPath = process.env.PATH;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = originalPath;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  async function installFakeClaude(script: string): Promise<void> {
+    const binPath = path.join(binDir, "claude");
+    await writeFile(binPath, `#!/bin/sh\n${script}\n`);
+    await chmod(binPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+  }
+
+  it("suspends around the spawn and reports success after a clean re-probe", async () => {
+    await installFakeClaude("exit 0");
+
+    const calls: string[] = [];
+    const suspend: Suspend = async (fn) => {
+      calls.push("suspend-start");
+      try {
+        return await fn();
+      } finally {
+        calls.push("suspend-end");
+      }
+    };
+
+    const run = claudeCodeLoginRunner(suspend, {});
+    const result = await run();
+    expect(calls).toEqual(["suspend-start", "suspend-end"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports the spawn error, without a suspend, when claude isn't on PATH", async () => {
+    process.env.PATH = binDir; // empty — nothing named "claude"
+    const run = claudeCodeLoginRunner();
     const result = await run();
     expect(result.ok).toBe(false);
     expect(result.detail).toBeDefined();

@@ -433,7 +433,7 @@ describe("runConfigWizard backend check", () => {
     );
     expect(lines[0]).toContain("claude not on PATH");
     expect(lines[1]).toContain("npm install -g @anthropic-ai/claude-code");
-    expect(lines[1]).toContain("log in");
+    expect(lines[1]).toContain("claude auth login");
     expect(prompt.calls).toHaveLength(5);
     expect(config?.backends).toEqual(["claude-code"]);
     expect(await loadKapelConfig(env)).toEqual(config);
@@ -564,26 +564,99 @@ describe("runConfigWizard codex login offer", () => {
   });
 });
 
-// --- claude-code: installed but not logged in — guidance, not automation ----
+// --- claude-code: installed but not logged in — the login offer ------------
 
-describe("runConfigWizard claude-code login guidance", () => {
-  it("points at Claude Code's own login instead of trying to automate it", async () => {
+describe("runConfigWizard claude-code login offer", () => {
+  it("skips the offer entirely when nothing can run claude auth login, same as before", async () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(
       deps(prompt, {
         checkBackend: async () => ({ ok: false, installed: true }),
       }),
     );
-    expect(lines.some((line) => line.includes("inside Claude Code"))).toBe(
-      true,
+    // No confirm question was inserted — the five original calls stand.
+    expect(prompt.calls).toHaveLength(5);
+    expect(
+      lines.some((line) =>
+        line.includes("npm install -g @anthropic-ai/claude-code"),
+      ),
+    ).toBe(true);
+  });
+
+  it("offers to run claude auth login, and reports success when it re-probes clean", async () => {
+    const prompt = new ScriptedPrompt([
+      ["claude-code"],
+      "yes",
+      ...CLAUDE_ANSWERS.slice(1),
+    ]);
+    let loginCalls = 0;
+    const config = await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+        runClaudeCodeLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      }),
     );
+    expect(prompt.calls[1]?.title).toBe(
+      "Claude Code is installed but not logged in — run `claude auth login` now?",
+    );
+    expect(loginCalls).toBe(1);
+    expect(lines).toContain("claude-code: now logged in.");
     expect(
       lines.some((line) =>
         line.includes("npm install -g @anthropic-ai/claude-code"),
       ),
     ).toBe(false);
-    // No confirm question was asked — claude-code is guidance only.
-    expect(prompt.calls).toHaveLength(5);
+    expect(config?.backends).toEqual(["claude-code"]);
+  });
+
+  it("declines to run claude auth login and falls back to the fix line", async () => {
+    const prompt = new ScriptedPrompt([
+      ["claude-code"],
+      "no",
+      ...CLAUDE_ANSWERS.slice(1),
+    ]);
+    let loginCalls = 0;
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+        runClaudeCodeLogin: async () => {
+          loginCalls += 1;
+          return { ok: true };
+        },
+      }),
+    );
+    expect(loginCalls).toBe(0);
+    expect(
+      lines.some((line) =>
+        line.includes("npm install -g @anthropic-ai/claude-code"),
+      ),
+    ).toBe(true);
+  });
+
+  it("reports a login attempt that did not end up logged in, then falls back to the fix line", async () => {
+    const prompt = new ScriptedPrompt([
+      ["claude-code"],
+      "yes",
+      ...CLAUDE_ANSWERS.slice(1),
+    ]);
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async () => ({ ok: false, installed: true }),
+        runClaudeCodeLogin: async () => ({
+          ok: false,
+          detail: "still no token",
+        }),
+      }),
+    );
+    expect(lines).toContain("claude-code: still not logged in: still no token");
+    expect(
+      lines.some((line) =>
+        line.includes("npm install -g @anthropic-ai/claude-code"),
+      ),
+    ).toBe(true);
   });
 });
 

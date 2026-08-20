@@ -148,7 +148,7 @@ export function claudeCodeInstallGuidance(
 ): string {
   const lines = [
     "The Claude Code CLI is not installed.",
-    "Install it with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription.",
+    "Install it with `npm install -g @anthropic-ai/claude-code`, then authenticate with `claude auth login`.",
   ];
   if (availability.detail !== undefined && availability.detail !== "") {
     lines.push(availability.detail);
@@ -165,7 +165,7 @@ export function claudeCodeLoginGuidance(
 ): string {
   const lines = [
     "The Claude Code CLI is installed but you are not logged in.",
-    "Run `claude` once and log in with your Claude subscription — no Anthropic API key needed.",
+    "Run `claude auth login` to authenticate with your Claude subscription — no Anthropic API key needed.",
   ];
   if (availability.detail !== undefined && availability.detail !== "") {
     lines.push(availability.detail);
@@ -260,6 +260,50 @@ export function spawnCodexLogin(
     }
     return new Promise((resolve) => {
       const child = spawn(binary, ["login"], { cwd, stdio: "inherit" });
+      child.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" && index + 1 < candidates.length) {
+          resolve(attempt(index + 1));
+          return;
+        }
+        resolve({ error: error.message });
+      });
+      child.once("exit", (code) => {
+        resolve({ exitCode: code });
+      });
+    });
+  };
+
+  return attempt(0);
+}
+
+/** What {@link spawnClaudeCodeLogin} resolves with. */
+export type SpawnClaudeCodeLoginResult =
+  | { readonly exitCode: number | null }
+  | { readonly error: string };
+
+/**
+ * Runs `claude auth login` as a fully interactive child process — mirrors
+ * {@link spawnCodexLogin} in every respect (stdio inherited, shim retry on
+ * `ENOENT`, same caller contract around suspending the terminal) for the
+ * subscription-login subcommand the installed `claude` CLI actually ships.
+ */
+export function spawnClaudeCodeLogin(
+  cwd: string = process.cwd(),
+): Promise<SpawnClaudeCodeLoginResult> {
+  const candidates = executableCandidates("claude");
+
+  const attempt = (index: number): Promise<SpawnClaudeCodeLoginResult> => {
+    const binary = candidates[index];
+    if (binary === undefined) {
+      return Promise.resolve({
+        error: "could not find the claude CLI on PATH.",
+      });
+    }
+    return new Promise((resolve) => {
+      const child = spawn(binary, ["auth", "login"], {
+        cwd,
+        stdio: "inherit",
+      });
       child.once("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT" && index + 1 < candidates.length) {
           resolve(attempt(index + 1));

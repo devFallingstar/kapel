@@ -2,6 +2,7 @@ import { ClaudeCodeBackend, CodexBackend } from "@agent/coding-agent";
 import type { BackendName, EnvLike } from "./backend.js";
 import {
   DEFAULT_BACKEND,
+  spawnClaudeCodeLogin,
   spawnCodexLogin,
   validateBackendName,
 } from "./backend.js";
@@ -393,6 +394,29 @@ export function codexLoginRunner(
   };
 }
 
+/**
+ * {@link codexLoginRunner}, for Claude Code: spawns `claude auth login`
+ * (through {@link spawnClaudeCodeLogin}) suspended the same way, then
+ * re-probes with {@link checkBackendAvailability} rather than assuming the
+ * spawn worked.
+ */
+export function claudeCodeLoginRunner(
+  suspend: Suspend = noSuspend,
+  env: EnvLike = process.env,
+): () => Promise<{ readonly ok: boolean; readonly detail?: string }> {
+  return async () => {
+    const outcome = await suspend(() => spawnClaudeCodeLogin());
+    if ("error" in outcome) return { ok: false, detail: outcome.error };
+    const result = await checkBackendAvailability("claude-code", env);
+    return result.ok
+      ? { ok: true }
+      : {
+          ok: false,
+          ...(result.detail === undefined ? {} : { detail: result.detail }),
+        };
+  };
+}
+
 /** `ensureKapelConfig`, as the injection point of {@link ensureFirstRunConfig}. */
 export type EnsureConfig = (
   deps: ConfigWizardDeps & { readonly interactive: boolean },
@@ -457,10 +481,14 @@ export async function ensureFirstRunConfig(
       checkBackendAvailability(backend, options.env ?? process.env),
     // Only wired when there is actually a human to ask — a non-interactive
     // run never reaches the wizard at all (see `ensureKapelConfig`), but this
-    // keeps `runCodexLogin` from implying otherwise.
+    // keeps `runCodexLogin`/`runClaudeCodeLogin` from implying otherwise.
     ...(interactive
       ? {
           runCodexLogin: codexLoginRunner(
+            options.suspend,
+            options.env ?? process.env,
+          ),
+          runClaudeCodeLogin: claudeCodeLoginRunner(
             options.suspend,
             options.env ?? process.env,
           ),

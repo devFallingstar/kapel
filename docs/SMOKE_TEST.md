@@ -51,16 +51,14 @@ kapel은 **REPL 전용**입니다 — 에이전트 작업은 전부 `kapel`이 �
 | Anthropic API 키 | `export ANTHROPIC_API_KEY=...` | `kapel models` 에 `api key` 표시 |
 | Anthropic OAuth (키 없음) | [`ant` CLI](https://github.com/anthropics/anthropic-cli) 설치 후 `ant auth login` | `kapel models` 에 `oauth (ant)` 표시 |
 | OpenAI (키 없음, Codex) | `npm i -g @openai/codex && codex login` (ChatGPT OAuth) | 시나리오 B에서 사용 |
-| Anthropic (키 없음, Claude Code) | `npm i -g @anthropic-ai/claude-code` 후 `claude` 실행해 구독 로그인 | 시나리오 A-0/B2에서 사용 |
+| Anthropic (키 없음, Claude Code) | `npm i -g @anthropic-ai/claude-code` 후 `claude auth login` 실행해 구독 로그인 | 시나리오 A-0/B2에서 사용 |
 
 `kapel models` 로 각 모델 별칭의 자격증명 상태를 먼저 확인하세요.
 
-Codex는 `codex login`을 미리 실행해 두지 않았어도 됩니다 — 마법사(1.5)나
-REPL 안의 `/login` 명령이 설치는 됐지만 로그인이 안 된 상태를 감지하면 지금
-`codex login`을 실행할지 물어보고, 터미널을 넘겨 로그인을 마친 뒤 다시
-확인해 줍니다. Claude Code는 로그인 자체가 Claude Code 안에서 이루어지므로
-자동화하지 않습니다 — `/login`은 다른 터미널에서 `claude`를 실행해 그 안에서
-로그인하라고 안내만 합니다.
+Codex와 Claude Code 모두 로그인을 미리 실행해 두지 않았어도 됩니다 —
+마법사(1.5)나 REPL 안의 `/login` 명령이 설치는 됐지만 로그인이 안 된 상태를
+감지하면 지금 `codex login` / `claude auth login`을 실행할지 물어보고,
+터미널을 넘겨 로그인을 마친 뒤 다시 확인해 줍니다.
 
 ## 1.5. 시나리오 A-0 — 첫 실행 마법사 (설정)
 

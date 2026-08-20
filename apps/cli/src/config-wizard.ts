@@ -83,6 +83,15 @@ export interface ConfigWizardDeps {
     readonly ok: boolean;
     readonly detail?: string;
   }>;
+  /**
+   * {@link runCodexLogin}, for Claude Code: runs `claude auth login`
+   * interactively and resolves with the re-probed outcome. Absent falls back
+   * the same way — the ordinary install/login fix line, unchanged.
+   */
+  readonly runClaudeCodeLogin?: () => Promise<{
+    readonly ok: boolean;
+    readonly detail?: string;
+  }>;
   readonly env?: NodeJS.ProcessEnv;
   /** `false` runs the whole flow without touching disk. Defaults to `true`. */
   readonly save?: boolean;
@@ -111,7 +120,7 @@ const ROLE_TITLES: Readonly<Record<KapelRole, string>> = {
 /** How to get each backend working, printed when its check comes back bad. */
 const BACKEND_FIX: Readonly<Record<KapelBackend, string>> = {
   "claude-code":
-    "fix: npm install -g @anthropic-ai/claude-code, then run `claude` once and log in",
+    "fix: npm install -g @anthropic-ai/claude-code, then `claude auth login`",
   codex: "fix: npm install -g @openai/codex, then `codex login`",
   native:
     "fix: set ANTHROPIC_API_KEY or OPENAI_API_KEY in your shell environment",
@@ -176,17 +185,6 @@ const CONTINUING_LINE =
   "continuing setup — you can fix this later and re-run `kapel config`.";
 
 /**
- * Claude Code's login lives inside Claude Code itself — there is no
- * `claude login` to spawn the way there is `codex login`, so this is guidance
- * rather than automation (see the module doc for why).
- */
-const CLAUDE_CODE_LOGIN_GUIDANCE: readonly string[] = [
-  "Claude Code's login happens inside Claude Code, not here.",
-  "Run `claude` in another terminal and log in there (its own `/login`), " +
-    "then come back and continue — or re-run `kapel config`.",
-];
-
-/**
  * Offers to run `codex login` right now, when the wizard can: asks, and on
  * "yes" runs it (via `deps.runCodexLogin`, which suspends whatever else owns
  * the terminal and re-probes afterward) and reports the real outcome.
@@ -230,6 +228,43 @@ async function offerCodexLogin(deps: ConfigWizardDeps): Promise<boolean> {
   return false;
 }
 
+/** {@link offerCodexLogin}, for Claude Code — same offer, `claude auth login`. */
+async function offerClaudeCodeLogin(deps: ConfigWizardDeps): Promise<boolean> {
+  const runLogin = deps.runClaudeCodeLogin;
+  if (runLogin === undefined) return false;
+
+  const answer = await ask(
+    deps,
+    "Claude Code is installed but not logged in — run `claude auth login` now?",
+    [
+      { value: "yes", label: "Yes" },
+      { value: "no", label: "No" },
+    ],
+    "no",
+  );
+  if (answer !== "yes") return false;
+
+  deps.write(
+    "running `claude auth login` — follow the prompts in your terminal…",
+  );
+  let result: { readonly ok: boolean; readonly detail?: string };
+  try {
+    result = await runLogin();
+  } catch (error) {
+    result = {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (result.ok) {
+    deps.write("claude-code: now logged in.");
+    return true;
+  }
+  const detail = result.detail === undefined ? "" : `: ${result.detail}`;
+  deps.write(`claude-code: still not logged in${detail}`);
+  return false;
+}
+
 async function warnIfUnavailable(
   deps: ConfigWizardDeps,
   backend: KapelBackend,
@@ -266,7 +301,8 @@ async function warnIfUnavailable(
   }
 
   if (backend === "claude-code" && result.installed === true) {
-    for (const line of CLAUDE_CODE_LOGIN_GUIDANCE) deps.write(line);
+    if (await offerClaudeCodeLogin(deps)) return;
+    deps.write(BACKEND_FIX["claude-code"]);
     deps.write(CONTINUING_LINE);
     return;
   }

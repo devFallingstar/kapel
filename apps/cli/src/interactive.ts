@@ -53,6 +53,7 @@ import type { KapelProjectConfig } from "./config-project.js";
 import { mergeKapelConfigs } from "./config-project.js";
 import {
   checkBackendAvailability,
+  claudeCodeLoginRunner,
   codexLoginRunner,
   delegatedModelOverride,
   detectBackendSetting,
@@ -606,6 +607,11 @@ export interface InteractiveControllerDeps {
     readonly confirm?: (question: string) => Promise<boolean>;
     /** Runs `codex login` and re-probes; see `codexLoginRunner`. */
     readonly runCodexLogin?: () => Promise<{
+      readonly ok: boolean;
+      readonly detail?: string;
+    }>;
+    /** Runs `claude auth login` and re-probes; see `claudeCodeLoginRunner`. */
+    readonly runClaudeCodeLogin?: () => Promise<{
       readonly ok: boolean;
       readonly detail?: string;
     }>;
@@ -1485,15 +1491,15 @@ export async function createInteractiveController(
 
   /**
    * `/login` — one line per backend in the effective config, and for any
-   * that isn't logged in, the same per-backend fix the wizard offers:
-   * codex gets an offer to run `codex login` right here, claude-code gets
-   * guidance (its login lives inside Claude Code, not in kapel), and native
-   * gets the name of the credential variable it's missing.
+   * that isn't logged in, the same per-backend fix the wizard offers: codex
+   * and claude-code each get an offer to run their own login command right
+   * here (`codex login` / `claude auth login`), and native gets the name of
+   * the credential variable it's missing.
    *
    * `deps.login` is absent from a test double that doesn't wire it, and its
-   * `confirm`/`runCodexLogin` are absent whenever stdin isn't interactive —
-   * both are `/login`'s way of never asking a question, or spawning
-   * anything, nobody can answer.
+   * `confirm`/`runCodexLogin`/`runClaudeCodeLogin` are absent whenever stdin
+   * isn't interactive — both are `/login`'s way of never asking a question,
+   * or spawning anything, nobody can answer.
    */
   const slashLogin = async (): Promise<DispatchResult> => {
     const login = deps.login;
@@ -1529,26 +1535,25 @@ export async function createInteractiveController(
       }
 
       emit(`${target}: not logged in`);
-      if (target === "codex") {
-        if (login.confirm === undefined || login.runCodexLogin === undefined) {
+      if (target === "codex" || target === "claude-code") {
+        const label = target === "codex" ? "Codex" : "Claude Code";
+        const loginCmd =
+          target === "codex" ? "codex login" : "claude auth login";
+        const runLogin =
+          target === "codex" ? login.runCodexLogin : login.runClaudeCodeLogin;
+        if (login.confirm === undefined || runLogin === undefined) {
           continue;
         }
         const yes = await login.confirm(
-          "Codex is installed but not logged in — run `codex login` now?",
+          `${label} is installed but not logged in — run \`${loginCmd}\` now?`,
         );
         if (!yes) continue;
-        emit("running `codex login` — follow the prompts in your terminal…");
-        const after = await login.runCodexLogin();
+        emit(`running \`${loginCmd}\` — follow the prompts in your terminal…`);
+        const after = await runLogin();
         emit(
           after.ok
-            ? "codex: now logged in."
-            : `codex: still not logged in${after.detail === undefined ? "" : `: ${after.detail}`}`,
-        );
-      } else if (target === "claude-code") {
-        emit("Claude Code's login happens inside Claude Code, not here.");
-        emit(
-          "Run `claude` in another terminal and log in there (its own `/login`), " +
-            "then come back and run /login again — or re-run `kapel config`.",
+            ? `${target}: now logged in.`
+            : `${target}: still not logged in${after.detail === undefined ? "" : `: ${after.detail}`}`,
         );
       }
     }
@@ -2132,11 +2137,11 @@ export async function runInteractive(
   // else holds the terminal.
   let inputManager: InputManager | undefined;
 
-  // The one seam a spawned `codex login` (and, alongside it, any picker or
-  // yes/no question) hands the terminal through: pause the persistent
-  // `InputManager`'s readline around the call, run it, resume. A no-op when
-  // there is no `InputManager` at all (piped input, or startup), matching
-  // `Suspend`'s own default in `config-runtime.ts`.
+  // The one seam a spawned `codex login`/`claude auth login` (and, alongside
+  // it, any picker or yes/no question) hands the terminal through: pause the
+  // persistent `InputManager`'s readline around the call, run it, resume. A
+  // no-op when there is no `InputManager` at all (piped input, or startup),
+  // matching `Suspend`'s own default in `config-runtime.ts`.
   const withSuspended = <T>(fn: () => Promise<T>): Promise<T> =>
     inputManager === undefined ? fn() : inputManager.withSuspended(fn);
 
@@ -2470,15 +2475,19 @@ export async function runInteractive(
         backends: loginBackends,
         check: (target) => checkBackendAvailability(target),
         env: process.env,
-        // `confirm`/`runCodexLogin` are only ever wired when there is a
-        // human at a terminal to ask — a piped `kapel < script.txt` has no
-        // `InputManager`, and `/login` must report status only there, never
-        // spawn anything nobody can answer.
+        // `confirm`/`runCodexLogin`/`runClaudeCodeLogin` are only ever wired
+        // when there is a human at a terminal to ask — a piped
+        // `kapel < script.txt` has no `InputManager`, and `/login` must
+        // report status only there, never spawn anything nobody can answer.
         ...(manager === undefined
           ? {}
           : {
               confirm: loginConfirm,
               runCodexLogin: codexLoginRunner(withSuspended, process.env),
+              runClaudeCodeLogin: claudeCodeLoginRunner(
+                withSuspended,
+                process.env,
+              ),
             }),
       },
       ...(wizardTty
@@ -2492,14 +2501,18 @@ export async function runInteractive(
               const saved = await runConfigWizard({
                 // `/config` runs while the REPL's own InputManager still owns
                 // stdin — suspend it around the picker (and around a spawned
-                // `codex login`) so the two don't fight over raw-mode
-                // keypresses.
+                // `codex login`/`claude auth login`) so the two don't fight
+                // over raw-mode keypresses.
                 prompt: ttyWizardPrompt(undefined, withSuspended),
                 write: (line) => {
                   console.log(line);
                 },
                 checkBackend: (target) => checkBackendAvailability(target),
                 runCodexLogin: codexLoginRunner(withSuspended, process.env),
+                runClaudeCodeLogin: claudeCodeLoginRunner(
+                  withSuspended,
+                  process.env,
+                ),
                 ...(options.config === undefined
                   ? {}
                   : { current: options.config }),
