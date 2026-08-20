@@ -34,6 +34,32 @@ export const DEFAULT_WORKTREES_DIR = join(AGENT_STATE_DIR, "worktrees");
 /** Unified diffs are capped so a runaway task cannot blow up memory or a model prompt. */
 export const MAX_DIFF_CHARS = 400_000;
 
+/**
+ * Total attempts for `git worktree add`, including the first. Guards against
+ * a known upstream git race (see {@link isWorktreeAddRace}): two `worktree
+ * add` invocations running concurrently against the same repository can each
+ * read the other's half-initialized `.git/worktrees/<name>/` admin directory
+ * and fail with "failed to read .../commondir" or ".../gitdir", even though
+ * every input (branch, path, base commit) is otherwise valid. A bare retry
+ * clears it, because the sibling's admin directory has always finished
+ * initializing by the time the failed attempt is cleaned up and retried.
+ */
+const WORKTREE_ADD_MAX_ATTEMPTS = 3;
+
+/**
+ * True for the specific transient failure `git worktree add` produces when it
+ * loses a race against a *different* concurrent `worktree add` on the same
+ * repository — never for a deterministic error (bad ref, path collision,
+ * branch already exists), which must still fail immediately and clearly.
+ */
+function isWorktreeAddRace(stderr: string): boolean {
+  return (
+    /fatal:/.test(stderr) &&
+    /\.git[/\\]worktrees[/\\]/.test(stderr) &&
+    /\b(commondir|gitdir)\b/.test(stderr)
+  );
+}
+
 const COMMIT_IDENTITY = {
   GIT_AUTHOR_NAME: "AGENT",
   GIT_AUTHOR_EMAIL: "agent@localhost",
@@ -134,6 +160,10 @@ export class TaskWorktreeManager {
    * Creates an isolated checkout of the current repository HEAD on a fresh
    * `agent-task/<runId>/<taskId>` branch. Leftovers from a previous attempt
    * (stale directory and/or branch) are removed first so retries start clean.
+   *
+   * Multiple tasks may call this concurrently for the same manager/repo (see
+   * the class doc); `#addWorktree` absorbs the one git-level race that
+   * genuinely follows from that.
    */
   async create(
     runId: string,
@@ -150,13 +180,59 @@ export class TaskWorktreeManager {
     await this.#removeLeftovers(path, branch, signal);
     await mkdir(dirname(path), { recursive: true });
 
-    await runGit(["worktree", "add", path, "-b", branch, baseCommit], {
-      cwd: this.repoRoot,
-      operation: "create",
-      signal,
-    });
+    await this.#addWorktree(path, branch, baseCommit, signal);
 
     return { path, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+  }
+
+  /**
+   * Runs `git worktree add`, retrying past {@link isWorktreeAddRace} up to
+   * {@link WORKTREE_ADD_MAX_ATTEMPTS} times. Any other failure — including a
+   * race-shaped one on the final attempt — surfaces immediately as a
+   * {@link WorktreeError}, exactly as a single `runGit` call would have.
+   */
+  async #addWorktree(
+    path: string,
+    branch: string,
+    baseCommit: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
+      const result = await tryGit(
+        ["worktree", "add", path, "-b", branch, baseCommit],
+        { cwd: this.repoRoot, operation: "create", signal },
+      );
+      if (result.exitCode === 0) {
+        return;
+      }
+      const isLastAttempt = attempt === WORKTREE_ADD_MAX_ATTEMPTS;
+      if (isLastAttempt || !isWorktreeAddRace(result.stderr)) {
+        throw new WorktreeError({
+          operation: "create",
+          message: `git worktree add ${path} -b ${branch} ${baseCommit} failed with exit code ${result.exitCode}`,
+          stderr: result.stderr.trim() || undefined,
+        });
+      }
+      // Lost the race: the failed attempt may have left a half-registered
+      // worktree and/or the branch it was about to create. Clear both before
+      // retrying, the same way #removeLeftovers does for a stale prior run.
+      await tryGit(["worktree", "remove", "--force", path], {
+        cwd: this.repoRoot,
+        operation: "create.retry-cleanup-worktree",
+        signal,
+      });
+      await rm(path, { recursive: true, force: true });
+      await tryGit(["worktree", "prune"], {
+        cwd: this.repoRoot,
+        operation: "create.retry-prune",
+        signal,
+      });
+      await tryGit(["branch", "-D", branch], {
+        cwd: this.repoRoot,
+        operation: "create.retry-cleanup-branch",
+        signal,
+      });
+    }
   }
 
   /**
@@ -275,13 +351,19 @@ export class TaskWorktreeManager {
 
     const dirty = await this.#dirtyPaths(signal);
     if (dirty.length > 0) {
+      // Naming the paths isn't enough on its own to unblock the merge; say
+      // what to do about them too, since they are real user files by the
+      // time they reach here (kapel's own `.agent/` state never counts, see
+      // `#dirtyPaths`).
       return {
         merged: false,
         conflictFiles: [],
         reason: "dirty-base",
         detail: `base working tree has uncommitted changes: ${dirty
           .slice(0, 10)
-          .join(", ")}`,
+          .join(
+            ", ",
+          )}; commit or stash them, or add generated files to .gitignore`,
       };
     }
 

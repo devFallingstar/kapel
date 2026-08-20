@@ -148,11 +148,16 @@ describe("createHistoryAppender", () => {
     }
     // Let the whole serialized chain of appends (and the trim it triggers)
     // settle — poll rather than a fixed sleep since the chain length here
-    // is a couple thousand writes.
+    // is a couple thousand writes. The trim that follows the very last
+    // append is itself a separate read-then-overwrite; checking only for
+    // the last entry's presence can catch the file between those two steps
+    // (still 2001 lines, trim not yet applied) and return early, so the
+    // predicate also waits for the post-trim line count.
     await waitUntil(async () => {
       try {
         const raw = await readFile(historyFilePath(env), "utf8");
-        return raw.includes(`e${total - 1}`);
+        const lines = raw.split("\n").filter((line) => line.trim() !== "");
+        return lines.includes(`e${total - 1}`) && lines.length <= HISTORY_LIMIT;
       } catch {
         return false;
       }

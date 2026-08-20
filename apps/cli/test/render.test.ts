@@ -514,6 +514,24 @@ describe("TextRenderer / worktree.* events", () => {
     ]);
   });
 
+  it("passes through the remedy suggestion on a dirty-base detail", () => {
+    // worktrees.ts appends a remedy for real user files past the path list;
+    // the renderer just prints whatever detail it is given, verbatim.
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.integrated", {
+        merged: false,
+        reason: "dirty-base",
+        conflictFiles: [],
+        detail:
+          "base working tree has uncommitted changes: src/app.ts; commit or stash them, or add generated files to .gitignore",
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "⚠ T01 not merged (dirty-base): base working tree has uncommitted changes: src/app.ts; commit or stash them, or add generated files to .gitignore",
+    ]);
+  });
+
   it("mentions a preserved branch but stays quiet about a clean removal", () => {
     const { renderer: r, stream } = renderer();
     r.emit(

@@ -1,6 +1,16 @@
 import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { tryGit } from "../src/git.js";
 import {
   MAX_DIFF_CHARS,
   TaskWorktreeManager,
@@ -15,6 +25,15 @@ import {
   makeTempDir,
   writeIn,
 } from "./git-helpers.js";
+
+// Wraps the real tryGit so one pair of tests can make a single `worktree add`
+// call fail on cue — deterministically reproducing the transient git-level
+// race `#addWorktree` retries around, instead of relying on real concurrency
+// and timing to hit it (see the "worktree-add race retry" describe below).
+vi.mock("../src/git.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/git.js")>();
+  return { ...actual, tryGit: vi.fn(actual.tryGit) };
+});
 
 const TIMEOUT = 60_000;
 
@@ -195,6 +214,127 @@ describe("TaskWorktreeManager.create", () => {
   );
 });
 
+describe("TaskWorktreeManager.create — worktree-add race retry", () => {
+  // Reproducing the real race requires enough concurrent `git worktree add`
+  // calls under enough contention that it is not reliable on demand (it was
+  // caught this way in CI, not written this way): instead, `tryGit` is
+  // mocked to fail the way git itself does when it loses that race, so the
+  // retry path is exercised deterministically every run.
+  let passthrough: typeof tryGit;
+
+  beforeAll(() => {
+    const impl = vi.mocked(tryGit).getMockImplementation();
+    if (impl === undefined) {
+      throw new Error("expected tryGit's mock to start with a passthrough");
+    }
+    passthrough = impl;
+  });
+
+  beforeEach(() => {
+    // Every git call in every test in this file goes through this one spy;
+    // clear call history so each test's `addCalls` count reflects only its
+    // own `create()`, not whatever ran before it.
+    vi.mocked(tryGit).mockClear();
+  });
+
+  afterEach(() => {
+    vi.mocked(tryGit).mockImplementation(passthrough);
+  });
+
+  it(
+    "retries past the known git worktree-add race and succeeds",
+    async () => {
+      const repo = await makeRepo();
+      const manager = new TaskWorktreeManager({ repoRoot: repo });
+      const mocked = vi.mocked(tryGit);
+      let raceInjected = false;
+      mocked.mockImplementation(async (args, options) => {
+        if (!raceInjected && args[0] === "worktree" && args[1] === "add") {
+          raceInjected = true;
+          return {
+            stdout: "",
+            stderr:
+              "Preparing worktree (new branch 'agent-task/run1/task1')\n" +
+              "fatal: failed to read .git/worktrees/other-task/commondir: Success\n",
+            exitCode: 128,
+          };
+        }
+        return passthrough(args, options);
+      });
+
+      const worktree = await manager.create("run1", "task1");
+
+      expect(worktree.branch).toBe(`${WORKTREE_BRANCH_PREFIX}/run1/task1`);
+      expect(await exists(join(worktree.path, "README.md"))).toBe(true);
+      const addCalls = mocked.mock.calls.filter(
+        ([callArgs]) => callArgs[0] === "worktree" && callArgs[1] === "add",
+      );
+      expect(addCalls.length).toBe(2);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "does not retry a deterministic worktree-add failure",
+    async () => {
+      const repo = await makeRepo();
+      const manager = new TaskWorktreeManager({ repoRoot: repo });
+      const mocked = vi.mocked(tryGit);
+      mocked.mockImplementation(async (args, options) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          return {
+            stdout: "",
+            stderr: "fatal: invalid reference: not-a-real-commit\n",
+            exitCode: 128,
+          };
+        }
+        return passthrough(args, options);
+      });
+
+      await expect(manager.create("run1", "task1")).rejects.toBeInstanceOf(
+        WorktreeError,
+      );
+
+      const addCalls = mocked.mock.calls.filter(
+        ([callArgs]) => callArgs[0] === "worktree" && callArgs[1] === "add",
+      );
+      expect(addCalls.length).toBe(1);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "gives up after exhausting retries on a persistent race",
+    async () => {
+      const repo = await makeRepo();
+      const manager = new TaskWorktreeManager({ repoRoot: repo });
+      const mocked = vi.mocked(tryGit);
+      mocked.mockImplementation(async (args, options) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          return {
+            stdout: "",
+            stderr:
+              "Preparing worktree (new branch 'agent-task/run1/task1')\n" +
+              "fatal: failed to read .git/worktrees/other-task/commondir: Success\n",
+            exitCode: 128,
+          };
+        }
+        return passthrough(args, options);
+      });
+
+      await expect(manager.create("run1", "task1")).rejects.toBeInstanceOf(
+        WorktreeError,
+      );
+
+      const addCalls = mocked.mock.calls.filter(
+        ([callArgs]) => callArgs[0] === "worktree" && callArgs[1] === "add",
+      );
+      expect(addCalls.length).toBe(3);
+    },
+    TIMEOUT,
+  );
+});
+
 describe("TaskWorktreeManager.collect", () => {
   it(
     "commits changes with the inline agent identity and reports diff metadata",
@@ -338,6 +478,8 @@ describe("TaskWorktreeManager.integrate", () => {
       expect(result.merged).toBe(false);
       expect(result.reason).toBe("dirty-base");
       expect(result.detail).toContain("README.md");
+      // The path alone isn't actionable; the detail also says what to do about it.
+      expect(result.detail).toContain("commit or stash them");
       expect(result.conflictFiles).toEqual([]);
       expect(await head(repo)).toBe(before);
     },
@@ -390,6 +532,7 @@ describe("TaskWorktreeManager.integrate", () => {
       expect(result.reason).toBe("dirty-base");
       expect(result.detail).toContain("src/app.ts");
       expect(result.detail).not.toContain(".agent/");
+      expect(result.detail).toContain("commit or stash them");
     },
     TIMEOUT,
   );
