@@ -14,6 +14,7 @@ import {
   type NormalizableRun,
   normalizeTaskResult,
 } from "./normalize.js";
+import { applyReviewVerdict, reviewVerdictFromRun } from "./review.js";
 
 export interface CodexWorkerExecutorOptions {
   readonly workspacePath: string;
@@ -98,7 +99,11 @@ export class CodexWorkerExecutor implements WorkerExecutor {
     let run: NormalizableRun;
     try {
       run = await backend.run(
-        { instruction: buildTaskBriefing(task.spec, agent, context) },
+        {
+          instruction: buildTaskBriefing(task.spec, agent, context, {
+            reviewContract: "json-reply",
+          }),
+        },
         {
           runId,
           taskId,
@@ -114,6 +119,12 @@ export class CodexWorkerExecutor implements WorkerExecutor {
     }
 
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
-    return normalizeTaskResult({ taskId, loop: run, inspection });
+    const result = normalizeTaskResult({ taskId, loop: run, inspection });
+
+    // Same contract as the native loop and the Claude Code executor: the
+    // verdict decides the review, and a reply with no readable verdict fails
+    // it rather than passing on a zero exit code.
+    if (task.spec.type !== "review") return result;
+    return applyReviewVerdict(result, reviewVerdictFromRun(run));
   }
 }

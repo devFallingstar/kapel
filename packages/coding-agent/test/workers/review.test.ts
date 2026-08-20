@@ -7,8 +7,10 @@ import {
 import {
   applyReviewVerdict,
   NO_VERDICT_SUMMARY,
+  parseReviewVerdictReply,
   REVIEW_VERDICT_TOOL_NAME,
   ReviewVerdictTool,
+  reviewVerdictFromRun,
 } from "../../src/workers/review.js";
 import {
   cleanup,
@@ -104,6 +106,124 @@ describe("ReviewVerdictTool", () => {
       tool.execute({ approved: true, summary: "ok", extra: 1 }, context),
     ).rejects.toThrow();
     expect(tool.verdict()).toBeUndefined();
+  });
+});
+
+describe("parseReviewVerdictReply", () => {
+  const REJECTION = {
+    approved: false,
+    summary: "The token is logged in plain text.",
+    issues: [{ severity: "blocking", description: "Redact the auth header." }],
+  };
+
+  it("reads a bare JSON object", () => {
+    const parsed = parseReviewVerdictReply(JSON.stringify(REJECTION));
+
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.verdict).toEqual(REJECTION);
+  });
+
+  it("reads a fenced object", () => {
+    const parsed = parseReviewVerdictReply(
+      `\`\`\`json\n${JSON.stringify(REJECTION, null, 2)}\n\`\`\``,
+    );
+
+    expect(parsed.verdict).toEqual(REJECTION);
+  });
+
+  it("reads an object wrapped in the model's own prose", () => {
+    const parsed = parseReviewVerdictReply(
+      [
+        "I read the diff and the tests. Here is my verdict:",
+        JSON.stringify(REJECTION),
+        "Happy to re-review once that is fixed.",
+      ].join("\n"),
+    );
+
+    expect(parsed.verdict).toEqual(REJECTION);
+  });
+
+  it("defaults issues to an empty list", () => {
+    const parsed = parseReviewVerdictReply(
+      '{"approved": true, "summary": "Looks correct and covered."}',
+    );
+
+    expect(parsed.verdict).toEqual({
+      approved: true,
+      summary: "Looks correct and covered.",
+      issues: [],
+    });
+  });
+
+  it("reports a reply with no JSON in it at all", () => {
+    for (const reply of [
+      "",
+      "REJECTED — the migration is not reversible.",
+      undefined,
+    ]) {
+      const parsed = parseReviewVerdictReply(reply);
+      expect(parsed.verdict).toBeUndefined();
+      expect(parsed.issues).toEqual([
+        { path: "(root)", message: "no JSON object found in the reply" },
+      ]);
+    }
+  });
+
+  it("reports a brace pair that is not valid JSON", () => {
+    const parsed = parseReviewVerdictReply("{approved: false,}");
+
+    expect(parsed.verdict).toBeUndefined();
+    expect(parsed.issues[0]?.path).toBe("(root)");
+    expect(parsed.issues[0]?.message).toContain("not valid JSON");
+  });
+
+  it("reports JSON that does not match the verdict schema", () => {
+    const missing = parseReviewVerdictReply('{"summary": "no decision"}');
+    expect(missing.verdict).toBeUndefined();
+    expect(missing.issues.map((issue) => issue.path)).toEqual(["approved"]);
+
+    const wrongSeverity = parseReviewVerdictReply(
+      JSON.stringify({
+        approved: false,
+        summary: "No.",
+        issues: [{ severity: "critical", description: "x" }],
+      }),
+    );
+    expect(wrongSeverity.verdict).toBeUndefined();
+    expect(wrongSeverity.issues[0]?.path).toBe("issues.0.severity");
+
+    const extra = parseReviewVerdictReply(
+      '{"approved": true, "summary": "ok", "verdict": "LGTM"}',
+    );
+    expect(extra.verdict).toBeUndefined();
+    expect(extra.issues).not.toEqual([]);
+  });
+});
+
+describe("reviewVerdictFromRun", () => {
+  const verdict = '{"approved": true, "summary": "Fine."}';
+
+  it("prefers the agent's final message over the run summary", () => {
+    expect(
+      reviewVerdictFromRun({
+        summary: "Claude Code exited with code 1: something went wrong",
+        output: verdict,
+      }),
+    ).toEqual({ approved: true, summary: "Fine.", issues: [] });
+  });
+
+  it("falls back to the summary when there is no separate output", () => {
+    expect(reviewVerdictFromRun({ summary: verdict })).toEqual({
+      approved: true,
+      summary: "Fine.",
+      issues: [],
+    });
+  });
+
+  it("has no verdict for a run that only reported a diagnostic", () => {
+    expect(
+      reviewVerdictFromRun({ summary: "Codex CLI not found." }),
+    ).toBeUndefined();
   });
 });
 

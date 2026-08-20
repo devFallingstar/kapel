@@ -15,6 +15,7 @@ import {
   type NormalizableRun,
   normalizeTaskResult,
 } from "./normalize.js";
+import { applyReviewVerdict, reviewVerdictFromRun } from "./review.js";
 
 /**
  * Bare template tool names mapped to the Claude Code tool that does the same
@@ -244,7 +245,11 @@ export class ClaudeCodeWorkerExecutor implements WorkerExecutor {
     let run: NormalizableRun;
     try {
       run = await backend.run(
-        { instruction: buildTaskBriefing(task.spec, agent, context) },
+        {
+          instruction: buildTaskBriefing(task.spec, agent, context, {
+            reviewContract: "json-reply",
+          }),
+        },
         {
           runId,
           taskId,
@@ -260,6 +265,14 @@ export class ClaudeCodeWorkerExecutor implements WorkerExecutor {
     }
 
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
-    return normalizeTaskResult({ taskId, loop: run, inspection });
+    const result = normalizeTaskResult({ taskId, loop: run, inspection });
+
+    // The verdict, not the prose, decides a review — exactly as on the native
+    // loop, which reads it off the tool it injected. Here it is parsed out of
+    // the reply the briefing asked for, and a reply with no readable verdict
+    // fails the task: a reviewer that answers "REJECTED, this is unsafe" in
+    // prose must not be recorded as a success just because the CLI exited 0.
+    if (task.spec.type !== "review") return result;
+    return applyReviewVerdict(result, reviewVerdictFromRun(run));
   }
 }

@@ -8,6 +8,7 @@ export {
   DEFAULT_WORKER_PERMISSIONS,
   selectToolsForAgent,
 } from "./agent-loop-executor.js";
+export type { ReviewContract, TaskBriefingOptions } from "./briefing.js";
 export {
   buildTaskBriefing,
   buildWorkerSystemPrompt,
@@ -65,12 +66,15 @@ export type {
   ReviewVerdict,
   ReviewVerdictInput,
   ReviewVerdictOutput,
+  ReviewVerdictParse,
 } from "./review.js";
 export {
   applyReviewVerdict,
   NO_VERDICT_SUMMARY,
+  parseReviewVerdictReply,
   REVIEW_VERDICT_TOOL_NAME,
   ReviewVerdictTool,
+  reviewVerdictFromRun,
 } from "./review.js";
 export type {
   WorkspaceExecutorFactory,

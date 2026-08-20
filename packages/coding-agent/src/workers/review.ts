@@ -1,6 +1,11 @@
 import type { Tool, ToolContext } from "@agent/core";
 import type { TaskResult } from "@agent/orchestration";
 import { z } from "zod";
+import type { DelegatedIssue } from "../planning/delegated-cli.js";
+import {
+  extractJsonObject,
+  issuesFromZodError,
+} from "../planning/delegated-cli.js";
 import { toInputSchema } from "../tools/json-schema.js";
 
 /** The tool a review task must call to state its decision. */
@@ -37,6 +42,15 @@ const IssueSchema = z
   })
   .strict();
 
+/**
+ * The verdict's shape, in one place.
+ *
+ * It is the tool's input schema on the native loop and the shape a delegated
+ * backend has to reply with (see `reviewSection` in `./briefing.ts`, which
+ * spells the same object out in prose because a CLI cannot be handed a tool
+ * definition). {@link parseReviewVerdictReply} validates the reply against
+ * *this* schema, so the two paths cannot drift into accepting different things.
+ */
 const InputSchema = z
   .object({
     approved: z
@@ -111,17 +125,87 @@ export class ReviewVerdictTool
     rawInput: unknown,
     _context: ToolContext,
   ): Promise<ReviewVerdictOutput> {
-    const input = InputSchema.parse(rawInput);
-    this.#verdict = {
-      approved: input.approved,
-      summary: input.summary,
-      issues: input.issues.map((issue) => ({
-        severity: issue.severity,
-        description: issue.description,
-      })),
-    };
+    this.#verdict = toVerdict(InputSchema.parse(rawInput));
     return { recorded: true };
   }
+}
+
+/** What {@link parseReviewVerdictReply} made of a delegated reviewer's reply. */
+export interface ReviewVerdictParse {
+  /** The verdict, or `undefined` when the reply did not carry a usable one. */
+  readonly verdict?: ReviewVerdict;
+  /** Why it did not, empty when it did. */
+  readonly issues: readonly DelegatedIssue[];
+}
+
+function toVerdict(input: ReviewVerdictInput): ReviewVerdict {
+  return {
+    approved: input.approved,
+    summary: input.summary,
+    issues: input.issues.map((issue) => ({
+      severity: issue.severity,
+      description: issue.description,
+    })),
+  };
+}
+
+/**
+ * Recovers a review verdict from a delegated backend's final reply.
+ *
+ * A CLI backend has no verdict tool to call — Claude Code and Codex run their
+ * own loops with their own toolsets — so the contract the briefing states there
+ * is "end your reply with this JSON object" instead. Parsing is deliberately
+ * forgiving about *packaging* and strict about *content*: {@link
+ * extractJsonObject} digs the object out of fences and surrounding prose (the
+ * same treatment a delegated plan gets), and the result is then validated
+ * against the very schema the native tool enforces. Anything that does not hold
+ * up comes back as `issues` with no verdict, which the executor turns into the
+ * same failure a native review that never called the tool produces.
+ */
+export function parseReviewVerdictReply(
+  reply: string | undefined,
+): ReviewVerdictParse {
+  const json = reply === undefined ? undefined : extractJsonObject(reply);
+  if (json === undefined) {
+    return {
+      issues: [
+        { path: "(root)", message: "no JSON object found in the reply" },
+      ],
+    };
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch (error) {
+    return {
+      issues: [
+        {
+          path: "(root)",
+          message: `reply is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+    };
+  }
+
+  const parsed = InputSchema.safeParse(data);
+  if (!parsed.success) return { issues: issuesFromZodError(parsed.error) };
+  return { verdict: toVerdict(parsed.data), issues: [] };
+}
+
+/**
+ * The verdict a delegated run stated, if any.
+ *
+ * The agent's own last message is what the contract binds, so `output` is read
+ * first; `summary` is the fallback because a successful CLI run repeats the
+ * final message there, and a failed one at least carries the diagnostic (which
+ * will not parse, which is the right answer for a run that died).
+ */
+export function reviewVerdictFromRun(run: {
+  readonly summary: string;
+  readonly output?: string;
+}): ReviewVerdict | undefined {
+  return parseReviewVerdictReply(run.output ?? run.summary).verdict;
 }
 
 function describeIssue(issue: ReviewIssue): string {

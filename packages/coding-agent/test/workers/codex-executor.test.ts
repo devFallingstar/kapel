@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CodexWorkerExecutor } from "../../src/workers/codex-executor.js";
+import { NO_VERDICT_SUMMARY } from "../../src/workers/review.js";
 import { writeFakeCodex } from "../backends/test-helpers.js";
 import {
   cleanup,
@@ -201,6 +202,134 @@ describe("CodexWorkerExecutor", () => {
     const modelIndex = argv.indexOf("-m");
     expect(modelIndex).toBeGreaterThanOrEqual(0);
     expect(argv[modelIndex + 1]).toBe("run-wide-default");
+  });
+
+  describe("review tasks", () => {
+    /** A fake `codex` whose whole run is one agent message. */
+    function fakeReplying(text: string): Promise<string> {
+      return writeFakeCodex(dir, {
+        body: [
+          `printf '%s\\n' '${JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text },
+          })}'`,
+          "exit 0",
+        ].join("\n"),
+      });
+    }
+
+    async function reviewResult(text: string) {
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath: await fakeReplying(text) },
+      });
+      return executor.execute(makeRuntimeTask({ type: "review" }), "reviewer");
+    }
+
+    it("briefs the reviewer to reply with a JSON verdict, not to call a tool", async () => {
+      const argvFile = join(dir, "argv.txt");
+      const binaryPath = await writeFakeCodex(dir, { argvFile });
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+      });
+
+      await executor.execute(makeRuntimeTask({ type: "review" }), "reviewer");
+
+      const prompt = (await readArgv(argvFile)).at(-1) ?? "";
+      expect(prompt).toContain("## Review task — a verdict is required");
+      expect(prompt).toContain(
+        "Your final message MUST contain exactly one JSON",
+      );
+      expect(prompt).not.toContain("submit_review_verdict");
+    });
+
+    it("passes a review whose reply approved the change", async () => {
+      const result = await reviewResult(
+        JSON.stringify({
+          approved: true,
+          summary: "The retry logic is correct and covered.",
+        }),
+      );
+
+      expect(result.status).toBe("success");
+      expect(result.summary).toBe("The retry logic is correct and covered.");
+      expect(result.unresolvedIssues).toEqual([]);
+    });
+
+    it("fails a review whose reply rejected the change, even on a clean exit", async () => {
+      const result = await reviewResult(
+        [
+          "Here is my verdict:",
+          "```json",
+          JSON.stringify({
+            approved: false,
+            summary: "The token is logged in plain text.",
+            issues: [
+              { severity: "blocking", description: "Redact the auth header." },
+            ],
+          }),
+          "```",
+        ].join("\n"),
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe(
+        "Review rejected: The token is logged in plain text.",
+      );
+      expect(result.unresolvedIssues).toEqual([
+        "blocking: Redact the auth header.",
+      ]);
+      expect(result.confidence).toBe(0.9);
+    });
+
+    it("fails a review that answered in prose only", async () => {
+      const result = await reviewResult(
+        "REJECTED. There is a blocking issue: the token is logged.",
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toBe(NO_VERDICT_SUMMARY);
+      expect(result.confidence).toBe(0.1);
+    });
+
+    it("keeps the CLI diagnostic when a review never ran", async () => {
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath: join(dir, "definitely-not-here") },
+      });
+
+      const result = await executor.execute(
+        makeRuntimeTask({ type: "review" }),
+        "reviewer",
+      );
+
+      expect(result.status).toBe("failed");
+      expect(result.summary).toContain(NO_VERDICT_SUMMARY);
+      expect(result.summary).toContain("Codex CLI not found");
+    });
+
+    it("leaves a non-review task alone even if it replied with JSON", async () => {
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: {
+          binaryPath: await fakeReplying(
+            '{"approved": false, "summary": "not a review"}',
+          ),
+        },
+      });
+
+      const result = await executor.execute(makeRuntimeTask(), "coder");
+
+      expect(result.status).toBe("success");
+      expect(result.summary).toBe(
+        '{"approved": false, "summary": "not a review"}',
+      );
+    });
   });
 
   describe("describeAgent", () => {

@@ -47,22 +47,74 @@ function dependencySection(results: readonly TaskResult[]): string[] {
 }
 
 /**
+ * How a review task is asked to state its decision.
+ *
+ * - `"tool"` — the in-process agent loop, which injects {@link
+ *   ReviewVerdictTool} and reads the verdict back off it.
+ * - `"json-reply"` — a delegated CLI backend (Claude Code, Codex), which runs
+ *   its own loop with its own toolset and cannot be handed a tool definition,
+ *   so the verdict has to come back in the reply text instead.
+ *
+ * Same contract either way, and both halves of it are enforced by the executor:
+ * the verdict decides the review, and no verdict fails it.
+ */
+export type ReviewContract = "tool" | "json-reply";
+
+/** The lines both review contracts open with. */
+const REVIEW_PREAMBLE = [
+  "",
+  "## Review task — a verdict is required",
+  "",
+  "You are reviewing work that other tasks produced, not writing code yourself.",
+  "Inspect the results of the tasks you depend on and the files they changed:",
+  "read those files, and use a diff against the base to see exactly what moved.",
+];
+
+/**
  * The extra instructions a `review` task carries.
  *
  * A review is only worth running if it can block, and it can only block if it
  * produces something the runtime can read. Prose cannot be acted on, so the
- * briefing states the contract bluntly: inspect, then call the verdict tool.
- * The executor treats a missing verdict as a failure, which is the other half
- * of the same contract — saying so here keeps that from looking arbitrary.
+ * briefing states the contract bluntly: inspect, then state the verdict in the
+ * one form this backend can read back. The executor treats a missing verdict as
+ * a failure, which is the other half of the same contract — saying so here
+ * keeps that from looking arbitrary.
+ *
+ * The `json-reply` variant spells out the schema `parseReviewVerdictReply`
+ * validates against (see `./review.ts`); it is stated as an example object
+ * rather than as JSON Schema because the reader is a coding CLI writing one
+ * message, not an API being handed a tool definition.
  */
-function reviewSection(): string[] {
+function reviewSection(contract: ReviewContract): string[] {
+  if (contract === "json-reply") {
+    return [
+      ...REVIEW_PREAMBLE,
+      "Do not edit, create or delete any file: this task decides, it does not fix.",
+      "",
+      "There is no verdict tool here — you are answering through a CLI, so the",
+      "verdict IS your reply. Your final message MUST contain exactly one JSON",
+      "object, in this shape, with nothing after it:",
+      "",
+      "{",
+      '  "approved": false,',
+      '  "summary": "One short paragraph explaining the decision.",',
+      '  "issues": [',
+      '    { "severity": "blocking", "description": "What is wrong, specific enough to act on." }',
+      "  ]",
+      "}",
+      "",
+      "  - `approved` is true only when the change is acceptable as it stands;",
+      "  - `approved` is false whenever you found anything that must be fixed first;",
+      '  - `severity` is either "blocking" (must not ship as-is) or "advisory";',
+      "  - `issues` may be `[]`, but list every problem you found, blocking ones first.",
+      "",
+      "A blocking issue means the verdict is not approved. A reply this object",
+      "cannot be read out of fails this task — an undecided review does not pass.",
+    ];
+  }
+
   return [
-    "",
-    "## Review task — a verdict is required",
-    "",
-    "You are reviewing work that other tasks produced, not writing code yourself.",
-    "Inspect the results of the tasks you depend on and the files they changed:",
-    "read those files, and use a diff against the base to see exactly what moved.",
+    ...REVIEW_PREAMBLE,
     "",
     `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
     "  - `approved: true` only when the change is acceptable as it stands;",
@@ -74,17 +126,31 @@ function reviewSection(): string[] {
   ];
 }
 
+export interface TaskBriefingOptions {
+  /**
+   * How a `review` task must state its verdict; defaults to `"tool"`, which is
+   * what the in-process loop (and any child process serving it) provides.
+   * Ignored for every other task type.
+   */
+  readonly reviewContract?: ReviewContract;
+}
+
 /**
  * The instruction every worker backend receives for a planned task.
  *
  * Kept backend-agnostic on purpose: the in-process agent loop, the Codex CLI
  * backend and any child-process worker all get the same briefing, so a task's
- * behaviour does not silently change with the executor it is routed to.
+ * behaviour does not silently change with the executor it is routed to. The one
+ * deliberate exception is {@link TaskBriefingOptions.reviewContract}: how a
+ * verdict is *delivered* is genuinely a property of the backend, since only the
+ * in-process loop can be given a tool to call. What is being asked for — a
+ * decision, in that exact shape, or the review fails — does not change.
  */
 export function buildTaskBriefing(
   task: PlannedTask,
   agent: string,
   context?: WorkerExecutionContext,
+  options?: TaskBriefingOptions,
 ): string {
   const lines: string[] = [
     `You are acting as the "${agent}" worker on task ${task.id}.`,
@@ -124,7 +190,7 @@ export function buildTaskBriefing(
   }
 
   if (task.type === "review") {
-    lines.push(...reviewSection());
+    lines.push(...reviewSection(options?.reviewContract ?? "tool"));
   }
 
   return lines.join("\n");
