@@ -1029,7 +1029,7 @@ var PolicyRouter = class {
     const candidates = policy.routing.filter((rule) => ruleMatches2(rule, task));
     const hard = candidates.filter((rule) => rule.strength === "hard");
     const pool = hard.length > 0 ? hard : candidates;
-    const best = [...pool].sort(byWeightThenId)[0];
+    const best = [...pool].sort(bySpecificityThenWeightThenId)[0];
     if (best !== void 0) {
       return { agent: best.agent, rule: best.id, reason: "rule" };
     }
@@ -1042,7 +1042,25 @@ var PolicyRouter = class {
 function ruleMatches2(rule, task) {
   return matches(rule.taskTypes, task.type) && matches(rule.riskCategories, task.risk.categories) && matches(rule.complexity, task.complexity);
 }
-function byWeightThenId(a, b) {
+var FACET_RANK = { taskTypes: 4, riskCategories: 2, complexity: 1 };
+function specificity(rule) {
+  const facets = [
+    rule.taskTypes.length > 0 ? FACET_RANK.taskTypes : 0,
+    rule.riskCategories.length > 0 ? FACET_RANK.riskCategories : 0,
+    rule.complexity.length > 0 ? FACET_RANK.complexity : 0
+  ];
+  return {
+    count: facets.filter((value) => value > 0).length,
+    rank: facets.reduce((total, value) => total + value, 0)
+  };
+}
+function bySpecificityThenWeightThenId(a, b) {
+  const left = specificity(a);
+  const right = specificity(b);
+  if (left.count !== right.count)
+    return right.count - left.count;
+  if (left.rank !== right.rank)
+    return right.rank - left.rank;
   if (a.weight !== b.weight)
     return b.weight - a.weight;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -1198,7 +1216,7 @@ var DeterministicScheduler = class {
       });
       return;
     }
-    const retry = canRetry;
+    const retry = canRetry || this.#grantEscalatedAttempt(task, policy, signal);
     task.status = retry ? "pending" : "failed";
     await this.#emit(runId, "task.completed", task.spec.id, {
       agent,
@@ -1281,6 +1299,33 @@ var DeterministicScheduler = class {
     const confidence = task.result?.confidence ?? 0;
     const matches2 = policy.escalation.filter((rule) => rule.fromAgent === from && (rule.afterFailures !== void 0 && task.attempts >= rule.afterFailures || rule.confidenceBelow !== void 0 && confidence < rule.confidenceBelow));
     return pickLowestId(matches2);
+  }
+  /**
+   * Decides whether an escalation rule grants `task` an attempt beyond
+   * `maxAttempts`, and records that it did.
+   *
+   * Called only when the ordinary attempt budget is spent and the task would
+   * otherwise be declared failed. The rule consulted is exactly the one
+   * `#escalationFor` will pick when the task is dispatched again, so the
+   * attempt that is granted is the attempt that actually escalates — a grant
+   * never produces a plain same-agent retry. Each rule grants at most once per
+   * task, so a ladder advances one rung per failure and then stops.
+   *
+   * An aborted run grants nothing: the pending sweep is about to cancel this
+   * task, and keeping it pending would only put it back in the queue.
+   */
+  #grantEscalatedAttempt(task, policy, signal) {
+    if (signal?.aborted === true)
+      return false;
+    const rule = this.#escalationFor(task, policy);
+    if (rule === void 0)
+      return false;
+    task.escalationsGranted ??= /* @__PURE__ */ new Set();
+    const granted = task.escalationsGranted;
+    if (granted.has(rule.id))
+      return false;
+    granted.add(rule.id);
+    return true;
   }
   /**
    * The escalation rule that disqualifies a "success" result from being
@@ -2436,6 +2481,9 @@ var ClaudeCodeBackend = class {
       inputTokens: 0,
       outputTokens: 0,
       messageOutputTokens: 0,
+      currentMessageId: void 0,
+      streamedMessageIds: /* @__PURE__ */ new Set(),
+      sawPartialContent: false,
       sawUsage: false,
       parsedEvents: 0,
       errors: [],
@@ -2534,6 +2582,9 @@ var ClaudeCodeBackend = class {
     ];
     if (this.#options.verbose !== false)
       args.push("--verbose");
+    if (this.#options.includePartialMessages !== false) {
+      args.push("--include-partial-messages");
+    }
     const model = this.#options.model;
     if (model !== void 0)
       args.push("--model", model);
@@ -2547,7 +2598,7 @@ var ClaudeCodeBackend = class {
     const extra = this.#options.extraArgs;
     if (extra !== void 0)
       args.push(...extra);
-    args.push(prompt);
+    args.push("--", prompt);
     return args;
   }
   #spawnClaude(binary, args, workspacePath, signal, timeoutSignal, state, emit2) {
@@ -2729,10 +2780,67 @@ function applyResult(line, state) {
     state.outputTokens += toCount(usage.output_tokens);
   }
 }
+function markPartialContent(state) {
+  state.sawPartialContent = true;
+  if (state.currentMessageId !== void 0) {
+    state.streamedMessageIds.add(state.currentMessageId);
+  }
+}
+function applyAssistantMessage(line, state, emit2) {
+  const message = isRecord(line.message) ? line.message : void 0;
+  if (message === void 0)
+    return;
+  const stopReason = firstString(message.stop_reason);
+  if (stopReason !== void 0)
+    state.stopReason = stopReason;
+  const content = Array.isArray(message.content) ? message.content : void 0;
+  if (content === void 0)
+    return;
+  const id = firstString(message.id);
+  const duplicate = id === void 0 ? state.sawPartialContent : state.streamedMessageIds.has(id);
+  if (duplicate)
+    return;
+  if (id !== void 0)
+    state.streamedMessageIds.add(id);
+  let index2 = 0;
+  let emittedText = false;
+  for (const block of content) {
+    if (isRecord(block)) {
+      if (block.type === "text" && typeof block.text === "string") {
+        if (block.text !== "") {
+          state.assistantText += block.text;
+          emit2("claude-code.content_block_delta", {
+            type: "stream_event",
+            event: {
+              type: "content_block_delta",
+              index: index2,
+              delta: { type: "text_delta", text: block.text }
+            }
+          });
+          emittedText = true;
+        }
+      } else if (block.type === "tool_use") {
+        emit2("claude-code.tool_use", {
+          name: firstString(block.name) ?? "unknown",
+          ...typeof block.id === "string" ? { id: block.id } : {},
+          index: index2
+        });
+      }
+    }
+    index2 += 1;
+  }
+  if (emittedText) {
+    emit2("claude-code.message_stop", {
+      type: "stream_event",
+      event: { type: "message_stop" }
+    });
+  }
+}
 function applyStreamEvent(kind, event2, state, emit2) {
   switch (kind) {
     case "message_start": {
       const message = isRecord(event2.message) ? event2.message : void 0;
+      state.currentMessageId = message === void 0 ? void 0 : firstString(message.id);
       const rawUsage = message === void 0 ? void 0 : message.usage;
       const usage = isRecord(rawUsage) ? rawUsage : void 0;
       if (usage !== void 0) {
@@ -2747,6 +2855,7 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "content_block_start": {
+      markPartialContent(state);
       const block = isRecord(event2.content_block) ? event2.content_block : void 0;
       if (block?.type !== "tool_use")
         return;
@@ -2759,11 +2868,16 @@ function applyStreamEvent(kind, event2, state, emit2) {
       return;
     }
     case "content_block_delta": {
+      markPartialContent(state);
       const delta = isRecord(event2.delta) ? event2.delta : void 0;
       if (delta?.type !== "text_delta")
         return;
       if (typeof delta.text === "string")
         state.assistantText += delta.text;
+      return;
+    }
+    case "assistant": {
+      applyAssistantMessage(event2, state, emit2);
       return;
     }
     case "message_delta": {
@@ -3771,11 +3885,11 @@ function matchBashPermission(patterns, command) {
     const { tokens, headOnly } = parseBashPattern(pattern);
     if (!bashPatternMatches(tokens, headOnly, derivedPrefix))
       continue;
-    const specificity = bashPatternSpecificity(tokens, headOnly);
-    const beatsCurrentBest = best === void 0 || specificity > bestSpecificity || specificity === bestSpecificity && decision === "deny" && best.decision !== "deny";
+    const specificity2 = bashPatternSpecificity(tokens, headOnly);
+    const beatsCurrentBest = best === void 0 || specificity2 > bestSpecificity || specificity2 === bestSpecificity && decision === "deny" && best.decision !== "deny";
     if (beatsCurrentBest) {
       best = { pattern, decision };
-      bestSpecificity = specificity;
+      bestSpecificity = specificity2;
     }
   }
   return best;
@@ -5383,18 +5497,50 @@ var ReviewVerdictTool = class {
     return this.#verdict;
   }
   async execute(rawInput, _context) {
-    const input = InputSchema8.parse(rawInput);
-    this.#verdict = {
-      approved: input.approved,
-      summary: input.summary,
-      issues: input.issues.map((issue) => ({
-        severity: issue.severity,
-        description: issue.description
-      }))
-    };
+    this.#verdict = toVerdict(InputSchema8.parse(rawInput));
     return { recorded: true };
   }
 };
+function toVerdict(input) {
+  return {
+    approved: input.approved,
+    summary: input.summary,
+    issues: input.issues.map((issue) => ({
+      severity: issue.severity,
+      description: issue.description
+    }))
+  };
+}
+function parseReviewVerdictReply(reply) {
+  const json = reply === void 0 ? void 0 : extractJsonObject(reply);
+  if (json === void 0) {
+    return {
+      issues: [
+        { path: "(root)", message: "no JSON object found in the reply" }
+      ]
+    };
+  }
+  let data;
+  try {
+    data = JSON.parse(json);
+  } catch (error) {
+    return {
+      issues: [
+        {
+          path: "(root)",
+          message: `reply is not valid JSON: ${error instanceof Error ? error.message : String(error)}`
+        }
+      ]
+    };
+  }
+  const parsed = InputSchema8.safeParse(data);
+  if (!parsed.success)
+    return { issues: issuesFromZodError(parsed.error) };
+  return { verdict: toVerdict(parsed.data), issues: [] };
+}
+function reviewVerdictFromRun(run) {
+  return parseReviewVerdictReply(run.output ?? run.summary).verdict;
+}
 function describeIssue(issue) {
   return `${issue.severity}: ${issue.description}`;
 }
@@ -5458,14 +5604,43 @@ function dependencySection(results) {
   }
   return lines;
 }
-function reviewSection() {
+var REVIEW_PREAMBLE = [
+  "",
+  "## Review task \u2014 a verdict is required",
+  "",
+  "You are reviewing work that other tasks produced, not writing code yourself.",
+  "Inspect the results of the tasks you depend on and the files they changed:",
+  "read those files, and use a diff against the base to see exactly what moved."
+];
+function reviewSection(contract) {
+  if (contract === "json-reply") {
+    return [
+      ...REVIEW_PREAMBLE,
+      "Do not edit, create or delete any file: this task decides, it does not fix.",
+      "",
+      "There is no verdict tool here \u2014 you are answering through a CLI, so the",
+      "verdict IS your reply. Your final message MUST contain exactly one JSON",
+      "object, in this shape, with nothing after it:",
+      "",
+      "{",
+      '  "approved": false,',
+      '  "summary": "One short paragraph explaining the decision.",',
+      '  "issues": [',
+      '    { "severity": "blocking", "description": "What is wrong, specific enough to act on." }',
+      "  ]",
+      "}",
+      "",
+      "  - `approved` is true only when the change is acceptable as it stands;",
+      "  - `approved` is false whenever you found anything that must be fixed first;",
+      '  - `severity` is either "blocking" (must not ship as-is) or "advisory";',
+      "  - `issues` may be `[]`, but list every problem you found, blocking ones first.",
+      "",
+      "A blocking issue means the verdict is not approved. A reply this object",
+      "cannot be read out of fails this task \u2014 an undecided review does not pass."
+    ];
+  }
   return [
-    "",
-    "## Review task \u2014 a verdict is required",
-    "",
-    "You are reviewing work that other tasks produced, not writing code yourself.",
-    "Inspect the results of the tasks you depend on and the files they changed:",
-    "read those files, and use a diff against the base to see exactly what moved.",
+    ...REVIEW_PREAMBLE,
     "",
     `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
     "  - `approved: true` only when the change is acceptable as it stands;",
@@ -5476,7 +5651,7 @@ function reviewSection() {
     `\`${REVIEW_VERDICT_TOOL_NAME}\` fails this task \u2014 an undecided review does not pass.`
   ];
 }
-function buildTaskBriefing(task, agent, context) {
+function buildTaskBriefing(task, agent, context, options) {
   const lines = [
     `You are acting as the "${agent}" worker on task ${task.id}.`,
     "",
@@ -5502,7 +5677,7 @@ function buildTaskBriefing(task, agent, context) {
     lines.push(...dependencySection(dependencyResults));
   }
   if (task.type === "review") {
-    lines.push(...reviewSection());
+    lines.push(...reviewSection(options?.reviewContract ?? "tool"));
   }
   return lines.join("\n");
 }
@@ -5879,7 +6054,11 @@ var ClaudeCodeWorkerExecutor = class {
     });
     let run;
     try {
-      run = await backend.run({ instruction: buildTaskBriefing(task.spec, agent, context) }, {
+      run = await backend.run({
+        instruction: buildTaskBriefing(task.spec, agent, context, {
+          reviewContract: "json-reply"
+        })
+      }, {
         runId,
         taskId,
         workspacePath,
@@ -5892,7 +6071,10 @@ var ClaudeCodeWorkerExecutor = class {
       };
     }
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
-    return normalizeTaskResult({ taskId, loop: run, inspection });
+    const result = normalizeTaskResult({ taskId, loop: run, inspection });
+    if (task.spec.type !== "review")
+      return result;
+    return applyReviewVerdict(result, reviewVerdictFromRun(run));
   }
 };
 
@@ -5927,7 +6109,11 @@ var CodexWorkerExecutor = class {
     });
     let run;
     try {
-      run = await backend.run({ instruction: buildTaskBriefing(task.spec, agent, context) }, {
+      run = await backend.run({
+        instruction: buildTaskBriefing(task.spec, agent, context, {
+          reviewContract: "json-reply"
+        })
+      }, {
         runId,
         taskId,
         workspacePath,
@@ -5940,7 +6126,10 @@ var CodexWorkerExecutor = class {
       };
     }
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
-    return normalizeTaskResult({ taskId, loop: run, inspection });
+    const result = normalizeTaskResult({ taskId, loop: run, inspection });
+    if (task.spec.type !== "review")
+      return result;
+    return applyReviewVerdict(result, reviewVerdictFromRun(run));
   }
 };
 
@@ -6090,7 +6279,8 @@ function isUnder(parent, child) {
 
 // packages/workspace/dist/worktrees.js
 var WORKTREE_BRANCH_PREFIX = "agent-task";
-var DEFAULT_WORKTREES_DIR = join6(".agent", "worktrees");
+var AGENT_STATE_DIR = ".agent";
+var DEFAULT_WORKTREES_DIR = join6(AGENT_STATE_DIR, "worktrees");
 var MAX_DIFF_CHARS2 = 4e5;
 var COMMIT_IDENTITY = {
   GIT_AUTHOR_NAME: "AGENT",
@@ -6395,8 +6585,18 @@ var TaskWorktreeManager = class {
     });
   }
   /**
-   * Uncommitted paths in the base checkout, excluding the worktrees directory —
+   * Uncommitted paths in the base checkout that would make a merge unsafe.
+   *
+   * Two things are excluded, and only two. The worktrees directory, because
    * task checkouts nested inside the repository always look untracked to git.
+   * And the rest of `.agent/`, because that is kapel's own state — the
+   * template `kapel init` writes, and the `sessions.db` the REPL opens the
+   * moment a conversation starts. Neither is the user's work, both are
+   * routinely untracked (or tracked and modified, as `sessions.db` is once
+   * someone commits it), and letting either veto the merge meant that on a
+   * fresh repository *every* task came back "dirty-base" and every completed
+   * task's work was thrown away. kapel-owned state must never block a merge;
+   * anything else in the tree still does.
    */
   async #dirtyPaths(signal) {
     const status = await runGit2(["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: this.repoRoot, operation: "integrate.status", signal });
@@ -6405,6 +6605,9 @@ var TaskWorktreeManager = class {
     for (const record of splitNul(status.stdout)) {
       const path15 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
       if (ignored !== void 0 && path15.startsWith(ignored)) {
+        continue;
+      }
+      if (isAgentStatePath(path15)) {
         continue;
       }
       paths.push(path15);
@@ -6420,6 +6623,9 @@ var TaskWorktreeManager = class {
     return `${rel.split(sep3).join("/")}/`;
   }
 };
+function isAgentStatePath(path15) {
+  return path15 === AGENT_STATE_DIR || path15 === `${AGENT_STATE_DIR}/` || path15.startsWith(`${AGENT_STATE_DIR}/`);
+}
 function truncateDiff(diff) {
   if (diff.length <= MAX_DIFF_CHARS2) {
     return diff;
@@ -6559,7 +6765,10 @@ var WorktreeIsolatedExecutor = class {
       taskId,
       merged: false,
       conflictFiles: integrated.conflictFiles,
-      ...integrated.reason === void 0 ? {} : { reason: integrated.reason }
+      ...integrated.reason === void 0 ? {} : { reason: integrated.reason },
+      // Without this, a `dirty-base` refusal reaches the user as three words
+      // and no way to tell which file is in the way.
+      ...integrated.detail === void 0 ? {} : { detail: integrated.detail }
     });
     await this.#remove(taskId, worktree, true);
     return finalize(inner, {
@@ -8652,8 +8861,9 @@ async function resolvePlannerModel(project, policy, options, output) {
   return resolveModelAndProvider(process.env, alias);
 }
 function delegatedPlannerModelId(project, policy, options) {
-  if (options.model !== void 0 && options.model !== "")
-    return options.model;
+  if (options.model !== void 0 && options.model !== "") {
+    return delegatedModelOverride({ value: options.model, source: "flag" });
+  }
   return createDelegatedModelResolver(project)(policy.orchestrator);
 }
 async function preparePlan(objective, options, deps = {}) {
@@ -9284,6 +9494,7 @@ var SqliteSessionStore = class {
         taskCounts: {
           completed: by.get("success") ?? 0,
           failed: by.get("failed") ?? 0,
+          partial: by.get("partial") ?? 0,
           cancelled: by.get("cancelled") ?? 0,
           ...typeof total === "number" ? { total } : {}
         }
@@ -9728,7 +9939,11 @@ function digestEvent(event2) {
         return `merged${commit === void 0 ? "" : ` \u2192 ${commit.slice(0, 8)}`}`;
       }
       const files = Array.isArray(data.conflictFiles) ? data.conflictFiles.filter((file) => typeof file === "string") : [];
-      return files.length === 0 ? `not merged \u2014 ${str(data.reason) ?? "unknown reason"}` : `not merged \u2014 conflicts in ${files.join(", ")}`;
+      if (files.length > 0)
+        return `not merged \u2014 conflicts in ${files.join(", ")}`;
+      const reason = str(data.reason) ?? "unknown reason";
+      const detail = str(data.detail);
+      return detail === void 0 ? `not merged \u2014 ${reason}` : `not merged \u2014 ${reason}: ${detail}`;
     }
     case "task.completed": {
       const result = isRecord7(data.result) ? data.result : {};
@@ -9876,6 +10091,33 @@ function seedModelsInto(templateYaml, config) {
     ...lines.slice(end)
   ].join("\n");
 }
+var GITIGNORE_ENTRIES = [
+  ".agent/sessions.db*",
+  ".agent/worktrees/"
+];
+var GITIGNORE_HEADER = "# kapel state (see .agent/)";
+async function ensureGitignoreEntries(cwd) {
+  const gitignorePath = path5.join(cwd, ".gitignore");
+  let existing = "";
+  try {
+    existing = await readFile10(gitignorePath, "utf8");
+  } catch {
+  }
+  const present2 = new Set(existing.split("\n").map((line) => line.trim()));
+  const missing = GITIGNORE_ENTRIES.filter((entry) => !present2.has(entry));
+  if (missing.length === 0)
+    return [];
+  const lines = [];
+  if (existing !== "") {
+    lines.push(existing.endsWith("\n") ? existing.slice(0, -1) : existing, "");
+  }
+  if (!present2.has(GITIGNORE_HEADER))
+    lines.push(GITIGNORE_HEADER);
+  lines.push(...missing);
+  await writeFile4(gitignorePath, `${lines.join("\n")}
+`, "utf8");
+  return missing;
+}
 async function pathExists(candidate) {
   try {
     await stat4(candidate);
@@ -9926,6 +10168,13 @@ async function runInit(options) {
       console.log("  (models seeded from your kapel configuration)");
     } catch {
     }
+  }
+  try {
+    const added = await ensureGitignoreEntries(options.cwd);
+    if (added.length > 0) {
+      console.log(`  (added to .gitignore: ${added.join(", ")})`);
+    }
+  } catch {
   }
   return 0;
 }
@@ -11756,7 +12005,13 @@ var TextRenderer = class {
           break;
         }
         const files = Array.isArray(data.conflictFiles) ? data.conflictFiles.filter((file) => typeof file === "string") : [];
-        this.#write(files.length === 0 ? `\u26A0 ${taskId} not merged (${stringOrUndefined(data.reason) ?? "unknown reason"})` : `\u26A0 ${taskId} merge conflict: ${files.join(", ")}`);
+        if (files.length > 0) {
+          this.#write(`\u26A0 ${taskId} merge conflict: ${files.join(", ")}`);
+          break;
+        }
+        const reason = stringOrUndefined(data.reason) ?? "unknown reason";
+        const detail = stringOrUndefined(data.detail);
+        this.#write(detail === void 0 ? `\u26A0 ${taskId} not merged (${reason})` : `\u26A0 ${taskId} not merged (${reason}): ${detail}`);
         break;
       }
       case "worktree.removed": {
@@ -12502,11 +12757,13 @@ function truncate5(text2, limit) {
   return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
 }
 function taskCountsCell(counts) {
-  const seen = counts.completed + counts.failed + counts.cancelled;
+  const seen = counts.completed + counts.failed + counts.partial + counts.cancelled;
   const total = counts.total ?? seen;
   const problems = [];
   if (counts.failed > 0)
     problems.push(`${counts.failed} failed`);
+  if (counts.partial > 0)
+    problems.push(`${counts.partial} partial`);
   if (counts.cancelled > 0)
     problems.push(`${counts.cancelled} cancelled`);
   const cell = `${counts.completed}/${total}`;
@@ -12561,7 +12818,7 @@ async function runRunsCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.8.0";
+var CLI_VERSION = "0.8.1";
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
 function shortId2(id) {
@@ -13588,8 +13845,15 @@ async function runInteractive(options) {
       onCustomCommandsChanged: (names) => {
         customCommandNames.current = names;
       },
-      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, alias, backend)),
-      plan: (objective, output) => runPlan(objective, planOptionsFor(options, alias, backend), { output }),
+      // `chatAlias`, not `alias`: on a delegated backend the conversation
+      // already decided what it honestly calls its model — the chosen id, or
+      // `default` when nobody chose one — and `/plan` and `/orchestrate` must
+      // report and forward the same thing the chat does. On the native path
+      // the two are the same value.
+      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, chatAlias, backend)),
+      plan: (objective, output) => runPlan(objective, planOptionsFor(options, chatAlias, backend), {
+        output
+      }),
       runs: (output) => runRunsCommand({ cwd: options.cwd, json: false }, { output }),
       resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), { output }),
       ...wizardTty ? {

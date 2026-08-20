@@ -104,7 +104,7 @@ import { isoTime } from "./sessions.js";
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
  * here so both spellings of it come from one place.
  */
-export const CLI_VERSION = "0.8.0";
+export const CLI_VERSION = "0.8.1";
 
 /** How many characters of a session id identify it in listings and the banner. */
 const SHORT_ID = 8;
