@@ -23,12 +23,15 @@ import {
   ClaudeCodeWorkerExecutor,
   CodexBackend,
   CodexWorkerExecutor,
+  createAgentBackendResolver,
   createDelegatedModelResolver,
   createDelegatedToolsResolver,
   DelegatedPlanner,
   DeterministicScheduler,
   LlmPlanner,
+  MixedBackendWorkerExecutor,
   PolicyRouter,
+  referencedBackends,
   TaskGraph,
   ValidatingExecutor,
   WorktreeIsolatedExecutor,
@@ -38,6 +41,7 @@ import type { SqliteSessionStore } from "@agent/session";
 import type { TuiController, TuiInit } from "@agent/tui";
 import type { BackendName, DelegatedBackendName } from "./backend.js";
 import {
+  BACKEND_NAMES,
   claudeCodeInstallGuidance,
   claudeCodeLoginGuidance,
   codexInstallGuidance,
@@ -195,74 +199,79 @@ export function delegatedWorkerUsageSink(
 }
 
 /**
- * Builds the "run a task in *this* directory" factory for a run.
+ * The Claude Code per-workspace factory: probe the CLI, read the project's
+ * model and tool answers once, then point an executor at a workspace.
  *
- * Everything expensive or fallible — the delegated CLI's availability probe,
- * the model and tool resolvers — happens once, here; the returned function
- * only has to point an executor at a workspace, which is what makes it usable
- * per task worktree.
- *
- * A delegated backend decides everything: `--backend codex` and `--backend
- * claude-code` both mean "let that CLI do the work", and each is already its
- * own process. Everything else runs the native agent loop in this one.
+ * Both resolvers read the project once, here, so every task worktree gets the
+ * same answers without re-parsing `.agent/` per task.
  */
-async function workspaceExecutorFactory(
+async function claudeCodeWorkspaceFactory(
   args: ExecutorFactoryArgs,
 ): Promise<WorkspaceExecutorFactory> {
   const { runId, events, taskTimeoutMs } = args;
-  // Read once, here, and handed to whichever executor the backend selects: what
-  // a run tells its workers is the project's decision, not the backend's. An
-  // absent `.agent/handoff.md` leaves this `undefined`, which is how the
-  // briefing spells "use the built-in guidance".
   const handoff = args.project.handoff;
 
-  if (args.backend === "claude-code") {
-    const availability = await ClaudeCodeBackend.checkAvailability();
-    if (!availability.installed) {
-      throw new Error(claudeCodeInstallGuidance(availability));
-    }
-    if (!availability.loggedIn) {
-      throw new Error(claudeCodeLoginGuidance(availability));
-    }
-    // Both resolvers read the project once, here, so every task worktree gets
-    // the same answers without re-parsing `.agent/` per task.
-    const resolveAgentModel = createDelegatedModelResolver(args.project);
-    const resolveAgentTools = createDelegatedToolsResolver(args.project);
-    const usage = delegatedWorkerUsageSink("claude-code", args.usage);
-    return (workspacePath) =>
-      new ClaudeCodeWorkerExecutor({
-        workspacePath,
-        runId,
-        events,
-        resolveAgentModel,
-        resolveAgentTools,
-        usage,
-        handoff,
-        ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-      });
+  const availability = await ClaudeCodeBackend.checkAvailability();
+  if (!availability.installed) {
+    throw new Error(claudeCodeInstallGuidance(availability));
   }
+  if (!availability.loggedIn) {
+    throw new Error(claudeCodeLoginGuidance(availability));
+  }
+  const resolveAgentModel = createDelegatedModelResolver(args.project);
+  const resolveAgentTools = createDelegatedToolsResolver(args.project);
+  const usage = delegatedWorkerUsageSink("claude-code", args.usage);
+  return (workspacePath) =>
+    new ClaudeCodeWorkerExecutor({
+      workspacePath,
+      runId,
+      events,
+      resolveAgentModel,
+      resolveAgentTools,
+      usage,
+      handoff,
+      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+    });
+}
 
-  if (args.backend === "codex") {
-    const availability = await CodexBackend.checkAvailability();
-    if (!availability.installed) {
-      throw new Error(codexInstallGuidance(availability));
-    }
-    if (!availability.loggedIn) {
-      throw new Error(codexLoginGuidance(availability));
-    }
-    const resolveAgentModel = createDelegatedModelResolver(args.project);
-    const usage = delegatedWorkerUsageSink("codex", args.usage);
-    return (workspacePath) =>
-      new CodexWorkerExecutor({
-        workspacePath,
-        runId,
-        events,
-        resolveAgentModel,
-        usage,
-        handoff,
-        ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
-      });
+/** {@link claudeCodeWorkspaceFactory} for Codex; no tool list, Codex owns that. */
+async function codexWorkspaceFactory(
+  args: ExecutorFactoryArgs,
+): Promise<WorkspaceExecutorFactory> {
+  const { runId, events, taskTimeoutMs } = args;
+  const handoff = args.project.handoff;
+
+  const availability = await CodexBackend.checkAvailability();
+  if (!availability.installed) {
+    throw new Error(codexInstallGuidance(availability));
   }
+  if (!availability.loggedIn) {
+    throw new Error(codexLoginGuidance(availability));
+  }
+  const resolveAgentModel = createDelegatedModelResolver(args.project);
+  const usage = delegatedWorkerUsageSink("codex", args.usage);
+  return (workspacePath) =>
+    new CodexWorkerExecutor({
+      workspacePath,
+      runId,
+      events,
+      resolveAgentModel,
+      usage,
+      handoff,
+      ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
+    });
+}
+
+/**
+ * The in-process agent loop. Unlike the delegated pair this needs provider
+ * credentials, which {@link createProjectModelResolver} resolves once here —
+ * so it is only ever called for a run that can actually route a task to it.
+ */
+async function nativeWorkspaceFactory(
+  args: ExecutorFactoryArgs,
+): Promise<WorkspaceExecutorFactory> {
+  const { runId, events, taskTimeoutMs } = args;
+  const handoff = args.project.handoff;
 
   const resolveModel = await createProjectModelResolver(
     args.project,
@@ -282,6 +291,95 @@ async function workspaceExecutorFactory(
         ? {}
         : { maxIterations: args.maxIterations }),
     });
+}
+
+/**
+ * The per-workspace factory for one named backend.
+ *
+ * Each branch reads the project's handoff guidance for itself — what a run
+ * tells its workers is the project's decision, not the backend's, and an
+ * absent `.agent/handoff.md` leaves it `undefined`, which is how the briefing
+ * spells "use the built-in guidance".
+ */
+function backendWorkspaceFactory(
+  args: ExecutorFactoryArgs,
+  backend: BackendName,
+): Promise<WorkspaceExecutorFactory> {
+  if (backend === "claude-code") return claudeCodeWorkspaceFactory(args);
+  if (backend === "codex") return codexWorkspaceFactory(args);
+  return nativeWorkspaceFactory(args);
+}
+
+/**
+ * The per-workspace factory for a run whose agents do *not* all share one
+ * backend: one dispatcher per workspace, routing each task to the backend its
+ * own agent's `models:` entry named.
+ *
+ * Every backend the run can reach is prepared up front — the CLI availability
+ * probes, the model/tool resolvers, the native loop's credentials — because
+ * that is the expensive and fallible part, and a run that is going to fail for
+ * want of `codex login` should say so before it pays for a plan's worth of
+ * work. Only backends in `backends` are prepared, so a mixed configuration
+ * that never mentions Codex never probes for Codex.
+ *
+ * What is left to the dispatcher is the cheap part: constructing the actual
+ * worker object, once per backend it is actually asked for, per workspace.
+ */
+async function mixedWorkspaceExecutorFactory(
+  args: ExecutorFactoryArgs,
+  backends: ReadonlySet<BackendName>,
+): Promise<WorkspaceExecutorFactory> {
+  const factories = new Map<BackendName, WorkspaceExecutorFactory>();
+  // Iterated in a fixed order rather than the set's, so a run that cannot
+  // satisfy two backends always fails on the same one.
+  for (const backend of BACKEND_NAMES) {
+    if (!backends.has(backend)) continue;
+    factories.set(backend, await backendWorkspaceFactory(args, backend));
+  }
+
+  const resolveAgentBackend = createAgentBackendResolver(args.project);
+  return (workspacePath) =>
+    new MixedBackendWorkerExecutor({
+      resolveAgentBackend,
+      defaultBackend: args.backend,
+      createExecutor: (backend) => {
+        const factory = factories.get(backend);
+        if (factory === undefined) {
+          // Unreachable via `referencedBackends`, which is what `backends`
+          // comes from; a thrown error here beats a silent fallback onto a
+          // backend the project did not ask for.
+          throw new Error(
+            `No ${backend} worker was prepared for this run: ${[...backends].join(", ")} were.`,
+          );
+        }
+        return factory(workspacePath);
+      },
+    });
+}
+
+/**
+ * Builds the "run a task in *this* directory" factory for a run.
+ *
+ * Everything expensive or fallible — the delegated CLI's availability probe,
+ * the model and tool resolvers — happens once, here; the returned function
+ * only has to point an executor at a workspace, which is what makes it usable
+ * per task worktree.
+ *
+ * Which executor that is comes from the project: an agent whose `models:`
+ * entry names a `backend:` runs there, everything else runs on the run's own
+ * backend (`--backend`, which for the REPL is the orchestrator role's). When
+ * those answers are all the same — including for every config.yaml written
+ * before `backend:` tags existed — the run takes the single-backend path it
+ * always did. When they differ, {@link mixedWorkspaceExecutorFactory} puts a
+ * dispatcher in front of one worker per backend.
+ */
+async function workspaceExecutorFactory(
+  args: ExecutorFactoryArgs,
+): Promise<WorkspaceExecutorFactory> {
+  const backends = referencedBackends(args.project, args.backend);
+  if (backends.size > 1) return mixedWorkspaceExecutorFactory(args, backends);
+
+  return backendWorkspaceFactory(args, args.backend);
 }
 
 /**
@@ -305,6 +403,13 @@ async function workspaceExecutorFactory(
  *
  * Otherwise validators run whenever the project declares at least one and
  * the caller didn't opt out with `--no-validate`.
+ *
+ * The question is asked once per run, of the run's own backend, even when the
+ * project mixes backends per agent (see {@link mixedWorkspaceExecutorFactory}):
+ * `ValidatingExecutor` wraps the dispatcher rather than sitting inside it, so
+ * "does this run gate its tasks" stays one answer a run header can print,
+ * rather than something a reader has to work out per task. The Codex
+ * carve-out above therefore follows the run's backend, not each agent's.
  */
 export function shouldRunValidators(
   project: AgentProject,

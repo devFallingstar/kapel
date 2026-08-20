@@ -26,6 +26,7 @@ export type {
   AgentProjectConfig,
   HandoffGuidance,
   ProjectAgent,
+  ProjectBackendName,
   ProjectHandoff,
   ProjectModelRef,
   ProjectValidator,

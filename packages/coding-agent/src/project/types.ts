@@ -1,10 +1,31 @@
 import type { AgentRole } from "@agent/core";
 import type { ToolPermissionRule } from "../permissions.js";
 
-/** A `provider`/`model` pair as declared under `models.<alias>` in config.yaml. */
+/**
+ * The execution backends a model alias can name in `config.yaml`.
+ *
+ * Deliberately a duplicate of the CLI's own `BackendName` (`apps/cli/src/
+ * backend.ts`) rather than an import of it: packages must not depend on apps,
+ * and this list is the file format's vocabulary, which is allowed to lag the
+ * CLI's by a release if the two ever diverge.
+ */
+export type ProjectBackendName = "native" | "codex" | "claude-code";
+
+/**
+ * A `provider`/`model` pair as declared under `models.<alias>` in config.yaml,
+ * optionally tagged with the backend that runs it.
+ *
+ * `backend` absent means "the run's own backend", which is what every config
+ * written before mixed execution existed says — so an untagged file behaves
+ * exactly as it did, and a run whose aliases are all untagged never leaves the
+ * single-backend path. Tagged, it is what routes an individual agent's tasks
+ * to Claude Code, Codex or the in-process loop while the rest of the run uses
+ * something else.
+ */
 export interface ProjectModelRef {
   readonly provider: string;
   readonly model: string;
+  readonly backend?: ProjectBackendName;
 }
 
 /** One agent definition loaded from `.agent/agents/<name>.md`. */

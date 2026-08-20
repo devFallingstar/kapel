@@ -111,6 +111,65 @@ describe("loadAgentProject - structural cases", () => {
   });
 });
 
+describe("loadAgentProject - model backend tags", () => {
+  it("reads a per-alias backend and leaves an untagged alias without one", async () => {
+    const workspacePath = await makeWorkspace();
+    try {
+      await writeAgentFile(
+        workspacePath,
+        "config.yaml",
+        [
+          "models:",
+          "  lead:",
+          "    provider: anthropic",
+          "    model: opus",
+          "    backend: claude-code",
+          "  worker:",
+          "    provider: openai",
+          "    model: gpt-5.1",
+          "    backend: codex",
+          "  cheap:",
+          "    provider: anthropic",
+          "    model: claude-haiku-4-5",
+          "",
+        ].join("\n"),
+      );
+      const project = await loadAgentProject(workspacePath);
+      expect(project?.config.models).toEqual({
+        lead: {
+          provider: "anthropic",
+          model: "opus",
+          backend: "claude-code",
+        },
+        worker: { provider: "openai", model: "gpt-5.1", backend: "codex" },
+        // No `backend` key at all, not an explicit undefined: an untagged
+        // alias means "the run's backend".
+        cheap: { provider: "anthropic", model: "claude-haiku-4-5" },
+      });
+    } finally {
+      await cleanupWorkspace(workspacePath);
+    }
+  });
+
+  it("rejects a backend it does not know", async () => {
+    const workspacePath = await makeWorkspace();
+    try {
+      await writeAgentFile(
+        workspacePath,
+        "config.yaml",
+        "models:\n  lead:\n    provider: openai\n    model: gpt-x\n    backend: cursor\n",
+      );
+      const err = await loadAgentProject(workspacePath).catch((e) => e);
+      expect(err).toBeInstanceOf(ProjectConfigError);
+      expect((err as ProjectConfigError).problems.join("\n")).toMatch(
+        /models\.lead\.backend/,
+      );
+    } finally {
+      await cleanupWorkspace(workspacePath);
+    }
+  });
+});
+
 describe("loadAgentProject - config.yaml errors", () => {
   it("throws ProjectConfigError with the file and problems for malformed YAML", async () => {
     const workspacePath = await makeWorkspace();

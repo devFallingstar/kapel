@@ -13,10 +13,14 @@ import {
   ProjectConfigError,
 } from "./types.js";
 
+// `backend` is optional so every config.yaml written before mixed execution
+// keeps parsing unchanged; absent means "the run's backend" (see
+// `ProjectModelRef`). Named, it is the backend this alias's agents run on.
 const ModelRefSchema = z
   .object({
     provider: z.string().min(1, "must not be empty"),
     model: z.string().min(1, "must not be empty"),
+    backend: z.enum(["native", "codex", "claude-code"]).optional(),
   })
   .strict();
 
@@ -98,7 +102,13 @@ export async function loadProjectConfig(
 
   const models: Record<string, ProjectModelRef> = {};
   for (const [alias, ref] of Object.entries(result.data.models ?? {})) {
-    models[alias] = { provider: ref.provider, model: ref.model };
+    // Dropped rather than carried as an explicit `undefined`, which
+    // `exactOptionalPropertyTypes` refuses to assign to `backend?: …`.
+    models[alias] = {
+      provider: ref.provider,
+      model: ref.model,
+      ...(ref.backend === undefined ? {} : { backend: ref.backend }),
+    };
   }
 
   // The default is resolved here rather than at run time so that everything

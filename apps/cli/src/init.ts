@@ -47,6 +47,16 @@ export function providerForModel(
  * and a Codex middle tier — `lead` is an Anthropic model and `worker` an
  * OpenAI one, and a seeded file that claimed otherwise would send the run at
  * the wrong provider.
+ *
+ * That backend is written out as well, on every alias, which is what makes a
+ * mixed configuration actually execute mixed: an agent on the `worker` alias
+ * runs its tasks through Codex while the orchestrator's run through Claude
+ * Code (see `MixedBackendWorkerExecutor`). Written even when every role
+ * agrees, because a config.yaml that says which CLI runs it is readable on
+ * its own, and because the file outlives the `~/.kapel/config.json` it was
+ * seeded from:
+ * the omitted form means "whatever the run is using", which is a different
+ * and weaker claim than the one the user actually made in the wizard.
  */
 export function renderModelsBlock(config: KapelConfig): readonly string[] {
   const lines = ["models:"];
@@ -56,6 +66,7 @@ export function renderModelsBlock(config: KapelConfig): readonly string[] {
       `  ${projectRole}:`,
       `    provider: ${providerForModel(model, backend)}`,
       `    model: ${model}`,
+      `    backend: ${backend}`,
     );
   }
   return lines;

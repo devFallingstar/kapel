@@ -33,6 +33,12 @@ export {
 export type { CodexWorkerExecutorOptions } from "./codex-executor.js";
 export { CodexWorkerExecutor } from "./codex-executor.js";
 export { createDelegatedModelResolver } from "./delegated-model.js";
+export type { MixedBackendWorkerExecutorOptions } from "./mixed-executor.js";
+export {
+  createAgentBackendResolver,
+  MixedBackendWorkerExecutor,
+  referencedBackends,
+} from "./mixed-executor.js";
 export type {
   NormalizableRun,
   NormalizeTaskResultInput,

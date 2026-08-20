@@ -159,18 +159,23 @@ describe("seedModelsInto", () => {
         "  lead:",
         "    provider: openai",
         "    model: gpt-5.1",
+        "    backend: codex",
         "  complex:",
         "    provider: openai",
         "    model: gpt-5.1-codex",
+        "    backend: codex",
         "  worker:",
         "    provider: openai",
         "    model: gpt-5.1",
+        "    backend: codex",
         "  cheap:",
         "    provider: openai",
         "    model: gpt-5-mini",
+        "    backend: codex",
         "  reviewer:",
         "    provider: openai",
         "    model: gpt-5.1",
+        "    backend: codex",
       ].join("\n"),
     );
   });
@@ -199,6 +204,36 @@ describe("seedModelsInto", () => {
     // single global one.
     expect(seeded).toContain(
       "  cheap:\n    provider: openai\n    model: default",
+    );
+  });
+
+  it("tags each alias with the backend that runs it", () => {
+    const seeded = seedModelsInto(
+      TEMPLATE_YAML,
+      kapelConfig({
+        backends: ["claude-code", "codex"],
+        models: {
+          orchestrator: cc("opus"),
+          complex: cc("opus"),
+          middle: { backend: "codex", model: "gpt-5.1" },
+          low: { backend: "native", model: "claude-haiku-4-5" },
+        },
+      }),
+    );
+    // The tag is what `MixedBackendWorkerExecutor` routes on, so it has to
+    // follow the role rather than one run-wide answer.
+    expect(seeded).toContain(
+      "  lead:\n    provider: anthropic\n    model: opus\n    backend: claude-code",
+    );
+    expect(seeded).toContain(
+      "  worker:\n    provider: openai\n    model: gpt-5.1\n    backend: codex",
+    );
+    expect(seeded).toContain(
+      "  cheap:\n    provider: anthropic\n    model: claude-haiku-4-5\n    backend: native",
+    );
+    // The reviewer follows the orchestrator's role, backend included.
+    expect(seeded).toContain(
+      "  reviewer:\n    provider: anthropic\n    model: opus\n    backend: claude-code",
     );
   });
 
@@ -496,18 +531,23 @@ describe("runInit", () => {
         "  lead:",
         "    provider: anthropic",
         "    model: opus",
+        "    backend: claude-code",
         "  complex:",
         "    provider: anthropic",
         "    model: opus",
+        "    backend: claude-code",
         "  worker:",
         "    provider: anthropic",
         "    model: sonnet",
+        "    backend: claude-code",
         "  cheap:",
         "    provider: anthropic",
         "    model: haiku",
+        "    backend: claude-code",
         "  reviewer:",
         "    provider: anthropic",
         "    model: opus",
+        "    backend: claude-code",
         "",
         "agents:",
         "  orchestrator: lead",

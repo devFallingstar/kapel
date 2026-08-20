@@ -1,15 +1,18 @@
+import { existsSync } from "node:fs";
 import { appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ModelDefinition, ModelEvent, ModelProvider } from "@agent/ai";
 import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type {
   AgentProject,
+  ProjectAgent,
   ProjectValidator,
   RuntimeTask,
   TaskResult,
   WorkerExecutor,
 } from "@agent/coding-agent";
 import {
+  ClaudeCodeWorkerExecutor,
   DEFAULT_WORKER_GUIDANCE,
   ValidatingExecutor,
   WORKER_SYSTEM_POSTAMBLE,
@@ -17,6 +20,10 @@ import {
 } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+// The argv-recording fake `claude`/`codex` harness the coding-agent package
+// already tests its delegated steps through; reused rather than reinvented so
+// the mixed-backend run below is asserted against the same shell scripts.
+import { writeScriptedCli } from "../../../packages/coding-agent/test/planning/delegated-cli-harness.js";
 import type {
   ExecutorFactoryArgs,
   OrchestrateCommandOptions,
@@ -359,6 +366,252 @@ describe("defaultExecutorFactory / validation", () => {
     // Unlike codex, a Claude Code task is gated on the project's validators:
     // they run in the task workspace once the CLI subprocess has exited.
     expect(result.tests.commands).toEqual(["true"]);
+  });
+});
+
+describe("defaultExecutorFactory / mixed backends", () => {
+  let workspace: string;
+  let claudeDir: string;
+  let codexDir: string;
+  const originalPath = process.env.PATH;
+  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace("cli-mixed-backends-");
+    claudeDir = await makeWorkspace("cli-mixed-claude-");
+    codexDir = await makeWorkspace("cli-mixed-codex-");
+    await initRepo(workspace);
+  });
+
+  afterEach(async () => {
+    process.env.PATH = originalPath;
+    if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalApiKey;
+    await cleanupWorkspace(workspace);
+    await cleanupWorkspace(claudeDir);
+    await cleanupWorkspace(codexDir);
+  });
+
+  /** A fake `claude` whose final result line reports the usage it "spent". */
+  const CLAUDE_REPLY = `${JSON.stringify({
+    type: "result",
+    subtype: "success",
+    result: "claude code did the task",
+    usage: { input_tokens: 5, output_tokens: 7 },
+  })}\n`;
+
+  /** A fake `codex`: one agent message, then a turn with its own usage. */
+  const CODEX_REPLY = `${[
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "codex did the task" },
+    }),
+    JSON.stringify({
+      type: "turn.completed",
+      usage: { input_tokens: 11, output_tokens: 22 },
+    }),
+  ].join("\n")}\n`;
+
+  /**
+   * The two probe invocations every delegated backend makes before it runs
+   * anything (`--version`, then `auth status`/`login status`), so the task's
+   * own invocation is the third.
+   */
+  const RUN_INVOCATION = 3;
+
+  function agent(
+    name: string,
+    modelAlias: string,
+    tools: readonly string[] = ["read", "grep"],
+  ): ProjectAgent {
+    return {
+      name,
+      modelAlias,
+      role: "worker",
+      tools,
+      systemPrompt: `You are ${name}.`,
+      sourcePath: `/virtual/.agent/agents/${name}.md`,
+    };
+  }
+
+  /** An {@link AgentProject} whose aliases name the backends under test. */
+  function mixedProject(
+    models: AgentProject["config"]["models"],
+    agents: readonly ProjectAgent[],
+  ): AgentProject {
+    const byName = new Map(agents.map((entry) => [entry.name, entry]));
+    return {
+      ...emptyProject(),
+      config: {
+        models,
+        agentSlots: {},
+        validators: [],
+        permission: {},
+      },
+      agents,
+      knownAgentNames: () => new Set(byName.keys()),
+      agent: (name: string) => byName.get(name),
+    };
+  }
+
+  function factoryArgs(
+    project: AgentProject,
+    backend: "native" | "codex" | "claude-code",
+    usage: UsageTracker,
+  ): ExecutorFactoryArgs {
+    return {
+      project,
+      workspacePath: workspace,
+      runId: "run-mixed",
+      events: { emit: () => undefined },
+      usage,
+      backend,
+      isolation: "none",
+      validate: false,
+    };
+  }
+
+  it("routes each task to its own agent's backend, with that backend's model and tools", async () => {
+    const fakeClaude = await writeScriptedCli(claudeDir, "claude-code", [
+      CLAUDE_REPLY,
+    ]);
+    const fakeCodex = await writeScriptedCli(codexDir, "codex", [CODEX_REPLY]);
+    process.env.PATH = `${claudeDir}:${codexDir}:${originalPath ?? ""}`;
+
+    const usage = new UsageTracker();
+    const project = mixedProject(
+      {
+        lead: { provider: "anthropic", model: "opus", backend: "claude-code" },
+        worker: { provider: "openai", model: "gpt-5.1", backend: "codex" },
+      },
+      [agent("reviewer", "lead"), agent("coder", "worker")],
+    );
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs(project, "claude-code", usage),
+    );
+
+    const codexResult = await executor.execute(mutatingTask("T01"), "coder");
+    const claudeResult = await executor.execute(
+      mutatingTask("T02"),
+      "reviewer",
+    );
+
+    // Each task reached a different binary, in the same workspace.
+    expect(codexResult.summary).toContain("codex did the task");
+    expect(claudeResult.summary).toContain("claude code did the task");
+    expect(fakeCodex.binaryPath).not.toBe(fakeClaude.binaryPath);
+
+    // The Codex-backed agent's model went to Codex...
+    const codexArgv = await fakeCodex.argv(RUN_INVOCATION);
+    expect(codexArgv).toContain("exec");
+    expect(
+      codexArgv.slice(codexArgv.indexOf("-m"), codexArgv.indexOf("-m") + 2),
+    ).toEqual(["-m", "gpt-5.1"]);
+    expect(codexArgv).toContain(workspace);
+
+    // ...and the Claude Code-backed agent's went to Claude Code, along with
+    // the translated `tools:` list only that CLI can express.
+    const claudeArgv = await fakeClaude.argv(RUN_INVOCATION);
+    expect(
+      claudeArgv.slice(
+        claudeArgv.indexOf("--model"),
+        claudeArgv.indexOf("--model") + 2,
+      ),
+    ).toEqual(["--model", "opus"]);
+    expect(
+      claudeArgv.slice(
+        claudeArgv.indexOf("--allowedTools"),
+        claudeArgv.indexOf("--allowedTools") + 2,
+      ),
+    ).toEqual(["--allowedTools", "Read,Grep"]);
+
+    // Usage keeps each backend's own model identity, per task.
+    const byModel = usage.breakdownBy("model");
+    expect([...byModel.keys()].sort()).toEqual(["gpt-5.1", "opus"]);
+    expect(byModel.get("gpt-5.1")?.usage).toMatchObject({
+      inputTokens: 11,
+      outputTokens: 22,
+    });
+    expect(byModel.get("opus")?.usage).toMatchObject({
+      inputTokens: 5,
+      outputTokens: 7,
+    });
+    expect(byModel.get("gpt-5.1")?.tasks).toContain("T01");
+    expect(byModel.get("opus")?.tasks).toContain("T02");
+  });
+
+  it("describes each agent with the model its own backend would run", async () => {
+    await writeScriptedCli(claudeDir, "claude-code", [CLAUDE_REPLY]);
+    await writeScriptedCli(codexDir, "codex", [CODEX_REPLY]);
+    process.env.PATH = `${claudeDir}:${codexDir}:${originalPath ?? ""}`;
+
+    const project = mixedProject(
+      {
+        lead: { provider: "anthropic", model: "opus", backend: "claude-code" },
+        worker: { provider: "openai", model: "gpt-5.1", backend: "codex" },
+      },
+      [agent("reviewer", "lead"), agent("coder", "worker")],
+    );
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs(project, "claude-code", new UsageTracker()),
+    );
+
+    expect(executor.describeAgent?.("coder")).toEqual({ model: "gpt-5.1" });
+    expect(executor.describeAgent?.("reviewer")).toEqual({ model: "opus" });
+  });
+
+  it("only probes the backends the project can actually route to", async () => {
+    await writeScriptedCli(claudeDir, "claude-code", [CLAUDE_REPLY]);
+    await writeScriptedCli(codexDir, "codex", [CODEX_REPLY]);
+    process.env.PATH = `${claudeDir}:${codexDir}:${originalPath ?? ""}`;
+    // Keeps the native branch's credential resolution off the `ant`
+    // subprocess; nothing here ever calls a provider.
+    process.env.ANTHROPIC_API_KEY = "test-key";
+
+    const project = mixedProject(
+      {
+        lead: { provider: "anthropic", model: "opus", backend: "claude-code" },
+        // Untagged: the coder runs on the run's own backend, which is native.
+        worker: { provider: "anthropic", model: "claude-sonnet-5" },
+      },
+      [agent("reviewer", "lead"), agent("coder", "worker")],
+    );
+
+    await defaultExecutorFactory(
+      factoryArgs(project, "native", new UsageTracker()),
+    );
+
+    // The fakes count every invocation they get, probes included: Claude Code
+    // is referenced and was probed, Codex is not and was never run at all.
+    expect(existsSync(path.join(claudeDir, "count"))).toBe(true);
+    expect(existsSync(path.join(codexDir, "count"))).toBe(false);
+  });
+
+  it("keeps a project whose aliases name one backend on the single-backend path", async () => {
+    const fakeClaude = await writeScriptedCli(claudeDir, "claude-code", [
+      CLAUDE_REPLY,
+    ]);
+    process.env.PATH = `${claudeDir}:${originalPath ?? ""}`;
+
+    const project = mixedProject(
+      {
+        lead: { provider: "anthropic", model: "opus", backend: "claude-code" },
+      },
+      [agent("reviewer", "lead")],
+    );
+
+    const executor = await defaultExecutorFactory(
+      factoryArgs(project, "claude-code", new UsageTracker()),
+    );
+
+    // Not a dispatcher: one backend means the executor the run has always
+    // built, straight through.
+    expect(executor).toBeInstanceOf(ClaudeCodeWorkerExecutor);
+    const result = await executor.execute(mutatingTask("T01"), "reviewer");
+    expect(result.summary).toContain("claude code did the task");
+    expect(await fakeClaude.argv(RUN_INVOCATION)).toContain("opus");
   });
 });
 

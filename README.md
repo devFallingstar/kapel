@@ -105,6 +105,7 @@ Commands available at the prompt:
 | `/fork` / `/fork <name>` | branch this conversation (everything said so far) into a new session and switch to it |
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
 | `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
+| `/login` | check every configured backend's login status, and help fix whichever isn't logged in |
 | `/usage` | tokens and cost so far |
 | `/compact` | compact the conversation history now (native backend only) |
 | `/undo` | put the files back the way they were before the last prompt |
@@ -282,11 +283,19 @@ explicit CLI flag  >  environment variable  >  .agent/config.local.json  >  ~/.k
      -m/--model           AGENT_MODEL                models.<role>.model                models.<role>.model                   claude-sonnet-5
 ```
 
-Execution itself is still single-backend for now: a chat turn, a plan and a
-policy compile all run on the **orchestrator role's** backend, whatever the
-other three roles say. The per-role backends are honoured today where they are
-written down — `kapel init` seeds each `.agent/config.yaml` alias with its own
-role's provider — and a follow-up will run each worker on its own.
+**Mixed execution is per task.** `kapel init` seeds each `.agent/config.yaml`
+alias with its own role's provider *and* its own role's `backend:`, and
+`/orchestrate` runs every task through the backend its agent's alias names. A
+single run can therefore drive Claude Code workers, Codex workers and native
+(API) workers side by side, each in its own task worktree, each billed and
+reported under its own model. Only the backends a run can actually reach are
+probed, so a configuration that never mentions Codex never asks for `codex
+login`. An alias with no `backend:` — which is every config.yaml written before
+this — runs on the run's own backend, exactly as it always did.
+
+The orchestrator's own work is the exception, and deliberately so: a chat turn,
+a plan and a policy compile all run on the **orchestrator role's** backend,
+which is also what an untagged alias falls back to.
 
 **Backend auto-detection** fills the gap in the last step but one. If nothing
 has chosen a backend — no `--backend`, no `AGENT_BACKEND`, no stored config
