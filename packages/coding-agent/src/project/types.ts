@@ -62,6 +62,40 @@ export interface AgentProjectConfig {
   readonly permission: Readonly<Record<string, ToolPermissionRule>>;
 }
 
+/**
+ * The guidance kapel includes whenever it hands work from one agent to
+ * another, as three independently replaceable blocks.
+ *
+ * A section left `undefined` means "kapel's built-in text for this one"; a
+ * section set to `""` means "deliberately nothing". That distinction is the
+ * whole point of the type — see `.agent/handoff.md` and the defaults in
+ * `workers/briefing.ts`.
+ */
+export interface HandoffGuidance {
+  /** Appended to every worker agent's system prompt. */
+  readonly common?: string | undefined;
+  /** Standing guidance in a task briefing (how to work, not what the task is). */
+  readonly worker?: string | undefined;
+  /**
+   * What a review task is being asked to do. Never includes the verdict
+   * contract: that is machine-readable protocol, and kapel appends it after
+   * this text no matter what the project put here.
+   */
+  readonly reviewer?: string | undefined;
+}
+
+/** {@link HandoffGuidance} as loaded from a project's `.agent/handoff.md`. */
+export interface ProjectHandoff extends HandoffGuidance {
+  /** Absolute path to the source `handoff.md`. */
+  readonly sourcePath: string;
+  /**
+   * Tolerated problems: unknown headings outside any section, repeated
+   * sections. Reported rather than thrown — a confused heading changes what an
+   * agent is told, it does not make a run incorrect.
+   */
+  readonly warnings: readonly string[];
+}
+
 /** A fully loaded and cross-validated `.agent/` project configuration. */
 export interface AgentProject {
   /** Absolute path to the `.agent` directory. */
@@ -70,6 +104,11 @@ export interface AgentProject {
   readonly agents: readonly ProjectAgent[];
   /** Contents of `orchestration.md`, or `undefined` when the file is absent. */
   readonly orchestrationMarkdown: string | undefined;
+  /**
+   * Parsed `handoff.md`, or `undefined` when the file is absent — in which case
+   * every handoff uses kapel's built-in guidance.
+   */
+  readonly handoff: ProjectHandoff | undefined;
   knownAgentNames(): ReadonlySet<string>;
   agent(name: string): ProjectAgent | undefined;
 }

@@ -248,6 +248,27 @@ describe("CodexWorkerExecutor", () => {
       expect(prompt).not.toContain("submit_review_verdict");
     });
 
+    it("keeps the JSON verdict contract under the project's own reviewer guidance", async () => {
+      const argvFile = join(dir, "argv.txt");
+      const binaryPath = await writeFakeCodex(dir, { argvFile });
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+        handoff: { reviewer: "Check the migration plan first." },
+      });
+
+      await executor.execute(makeRuntimeTask({ type: "review" }), "reviewer");
+
+      const prompt = (await readArgv(argvFile)).at(-1) ?? "";
+      expect(prompt).toContain("Check the migration plan first.");
+      expect(prompt).not.toContain("not writing code yourself");
+      expect(prompt).toContain(
+        "Your final message MUST contain exactly one JSON",
+      );
+      expect(prompt).toContain('"severity": "blocking"');
+    });
+
     it("passes a review whose reply approved the change", async () => {
       const result = await reviewResult(
         JSON.stringify({

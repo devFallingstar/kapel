@@ -210,6 +210,11 @@ async function workspaceExecutorFactory(
   args: ExecutorFactoryArgs,
 ): Promise<WorkspaceExecutorFactory> {
   const { runId, events, taskTimeoutMs } = args;
+  // Read once, here, and handed to whichever executor the backend selects: what
+  // a run tells its workers is the project's decision, not the backend's. An
+  // absent `.agent/handoff.md` leaves this `undefined`, which is how the
+  // briefing spells "use the built-in guidance".
+  const handoff = args.project.handoff;
 
   if (args.backend === "claude-code") {
     const availability = await ClaudeCodeBackend.checkAvailability();
@@ -232,6 +237,7 @@ async function workspaceExecutorFactory(
         resolveAgentModel,
         resolveAgentTools,
         usage,
+        handoff,
         ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       });
   }
@@ -253,6 +259,7 @@ async function workspaceExecutorFactory(
         events,
         resolveAgentModel,
         usage,
+        handoff,
         ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       });
   }
@@ -269,6 +276,7 @@ async function workspaceExecutorFactory(
       runId,
       events,
       usage: args.usage,
+      handoff,
       ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
       ...(args.maxIterations === undefined
         ? {}
@@ -690,6 +698,13 @@ export async function executePreparedPlan(
     await recordRunStatus(store, runId, "failed");
     return 1;
   };
+
+  // Surfaced rather than thrown: a heading kapel did not recognise in
+  // `.agent/handoff.md` changes what every worker is told, so it must not pass
+  // silently — but it cannot make the run incorrect either.
+  for (const warning of request.project.handoff?.warnings ?? []) {
+    output.error(`Note: ${warning}`);
+  }
 
   let executor: WorkerExecutor;
   try {

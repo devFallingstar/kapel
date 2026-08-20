@@ -11,7 +11,7 @@ import type { ClaudeCodeBackendOptions } from "../backends/claude-code.js";
 import { ClaudeCodeBackend } from "../backends/claude-code.js";
 import type { DelegatedWorkerUsageSink } from "../planning/delegated-cli.js";
 import { recordDelegatedWorkerUsage } from "../planning/delegated-cli.js";
-import type { AgentProject } from "../project/index.js";
+import type { AgentProject, HandoffGuidance } from "../project/index.js";
 import { buildTaskBriefing } from "./briefing.js";
 import {
   inspectWorkspaceChanges,
@@ -178,6 +178,13 @@ export interface ClaudeCodeWorkerExecutorOptions {
    * zero, mirroring `DelegatedPlannerOptions.usage`.
    */
   readonly usage?: DelegatedWorkerUsageSink;
+  /**
+   * The project's `.agent/handoff.md` guidance, normally `project.handoff`.
+   * Only the briefing's sections apply here — a delegated CLI brings its own
+   * system prompt, so `## common` has nowhere to go — and the review verdict
+   * contract is appended after `## reviewer` either way.
+   */
+  readonly handoff?: HandoffGuidance | undefined;
 }
 
 /**
@@ -261,6 +268,7 @@ export class ClaudeCodeWorkerExecutor implements WorkerExecutor {
         {
           instruction: buildTaskBriefing(task.spec, agent, context, {
             reviewContract: "json-reply",
+            handoff: this.#options.handoff,
           }),
         },
         {

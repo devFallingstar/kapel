@@ -2,21 +2,31 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { loadProjectAgents } from "./agents.js";
 import { loadProjectConfig } from "./config.js";
+import { loadProjectHandoff } from "./handoff.js";
 
 export { loadProjectConfig } from "./config.js";
+export {
+  HANDOFF_FILE_NAME,
+  HANDOFF_SECTION_NAMES,
+  loadProjectHandoff,
+  parseHandoffMarkdown,
+} from "./handoff.js";
 
 import { isNotFound } from "./internal.js";
 import type {
   AgentProject,
   AgentProjectConfig,
   ProjectAgent,
+  ProjectHandoff,
 } from "./types.js";
 import { ProjectConfigError } from "./types.js";
 
 export type {
   AgentProject,
   AgentProjectConfig,
+  HandoffGuidance,
   ProjectAgent,
+  ProjectHandoff,
   ProjectModelRef,
   ProjectValidator,
 } from "./types.js";
@@ -55,6 +65,7 @@ class AgentProjectImpl implements AgentProject {
   readonly config: AgentProjectConfig;
   readonly agents: readonly ProjectAgent[];
   readonly orchestrationMarkdown: string | undefined;
+  readonly handoff: ProjectHandoff | undefined;
   readonly #byName: ReadonlyMap<string, ProjectAgent>;
 
   constructor(
@@ -62,11 +73,13 @@ class AgentProjectImpl implements AgentProject {
     config: AgentProjectConfig,
     agents: readonly ProjectAgent[],
     orchestrationMarkdown: string | undefined,
+    handoff: ProjectHandoff | undefined,
   ) {
     this.root = root;
     this.config = config;
     this.agents = agents;
     this.orchestrationMarkdown = orchestrationMarkdown;
+    this.handoff = handoff;
     this.#byName = new Map(agents.map((agent) => [agent.name, agent]));
   }
 
@@ -88,6 +101,8 @@ class AgentProjectImpl implements AgentProject {
  *   `agents/*.md` file has invalid front matter, or a cross-reference
  *   (model alias, agent slot, duplicate/mismatched agent name) doesn't
  *   resolve. All problems found are aggregated onto the thrown error.
+ * - Never throws for `handoff.md`: an unrecognised heading there is reported as
+ *   a warning on {@link AgentProject.handoff} instead.
  */
 export async function loadAgentProject(
   workspaceRoot: string,
@@ -98,6 +113,9 @@ export async function loadAgentProject(
   const config = await loadProjectConfig(agentDir);
   const { agents, problems: agentProblems } = await loadProjectAgents(agentDir);
   const orchestrationMarkdown = await readOrchestrationMarkdown(agentDir);
+  // Handoff problems are warnings, not errors (see `parseHandoffMarkdown`), so
+  // they stay on the returned project instead of joining `problems` below.
+  const handoff = await loadProjectHandoff(agentDir);
 
   const problems = [...agentProblems];
   const agentNames = new Set(agents.map((agent) => agent.name));
@@ -125,5 +143,11 @@ export async function loadAgentProject(
     throw new ProjectConfigError(agentDir, problems);
   }
 
-  return new AgentProjectImpl(agentDir, config, agents, orchestrationMarkdown);
+  return new AgentProjectImpl(
+    agentDir,
+    config,
+    agents,
+    orchestrationMarkdown,
+    handoff,
+  );
 }

@@ -3,6 +3,7 @@ import type {
   TaskResult,
   WorkerExecutionContext,
 } from "@agent/orchestration";
+import type { HandoffGuidance } from "../project/types.js";
 import { REVIEW_VERDICT_TOOL_NAME } from "./review.js";
 
 /** How much of a dependency's summary is quoted into the briefing. */
@@ -60,18 +61,70 @@ function dependencySection(results: readonly TaskResult[]): string[] {
  */
 export type ReviewContract = "tool" | "json-reply";
 
-/** The lines both review contracts open with. */
-const REVIEW_PREAMBLE = [
-  "",
-  "## Review task — a verdict is required",
-  "",
+/** The heading the review block always opens with; structure, not guidance. */
+const REVIEW_HEADING = "## Review task — a verdict is required";
+
+/**
+ * Built-in `## reviewer` guidance: what a review task is being asked to *do*.
+ *
+ * Replaceable from `.agent/handoff.md`, unlike the verdict contract below it —
+ * see {@link buildTaskBriefing}.
+ */
+export const DEFAULT_REVIEWER_GUIDANCE = [
   "You are reviewing work that other tasks produced, not writing code yourself.",
   "Inspect the results of the tasks you depend on and the files they changed:",
   "read those files, and use a diff against the base to see exactly what moved.",
+].join("\n");
+
+/**
+ * The machine-readable half of a review, for a delegated CLI backend.
+ *
+ * Spells out the schema `parseReviewVerdictReply` validates against (see
+ * `./review.ts`); it is stated as an example object rather than as JSON Schema
+ * because the reader is a coding CLI writing one message, not an API being
+ * handed a tool definition. The no-edit line belongs to this block rather than
+ * to the replaceable guidance: on a delegated backend kapel cannot take the
+ * write tools away, so "do not edit" is enforcement, not style.
+ */
+const JSON_REPLY_VERDICT_CONTRACT = [
+  "Do not edit, create or delete any file: this task decides, it does not fix.",
+  "",
+  "There is no verdict tool here — you are answering through a CLI, so the",
+  "verdict IS your reply. Your final message MUST contain exactly one JSON",
+  "object, in this shape, with nothing after it:",
+  "",
+  "{",
+  '  "approved": false,',
+  '  "summary": "One short paragraph explaining the decision.",',
+  '  "issues": [',
+  '    { "severity": "blocking", "description": "What is wrong, specific enough to act on." }',
+  "  ]",
+  "}",
+  "",
+  "  - `approved` is true only when the change is acceptable as it stands;",
+  "  - `approved` is false whenever you found anything that must be fixed first;",
+  '  - `severity` is either "blocking" (must not ship as-is) or "advisory";',
+  "  - `issues` may be `[]`, but list every problem you found, blocking ones first.",
+  "",
+  "A blocking issue means the verdict is not approved. A reply this object",
+  "cannot be read out of fails this task — an undecided review does not pass.",
+];
+
+/** The machine-readable half of a review, for the in-process agent loop. */
+const TOOL_VERDICT_CONTRACT = [
+  "",
+  `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
+  "  - `approved: true` only when the change is acceptable as it stands;",
+  "  - `approved: false` whenever you found anything that must be fixed first;",
+  "  - list every problem in `issues`, marking each `blocking` or `advisory`.",
+  "",
+  "A blocking issue means the verdict is not approved. Finishing without calling",
+  `\`${REVIEW_VERDICT_TOOL_NAME}\` fails this task — an undecided review does not pass.`,
 ];
 
 /**
- * The extra instructions a `review` task carries.
+ * The extra instructions a `review` task carries: the project's reviewer
+ * guidance, then the verdict contract for this backend.
  *
  * A review is only worth running if it can block, and it can only block if it
  * produces something the runtime can read. Prose cannot be acted on, so the
@@ -80,50 +133,25 @@ const REVIEW_PREAMBLE = [
  * a failure, which is the other half of the same contract — saying so here
  * keeps that from looking arbitrary.
  *
- * The `json-reply` variant spells out the schema `parseReviewVerdictReply`
- * validates against (see `./review.ts`); it is stated as an example object
- * rather than as JSON Schema because the reader is a coding CLI writing one
- * message, not an API being handed a tool definition.
+ * That is also why the contract is appended *after* `guidance` instead of being
+ * part of it: a project may rewrite what a review looks for, but a reply the
+ * runtime cannot parse fails the review however well it reads.
  */
-function reviewSection(contract: ReviewContract): string[] {
-  if (contract === "json-reply") {
-    return [
-      ...REVIEW_PREAMBLE,
-      "Do not edit, create or delete any file: this task decides, it does not fix.",
-      "",
-      "There is no verdict tool here — you are answering through a CLI, so the",
-      "verdict IS your reply. Your final message MUST contain exactly one JSON",
-      "object, in this shape, with nothing after it:",
-      "",
-      "{",
-      '  "approved": false,',
-      '  "summary": "One short paragraph explaining the decision.",',
-      '  "issues": [',
-      '    { "severity": "blocking", "description": "What is wrong, specific enough to act on." }',
-      "  ]",
-      "}",
-      "",
-      "  - `approved` is true only when the change is acceptable as it stands;",
-      "  - `approved` is false whenever you found anything that must be fixed first;",
-      '  - `severity` is either "blocking" (must not ship as-is) or "advisory";',
-      "  - `issues` may be `[]`, but list every problem you found, blocking ones first.",
-      "",
-      "A blocking issue means the verdict is not approved. A reply this object",
-      "cannot be read out of fails this task — an undecided review does not pass.",
-    ];
-  }
+function reviewSection(contract: ReviewContract, guidance: string): string[] {
+  const lines: string[] = ["", REVIEW_HEADING, ""];
+  if (guidance !== "") lines.push(...guidance.split("\n"));
 
-  return [
-    ...REVIEW_PREAMBLE,
-    "",
-    `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
-    "  - `approved: true` only when the change is acceptable as it stands;",
-    "  - `approved: false` whenever you found anything that must be fixed first;",
-    "  - list every problem in `issues`, marking each `blocking` or `advisory`.",
-    "",
-    "A blocking issue means the verdict is not approved. Finishing without calling",
-    `\`${REVIEW_VERDICT_TOOL_NAME}\` fails this task — an undecided review does not pass.`,
-  ];
+  const verdict =
+    contract === "json-reply"
+      ? JSON_REPLY_VERDICT_CONTRACT
+      : TOOL_VERDICT_CONTRACT;
+  // The tool contract opens with the blank line that separates it from the
+  // guidance above; with the guidance blanked out there is nothing to separate.
+  lines.push(
+    ...(guidance === "" && verdict[0] === "" ? verdict.slice(1) : verdict),
+  );
+
+  return lines;
 }
 
 export interface TaskBriefingOptions {
@@ -133,6 +161,12 @@ export interface TaskBriefingOptions {
    * Ignored for every other task type.
    */
   readonly reviewContract?: ReviewContract;
+  /**
+   * The project's `.agent/handoff.md` guidance. Each section present replaces
+   * kapel's built-in text for it wholesale; each section absent (or the whole
+   * option left out) falls back to the built-in default.
+   */
+  readonly handoff?: HandoffGuidance | undefined;
 }
 
 /**
@@ -145,6 +179,14 @@ export interface TaskBriefingOptions {
  * verdict is *delivered* is genuinely a property of the backend, since only the
  * in-process loop can be given a tool to call. What is being asked for — a
  * decision, in that exact shape, or the review fails — does not change.
+ *
+ * Two blocks of the result are the project's to rewrite via
+ * {@link TaskBriefingOptions.handoff}: the standing guidance
+ * ({@link DEFAULT_WORKER_GUIDANCE}) and, on a review task, what a review is
+ * looking for ({@link DEFAULT_REVIEWER_GUIDANCE}). Everything else is data the
+ * planner produced (title, goal, affected areas, risk, dependency results) or
+ * the verdict contract the runtime has to be able to read back, and neither is
+ * replaceable.
  */
 export function buildTaskBriefing(
   task: PlannedTask,
@@ -179,11 +221,10 @@ export function buildTaskBriefing(
     lines.push(`Depends on completed tasks: ${task.dependencies.join(", ")}`);
   }
 
-  lines.push(
-    "",
-    "Work directly in the current workspace. Return a short summary of what you changed.",
-    "If this project configures validators (.agent/config.yaml's `validation:` block), they run against your change after you finish — you are not expected to run checks yourself.",
-  );
+  const workerGuidance = (
+    options?.handoff?.worker ?? DEFAULT_WORKER_GUIDANCE
+  ).trim();
+  if (workerGuidance !== "") lines.push("", ...workerGuidance.split("\n"));
 
   const dependencyResults = context?.dependencyResults ?? [];
   if (dependencyResults.length > 0) {
@@ -191,14 +232,20 @@ export function buildTaskBriefing(
   }
 
   if (task.type === "review") {
-    lines.push(...reviewSection(options?.reviewContract ?? "tool"));
+    const reviewerGuidance = (
+      options?.handoff?.reviewer ?? DEFAULT_REVIEWER_GUIDANCE
+    ).trim();
+    lines.push(
+      ...reviewSection(options?.reviewContract ?? "tool", reviewerGuidance),
+    );
   }
 
   return lines.join("\n");
 }
 
 /**
- * Appended to a worker agent's own system prompt.
+ * Appended to a worker agent's own system prompt — the built-in `## common`
+ * text.
  *
  * Workers run unattended, so the prompt has to state what the runtime cannot:
  * there is nobody to answer a clarifying question, and denied tools come back
@@ -216,10 +263,44 @@ export const WORKER_SYSTEM_POSTAMBLE = [
   "short prose summary of what you changed.",
 ].join("\n");
 
-/** Combines an agent's configured system prompt with the worker postamble. */
-export function buildWorkerSystemPrompt(systemPrompt: string): string {
+/**
+ * Built-in `## worker` text: the standing guidance every task briefing carries,
+ * as opposed to the per-task facts above it, which are data.
+ */
+export const DEFAULT_WORKER_GUIDANCE = [
+  "Work directly in the current workspace. Return a short summary of what you changed.",
+  "If this project configures validators (.agent/config.yaml's `validation:` block), they run against your change after you finish — you are not expected to run checks yourself.",
+].join("\n");
+
+/**
+ * kapel's built-in guidance for all three handoff sections — what a project
+ * gets when it ships no `.agent/handoff.md`, and what
+ * `templates/default/.agent/handoff.md` contains verbatim.
+ */
+export const DEFAULT_HANDOFF: {
+  readonly common: string;
+  readonly worker: string;
+  readonly reviewer: string;
+} = {
+  common: WORKER_SYSTEM_POSTAMBLE,
+  worker: DEFAULT_WORKER_GUIDANCE,
+  reviewer: DEFAULT_REVIEWER_GUIDANCE,
+};
+
+/**
+ * Combines an agent's configured system prompt with the common handoff text
+ * ({@link WORKER_SYSTEM_POSTAMBLE} unless the project replaced it through
+ * `.agent/handoff.md`).
+ *
+ * A blank `## common` section is a choice, not an omission: the agent file's
+ * own prompt is then all the agent gets.
+ */
+export function buildWorkerSystemPrompt(
+  systemPrompt: string,
+  handoff?: HandoffGuidance,
+): string {
   const base = systemPrompt.trim();
-  return base === ""
-    ? WORKER_SYSTEM_POSTAMBLE
-    : `${base}\n\n${WORKER_SYSTEM_POSTAMBLE}`;
+  const common = (handoff?.common ?? WORKER_SYSTEM_POSTAMBLE).trim();
+  if (common === "") return base;
+  return base === "" ? common : `${base}\n\n${common}`;
 }

@@ -10,7 +10,7 @@ import type {
 import type { EventSink } from "@agent/protocol";
 import { AgentLoop } from "../loop.js";
 import { PermissionEngine } from "../permissions.js";
-import type { AgentProject } from "../project/index.js";
+import type { AgentProject, HandoffGuidance } from "../project/index.js";
 import { builtinTools } from "../tools/index.js";
 import { buildTaskBriefing, buildWorkerSystemPrompt } from "./briefing.js";
 import {
@@ -143,6 +143,13 @@ export interface AgentLoopWorkerExecutorOptions {
   readonly maxIterations?: number;
   /** Replaces {@link DEFAULT_WORKER_PERMISSIONS} wholesale when provided. */
   readonly permissionOverrides?: Readonly<Record<string, PermissionDecision>>;
+  /**
+   * The project's `.agent/handoff.md` guidance, normally `project.handoff`.
+   * Passed in rather than read off {@link project} so the caller decides once,
+   * for every backend, what guidance a run hands its workers; left out, every
+   * section falls back to kapel's built-in text.
+   */
+  readonly handoff?: HandoffGuidance | undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -233,7 +240,10 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
       name: projectAgent.name,
       role: projectAgent.role,
       model: resolved.model,
-      systemPrompt: buildWorkerSystemPrompt(projectAgent.systemPrompt),
+      systemPrompt: buildWorkerSystemPrompt(
+        projectAgent.systemPrompt,
+        this.#options.handoff,
+      ),
       tools: tools.map((tool) => tool.name),
       permissions,
     };
@@ -264,7 +274,11 @@ export class AgentLoopWorkerExecutor implements WorkerExecutor {
     let run: NormalizableRun;
     try {
       run = await loop.run(
-        { instruction: buildTaskBriefing(task.spec, agent, context) },
+        {
+          instruction: buildTaskBriefing(task.spec, agent, context, {
+            handoff: this.#options.handoff,
+          }),
+        },
         {
           runId,
           taskId,

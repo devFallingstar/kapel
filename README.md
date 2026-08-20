@@ -313,6 +313,18 @@ Drop an `AGENTS.md` in your repo and kapel follows it from the first turn — th
 
 All that exist are concatenated in that order; a missing file is simply skipped. The REPL's banner names whichever were loaded (`instructions: AGENTS.md, .agent/AGENTS.md`). The combined text is capped at 32 KiB. Delegated backends (`--backend codex`, `--backend claude-code`) run the external CLI's own agent loop, which does not take a system prompt from kapel — those AGENTS.md files are not injected there, though the CLIs themselves may already read AGENTS.md-style files on their own.
 
+### Handoff guidance (.agent/handoff.md)
+
+Every time kapel hands work between agents — the orchestrator briefing a worker, a worker's results reaching a dependent task, a reviewer being asked for a verdict — it includes a little standing guidance of its own. `.agent/handoff.md` is where you rewrite it. `kapel init` ships the file with kapel's built-in text in it, and it has three `## `-headed sections:
+
+- `## common` — appended to every worker agent's system prompt, after that agent's own `.agent/agents/<name>.md` body. (Delegated backends run the external CLI's own loop and take no system prompt from kapel, so this one reaches kapel's own agent loop only.)
+- `## worker` — the standing guidance in a task briefing: how to work, not what the task is. The per-task facts above it (title, goal, affected areas, risk, dependencies, dependency results) are planner output, not guidance, and are never replaceable.
+- `## reviewer` — what a review task is being asked to look for.
+
+Replacement is wholesale, per section: a section present in the file replaces kapel's built-in text for it entirely (nothing is merged or appended), a section you delete falls back to the built-in default, and a section you leave empty is a deliberate blank — kapel says nothing there. No file at all means the built-in guidance, exactly as before. Text above the first heading is a comment; an unrecognised `## ` heading outside a section is reported as a note and ignored, while headings *inside* a section are just part of the guidance.
+
+One part is not yours to replace: the review verdict contract. Whatever `## reviewer` says, kapel appends the mechanics of stating the decision after it — the `submit_review_verdict` tool call on its own agent loop, or the exact JSON reply object (schema included) on `--backend codex` / `--backend claude-code`. A review whose answer the runtime cannot parse fails whatever the prose asked for, so those lines stay.
+
 ### Claude Code backend
 
 Want Claude models without an `ANTHROPIC_API_KEY`? Pass `--backend claude-code`

@@ -17,6 +17,9 @@ export type { ReviewContract, TaskBriefingOptions } from "./briefing.js";
 export {
   buildTaskBriefing,
   buildWorkerSystemPrompt,
+  DEFAULT_HANDOFF,
+  DEFAULT_REVIEWER_GUIDANCE,
+  DEFAULT_WORKER_GUIDANCE,
   WORKER_SYSTEM_POSTAMBLE,
 } from "./briefing.js";
 export type { ChildProcessWorkerExecutorOptions } from "./child-process-executor.js";

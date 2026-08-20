@@ -19,6 +19,7 @@ import type {
   AgentProject,
   AgentProjectConfig,
   ProjectAgent,
+  ProjectHandoff,
 } from "../../src/project/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -146,7 +147,10 @@ export function makeProjectAgent(
 }
 
 /** Minimal in-memory {@link AgentProject} for executor tests. */
-export function makeProject(agents: readonly ProjectAgent[]): AgentProject {
+export function makeProject(
+  agents: readonly ProjectAgent[],
+  handoff?: ProjectHandoff,
+): AgentProject {
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const config: AgentProjectConfig = {
     models: {},
@@ -158,6 +162,7 @@ export function makeProject(agents: readonly ProjectAgent[]): AgentProject {
     config,
     agents,
     orchestrationMarkdown: undefined,
+    handoff,
     knownAgentNames: () => new Set(byName.keys()),
     agent: (name: string) => byName.get(name),
   };

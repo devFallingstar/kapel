@@ -1,4 +1,4 @@
-import { appendFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ModelDefinition, ModelEvent, ModelProvider } from "@agent/ai";
 import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
@@ -10,12 +10,17 @@ import type {
   WorkerExecutor,
 } from "@agent/coding-agent";
 import {
+  DEFAULT_WORKER_GUIDANCE,
   ValidatingExecutor,
+  WORKER_SYSTEM_POSTAMBLE,
   WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { OrchestrateCommandOptions } from "../src/orchestrate.js";
+import type {
+  ExecutorFactoryArgs,
+  OrchestrateCommandOptions,
+} from "../src/orchestrate.js";
 import {
   DEFAULT_ISOLATION,
   defaultExecutorFactory,
@@ -54,6 +59,7 @@ function emptyProject(): AgentProject {
     config: { models: {}, agentSlots: {}, validators: [] },
     agents: [],
     orchestrationMarkdown: undefined,
+    handoff: undefined,
     knownAgentNames: () => new Set<string>(),
     agent: () => undefined,
   };
@@ -418,6 +424,71 @@ describe("kapel orchestrate", () => {
     expect(summary).toContain("completed  T01  explorer");
     expect(summary).toContain("3/3 tasks completed");
     expect(summary).toContain("tokens —");
+  });
+
+  it("hands the project's handoff guidance to the executor factory", async () => {
+    // The shipped template *is* the built-in guidance, so a run over an
+    // untouched `kapel init` workspace must see exactly the defaults.
+    let fromTemplate: ExecutorFactoryArgs["project"] | undefined;
+    const executor = new ScriptedExecutor();
+    const { output } = capture();
+
+    await runOrchestrate("add a health endpoint", options(workspace), {
+      output,
+      renderer: new TextRenderer(new CapturingStream().asStream()),
+      plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+      executorFactory: (args) => {
+        fromTemplate = args.project;
+        return executor;
+      },
+    });
+
+    expect(fromTemplate?.handoff?.worker).toBe(DEFAULT_WORKER_GUIDANCE);
+    expect(fromTemplate?.handoff?.common).toBe(WORKER_SYSTEM_POSTAMBLE);
+    expect(fromTemplate?.handoff?.warnings).toEqual([]);
+
+    // And an edited file replaces only the sections it names.
+    await writeFile(
+      path.join(workspace, ".agent", "handoff.md"),
+      "## worker\n\nHouse rule: no new dependencies.\n",
+      "utf8",
+    );
+    let edited: ExecutorFactoryArgs["project"] | undefined;
+    await runOrchestrate("add a health endpoint", options(workspace), {
+      output,
+      renderer: new TextRenderer(new CapturingStream().asStream()),
+      plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+      executorFactory: (args) => {
+        edited = args.project;
+        return new ScriptedExecutor();
+      },
+    });
+
+    expect(edited?.handoff?.worker).toBe("House rule: no new dependencies.");
+    expect(edited?.handoff?.common).toBeUndefined();
+  });
+
+  it("notes an unrecognised handoff heading without failing the run", async () => {
+    await writeFile(
+      path.join(workspace, ".agent", "handoff.md"),
+      "## wroker\n\nTypo.\n",
+      "utf8",
+    );
+    const { output, errLines } = capture();
+
+    const code = await runOrchestrate(
+      "add a health endpoint",
+      options(workspace),
+      {
+        output,
+        renderer: new TextRenderer(new CapturingStream().asStream()),
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => new ScriptedExecutor(),
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(errLines.join("\n")).toContain('unknown section "## wroker"');
   });
 
   it("fails the run and cancels dependents when a task fails", async () => {

@@ -11,6 +11,7 @@ import type { CodexBackendOptions } from "../backends/codex.js";
 import { CodexBackend } from "../backends/codex.js";
 import type { DelegatedWorkerUsageSink } from "../planning/delegated-cli.js";
 import { recordDelegatedWorkerUsage } from "../planning/delegated-cli.js";
+import type { HandoffGuidance } from "../project/index.js";
 import { buildTaskBriefing } from "./briefing.js";
 import {
   inspectWorkspaceChanges,
@@ -49,6 +50,13 @@ export interface CodexWorkerExecutorOptions {
    * mirroring `DelegatedPlannerOptions.usage`.
    */
   readonly usage?: DelegatedWorkerUsageSink;
+  /**
+   * The project's `.agent/handoff.md` guidance, normally `project.handoff`.
+   * Only the briefing's sections apply here — Codex brings its own system
+   * prompt, so `## common` has nowhere to go — and the review verdict contract
+   * is appended after `## reviewer` either way.
+   */
+  readonly handoff?: HandoffGuidance | undefined;
 }
 
 /**
@@ -115,6 +123,7 @@ export class CodexWorkerExecutor implements WorkerExecutor {
         {
           instruction: buildTaskBriefing(task.spec, agent, context, {
             reviewContract: "json-reply",
+            handoff: this.#options.handoff,
           }),
         },
         {

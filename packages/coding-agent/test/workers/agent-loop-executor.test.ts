@@ -167,6 +167,58 @@ describe("AgentLoopWorkerExecutor", () => {
     expect(user?.content).toContain("  - src/server.ts");
   });
 
+  it("hands the project's handoff guidance to the prompt and the briefing", async () => {
+    const provider = new ScriptedProvider([textTurn("done")]);
+    const executor = new AgentLoopWorkerExecutor(
+      options({
+        resolveModel: () => ({ provider, model: MODEL }),
+        handoff: {
+          common: "House style: tiny commits.",
+          worker: "House rule: no new dependencies.",
+        },
+      }),
+    );
+
+    await executor.execute(makeRuntimeTask(), "coder");
+
+    const request = provider.requests[0];
+    expect(request?.messages[0]?.content).toBe(
+      "You are the coder.\n\nHouse style: tiny commits.",
+    );
+    expect(request?.messages[0]?.content).not.toContain(
+      WORKER_SYSTEM_POSTAMBLE,
+    );
+
+    const user = request?.messages[1];
+    expect(user?.content).toContain("House rule: no new dependencies.");
+    expect(user?.content).not.toContain(
+      "Work directly in the current workspace",
+    );
+    // Task facts are data, not guidance.
+    expect(user?.content).toContain("Add retry to the uploader");
+  });
+
+  it("keeps the verdict tool contract under the project's own reviewer guidance", async () => {
+    const provider = new ScriptedProvider([textTurn("looks fine")]);
+    const executor = new AgentLoopWorkerExecutor(
+      options({
+        project: makeProject([makeProjectAgent({ name: "reviewer" })]),
+        resolveModel: () => ({ provider, model: MODEL }),
+        handoff: { reviewer: "Check the migration plan first." },
+      }),
+    );
+
+    await executor.execute(makeRuntimeTask({ type: "review" }), "reviewer");
+
+    const user = provider.requests[0]?.messages[1];
+    expect(user?.content).toContain("Check the migration plan first.");
+    expect(user?.content).not.toContain("not writing code yourself");
+    // The machine contract is not the project's to remove.
+    expect(user?.content).toContain(
+      "You MUST call the `submit_review_verdict` tool exactly once",
+    );
+  });
+
   it("reports the files the worker changed and the workspace commit", async () => {
     const head = await initGitRepo(workspace);
     const provider = new ScriptedProvider([
