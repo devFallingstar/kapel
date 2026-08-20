@@ -37,7 +37,11 @@ import type { ResolvedModel } from "../src/run.js";
 /** A backend stand-in that records how it was built and what it was asked. */
 interface RecordedBackend {
   readonly options: ClaudeCodeBackendOptions;
-  readonly prompts: { instruction: string; context?: readonly string[] }[];
+  readonly prompts: {
+    instruction: string;
+    context?: readonly string[];
+    imagePaths?: readonly string[];
+  }[];
 }
 
 function fakeClaudeCodeBackends(sessionIds: readonly string[]): {
@@ -149,6 +153,26 @@ describe("claudeCodeTurnRunner", () => {
     expect(built[0]?.options.extraArgs).toBeUndefined();
   });
 
+  it("hands attached image paths to the backend, resumed turns included", async () => {
+    const { built, create } = fakeClaudeCodeBackends(["sess-img"]);
+    const chat = createDelegatedChatSession({
+      backend: "claude-code",
+      workspacePath: "/repo",
+      runId: "run-1",
+      createClaudeCodeBackend: create,
+    });
+
+    await chat.send("first", undefined, ["/repo/a.png"]);
+    await chat.send("second", undefined, ["/repo/b.png", "/repo/c.jpg"]);
+
+    expect(built[0]?.prompts[0]?.imagePaths).toEqual(["/repo/a.png"]);
+    expect(built[1]?.options.extraArgs).toEqual(["--resume", "sess-img"]);
+    expect(built[1]?.prompts[0]?.imagePaths).toEqual([
+      "/repo/b.png",
+      "/repo/c.jpg",
+    ]);
+  });
+
   it("forwards the model and keeps it across a resumed turn", async () => {
     const { built, create } = fakeClaudeCodeBackends(["s1"]);
     const runner = claudeCodeTurnRunner({
@@ -235,8 +259,10 @@ async function delegatedHarness(
       ...(args.sessionRef === undefined ? {} : { sessionRef: args.sessionRef }),
     });
     return {
-      send: async (instruction) => {
-        const result = await chat.send(instruction);
+      // Mirrors the production adapter: image *paths* are what a delegated
+      // turn attaches, so the third argument (bytes) is ignored here.
+      send: async (instruction, _context, _images, imagePaths) => {
+        const result = await chat.send(instruction, undefined, imagePaths);
         usage.add(result);
         return result;
       },
@@ -300,6 +326,27 @@ describe("interactive controller — delegated backend", () => {
     ]);
     // The backend's own usage is what the per-turn line reports.
     expect(h.written.at(-1)).toBe("tokens +7 in, +3 out  (~$0.0020)");
+  });
+
+  it("attaches an @image mention to the delegated turn as a path", async () => {
+    const h = await delegatedHarness({
+      fileExists: (relativePath: string) => relativePath === "shot.png",
+      readImagePath: async (relativePath: string) => ({
+        path: `/repo/${relativePath}`,
+      }),
+    });
+    await h.controller.handleLine("what is wrong with @shot.png?");
+
+    expect(h.requests[0]?.imagePaths).toEqual(["/repo/shot.png"]);
+    expect(h.requests[0]?.instruction).toBe(
+      "what is wrong with @shot.png?\n\n[attached images: shot.png]",
+    );
+  });
+
+  it("leaves imagePaths off a turn that mentioned no image", async () => {
+    const h = await delegatedHarness();
+    await h.controller.handleLine("hello");
+    expect(h.requests[0]?.imagePaths).toBeUndefined();
   });
 
   it("builds every session with the conversation id as its run id", async () => {

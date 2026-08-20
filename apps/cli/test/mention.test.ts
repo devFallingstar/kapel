@@ -21,6 +21,7 @@ import {
   rankMentionMatches,
   resolveMentions,
   workspaceFileExists,
+  workspaceImagePathReader,
   workspaceImageReader,
 } from "../src/mention.js";
 
@@ -536,6 +537,7 @@ describe("prepareMentions — images", () => {
       "look at @shot.png\n\n[attached images: shot.png]",
     );
     expect(prepared.imageMentions).toEqual(["shot.png"]);
+    expect(prepared.imagePaths).toEqual(["/repo/shot.png"]);
     expect(prepared.notices).toEqual([]);
   });
 
@@ -602,10 +604,48 @@ describe("prepareMentions — images", () => {
     );
   });
 
+  it("attaches by path when the reader carries no bytes", async () => {
+    const readPath: MentionImageReader = async (relativePath) => ({
+      path: `/repo/${relativePath}`,
+    });
+    const prepared = await prepareMentions("look at @shot.png and @notes.md", {
+      exists,
+      readImage: readPath,
+    });
+
+    // Nothing was read, but the mention is still *attached*: the REPL says the
+    // same thing on every backend.
+    expect(prepared.images).toEqual([]);
+    expect(prepared.imagePaths).toEqual(["/repo/shot.png"]);
+    expect(prepared.imageMentions).toEqual(["shot.png"]);
+    expect(prepared.notices).toEqual([]);
+    expect(prepared.instruction).toBe(
+      "look at @shot.png and @notes.md\n\n" +
+        "[mentioned files: notes.md]\n[attached images: shot.png]",
+    );
+  });
+
+  it("applies the per-turn count to path attachments too", async () => {
+    const mentions = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    const prepared = await prepareMentions(
+      mentions.map((name) => `@${name}`).join(" "),
+      {
+        exists,
+        readImage: async (relativePath) => ({ path: `/repo/${relativePath}` }),
+      },
+    );
+
+    expect(prepared.imagePaths).toHaveLength(MAX_MENTION_IMAGES);
+    expect(prepared.notices).toEqual([
+      "note: @e.png was not attached — at most 4 images can ride with one message.",
+    ]);
+  });
+
   it("leaves images as paths, silently, when nothing can read them", async () => {
     const prepared = await prepareMentions("look at @shot.png", { exists });
 
     expect(prepared.images).toEqual([]);
+    expect(prepared.imagePaths).toEqual([]);
     expect(prepared.notices).toEqual([]);
     // Still reported as an image mention, which is how the caller knows to say
     // that this backend cannot carry it.
@@ -637,7 +677,9 @@ describe("workspaceImageReader", () => {
     const read = await workspaceImageReader(root)("docs/shot.png");
     expect("error" in read).toBe(false);
     if ("error" in read) return;
-    expect(Buffer.from(read.bytes)).toEqual(pngBytes());
+    expect(
+      read.bytes === undefined ? undefined : Buffer.from(read.bytes),
+    ).toEqual(pngBytes());
     expect(read.path).toBe(path.join(root, "docs", "shot.png"));
   });
 
@@ -658,6 +700,37 @@ describe("workspaceImageReader", () => {
     await writeFile(path.join(path.dirname(root), "outside.png"), pngBytes());
 
     const reader = workspaceImageReader(root);
+    expect(await reader("assets")).toEqual({ error: "it is not a file" });
+    expect(await reader("../outside.png")).toEqual({
+      error: "it is outside this workspace",
+    });
+    const missing = await reader("nope.png");
+    expect("error" in missing && missing.error).toContain("ENOENT");
+  });
+});
+
+describe("workspaceImagePathReader", () => {
+  it("answers with the absolute path and reads no bytes", async () => {
+    const root = await tempDir("kapel-mention-path-");
+    await mkdir(path.join(root, "docs"), { recursive: true });
+    await writeFile(path.join(root, "docs", "shot.png"), pngBytes());
+
+    const read = await workspaceImagePathReader(root)("docs/shot.png");
+    expect(read).toEqual({ path: path.join(root, "docs", "shot.png") });
+  });
+
+  it("enforces the same limits as the byte reader", async () => {
+    const root = await tempDir("kapel-mention-path-limits-");
+    await mkdir(path.join(root, "assets"), { recursive: true });
+    await writeFile(path.join(root, "big.png"), pngBytes("x".repeat(2048)));
+    await writeFile(path.join(path.dirname(root), "outside.png"), pngBytes());
+
+    const reader = workspaceImagePathReader(root, 1024);
+    // The cap still applies even though nothing is embedded: `@huge.png`
+    // behaves the same on a delegated backend as on the native one.
+    expect(await reader("big.png")).toEqual({
+      error: "it is 2.0 KiB, over the 1.0 KiB per-image limit",
+    });
     expect(await reader("assets")).toEqual({ error: "it is not a file" });
     expect(await reader("../outside.png")).toEqual({
       error: "it is outside this workspace",

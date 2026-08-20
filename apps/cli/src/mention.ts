@@ -28,9 +28,23 @@ const execFileAsync = promisify(execFile);
  * and lie about how fresh the snapshot is — so a text mention becomes one
  * `[mentioned files: …]` line naming it. An *image* has no such tool (no
  * model reads a PNG through `read_file`), so `@shot.png` is the one mention
- * whose bytes do travel: it is read, validated and attached to the turn as
- * vision content, under the same count and size caps the removed
- * `-i/--image` flag enforced.
+ * that is really attached to the turn, under the same count and size caps the
+ * removed `-i/--image` flag enforced.
+ *
+ * *How* it is attached depends on who runs the turn, which is the whole reason
+ * {@link PrepareMentionsOptions.readImage} is a seam:
+ *
+ * - The native loop speaks to a provider, so the bytes travel —
+ *   {@link workspaceImageReader} reads them and they ride as vision content.
+ * - A delegated backend is a CLI running in the workspace, which can open the
+ *   file itself, so only the path travels — {@link workspaceImagePathReader}
+ *   validates the mention exactly as the byte reader does (containment, is-a-
+ *   file, size cap) and hands back the path without reading it.
+ *
+ * Both produce the same `[attached images: …]` line and obey the same caps: an
+ * image that is too big is refused on a delegated backend too, even though
+ * nothing would have been embedded, because "kapel attaches images up to 5 MiB"
+ * is a contract worth keeping identical across backends.
  */
 
 // --- Fuzzy ranking (pure) ----------------------------------------------------
@@ -437,7 +451,7 @@ export function mentionAnnotation(paths: readonly string[]): string {
   return `[mentioned files: ${paths.join(", ")}]`;
 }
 
-/** The line appended to a message whose image mentions rode along as bytes. */
+/** The line appended to a message whose image mentions were attached. */
 export function imageAnnotation(paths: readonly string[]): string {
   return `[attached images: ${paths.join(", ")}]`;
 }
@@ -460,13 +474,17 @@ export const MAX_MENTION_IMAGES = 4;
 export const MAX_MENTION_IMAGE_BYTES = 5 * 1024 * 1024;
 
 /**
- * What a reader gives back for one image mention: the bytes and the absolute
- * path they came from, or the reason (a printable clause) it did not work out.
- * A failure is never fatal — {@link prepareMentions} turns it into a note and
- * lets the mention fall back to being just a path.
+ * What a reader gives back for one image mention: the absolute path it
+ * resolved to, the bytes when this turn carries bytes at all, or the reason (a
+ * printable clause) it did not work out. A failure is never fatal —
+ * {@link prepareMentions} turns it into a note and lets the mention fall back
+ * to being just a path.
+ *
+ * `bytes` is optional because a delegated backend attaches by path: the same
+ * validation runs, and the successful answer is a path with nothing read.
  */
 export type MentionImageRead =
-  | { readonly bytes: Uint8Array; readonly path: string }
+  | { readonly bytes?: Uint8Array; readonly path: string }
   | { readonly error: string };
 
 export type MentionImageReader = (
@@ -479,14 +497,43 @@ function formatBytes(count: number): string {
 }
 
 /**
- * The real reader: a mentioned image, read from under `workspacePath`.
+ * Everything both readers agree on: the mention names a real file, inside the
+ * workspace, no bigger than the cap. Answers with the absolute path, which is
+ * what the byte reader then opens and what the path reader hands on as-is.
  *
  * Containment is re-checked here even though {@link workspaceFileExists}
- * already checked it, because this is the layer that opens the file — a reader
- * that trusts its caller for that is one refactor away from reading
- * `@../../.ssh/id_rsa` into a request body. The size cap is applied from
- * `stat`, before the read, so an enormous file is refused rather than pulled
- * into memory first.
+ * already checked it, because this is the layer that opens the file (or names
+ * it to another process) — a reader that trusts its caller for that is one
+ * refactor away from attaching `@../../.ssh/id_rsa`. The size cap is applied
+ * from `stat`, before any read, so an enormous file is refused rather than
+ * pulled into memory first.
+ */
+async function resolveWorkspaceImage(
+  root: string,
+  relativePath: string,
+  maxBytes: number,
+): Promise<{ readonly path: string } | { readonly error: string }> {
+  const resolved = path.resolve(root, relativePath);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    return { error: "it is outside this workspace" };
+  }
+  try {
+    const info = await stat(resolved);
+    if (!info.isFile()) return { error: "it is not a file" };
+    if (info.size > maxBytes) {
+      return {
+        error: `it is ${formatBytes(info.size)}, over the ${formatBytes(maxBytes)} per-image limit`,
+      };
+    }
+    return { path: resolved };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * The reader for a turn that carries bytes: a mentioned image, read from under
+ * `workspacePath`. This is the native path's reader.
  */
 export function workspaceImageReader(
   workspacePath: string,
@@ -494,19 +541,10 @@ export function workspaceImageReader(
 ): MentionImageReader {
   const root = path.resolve(workspacePath);
   return async (relativePath: string): Promise<MentionImageRead> => {
-    const resolved = path.resolve(root, relativePath);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-      return { error: "it is outside this workspace" };
-    }
+    const resolved = await resolveWorkspaceImage(root, relativePath, maxBytes);
+    if ("error" in resolved) return resolved;
     try {
-      const info = await stat(resolved);
-      if (!info.isFile()) return { error: "it is not a file" };
-      if (info.size > maxBytes) {
-        return {
-          error: `it is ${formatBytes(info.size)}, over the ${formatBytes(maxBytes)} per-image limit`,
-        };
-      }
-      return { bytes: await readFile(resolved), path: resolved };
+      return { bytes: await readFile(resolved.path), path: resolved.path };
     } catch (error) {
       return {
         error: error instanceof Error ? error.message : String(error),
@@ -515,13 +553,34 @@ export function workspaceImageReader(
   };
 }
 
+/**
+ * The reader for a turn that carries *paths*: the delegated backends, whose
+ * CLI opens the file itself from inside the workspace.
+ *
+ * Same validation as {@link workspaceImageReader} — including the size cap,
+ * which has nothing to protect here since no bytes are embedded, and is
+ * enforced anyway so `@huge.png` behaves the same on every backend rather than
+ * quietly succeeding on one of them. The path is absolute: the delegated CLIs
+ * run with the workspace as their cwd, so a relative path would also resolve,
+ * but an absolute one cannot be misread if the child ever changes directory.
+ */
+export function workspaceImagePathReader(
+  workspacePath: string,
+  maxBytes = MAX_MENTION_IMAGE_BYTES,
+): MentionImageReader {
+  const root = path.resolve(workspacePath);
+  return async (relativePath: string): Promise<MentionImageRead> =>
+    await resolveWorkspaceImage(root, relativePath, maxBytes);
+}
+
 export interface PrepareMentionsOptions {
   /** Decides whether a mention names a real workspace file. */
   readonly exists: (relativePath: string) => boolean | Promise<boolean>;
   /**
-   * Reads image mentions into attachments. Absent means "this turn cannot
-   * carry images" — a delegated backend, say — and every image mention stays
-   * an ordinary path in the `[mentioned files: …]` line, exactly as before.
+   * Turns an image mention into an attachment: {@link workspaceImageReader} on
+   * the native path (bytes), {@link workspaceImagePathReader} on a delegated
+   * one (path only). Absent means "this turn attaches nothing" — every image
+   * mention stays an ordinary path in the `[mentioned files: …]` line.
    */
   readonly readImage?: MentionImageReader;
   /** Defaults to {@link MAX_MENTION_IMAGES}. */
@@ -531,8 +590,14 @@ export interface PrepareMentionsOptions {
 export interface PreparedMentions {
   /** The message as it should be sent: the text, plus its annotation lines. */
   readonly instruction: string;
-  /** Images to attach to this turn, in mention order. */
+  /** Images to attach to this turn as bytes, in mention order. */
   readonly images: readonly AgentImageAttachment[];
+  /**
+   * Absolute paths of the images attached to this turn, in mention order —
+   * what a delegated backend forwards to its CLI. Populated whichever reader
+   * was used, so on the native path it simply mirrors {@link images}' paths.
+   */
+  readonly imagePaths: readonly string[];
   /**
    * Every resolved mention whose extension names an image, attached or not.
    * The caller uses it to say something when images cannot be attached at all.
@@ -547,10 +612,10 @@ export interface PreparedMentions {
  * the annotation lines its mentions earned.
  *
  * Text mentions are *named*, never inlined (see the module comment). Image
- * mentions are read and attached, and are named on their own
- * `[attached images: …]` line rather than the `[mentioned files: …]` one —
- * telling the agent to go `read_file` a PNG it can already see would only earn
- * a screenful of binary.
+ * mentions are attached — as bytes or as a path, whichever the configured
+ * reader produces — and are named on their own `[attached images: …]` line
+ * rather than the `[mentioned files: …]` one: telling the agent to go
+ * `read_file` a PNG it can already see would only earn a screenful of binary.
  *
  * Nothing here fails a turn. An image that is too big, unreadable, or past the
  * per-turn count comes back as a note *and* as an ordinary path mention, so the
@@ -569,6 +634,7 @@ export async function prepareMentions(
   const imageMentions: string[] = [];
   const attachedNames: string[] = [];
   const images: AgentImageAttachment[] = [];
+  const imagePaths: string[] = [];
   const notices: string[] = [];
 
   const skip = (relativePath: string, reason?: string): void => {
@@ -592,7 +658,9 @@ export async function prepareMentions(
       listed.push(relativePath);
       continue;
     }
-    if (images.length >= maxImages) {
+    // Counted on what was *attached*, not on the byte attachments: a path-only
+    // turn fills `images` with nothing and would otherwise never hit the cap.
+    if (attachedNames.length >= maxImages) {
       skip(
         relativePath,
         `at most ${maxImages} image${maxImages === 1 ? "" : "s"} can ride with one message`,
@@ -605,14 +673,18 @@ export async function prepareMentions(
       skip(relativePath, read.error);
       continue;
     }
-    images.push({
-      // A `.png` that is really a JPEG is declared as what it is; a format the
-      // sniffer's small table does not cover falls back to the extension that
-      // got it this far.
-      mediaType: sniffImageMediaType(read.bytes) ?? extensionType,
-      base64: Buffer.from(read.bytes).toString("base64"),
-      path: read.path,
-    });
+    const bytes = read.bytes;
+    if (bytes !== undefined) {
+      images.push({
+        // A `.png` that is really a JPEG is declared as what it is; a format
+        // the sniffer's small table does not cover falls back to the extension
+        // that got it this far.
+        mediaType: sniffImageMediaType(bytes) ?? extensionType,
+        base64: Buffer.from(bytes).toString("base64"),
+        path: read.path,
+      });
+    }
+    imagePaths.push(read.path);
     attachedNames.push(relativePath);
   }
 
@@ -623,6 +695,7 @@ export async function prepareMentions(
   return {
     instruction: blocks.length === 0 ? text : `${text}\n\n${blocks.join("\n")}`,
     images,
+    imagePaths,
     imageMentions,
     notices,
   };

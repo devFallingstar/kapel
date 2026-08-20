@@ -465,16 +465,45 @@ describe("interactive controller — image mentions", () => {
     );
   });
 
-  it("says images are unsupported on a delegated backend and sends the path", async () => {
-    const h = await harness({ backend: "codex", fileExists, readImage });
+  it("attaches by path on a delegated backend, with no bytes and no notice", async () => {
+    const readImagePath: MentionImageReader = async (relativePath) => ({
+      path: `/repo/${relativePath}`,
+    });
+    const h = await harness({
+      backend: "codex",
+      fileExists,
+      readImage,
+      readImagePath,
+    });
     const result = await h.controller.handleLine("look at @shot.png");
 
-    expect(result.output[0]).toBe(
-      "images are not supported on the codex backend yet — sent as file paths.",
+    // Same `[attached images: …]` treatment as the native path, and nothing
+    // scary printed: the difference is only in how the file reaches the CLI.
+    expect(h.session().sends[0]?.instruction).toBe(
+      "look at @shot.png\n\n[attached images: shot.png]",
     );
     expect(h.session().attachments[0]).toEqual([]);
+    expect(result.output).toEqual(["tokens +0 in, +0 out"]);
+  });
+
+  it("still refuses an over-limit image on a delegated backend", async () => {
+    const readImagePath: MentionImageReader = async (relativePath) =>
+      relativePath === "huge.png"
+        ? { error: "it is 9.0 MiB, over the 5.0 MiB per-image limit" }
+        : { path: `/repo/${relativePath}` };
+    const h = await harness({
+      backend: "codex",
+      fileExists,
+      readImage,
+      readImagePath,
+    });
+    const result = await h.controller.handleLine("look at @huge.png");
+
+    expect(result.output[0]).toBe(
+      "note: @huge.png was not attached — it is 9.0 MiB, over the 5.0 MiB per-image limit.",
+    );
     expect(h.session().sends[0]?.instruction).toBe(
-      "look at @shot.png\n\n[mentioned files: shot.png]",
+      "look at @huge.png\n\n[mentioned files: huge.png]",
     );
   });
 

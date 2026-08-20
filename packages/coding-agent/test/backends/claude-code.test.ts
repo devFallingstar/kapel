@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ClaudeCodeBackend,
   type ClaudeCodeRunContext,
+  imagePathsSection,
 } from "../../src/backends/claude-code.js";
 import {
   cleanup,
@@ -718,6 +719,23 @@ describe("ClaudeCodeBackend.run", () => {
   }, 20_000);
 });
 
+describe("imagePathsSection", () => {
+  it("names one image in the singular", () => {
+    expect(imagePathsSection(["/repo/shot.png"])).toBe(
+      "<attached-images>\n" +
+        "The user attached an image file to this message. Open and view it with your Read tool before answering:\n" +
+        "- /repo/shot.png\n" +
+        "</attached-images>",
+    );
+  });
+
+  it("lists every path, one per line", () => {
+    const section = imagePathsSection(["/repo/a.png", "/repo/b.png"]);
+    expect(section).toContain("- /repo/a.png\n- /repo/b.png");
+    expect(section).toContain("each of them with your Read tool");
+  });
+});
+
 describe("ClaudeCodeBackend argument construction", () => {
   let dir: string;
   let workspace: string;
@@ -813,6 +831,44 @@ describe("ClaudeCodeBackend argument construction", () => {
     const argv = await readArgv(argvFile);
     expect(argv).toContain("--");
     expect(promptAfterSeparator(argv)).toBe("plain prompt");
+  });
+
+  it("asks the agent to open images attached by path, after the context", async () => {
+    const binaryPath = await writeFakeClaude(dir, { argvFile });
+    const backend = new ClaudeCodeBackend({ binaryPath });
+
+    await backend.run(
+      {
+        instruction: "what is wrong here?",
+        context: ["Earlier in this conversation:\nuser: hi"],
+        imagePaths: [`${workspace}/shot.png`, `${workspace}/other.jpg`],
+      },
+      context(workspace),
+    );
+
+    const argv = await readArgv(argvFile);
+    // `-p` has no image flag, so nothing new appears in argv — the attachment
+    // lives in the prompt.
+    expect(argv).not.toContain("-i");
+    expect(promptAfterSeparator(argv)).toBe(
+      "what is wrong here?\n\n" +
+        '<additional-context>\n<context index="1">\n' +
+        "Earlier in this conversation:\nuser: hi\n</context>\n</additional-context>\n\n" +
+        "<attached-images>\n" +
+        "The user attached image files to this message. Open and view each of them with your Read tool before answering:\n" +
+        `- ${workspace}/shot.png\n- ${workspace}/other.jpg\n` +
+        "</attached-images>",
+    );
+  });
+
+  it("keeps the prompt untouched when no image was attached", async () => {
+    const binaryPath = await writeFakeClaude(dir, { argvFile });
+    const backend = new ClaudeCodeBackend({ binaryPath });
+
+    await backend.run({ instruction: "just text" }, context(workspace));
+
+    const argv = await readArgv(argvFile);
+    expect(promptAfterSeparator(argv)).toBe("just text");
   });
 
   it("never passes --dangerously-skip-permissions or --cwd", async () => {

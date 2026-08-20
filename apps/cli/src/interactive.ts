@@ -75,6 +75,7 @@ import {
   mentionTokenAt,
   prepareMentions,
   workspaceFileExists,
+  workspaceImagePathReader,
   workspaceImageReader,
 } from "./mention.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
@@ -167,15 +168,18 @@ export interface ChatTurnLike {
  */
 export interface ChatLike {
   /**
-   * Runs one turn. `images` is what an `@shot.png` mention resolved to (see
-   * {@link prepareMentions}); an implementation that cannot carry image bytes
-   * — every delegated backend today — simply ignores the argument, and the
-   * controller has already told the user so before calling.
+   * Runs one turn. `images` and `imagePaths` are the two halves of what an
+   * `@shot.png` mention resolved to (see {@link prepareMentions}): the native
+   * loop sends the bytes to a provider, a delegated backend hands its CLI the
+   * paths and lets it open the files itself. An implementation reads whichever
+   * one it can use and ignores the other — the controller fills in only the one
+   * this backend asked for, so the unused argument is empty anyway.
    */
   send(
     instruction: string,
     context: AgentLoopRunContext,
     images?: readonly AgentImageAttachment[],
+    imagePaths?: readonly string[],
   ): Promise<ChatTurnLike>;
   toModelMessages(): readonly ModelMessage[];
   /** A delegating backend's own session id, when it is holding the thread. */
@@ -567,11 +571,18 @@ export interface InteractiveControllerDeps {
    */
   readonly fileExists?: (relativePath: string) => boolean | Promise<boolean>;
   /**
-   * Reads an `@shot.png` mention into an attachment. Defaults to a
-   * containment-checked, size-capped read under {@link workspacePath}; tests
-   * override it to keep the bytes in memory.
+   * Reads an `@shot.png` mention into an attachment, for a turn that carries
+   * bytes (the native backend). Defaults to a containment-checked, size-capped
+   * read under {@link workspacePath}; tests override it to keep the bytes in
+   * memory.
    */
   readonly readImage?: MentionImageReader;
+  /**
+   * The same, for a turn that attaches by path (the delegated backends):
+   * validates the mention and answers with the path, reading nothing. Defaults
+   * to a containment-checked, size-capped `stat` under {@link workspacePath}.
+   */
+  readonly readImagePath?: MentionImageReader;
   readonly newId?: () => string;
   readonly now?: () => number;
   /**
@@ -1001,17 +1012,21 @@ export async function createInteractiveController(
     ((relativePath: string) =>
       workspaceFileExists(deps.workspacePath, relativePath));
   const readImage = deps.readImage ?? workspaceImageReader(deps.workspacePath);
+  const readImagePath =
+    deps.readImagePath ?? workspaceImagePathReader(deps.workspacePath);
 
   /**
-   * Whether *this* turn can carry image bytes.
+   * How *this* turn attaches an image mention.
    *
-   * Only the native path can: it sends provider messages, and `@agent/ai`'s
-   * providers already serialize `ModelMessage.images` into vision content
-   * blocks. A delegated turn is a CLI invocation whose chat request has no
-   * attachment channel at all (see `BackendTurnRequest`). Read per turn rather
-   * than once, because `/config` can switch backends mid-conversation.
+   * The native path sends provider messages, and `@agent/ai`'s providers
+   * serialize `ModelMessage.images` into vision content blocks, so the bytes
+   * travel. A delegated turn is a CLI invocation in this very workspace, so the
+   * path travels and the CLI opens the file itself (`-i <path>` for Codex, a
+   * prompt section for Claude Code — see `BackendTurnRequest`). Read per turn
+   * rather than once, because `/config` can switch backends mid-conversation.
    */
-  const canAttachImages = (): boolean => backend === "native";
+  const imageReaderForTurn = (): MentionImageReader =>
+    backend === "native" ? readImage : readImagePath;
 
   const handleMessage = async (
     text: string,
@@ -1031,23 +1046,18 @@ export async function createInteractiveController(
     }
 
     // `@path` mentions stay verbatim in the message and gain a trailing line
-    // naming what they resolved to; an `@shot.png` also rides along as real
-    // image content (see `prepareMentions`). The title and the checkpoint
-    // label above deliberately come from the text as typed — the annotation is
-    // for the agent, not for the history.
-    const attachable = canAttachImages();
+    // naming what they resolved to; an `@shot.png` is additionally attached to
+    // the turn — as bytes or as a path, depending on the backend (see
+    // `prepareMentions`). The title and the checkpoint label above deliberately
+    // come from the text as typed — the annotation is for the agent, not for
+    // the history.
     const prepared = await prepareMentions(text, {
       exists: fileExists,
-      ...(attachable ? { readImage } : {}),
+      readImage: imageReaderForTurn(),
     });
     // An image that could not be attached is a note, never a failed turn: the
     // message still goes, with that mention as an ordinary path.
     for (const notice of prepared.notices) emit(notice);
-    if (!attachable && prepared.imageMentions.length > 0) {
-      emit(
-        `images are not supported on the ${backend} backend yet — sent as file paths.`,
-      );
-    }
 
     const before = deps.usage.totals();
     let result: ChatTurnLike | undefined;
@@ -1060,6 +1070,7 @@ export async function createInteractiveController(
           ...(signal === undefined ? {} : { signal }),
         },
         prepared.images,
+        prepared.imagePaths,
       );
     } catch (error) {
       emit(`error: ${errorText(error)}`);
@@ -2081,10 +2092,19 @@ export async function runInteractive(
           : { timeoutMs: options.timeoutSeconds * 1000 }),
       });
       return {
-        send: async (instruction, context) => {
-          const result = await chat.send(instruction, {
-            ...(context.signal === undefined ? {} : { signal: context.signal }),
-          });
+        // `images` (bytes) is ignored here on purpose: a delegated turn
+        // attaches by path, and the controller only ever fills in one of the
+        // two for a given backend.
+        send: async (instruction, context, _images, imagePaths) => {
+          const result = await chat.send(
+            instruction,
+            {
+              ...(context.signal === undefined
+                ? {}
+                : { signal: context.signal }),
+            },
+            imagePaths,
+          );
           delegatedUsageFor(target).add(result);
           return result;
         },

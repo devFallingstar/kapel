@@ -39,17 +39,23 @@ export interface BackendChatEntry {
 /**
  * What a delegating CLI backend must provide to serve a chat turn.
  *
- * Text only, deliberately: there is no `images` here, so a REPL turn that
- * attached one (`@shot.png` — see the CLI's `prepareMentions`) sends the path
- * and says so rather than the bytes. Claude Code's `-p` accepts no image
- * attachment at all (`ClaudeCodeBackend` refuses them outright), and while
- * Codex's `-i <path>` does, wiring it would mean carrying attachments through
- * this request, {@link backendTurnRunner} and {@link DelegatingBackendLike} for
- * one of the two backends. Left undone on purpose; the CLI's notice is the
- * honest interim.
+ * Text and image *paths*, never image bytes. A delegated turn is a CLI running
+ * in the workspace with a filesystem of its own, so the cheap and honest way to
+ * attach `@shot.png` (see the CLI's `prepareMentions`) is to name the file:
+ * Codex takes repeated `-i <path>` flags, and Claude Code — whose `-p` mode has
+ * no image flag at all — is told in the prompt to open the paths with its Read
+ * tool. Both are wired through {@link backendTurnRunner} and
+ * {@link DelegatingBackendLike}, so the same `@` mention now works on every
+ * backend; only the native path carries the bytes themselves.
  */
 export interface BackendTurnRequest {
   readonly instruction: string;
+  /**
+   * Absolute paths of images attached to this turn, in mention order. Already
+   * validated by the caller (inside the workspace, a real file, within the
+   * per-image size cap), so a runner forwards them as-is.
+   */
+  readonly imagePaths?: readonly string[];
   /**
    * Prior turns, oldest first, excluding {@link instruction}. Empty when the
    * backend is continuing its own session (see {@link sessionRef}).
@@ -224,11 +230,17 @@ export class BackendChatSession {
    * runner throws, so the conversation still reads as a conversation. An
    * assistant entry is only recorded when the backend actually produced text.
    *
+   * `imagePaths` attaches images to *this* turn by naming them (see
+   * {@link BackendTurnRequest}). They are deliberately not recorded in the
+   * transcript: the instruction already names them on its `[attached images: …]`
+   * line, which is what a later stateless turn needs to see.
+   *
    * @throws if another send on this session is still in flight.
    */
   async send(
     instruction: string,
     context?: BackendChatSendContext,
+    imagePaths?: readonly string[],
   ): Promise<BackendChatTurnResult> {
     if (this.#sending) {
       throw new Error(
@@ -255,7 +267,13 @@ export class BackendChatSession {
         backend: "delegated",
       });
 
-      const result = await this.#runTurn(instruction, prior, signal, taskId);
+      const result = await this.#runTurn(
+        instruction,
+        prior,
+        signal,
+        taskId,
+        imagePaths ?? [],
+      );
 
       await this.#emit(taskId, "chat.turn.completed", {
         turn,
@@ -293,6 +311,7 @@ export class BackendChatSession {
     prior: readonly BackendChatEntry[],
     signal: AbortSignal | undefined,
     taskId: string | undefined,
+    imagePaths: readonly string[],
   ): Promise<BackendChatTurnResult> {
     if (signal?.aborted === true) {
       return { status: "failed", summary: CANCELLED_SUMMARY };
@@ -301,7 +320,7 @@ export class BackendChatSession {
     let outcome: BackendTurnOutcome;
     try {
       outcome = await this.#options.runner(
-        this.#request(instruction, prior, signal, taskId),
+        this.#request(instruction, prior, signal, taskId, imagePaths),
       );
     } catch (error) {
       // A runner that throws is still just a turn that failed: the REPL keeps
@@ -353,6 +372,7 @@ export class BackendChatSession {
     prior: readonly BackendChatEntry[],
     signal: AbortSignal | undefined,
     taskId: string | undefined,
+    imagePaths: readonly string[],
   ): BackendTurnRequest {
     const continuing =
       this.#options.supportsContinuation === true &&
@@ -367,6 +387,7 @@ export class BackendChatSession {
     return {
       instruction,
       transcript,
+      ...(imagePaths.length === 0 ? {} : { imagePaths }),
       ...(continuing && this.#sessionRef !== undefined
         ? { sessionRef: this.#sessionRef }
         : {}),
@@ -416,7 +437,11 @@ export class BackendChatSession {
  */
 export interface DelegatingBackendLike {
   run(
-    input: { instruction: string; context?: readonly string[] },
+    input: {
+      instruction: string;
+      context?: readonly string[];
+      imagePaths?: readonly string[];
+    },
     context: {
       runId: string;
       taskId?: string;
@@ -462,7 +487,9 @@ export function renderTranscript(
  *
  * A stateless backend sees the thread because the transcript is rendered into
  * an `input.context` entry; `sessionId` from the run result becomes the
- * outcome's `sessionRef`.
+ * outcome's `sessionRef`. Attached image paths are forwarded untouched — each
+ * backend decides what to do with them (`-i <path>` for Codex, a prompt
+ * section for Claude Code).
  *
  * Note the asymmetry: this helper *reports* a session id but cannot *use* one,
  * because `run()` takes no continuation argument. To actually resume, build a
@@ -482,10 +509,12 @@ export function backendTurnRunner(
         ? [renderTranscript(request.transcript)]
         : [];
 
+    const imagePaths = request.imagePaths ?? [];
     const result = await backend.run(
       {
         instruction: request.instruction,
         ...(context.length === 0 ? {} : { context }),
+        ...(imagePaths.length === 0 ? {} : { imagePaths }),
       },
       {
         runId: request.context.runId,

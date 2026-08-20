@@ -441,6 +441,57 @@ describe("CodexBackend argument construction", () => {
     ]);
   });
 
+  it("passes an image attached by path as -i <path> too (delegated chat)", async () => {
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const backend = new CodexBackend({ binaryPath });
+
+    await backend.run(
+      {
+        instruction: "what changed in these?",
+        imagePaths: [`${workspace}/before.png`, `${workspace}/after.png`],
+      },
+      context(workspace),
+    );
+
+    expect(await readArgv(argvFile)).toEqual([
+      "exec",
+      "--json",
+      "--cd",
+      workspace,
+      "--full-auto",
+      "-i",
+      `${workspace}/before.png`,
+      "-i",
+      `${workspace}/after.png`,
+      "what changed in these?",
+    ]);
+  });
+
+  it("attaches an image named both ways only once", async () => {
+    const binaryPath = await writeFakeCodex(dir, { argvFile });
+    const backend = new CodexBackend({ binaryPath });
+
+    await backend.run(
+      {
+        instruction: "describe it",
+        images: [
+          { mediaType: "image/png", base64: "cG5n", path: "/tmp/one.png" },
+        ],
+        imagePaths: ["/tmp/one.png", "/tmp/two.png"],
+      },
+      context(workspace),
+    );
+
+    const argv = await readArgv(argvFile);
+    expect(argv.filter((arg) => arg === "-i")).toHaveLength(2);
+    expect(argv.slice(argv.indexOf("-i"), -1)).toEqual([
+      "-i",
+      "/tmp/one.png",
+      "-i",
+      "/tmp/two.png",
+    ]);
+  });
+
   it("passes no -i flags when there are no attached images", async () => {
     const binaryPath = await writeFakeCodex(dir, { argvFile });
     const backend = new CodexBackend({ binaryPath });

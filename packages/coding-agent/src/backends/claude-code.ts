@@ -142,15 +142,38 @@ function toCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * The prompt section that attaches images to a `claude -p` turn.
+ *
+ * `-p` has no image flag — but the agent behind it has a Read tool that
+ * renders an image file, which is the whole trick: kapel names the files and
+ * asks for them to be opened, and Claude Code does the attaching itself. Pure
+ * and exported so the wording is testable without spawning anything.
+ */
+export function imagePathsSection(paths: readonly string[]): string {
+  const lines = paths.map((imagePath) => `- ${imagePath}`).join("\n");
+  return `<attached-images>\nThe user attached ${paths.length === 1 ? "an image file" : "image files"} to this message. Open and view ${paths.length === 1 ? "it" : "each of them"} with your Read tool before answering:\n${lines}\n</attached-images>`;
+}
+
 /** Composes the single prompt argument handed to `claude -p`. */
 function buildPrompt(input: AgentRunInput): string {
   const context = input.context ?? [];
-  if (context.length === 0) return input.instruction;
+  const imagePaths = input.imagePaths ?? [];
 
-  const blocks = context.map(
-    (entry, index) => `<context index="${index + 1}">\n${entry}\n</context>`,
-  );
-  return `${input.instruction}\n\n<additional-context>\n${blocks.join("\n")}\n</additional-context>`;
+  const parts = [input.instruction];
+  if (context.length > 0) {
+    const blocks = context.map(
+      (entry, index) => `<context index="${index + 1}">\n${entry}\n</context>`,
+    );
+    parts.push(
+      `<additional-context>\n${blocks.join("\n")}\n</additional-context>`,
+    );
+  }
+  // Last, so the instruction to go look at the images is the closest thing to
+  // the turn's own question rather than something buried above the transcript.
+  if (imagePaths.length > 0) parts.push(imagePathsSection(imagePaths));
+
+  return parts.join("\n\n");
 }
 
 function tail(text: string, limit: number): string {
@@ -343,17 +366,20 @@ export class ClaudeCodeBackend {
     }
 
     // P1-9: `claude -p` (headless print mode) has no documented flag for
-    // attaching an image — unlike Codex's `exec -i <path>`, there is nothing
-    // to translate this into. Rather than silently dropping the image or
-    // stuffing it into the text prompt as something the model can't actually
-    // see, fail clearly before spawning anything.
+    // attaching image *bytes* — unlike Codex's `exec -i <path>`, there is
+    // nothing to translate an inline attachment into. Rather than silently
+    // dropping it or stuffing base64 into the text prompt as something the
+    // model can't actually see, fail clearly before spawning anything.
+    // Attaching by path is the supported route here (`input.imagePaths`, which
+    // `buildPrompt` asks the agent to open with its Read tool).
     if ((input.images?.length ?? 0) > 0) {
       return finish(
         settle(
           "failed",
           "Claude Code's headless -p mode has no documented flag for attaching " +
-            "images, so kapel cannot send them through this backend. Use " +
-            "`--backend codex` or the native backend to attach images.",
+            "image bytes, so kapel cannot send them inline through this " +
+            "backend. Attach the images by path instead (kapel's `@shot.png` " +
+            "mention does), or use `--backend codex` or the native backend.",
           null,
         ),
       );

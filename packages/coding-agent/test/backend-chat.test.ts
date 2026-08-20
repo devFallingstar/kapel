@@ -99,6 +99,19 @@ describe("BackendChatSession (stateless mode)", () => {
     });
   });
 
+  it("attaches image paths to the turn that sent them, and to no other", async () => {
+    const runner = new RecordingRunner([ok("looked"), ok("and then")]);
+    const session = new BackendChatSession(options(runner.run));
+
+    await session.send("look at this", undefined, ["/repo/shot.png"]);
+    await session.send("now fix it");
+
+    expect(runner.requests[0]?.imagePaths).toEqual(["/repo/shot.png"]);
+    // The attachment belongs to one turn: the transcript replays the text
+    // (whose annotation line already names the file), not the attachment.
+    expect(runner.requests[1]?.imagePaths).toBeUndefined();
+  });
+
   it("caps the transcript at transcriptTurns entries", async () => {
     const runner = new RecordingRunner([
       ok("a1"),
@@ -427,14 +440,20 @@ describe("BackendChatSession events", () => {
 // --- the backend adapter -----------------------------------------------------
 
 describe("backendTurnRunner", () => {
+  interface BackendInput {
+    instruction: string;
+    context?: readonly string[];
+    imagePaths?: readonly string[];
+  }
+
   class FakeBackend implements DelegatingBackendLike {
     readonly calls: {
-      input: { instruction: string; context?: readonly string[] };
+      input: BackendInput;
       context: Record<string, unknown>;
     }[] = [];
 
     async run(
-      input: { instruction: string; context?: readonly string[] },
+      input: BackendInput,
       context: {
         runId: string;
         taskId?: string;
@@ -514,6 +533,20 @@ describe("backendTurnRunner", () => {
     );
 
     expect(backend.calls[0]?.input.context).toBeUndefined();
+  });
+
+  it("forwards attached image paths to the backend, and omits them otherwise", async () => {
+    const backend = new FakeBackend();
+    const runner = backendTurnRunner(backend);
+
+    await runner(request({ imagePaths: ["/repo/a.png", "/repo/b.png"] }));
+    await runner(request());
+
+    expect(backend.calls[0]?.input.imagePaths).toEqual([
+      "/repo/a.png",
+      "/repo/b.png",
+    ]);
+    expect(backend.calls[1]?.input.imagePaths).toBeUndefined();
   });
 
   it("forwards taskId and signal to the backend run context", async () => {

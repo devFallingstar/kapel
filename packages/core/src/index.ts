@@ -53,6 +53,15 @@ export interface AgentRunInput {
   readonly context?: readonly string[];
   /** Images attached to this run, already validated and read (P1-9). */
   readonly images?: readonly AgentImageAttachment[];
+  /**
+   * Images attached by *path* instead of by bytes: absolute filesystem paths
+   * for a delegating CLI backend to open itself — Codex takes them as repeated
+   * `-i <path>` flags, Claude Code is told to read them with its own tools.
+   * Validated by the caller exactly as {@link images} are (the file exists, is
+   * inside the workspace, and is within the per-image size cap), so a backend
+   * can forward them as-is.
+   */
+  readonly imagePaths?: readonly string[];
 }
 
 export interface AgentRunResult {

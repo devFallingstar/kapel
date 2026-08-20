@@ -397,13 +397,22 @@ export class CodexBackend {
     if (model !== undefined) args.push("-m", model);
 
     // Codex's `exec` subcommand documents repeatable `-i/--image <path>`
-    // flags for attaching images to the prompt (P1-9); each attachment was
-    // already validated (existence, size, recognized format) by the CLI
-    // before this backend ever sees it. This has not been exercised against
-    // a real Codex binary — only against the fake CLI in this package's
-    // tests — so treat it as untested-against-the-real-CLI until confirmed.
+    // flags for attaching images to the prompt (P1-9). Two callers reach this:
+    // a byte attachment carrying the path it was read from, and a delegated
+    // chat turn that only ever had the path (`@shot.png` in the REPL). Both
+    // were validated (existence, containment, size) before this backend saw
+    // them, and both mean exactly the same thing to `codex`, so they are
+    // flattened into one flag list — de-duplicated, so a caller that somehow
+    // passes an image both ways does not attach it twice. This has not been
+    // exercised against a real Codex binary — only against the fake CLI in
+    // this package's tests — so treat it as untested-against-the-real-CLI
+    // until confirmed.
     const images: readonly AgentImageAttachment[] = input.images ?? [];
-    for (const image of images) args.push("-i", image.path);
+    const imagePaths = new Set<string>([
+      ...images.map((image) => image.path),
+      ...(input.imagePaths ?? []),
+    ]);
+    for (const imagePath of imagePaths) args.push("-i", imagePath);
 
     const extra = this.#options.extraArgs;
     if (extra !== undefined) args.push(...extra);
