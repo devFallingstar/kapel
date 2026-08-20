@@ -345,6 +345,56 @@ describe("TaskWorktreeManager.integrate", () => {
   );
 
   it(
+    "merges with kapel's own untracked .agent state in the base",
+    async () => {
+      // `kapel init` creates `.agent/` and the REPL opens `.agent/sessions.db`
+      // before any task runs, so on a fresh repository this is the state of
+      // the base every single time. Counting it as "dirty" made every merge
+      // refuse and threw away every completed task's work.
+      const repo = await makeRepo();
+      const manager = new TaskWorktreeManager({ repoRoot: repo });
+      const worktree = await manager.create("run1", "task1");
+      await writeIn(worktree.path, "feature.txt", "feature\n");
+      await manager.collect(worktree);
+      await writeIn(repo, ".agent/sessions.db", "sqlite\n");
+      await writeIn(repo, ".agent/sessions.db-wal", "wal\n");
+      await writeIn(repo, ".agent/config.yaml", "models: {}\n");
+      const before = await head(repo);
+
+      const result = await manager.integrate(worktree);
+
+      expect(result.reason).toBeUndefined();
+      expect(result.merged).toBe(true);
+      expect(await head(repo)).not.toBe(before);
+      expect(await exists(join(repo, "feature.txt"))).toBe(true);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "still refuses when a tracked .agent file is modified alongside real work",
+    async () => {
+      // Only kapel's state is exempt: a real edit outside `.agent/` still
+      // vetoes the merge, and its path is named in the detail.
+      const repo = await makeRepo();
+      await writeIn(repo, ".agent/sessions.db", "sqlite\n");
+      const manager = new TaskWorktreeManager({ repoRoot: repo });
+      const worktree = await manager.create("run1", "task1");
+      await writeIn(worktree.path, "feature.txt", "feature\n");
+      await manager.collect(worktree);
+      await writeIn(repo, "src/app.ts", "half-finished\n");
+
+      const result = await manager.integrate(worktree);
+
+      expect(result.merged).toBe(false);
+      expect(result.reason).toBe("dirty-base");
+      expect(result.detail).toContain("src/app.ts");
+      expect(result.detail).not.toContain(".agent/");
+    },
+    TIMEOUT,
+  );
+
+  it(
     "lands two parallel workers that touched different files",
     async () => {
       const repo = await makeRepo();

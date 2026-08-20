@@ -581,10 +581,19 @@ export class TextRenderer implements Renderer {
               (file): file is string => typeof file === "string",
             )
           : [];
+        if (files.length > 0) {
+          this.#write(`⚠ ${taskId} merge conflict: ${files.join(", ")}`);
+          break;
+        }
+        // The reason alone ("dirty-base") does not say what is in the way;
+        // the detail names the offending paths, which is the only form of
+        // this message a reader can act on.
+        const reason = stringOrUndefined(data.reason) ?? "unknown reason";
+        const detail = stringOrUndefined(data.detail);
         this.#write(
-          files.length === 0
-            ? `⚠ ${taskId} not merged (${stringOrUndefined(data.reason) ?? "unknown reason"})`
-            : `⚠ ${taskId} merge conflict: ${files.join(", ")}`,
+          detail === undefined
+            ? `⚠ ${taskId} not merged (${reason})`
+            : `⚠ ${taskId} not merged (${reason}): ${detail}`,
         );
         break;
       }

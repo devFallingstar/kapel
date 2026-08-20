@@ -13,6 +13,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { KapelConfig } from "../src/config.js";
 import { KAPEL_CONFIG_VERSION } from "../src/config.js";
 import {
+  ensureGitignoreEntries,
+  GITIGNORE_ENTRIES,
   locateTemplate,
   providerForModel,
   runInit,
@@ -180,6 +182,37 @@ describe("providerForModel", () => {
   });
 });
 
+describe("ensureGitignoreEntries", () => {
+  let dir: string;
+
+  afterEach(async () => {
+    if (dir !== undefined) await rm(dir, { recursive: true, force: true });
+  });
+
+  async function makeDir(): Promise<string> {
+    dir = await mkdtemp(path.join(tmpdir(), "agent-cli-gitignore-"));
+    return dir;
+  }
+
+  it("reports which entries it added, and nothing on a second call", async () => {
+    const cwd = await makeDir();
+
+    expect(await ensureGitignoreEntries(cwd)).toEqual([...GITIGNORE_ENTRIES]);
+    expect(await ensureGitignoreEntries(cwd)).toEqual([]);
+  });
+
+  it("preserves a file with no trailing newline", async () => {
+    const cwd = await makeDir();
+    await writeFile(path.join(cwd, ".gitignore"), "dist/", "utf8");
+
+    await ensureGitignoreEntries(cwd);
+
+    const written = await readFile(path.join(cwd, ".gitignore"), "utf8");
+    expect(written.split("\n")[0]).toBe("dist/");
+    expect(written).toContain(".agent/sessions.db*");
+  });
+});
+
 describe("runInit", () => {
   let root: string;
 
@@ -216,6 +249,60 @@ describe("runInit", () => {
     expect(code).toBe(0);
     const copied = await readdir(path.join(target, ".agent"));
     expect(copied.sort()).toEqual(["agents", "config.yaml"]);
+  });
+
+  it("creates a .gitignore with kapel's state entries when there is none", async () => {
+    const { entryUrl, target } = await setup();
+
+    expect(await runInit({ cwd: target, entryUrl })).toBe(0);
+
+    const written = await readFile(path.join(target, ".gitignore"), "utf8");
+    for (const entry of GITIGNORE_ENTRIES) expect(written).toContain(entry);
+    expect(written.endsWith("\n")).toBe(true);
+  });
+
+  it("extends an existing .gitignore without touching what is already in it", async () => {
+    const { entryUrl, target } = await setup();
+    await writeFile(
+      path.join(target, ".gitignore"),
+      "node_modules/\ndist/\n",
+      "utf8",
+    );
+
+    expect(await runInit({ cwd: target, entryUrl })).toBe(0);
+
+    const written = await readFile(path.join(target, ".gitignore"), "utf8");
+    expect(written.startsWith("node_modules/\ndist/\n")).toBe(true);
+    expect(written).toContain(".agent/sessions.db*");
+    expect(written).toContain(".agent/worktrees/");
+  });
+
+  it("does not duplicate .gitignore lines when init runs again", async () => {
+    const { entryUrl, target } = await setup();
+
+    expect(await runInit({ cwd: target, entryUrl })).toBe(0);
+    const first = await readFile(path.join(target, ".gitignore"), "utf8");
+    expect(await runInit({ cwd: target, entryUrl, force: true })).toBe(0);
+    const second = await readFile(path.join(target, ".gitignore"), "utf8");
+
+    expect(second).toBe(first);
+    expect(second.split(".agent/sessions.db*")).toHaveLength(2);
+  });
+
+  it("adds only the entry that is missing", async () => {
+    const { entryUrl, target } = await setup();
+    await writeFile(
+      path.join(target, ".gitignore"),
+      "  .agent/worktrees/  \n",
+      "utf8",
+    );
+
+    expect(await runInit({ cwd: target, entryUrl })).toBe(0);
+
+    const written = await readFile(path.join(target, ".gitignore"), "utf8");
+    // Matched despite the surrounding whitespace, so it is not written twice.
+    expect(written.split(".agent/worktrees/")).toHaveLength(2);
+    expect(written).toContain(".agent/sessions.db*");
   });
 
   it("refuses to overwrite an existing .agent without --force", async () => {

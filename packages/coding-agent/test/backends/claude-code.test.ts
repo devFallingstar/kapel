@@ -47,6 +47,34 @@ async function readArgv(path: string): Promise<string[]> {
   return raw.split("\0").slice(0, -1);
 }
 
+/**
+ * The prompt as the real CLI would see it: the argv element immediately after
+ * the `--` separator. Reading it positionally (rather than as `argv.at(-1)`)
+ * is the whole point — the trailing positional is only reachable at all
+ * because option parsing was ended first.
+ */
+function promptAfterSeparator(argv: readonly string[]): string | undefined {
+  const separator = argv.indexOf("--");
+  return separator === -1 ? undefined : argv[separator + 1];
+}
+
+/** A whole-message `assistant` line, the shape Claude Code 2.x emits. */
+function assistantMessage(content: readonly unknown[], id = "msg_1"): string {
+  return JSON.stringify({
+    type: "assistant",
+    message: {
+      id,
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-5",
+      content,
+      stop_reason: null,
+    },
+    session_id: "sess-1",
+    parent_tool_use_id: null,
+  });
+}
+
 describe("ClaudeCodeBackend.run", () => {
   let dir: string;
   let workspace: string;
@@ -211,6 +239,158 @@ describe("ClaudeCodeBackend.run", () => {
       "claude-code.message_stop",
       "claude-code.completed",
     ]);
+  });
+
+  it("renders a whole-message assistant line when no deltas ever arrive", async () => {
+    const binaryPath = await writeFakeClaude(dir, {
+      stdout: [
+        JSON.stringify({ type: "system", subtype: "init" }),
+        assistantMessage([
+          { type: "text", text: "Added the feature " },
+          { type: "tool_use", id: "tu_1", name: "Edit", input: {} },
+          { type: "text", text: "and updated the tests." },
+        ]),
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          result: FINAL_TEXT,
+          session_id: "sess-1",
+          usage: {
+            input_tokens: 2,
+            cache_read_input_tokens: 40,
+            output_tokens: 4,
+          },
+        }),
+      ],
+      exitCode: 0,
+    });
+    const events = new RecordingSink();
+    const backend = new ClaudeCodeBackend({ binaryPath, events });
+
+    const result = await backend.run(
+      { instruction: "whole messages only" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.output).toBe(FINAL_TEXT);
+    // Usage still comes from the trailing result line — the whole-message
+    // line's own `usage` is a placeholder taken before the turn finished.
+    expect(result.usage).toEqual({ inputTokens: 42, outputTokens: 4 });
+    expect(events.types()).toEqual([
+      "claude-code.system",
+      "claude-code.assistant",
+      "claude-code.content_block_delta",
+      "claude-code.tool_use",
+      "claude-code.content_block_delta",
+      "claude-code.message_stop",
+      "claude-code.result",
+      "claude-code.completed",
+    ]);
+    expect(events.events[2]?.data).toEqual({
+      type: "stream_event",
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Added the feature " },
+      },
+    });
+    expect(events.events[3]?.data).toEqual({
+      name: "Edit",
+      id: "tu_1",
+      index: 1,
+    });
+  });
+
+  it("falls back to whole-message text when there is no result line", async () => {
+    const binaryPath = await writeFakeClaude(dir, {
+      stdout: [
+        assistantMessage([{ type: "text", text: "Refactored the parser." }]),
+      ],
+      exitCode: 0,
+    });
+    const backend = new ClaudeCodeBackend({ binaryPath });
+
+    const result = await backend.run(
+      { instruction: "refactor" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.output).toBe("Refactored the parser.");
+  });
+
+  it("does not re-emit a whole message whose deltas already streamed", async () => {
+    const binaryPath = await writeFakeClaude(dir, {
+      stdout: [
+        envelope({
+          type: "message_start",
+          message: {
+            id: "msg_1",
+            usage: { input_tokens: 5, output_tokens: 1 },
+          },
+        }),
+        envelope({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        }),
+        envelope(textDelta("Added the feature ")),
+        envelope(textDelta("and updated the tests.")),
+        // The CLI repeats the finished message alongside the deltas when
+        // --include-partial-messages is on; it must not print twice.
+        assistantMessage([
+          { type: "text", text: "Added the feature and updated the tests." },
+        ]),
+        envelope({ type: "content_block_stop", index: 0 }),
+        envelope({ type: "message_stop" }),
+      ],
+      exitCode: 0,
+    });
+    const events = new RecordingSink();
+    const backend = new ClaudeCodeBackend({ binaryPath, events });
+
+    const result = await backend.run(
+      { instruction: "both shapes" },
+      context(workspace),
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.output).toBe("Added the feature and updated the tests.");
+    expect(events.types()).toEqual([
+      "claude-code.message_start",
+      "claude-code.content_block_start",
+      "claude-code.content_block_delta",
+      "claude-code.content_block_delta",
+      "claude-code.assistant",
+      "claude-code.content_block_stop",
+      "claude-code.message_stop",
+      "claude-code.completed",
+    ]);
+  });
+
+  it("still renders a second message that arrives whole after a streamed first one", async () => {
+    const binaryPath = await writeFakeClaude(dir, {
+      stdout: [
+        envelope({ type: "message_start", message: { id: "msg_1" } }),
+        envelope(textDelta("first ")),
+        assistantMessage([{ type: "text", text: "first " }], "msg_1"),
+        assistantMessage([{ type: "text", text: "second" }], "msg_2"),
+      ],
+      exitCode: 0,
+    });
+    const events = new RecordingSink();
+    const backend = new ClaudeCodeBackend({ binaryPath, events });
+
+    const result = await backend.run(
+      { instruction: "two messages" },
+      context(workspace),
+    );
+
+    expect(result.output).toBe("first second");
+    expect(
+      events.types().filter((type) => type.endsWith("content_block_delta")),
+    ).toHaveLength(2);
   });
 
   it("skips non-JSON and non-object lines without crashing", async () => {
@@ -567,6 +747,8 @@ describe("ClaudeCodeBackend argument construction", () => {
       "--permission-mode",
       "acceptEdits",
       "--verbose",
+      "--include-partial-messages",
+      "--",
       "ship it",
     ]);
   });
@@ -578,6 +760,59 @@ describe("ClaudeCodeBackend argument construction", () => {
     await backend.run({ instruction: "quiet" }, context(workspace));
 
     expect(await readArgv(argvFile)).not.toContain("--verbose");
+  });
+
+  it("omits --include-partial-messages when the option is false", async () => {
+    const binaryPath = await writeFakeClaude(dir, { argvFile });
+    const backend = new ClaudeCodeBackend({
+      binaryPath,
+      includePartialMessages: false,
+    });
+
+    await backend.run(
+      { instruction: "whole messages only" },
+      context(workspace),
+    );
+
+    const argv = await readArgv(argvFile);
+    expect(argv).not.toContain("--include-partial-messages");
+    expect(promptAfterSeparator(argv)).toBe("whole messages only");
+  });
+
+  it("ends option parsing with `--` so a variadic flag cannot swallow the prompt", async () => {
+    // Claude Code declares `--allowedTools <tools...>` and `--add-dir
+    // <directories...>` as variadic, so without the separator the trailing
+    // positional is consumed as another value and the CLI exits 1 with
+    // "Input must be provided either through stdin or as a prompt argument".
+    const binaryPath = await writeFakeClaude(dir, { argvFile });
+    const backend = new ClaudeCodeBackend({
+      binaryPath,
+      allowedTools: ["Read", "Edit"],
+      addDirs: ["/srv/shared"],
+    });
+
+    await backend.run(
+      { instruction: "reply with exactly OK" },
+      context(workspace),
+    );
+
+    const argv = await readArgv(argvFile);
+    const separator = argv.indexOf("--");
+    expect(separator).toBeGreaterThan(argv.indexOf("--allowedTools"));
+    expect(separator).toBeGreaterThan(argv.indexOf("--add-dir"));
+    expect(argv[separator + 1]).toBe("reply with exactly OK");
+    expect(separator).toBe(argv.length - 2);
+  });
+
+  it("passes `--` even with no variadic flag in play", async () => {
+    const binaryPath = await writeFakeClaude(dir, { argvFile });
+    const backend = new ClaudeCodeBackend({ binaryPath });
+
+    await backend.run({ instruction: "plain prompt" }, context(workspace));
+
+    const argv = await readArgv(argvFile);
+    expect(argv).toContain("--");
+    expect(promptAfterSeparator(argv)).toBe("plain prompt");
   });
 
   it("never passes --dangerously-skip-permissions or --cwd", async () => {
@@ -605,7 +840,7 @@ describe("ClaudeCodeBackend argument construction", () => {
       permissionMode: "default",
       allowedTools: ["Read", "Edit", "Bash"],
       addDirs: ["/srv/shared", "/srv/docs"],
-      extraArgs: ["--include-partial-messages"],
+      extraArgs: ["--settings", "/srv/settings.json"],
     });
 
     await backend.run({ instruction: "review it" }, context(workspace));
@@ -617,6 +852,7 @@ describe("ClaudeCodeBackend argument construction", () => {
       "--permission-mode",
       "default",
       "--verbose",
+      "--include-partial-messages",
       "--model",
       "claude-opus-5",
       "--allowedTools",
@@ -625,7 +861,9 @@ describe("ClaudeCodeBackend argument construction", () => {
       "/srv/shared",
       "--add-dir",
       "/srv/docs",
-      "--include-partial-messages",
+      "--settings",
+      "/srv/settings.json",
+      "--",
       "review it",
     ]);
   });
@@ -668,7 +906,7 @@ describe("ClaudeCodeBackend argument construction", () => {
     );
 
     const argv = await readArgv(argvFile);
-    const prompt = argv.at(-1) ?? "";
+    const prompt = promptAfterSeparator(argv) ?? "";
     expect(prompt.startsWith("fix the bug")).toBe(true);
     expect(prompt).toContain('<context index="1">');
     expect(prompt).toContain("repo uses vitest");

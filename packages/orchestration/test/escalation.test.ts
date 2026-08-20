@@ -311,6 +311,216 @@ describe("DeterministicScheduler / confidence-based escalation", () => {
     });
   });
 
+  it("escalates when afterFailures equals maxAttempts, which the shipped template compiles to", async () => {
+    // "Retry a failed worker once. If the second attempt fails, escalate one
+    // tier up" is defaultMaxAttempts 2 + afterFailures 2 — a rule that only
+    // becomes true after the last ordinary attempt, and so was unreachable
+    // until a matching rule started granting the attempt it needs.
+    const worker = new ScriptedWorker((call) =>
+      call.agent === "coder"
+        ? makeResult(call.taskId)
+        : makeResult(call.taskId, "failed"),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-junior", agent: "junior", strength: "hard" }],
+      escalation: [
+        {
+          id: "tier-up",
+          fromAgent: "junior",
+          toAgent: "coder",
+          afterFailures: 2,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "junior",
+      "junior",
+      "coder",
+    ]);
+    expect(graph.get("T01").status).toBe("completed");
+    expect(events.ofType("task.escalated")).toHaveLength(1);
+    expect(events.ofType("task.escalated")[0]?.data).toEqual({
+      from: "junior",
+      to: "coder",
+      rule: "tier-up",
+    });
+  });
+
+  it("climbs the junior → coder → senior ladder, one granted attempt per rule", async () => {
+    const worker = new ScriptedWorker((call) =>
+      makeResult(call.taskId, "failed"),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-junior", agent: "junior", strength: "hard" }],
+      escalation: [
+        {
+          id: "e1-junior",
+          fromAgent: "junior",
+          toAgent: "coder",
+          afterFailures: 2,
+        },
+        {
+          id: "e2-coder",
+          fromAgent: "coder",
+          toAgent: "senior",
+          afterFailures: 2,
+        },
+        {
+          id: "e3-senior",
+          fromAgent: "senior",
+          toAgent: "architect",
+          afterFailures: 2,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    // Two ordinary attempts, then one granted attempt per rule — and no more,
+    // because every rule has spent its single grant.
+    expect(worker.calls.map((call) => call.agent)).toEqual([
+      "junior",
+      "junior",
+      "coder",
+      "senior",
+      "architect",
+    ]);
+    expect(events.ofType("task.escalated").map((event) => event.data)).toEqual([
+      { from: "junior", to: "coder", rule: "e1-junior" },
+      { from: "coder", to: "senior", rule: "e2-coder" },
+      { from: "senior", to: "architect", rule: "e3-senior" },
+    ]);
+    expect(graph.get("T01").status).toBe("failed");
+    expect([...(graph.get("T01").escalationsGranted ?? [])]).toEqual([
+      "e1-junior",
+      "e2-coder",
+      "e3-senior",
+    ]);
+  });
+
+  it("grants each rule at most once, so a rule pointing back at itself cannot loop", async () => {
+    const worker = new ScriptedWorker((call) =>
+      makeResult(call.taskId, "failed"),
+    );
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 1,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "self",
+          fromAgent: "implementer",
+          toAgent: "implementer",
+          afterFailures: 1,
+        },
+      ],
+    });
+
+    await scheduler(worker).run("run-1", graph, policy);
+
+    expect(worker.calls).toHaveLength(2);
+    expect(graph.get("T01").status).toBe("failed");
+  });
+
+  it("grants nothing when there is no matching rule left", async () => {
+    const worker = new ScriptedWorker((call) =>
+      makeResult(call.taskId, "failed"),
+    );
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 2,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        // Hands off from an agent this task never ran as.
+        {
+          id: "elsewhere",
+          fromAgent: "reviewer",
+          toAgent: "architect",
+          afterFailures: 1,
+        },
+      ],
+    });
+
+    await scheduler(worker).run("run-1", graph, policy);
+
+    expect(worker.calls).toHaveLength(2);
+    expect(graph.get("T01").status).toBe("failed");
+    expect(graph.get("T01").escalationsGranted).toBeUndefined();
+  });
+
+  it("does not grant an escalated attempt to an aborted run", async () => {
+    const controller = new AbortController();
+    const worker = new ScriptedWorker((call) => {
+      controller.abort();
+      return makeResult(call.taskId, "failed");
+    });
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 1,
+      routing: [{ id: "all-junior", agent: "junior", strength: "hard" }],
+      escalation: [
+        {
+          id: "tier-up",
+          fromAgent: "junior",
+          toAgent: "coder",
+          afterFailures: 1,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run(
+      "run-1",
+      graph,
+      policy,
+      controller.signal,
+    );
+
+    expect(worker.calls).toHaveLength(1);
+    expect(graph.get("T01").status).toBe("cancelled");
+    expect(events.ofType("task.escalated")).toHaveLength(0);
+    expect(graph.get("T01").escalationsGranted).toBeUndefined();
+  });
+
+  it("still accepts a low-confidence success once attempts are exhausted rather than granting one", async () => {
+    // The grant is for tasks that would otherwise be *failed*. A
+    // low-confidence success is accepted work, and that decision is unchanged.
+    const worker = new ScriptedWorker((call) =>
+      makeResult(call.taskId, "success", { confidence: 0.2 }),
+    );
+    const events = new RecordingSink();
+    const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));
+    const policy = makePolicy({
+      defaultMaxAttempts: 1,
+      routing: [{ id: "all-impl", agent: "implementer", strength: "hard" }],
+      escalation: [
+        {
+          id: "low-conf",
+          fromAgent: "implementer",
+          toAgent: "architect",
+          confidenceBelow: 0.5,
+        },
+      ],
+    });
+
+    await scheduler(worker, events).run("run-1", graph, policy);
+
+    expect(worker.calls).toHaveLength(1);
+    expect(graph.get("T01").status).toBe("completed");
+    expect(events.ofType("task.low_confidence")[0]?.data).toMatchObject({
+      accepted: true,
+    });
+  });
+
   it("leaves lastEscalation unset when no escalation ever reroutes the task", async () => {
     const worker = new ScriptedWorker((call) => makeResult(call.taskId));
     const graph = new TaskGraph(makePlan([makeTask({ id: "T01" })]));

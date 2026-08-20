@@ -137,9 +137,13 @@ export function digestEvent(event: AgentEvent): string | undefined {
             (file): file is string => typeof file === "string",
           )
         : [];
-      return files.length === 0
-        ? `not merged — ${str(data.reason) ?? "unknown reason"}`
-        : `not merged — conflicts in ${files.join(", ")}`;
+      if (files.length > 0)
+        return `not merged — conflicts in ${files.join(", ")}`;
+      const reason = str(data.reason) ?? "unknown reason";
+      const detail = str(data.detail);
+      return detail === undefined
+        ? `not merged — ${reason}`
+        : `not merged — ${reason}: ${detail}`;
     }
     case "task.completed": {
       const result = isRecord(data.result) ? data.result : {};

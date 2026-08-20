@@ -44,6 +44,34 @@ export type TaskCancelReason = "dependency-failed" | "aborted";
  * behind it. Retries, escalation, dependency cancellation and abort are all
  * handled here; the router decides *who* runs a task and the worker decides
  * *what* happens when it does.
+ *
+ * ## Attempts, and how escalation earns one
+ *
+ * Ordinarily a task gets `maxAttempts` attempts (`policy.defaultMaxAttempts`,
+ * or the scheduler option) and is declared failed after the last one. On its
+ * own that made most escalation rules unreachable: the shipped template says
+ * "retry a failed worker once, and if the second attempt fails escalate one
+ * tier up", which compiles to `defaultMaxAttempts: 2` with
+ * `afterFailures: 2` — and a rule that only becomes true *after* the last
+ * attempt has nothing left to reroute. Every escalation ladder written that
+ * way was dead code.
+ *
+ * So a matching escalation rule **grants** the attempt it needs: when a task
+ * has failed its last ordinary attempt, `#escalationFor` is consulted, and if
+ * a rule matches that has not already granted this task an attempt, the task
+ * stays pending and the next dispatch runs it against that rule's `toAgent`.
+ * Each rule may grant at most once per task ({@link RuntimeTask.escalationsGranted}),
+ * so a ladder climbs one tier per hop — junior→coder→senior is two rules and
+ * two grants — and terminates: there are finitely many rules and none is ever
+ * spent twice.
+ *
+ * Two deliberate limits on that. An aborted run never grants anything: the
+ * run is being torn down and the task is cancelled, not retried. And a
+ * low-confidence *success* with its attempts exhausted is still accepted
+ * rather than granted a further attempt — that path is not "the task failed",
+ * it is "the policy can no longer improve on work that exists", and turning
+ * an accepted result back into another round of work is a different decision
+ * from rescuing a dead escalation rule.
  */
 export class DeterministicScheduler {
   constructor(
@@ -245,7 +273,9 @@ export class DeterministicScheduler {
       return;
     }
 
-    const retry = canRetry;
+    // The attempt failed. If the ordinary budget is spent, a matching
+    // escalation rule can still buy one more — see the class doc comment.
+    const retry = canRetry || this.#grantEscalatedAttempt(task, policy, signal);
     task.status = retry ? "pending" : "failed";
     await this.#emit(runId, "task.completed", task.spec.id, {
       agent,
@@ -353,6 +383,37 @@ export class DeterministicScheduler {
             confidence < rule.confidenceBelow)),
     );
     return pickLowestId(matches);
+  }
+
+  /**
+   * Decides whether an escalation rule grants `task` an attempt beyond
+   * `maxAttempts`, and records that it did.
+   *
+   * Called only when the ordinary attempt budget is spent and the task would
+   * otherwise be declared failed. The rule consulted is exactly the one
+   * `#escalationFor` will pick when the task is dispatched again, so the
+   * attempt that is granted is the attempt that actually escalates — a grant
+   * never produces a plain same-agent retry. Each rule grants at most once per
+   * task, so a ladder advances one rung per failure and then stops.
+   *
+   * An aborted run grants nothing: the pending sweep is about to cancel this
+   * task, and keeping it pending would only put it back in the queue.
+   */
+  #grantEscalatedAttempt(
+    task: RuntimeTask,
+    policy: OrchestrationPolicy,
+    signal: AbortSignal | undefined,
+  ): boolean {
+    if (signal?.aborted === true) return false;
+
+    const rule = this.#escalationFor(task, policy);
+    if (rule === undefined) return false;
+
+    task.escalationsGranted ??= new Set<string>();
+    const granted = task.escalationsGranted;
+    if (granted.has(rule.id)) return false;
+    granted.add(rule.id);
+    return true;
   }
 
   /**

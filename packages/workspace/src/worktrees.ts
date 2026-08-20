@@ -18,8 +18,18 @@ export { WorktreeError } from "./git.js";
 /** Branch namespace owned by the worktree manager: `agent-task/<runId>/<taskId>`. */
 export const WORKTREE_BRANCH_PREFIX = "agent-task";
 
+/**
+ * kapel's own state directory, relative to the repository root.
+ *
+ * Everything under it belongs to kapel, not to the user's project: the
+ * project template, the session database (and its `-wal`/`-shm` siblings) and
+ * the task checkouts. It is deliberately excluded from the dirty-base check —
+ * see {@link TaskWorktreeManager}'s `#dirtyPaths`.
+ */
+export const AGENT_STATE_DIR = ".agent";
+
 /** Default location of task checkouts, relative to the repository root. */
-export const DEFAULT_WORKTREES_DIR = join(".agent", "worktrees");
+export const DEFAULT_WORKTREES_DIR = join(AGENT_STATE_DIR, "worktrees");
 
 /** Unified diffs are capped so a runaway task cannot blow up memory or a model prompt. */
 export const MAX_DIFF_CHARS = 400_000;
@@ -488,8 +498,18 @@ export class TaskWorktreeManager {
   }
 
   /**
-   * Uncommitted paths in the base checkout, excluding the worktrees directory —
+   * Uncommitted paths in the base checkout that would make a merge unsafe.
+   *
+   * Two things are excluded, and only two. The worktrees directory, because
    * task checkouts nested inside the repository always look untracked to git.
+   * And the rest of `.agent/`, because that is kapel's own state — the
+   * template `kapel init` writes, and the `sessions.db` the REPL opens the
+   * moment a conversation starts. Neither is the user's work, both are
+   * routinely untracked (or tracked and modified, as `sessions.db` is once
+   * someone commits it), and letting either veto the merge meant that on a
+   * fresh repository *every* task came back "dirty-base" and every completed
+   * task's work was thrown away. kapel-owned state must never block a merge;
+   * anything else in the tree still does.
    */
   async #dirtyPaths(signal?: AbortSignal): Promise<string[]> {
     const status = await runGit(
@@ -502,6 +522,9 @@ export class TaskWorktreeManager {
       const path =
         record.length > 3 && record[2] === " " ? record.slice(3) : record;
       if (ignored !== undefined && path.startsWith(ignored)) {
+        continue;
+      }
+      if (isAgentStatePath(path)) {
         continue;
       }
       paths.push(path);
@@ -517,6 +540,19 @@ export class TaskWorktreeManager {
     }
     return `${rel.split(sep).join("/")}/`;
   }
+}
+
+/**
+ * True for a repo-relative path inside kapel's own `.agent/` state directory
+ * (or for the directory entry itself, which is what `git status` reports when
+ * `.agent/` is ignored wholesale).
+ */
+function isAgentStatePath(path: string): boolean {
+  return (
+    path === AGENT_STATE_DIR ||
+    path === `${AGENT_STATE_DIR}/` ||
+    path.startsWith(`${AGENT_STATE_DIR}/`)
+  );
 }
 
 function truncateDiff(diff: string): string {

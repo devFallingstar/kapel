@@ -29,7 +29,10 @@ import {
   isDelegatedBackend,
 } from "./backend.js";
 import type { KapelConfig } from "./config.js";
-import { resolveOrchestratorModel } from "./config-runtime.js";
+import {
+  delegatedModelOverride,
+  resolveOrchestratorModel,
+} from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
 import { createProjectModelResolver } from "./project-models.js";
 import { resolveModelAndProvider } from "./run.js";
@@ -233,21 +236,28 @@ async function resolvePlannerModel(
 /**
  * The model id handed to a delegating CLI for planning.
  *
- * `-m/--model` wins verbatim — the flag names a model in *that CLI's*
- * catalog, so it is passed through untranslated. Otherwise the policy's
- * orchestrator agent
- * decides, through the project's own alias table, exactly as on the native
- * path; `createDelegatedModelResolver` already reads "default" in
- * `config.yaml` as "no opinion". `undefined` means the CLI picks, which is
- * the right answer whenever this project has not named a model the CLI would
- * recognize anyway.
+ * `-m/--model` wins — the flag names a model in *that CLI's* catalog, so it
+ * is passed through untranslated — but it goes through
+ * {@link delegatedModelOverride} first, because the value reaching this
+ * function is not always a human typing `-m`: the REPL fills it in from
+ * `config.models.orchestrator`, which a wizard-configured Claude Code or
+ * Codex setup sets to the `"default"` sentinel. That sentinel is not a model
+ * id, and forwarding it put a literal `--model default` on the CLI's argv and
+ * printed `default (anthropic)` where the honest answer is
+ * `<claude-code default>`. Otherwise the policy's orchestrator agent decides,
+ * through the project's own alias table, exactly as on the native path;
+ * `createDelegatedModelResolver` already reads "default" in `config.yaml` as
+ * "no opinion". `undefined` means the CLI picks, which is the right answer
+ * whenever this project has not named a model the CLI would recognize anyway.
  */
 function delegatedPlannerModelId(
   project: AgentProject,
   policy: OrchestrationPolicy,
   options: PlanCommandOptions,
 ): string | undefined {
-  if (options.model !== undefined && options.model !== "") return options.model;
+  if (options.model !== undefined && options.model !== "") {
+    return delegatedModelOverride({ value: options.model, source: "flag" });
+  }
   return createDelegatedModelResolver(project)(policy.orchestrator);
 }
 

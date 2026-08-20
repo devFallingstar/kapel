@@ -497,6 +497,23 @@ describe("TextRenderer / worktree.* events", () => {
     expect(stream.lines).toEqual(["⚠ T01 not merged (dirty-base)"]);
   });
 
+  it("names the offending paths on a dirty-base refusal", () => {
+    // "dirty-base" on its own leaves the reader with nothing to fix; the
+    // detail the manager already built says which paths are in the way.
+    const { renderer: r, stream } = renderer();
+    r.emit(
+      worktreeEvent("worktree.integrated", {
+        merged: false,
+        reason: "dirty-base",
+        conflictFiles: [],
+        detail: "base working tree has uncommitted changes: src/app.ts",
+      }),
+    );
+    expect(stream.lines).toEqual([
+      "⚠ T01 not merged (dirty-base): base working tree has uncommitted changes: src/app.ts",
+    ]);
+  });
+
   it("mentions a preserved branch but stays quiet about a clean removal", () => {
     const { renderer: r, stream } = renderer();
     r.emit(

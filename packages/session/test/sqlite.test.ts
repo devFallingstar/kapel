@@ -550,6 +550,7 @@ describe("SqliteSessionStore listRuns", () => {
     expect(mid?.taskCounts).toEqual({
       completed: 1,
       failed: 1,
+      partial: 0,
       cancelled: 1,
       total: 3,
     });
@@ -557,11 +558,37 @@ describe("SqliteSessionStore listRuns", () => {
     expect(all[0]?.taskCounts).toEqual({
       completed: 0,
       failed: 0,
+      partial: 0,
       cancelled: 0,
     });
 
     const limited = await store.listRuns({ limit: 2 });
     expect(limited.map((run) => run.id)).toEqual(["new", "mid"]);
+    store.close();
+  });
+
+  it("counts a partial task in its own bucket rather than losing it", async () => {
+    const store = memoryStore();
+    await store.createRun(runRecord({ id: "run", createdAt: 100 }));
+    await store.savePlan("run", makePlan([makeTask("t1"), makeTask("t2")]));
+    await store.appendEvent(
+      makeEvent("run", "task.completed", {
+        taskId: "t1",
+        data: { result: makeResult("t1", { status: "partial" }), final: true },
+      }),
+    );
+    await store.appendEvent(
+      makeEvent("run", "task.cancelled", { taskId: "t2", data: {} }),
+    );
+
+    const [summary] = await store.listRuns();
+    expect(summary?.taskCounts).toEqual({
+      completed: 0,
+      failed: 0,
+      partial: 1,
+      cancelled: 1,
+      total: 2,
+    });
     store.close();
   });
 

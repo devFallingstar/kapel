@@ -17,12 +17,21 @@ import {
  * `claude` binary as a subprocess. Claude Code then runs its own agent loop
  * inside the workspace directory.
  *
- * The CLI is driven headlessly with `-p --output-format stream-json`, which
- * emits newline-delimited JSON. Those lines are raw Claude API streaming
- * events wrapped in a `{"type":"stream_event","event":{...}}` envelope, with a
- * final result object as the last line. All of it is treated as untrusted and
+ * The CLI is driven headlessly with `-p --output-format stream-json
+ * --include-partial-messages`, which emits newline-delimited JSON. Those
+ * lines are raw Claude API streaming events wrapped in a
+ * `{"type":"stream_event","event":{...}}` envelope, interleaved with
+ * whole-message `{"type":"assistant","message":{...}}` lines, with a final
+ * result object as the last line. All of it is treated as untrusted and
  * drifting: unknown types, missing fields, bare (un-enveloped) events and
  * non-JSON lines are tolerated and never crash a run.
+ *
+ * Both shapes of assistant output are understood, because which ones arrive
+ * depends on the installed CLI: without `--include-partial-messages` (or on a
+ * build that does not know the flag) only the whole-message lines are
+ * emitted, and a parser that only spoke deltas showed the user nothing at all.
+ * When both arrive the whole message is deduplicated against the deltas that
+ * already streamed for it, so nothing is printed twice.
  */
 
 const DEFAULT_BINARY = "claude";
@@ -76,6 +85,13 @@ export interface ClaudeCodeBackendOptions {
    * Some CLI builds require the pair in print mode; set false to omit it.
    */
   readonly verbose?: boolean;
+  /**
+   * Pass `--include-partial-messages` (default true), which is what makes the
+   * CLI stream `content_block_delta` events instead of only whole-message
+   * `assistant` lines. Set false for a CLI build that does not know the flag;
+   * the whole-message path still renders, just without token-by-token output.
+   */
+  readonly includePartialMessages?: boolean;
   /** Escape hatch for flags this wrapper does not model yet. */
   readonly extraArgs?: readonly string[];
 }
@@ -203,6 +219,12 @@ interface RunState {
   outputTokens: number;
   /** Output tokens already credited for the message currently streaming. */
   messageOutputTokens: number;
+  /** `message.id` of the message currently streaming, when the CLI named one. */
+  currentMessageId: string | undefined;
+  /** Message ids whose content already arrived as partial stream events. */
+  readonly streamedMessageIds: Set<string>;
+  /** True once any partial content event was seen (id-less fallback). */
+  sawPartialContent: boolean;
   sawUsage: boolean;
   parsedEvents: number;
   readonly errors: string[];
@@ -242,6 +264,9 @@ export class ClaudeCodeBackend {
       inputTokens: 0,
       outputTokens: 0,
       messageOutputTokens: 0,
+      currentMessageId: undefined,
+      streamedMessageIds: new Set<string>(),
+      sawPartialContent: false,
       sawUsage: false,
       parsedEvents: 0,
       errors: [],
@@ -438,6 +463,13 @@ export class ClaudeCodeBackend {
     // default and `verbose: false` opts out.
     if (this.#options.verbose !== false) args.push("--verbose");
 
+    // Without this, Claude Code 2.x reports a turn as a single whole-message
+    // `assistant` line and never streams a `content_block_delta` — the answer
+    // still arrives, but nothing can be shown while it is being written.
+    if (this.#options.includePartialMessages !== false) {
+      args.push("--include-partial-messages");
+    }
+
     const model = this.#options.model;
     if (model !== undefined) args.push("--model", model);
 
@@ -453,8 +485,15 @@ export class ClaudeCodeBackend {
     const extra = this.#options.extraArgs;
     if (extra !== undefined) args.push(...extra);
 
-    // The prompt is always the trailing positional argument.
-    args.push(prompt);
+    // `--` before the prompt, always. Several of the flags above are variadic
+    // in Claude Code's own parser (`--allowedTools <tools...>`, `--add-dir
+    // <directories...>`), so a bare trailing positional is swallowed as one
+    // more value for whichever variadic flag came last and the CLI exits 1
+    // with "Input must be provided either through stdin or as a prompt
+    // argument when using --print". The separator ends option parsing, and a
+    // run with no variadic flag at all accepts it just the same, so it is
+    // unconditional rather than something to reason about per flag set.
+    args.push("--", prompt);
     return args;
   }
 
@@ -710,6 +749,93 @@ function applyResult(line: Record<string, unknown>, state: RunState): void {
   }
 }
 
+/**
+ * Records that partial (delta-style) content arrived for the message being
+ * streamed, so the whole-message `assistant` line that repeats it later is
+ * recognized as a duplicate rather than re-emitted.
+ *
+ * The id is the reliable key; `sawPartialContent` is the fallback for a CLI
+ * that streams deltas without ever naming a message id, where "we already
+ * streamed something" is the best available answer.
+ */
+function markPartialContent(state: RunState): void {
+  state.sawPartialContent = true;
+  if (state.currentMessageId !== undefined) {
+    state.streamedMessageIds.add(state.currentMessageId);
+  }
+}
+
+/**
+ * Normalizes a whole-message `{"type":"assistant","message":{content:[…]}}`
+ * line into the same events the delta path produces, so a CLI that only
+ * reports finished messages still renders text and tool calls.
+ *
+ * Skipped entirely when partial events already carried this message: with
+ * `--include-partial-messages` the CLI emits both shapes for the same
+ * `message.id`, and re-emitting would print the answer twice.
+ */
+function applyAssistantMessage(
+  line: Record<string, unknown>,
+  state: RunState,
+  emit: (type: string, data: unknown) => void,
+): void {
+  const message = isRecord(line.message) ? line.message : undefined;
+  if (message === undefined) return;
+
+  const stopReason = firstString(message.stop_reason);
+  if (stopReason !== undefined) state.stopReason = stopReason;
+
+  const content = Array.isArray(message.content) ? message.content : undefined;
+  if (content === undefined) return;
+
+  const id = firstString(message.id);
+  const duplicate =
+    id === undefined
+      ? state.sawPartialContent
+      : state.streamedMessageIds.has(id);
+  if (duplicate) return;
+  // Also guards against the same whole message being repeated on the stream.
+  if (id !== undefined) state.streamedMessageIds.add(id);
+
+  let index = 0;
+  let emittedText = false;
+  for (const block of content) {
+    if (isRecord(block)) {
+      if (block.type === "text" && typeof block.text === "string") {
+        if (block.text !== "") {
+          state.assistantText += block.text;
+          emit("claude-code.content_block_delta", {
+            type: "stream_event",
+            event: {
+              type: "content_block_delta",
+              index,
+              delta: { type: "text_delta", text: block.text },
+            },
+          });
+          emittedText = true;
+        }
+      } else if (block.type === "tool_use") {
+        emit("claude-code.tool_use", {
+          name: firstString(block.name) ?? "unknown",
+          ...(typeof block.id === "string" ? { id: block.id } : {}),
+          index,
+        });
+      }
+    }
+    index += 1;
+  }
+
+  // Closes the block the synthesized deltas opened, so a renderer that buffers
+  // text until a stop event flushes it instead of holding it to the end of the
+  // run. Only when there was text: a tool-only message has nothing to flush.
+  if (emittedText) {
+    emit("claude-code.message_stop", {
+      type: "stream_event",
+      event: { type: "message_stop" },
+    });
+  }
+}
+
 /** Folds one raw Claude API streaming event into the run state. */
 function applyStreamEvent(
   kind: string,
@@ -720,6 +846,8 @@ function applyStreamEvent(
   switch (kind) {
     case "message_start": {
       const message = isRecord(event.message) ? event.message : undefined;
+      state.currentMessageId =
+        message === undefined ? undefined : firstString(message.id);
       const rawUsage = message === undefined ? undefined : message.usage;
       const usage = isRecord(rawUsage) ? rawUsage : undefined;
       if (usage !== undefined) {
@@ -736,6 +864,7 @@ function applyStreamEvent(
       return;
     }
     case "content_block_start": {
+      markPartialContent(state);
       const block = isRecord(event.content_block)
         ? event.content_block
         : undefined;
@@ -750,9 +879,14 @@ function applyStreamEvent(
       return;
     }
     case "content_block_delta": {
+      markPartialContent(state);
       const delta = isRecord(event.delta) ? event.delta : undefined;
       if (delta?.type !== "text_delta") return;
       if (typeof delta.text === "string") state.assistantText += delta.text;
+      return;
+    }
+    case "assistant": {
+      applyAssistantMessage(event, state, emit);
       return;
     }
     case "message_delta": {

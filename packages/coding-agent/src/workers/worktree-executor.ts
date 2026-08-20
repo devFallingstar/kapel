@@ -254,6 +254,9 @@ export class WorktreeIsolatedExecutor implements WorkerExecutor {
       merged: false,
       conflictFiles: integrated.conflictFiles,
       ...(integrated.reason === undefined ? {} : { reason: integrated.reason }),
+      // Without this, a `dirty-base` refusal reaches the user as three words
+      // and no way to tell which file is in the way.
+      ...(integrated.detail === undefined ? {} : { detail: integrated.detail }),
     });
     await this.#remove(taskId, worktree, true);
     return finalize(inner, {

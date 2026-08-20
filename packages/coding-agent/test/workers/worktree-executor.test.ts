@@ -276,6 +276,45 @@ describe("WorktreeIsolatedExecutor / mutating tasks", () => {
     expect(content).not.toContain("<<<<<<<");
   });
 
+  it("merges even though kapel's own .agent state is untracked in the base", async () => {
+    const repo = await makeRepo();
+    // What `kapel init` plus a REPL session leave behind before any task runs.
+    await mkdir(join(repo, ".agent"), { recursive: true });
+    await writeFile(join(repo, ".agent", "sessions.db"), "sqlite\n");
+    await writeFile(join(repo, ".agent", "sessions.db-wal"), "wal\n");
+    const inner = makeInner({ writes: { T01: { "feature.txt": "added\n" } } });
+    const events = new RecordingSink();
+
+    const result = await makeExecutor(repo, inner, events).execute(
+      taskOf("T01", "implementation"),
+      "coder",
+    );
+
+    expect(result.status).toBe("success");
+    expect(await readFile(join(repo, "feature.txt"), "utf8")).toBe("added\n");
+    expect(events.events[1]?.data).toMatchObject({ merged: true });
+  });
+
+  it("names the dirty paths on the not-merged event so the REPL can show them", async () => {
+    const repo = await makeRepo();
+    await writeFile(join(repo, "half-finished.ts"), "wip\n");
+    const inner = makeInner({ writes: { T01: { "feature.txt": "added\n" } } });
+    const events = new RecordingSink();
+
+    const result = await makeExecutor(repo, inner, events).execute(
+      taskOf("T01", "implementation"),
+      "coder",
+    );
+
+    expect(result.status).toBe("partial");
+    expect(events.events[1]?.data).toMatchObject({
+      merged: false,
+      reason: "dirty-base",
+    });
+    const notMerged = events.events[1]?.data as { detail?: string } | undefined;
+    expect(notMerged?.detail).toContain("half-finished.ts");
+  });
+
   it("keeps a failed task's edits on its branch instead of merging them", async () => {
     const repo = await makeRepo();
     const inner = makeInner({

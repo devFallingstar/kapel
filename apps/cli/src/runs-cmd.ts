@@ -33,15 +33,20 @@ function truncate(text: string, limit: number): string {
  *
  * The total is only known once a plan was saved; before that the counts are
  * all the listing has, so the denominator falls back to how many tasks were
- * heard from at all.
+ * heard from at all — which is why `partial` is named here rather than
+ * dropped: a task whose work exists but did not land is neither a completion
+ * nor a failure, and leaving it out of both the bucket list and the fallback
+ * denominator made a run with one report "0/2 (1 cancelled)".
  */
 export function taskCountsCell(
   counts: PersistedRunSummary["taskCounts"],
 ): string {
-  const seen = counts.completed + counts.failed + counts.cancelled;
+  const seen =
+    counts.completed + counts.failed + counts.partial + counts.cancelled;
   const total = counts.total ?? seen;
   const problems: string[] = [];
   if (counts.failed > 0) problems.push(`${counts.failed} failed`);
+  if (counts.partial > 0) problems.push(`${counts.partial} partial`);
   if (counts.cancelled > 0) problems.push(`${counts.cancelled} cancelled`);
   const cell = `${counts.completed}/${total}`;
   return problems.length === 0 ? cell : `${cell} (${problems.join(", ")})`;

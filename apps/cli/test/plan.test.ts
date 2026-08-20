@@ -438,6 +438,31 @@ describe("agent plan --backend claude-code / codex", () => {
     expect(lines.join("\n")).toContain("Planner: gpt-5-codex (openai)");
   });
 
+  it('treats the wizard\'s "default" sentinel as no model at all', async () => {
+    // The REPL fills `model` in from `config.models.orchestrator`, which is
+    // literally "default" for a wizard-configured Claude Code setup. Passing
+    // it through put `--model default` on the CLI's argv and reported the
+    // planner as "default (anthropic)".
+    const { output, lines } = capture();
+    const { factory, calls } = recordingDelegatedFactory();
+
+    const code = await runPlan(
+      "add a health endpoint",
+      {
+        cwd: workspace,
+        json: false,
+        backend: "claude-code",
+        model: "default",
+      },
+      { output, delegatedPlannerFactory: factory },
+    );
+
+    expect(code).toBe(0);
+    expect(calls[0]?.model).toBeUndefined();
+    expect(lines.join("\n")).toContain("Planner: <claude-code default>");
+    expect(lines.join("\n")).not.toContain("default (anthropic)");
+  });
+
   it("shows a placeholder when neither the flag nor the project names a model", async () => {
     await writeLock(workspace, { ...ROUTING_POLICY, orchestrator: "ghost" });
     const { output, lines } = capture();

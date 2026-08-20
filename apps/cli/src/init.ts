@@ -86,6 +86,58 @@ export function seedModelsInto(
   ].join("\n");
 }
 
+/**
+ * The `.gitignore` entries `kapel init` guarantees.
+ *
+ * `sessions.db*` covers the SQLite file and the `-wal`/`-shm` siblings WAL
+ * mode creates beside it; `worktrees/` is where task checkouts live. Both are
+ * kapel's own state and neither belongs in a project's history — and an
+ * untracked `sessions.db` in particular used to make every merge report
+ * `dirty-base`, which is why this is written rather than merely recommended.
+ * The rest of `.agent/` (the policy, the agent prompts) is a project's own
+ * configuration and is deliberately left committable.
+ */
+export const GITIGNORE_ENTRIES: readonly string[] = [
+  ".agent/sessions.db*",
+  ".agent/worktrees/",
+];
+
+const GITIGNORE_HEADER = "# kapel state (see .agent/)";
+
+/**
+ * Adds {@link GITIGNORE_ENTRIES} to the repository's `.gitignore`, keeping
+ * everything already in it.
+ *
+ * Idempotent by line: an entry already present anywhere in the file (ignoring
+ * surrounding whitespace) is not written again, so re-running `kapel init`
+ * — with or without `--force` — never grows the file. A missing `.gitignore`
+ * is created. Returns the entries it actually added.
+ */
+export async function ensureGitignoreEntries(cwd: string): Promise<string[]> {
+  const gitignorePath = path.join(cwd, ".gitignore");
+
+  let existing = "";
+  try {
+    existing = await readFile(gitignorePath, "utf8");
+  } catch {
+    // No .gitignore yet: one is created below with just these entries.
+  }
+
+  const present = new Set(existing.split("\n").map((line) => line.trim()));
+  const missing = GITIGNORE_ENTRIES.filter((entry) => !present.has(entry));
+  if (missing.length === 0) return [];
+
+  const lines: string[] = [];
+  if (existing !== "") {
+    lines.push(existing.endsWith("\n") ? existing.slice(0, -1) : existing, "");
+  }
+  if (!present.has(GITIGNORE_HEADER)) lines.push(GITIGNORE_HEADER);
+  lines.push(...missing);
+
+  await writeFile(gitignorePath, `${lines.join("\n")}\n`, "utf8");
+  return missing;
+}
+
 async function pathExists(candidate: string): Promise<boolean> {
   try {
     await stat(candidate);
@@ -177,6 +229,17 @@ export async function runInit(options: InitOptions): Promise<number> {
       // a template without a readable config.yaml still leaves a usable
       // project behind, so this never fails `kapel init`.
     }
+  }
+
+  try {
+    const added = await ensureGitignoreEntries(options.cwd);
+    if (added.length > 0) {
+      console.log(`  (added to .gitignore: ${added.join(", ")})`);
+    }
+  } catch {
+    // A read-only or otherwise unwritable .gitignore is not a reason to fail
+    // an init that has already copied the template; the project still works,
+    // it just has kapel's state showing up in `git status`.
   }
   return 0;
 }

@@ -17,7 +17,7 @@ let seq = 0;
 interface SeedTask {
   readonly id: string;
   readonly agent: string;
-  readonly status: "success" | "failed";
+  readonly status: "success" | "failed" | "partial" | "cancelled";
 }
 
 /** Writes a run with a plan and one settled result per named task. */
@@ -62,17 +62,47 @@ async function seedRun(
 describe("taskCountsCell", () => {
   it("spells out what went wrong beside the completion count", () => {
     expect(
-      taskCountsCell({ completed: 3, failed: 0, cancelled: 0, total: 3 }),
+      taskCountsCell({
+        completed: 3,
+        failed: 0,
+        partial: 0,
+        cancelled: 0,
+        total: 3,
+      }),
     ).toBe("3/3");
     expect(
-      taskCountsCell({ completed: 1, failed: 1, cancelled: 1, total: 3 }),
+      taskCountsCell({
+        completed: 1,
+        failed: 1,
+        partial: 0,
+        cancelled: 1,
+        total: 3,
+      }),
     ).toBe("1/3 (1 failed, 1 cancelled)");
   });
 
+  it("names partial tasks instead of dropping them from the line", () => {
+    expect(
+      taskCountsCell({
+        completed: 0,
+        failed: 0,
+        partial: 1,
+        cancelled: 1,
+        total: 2,
+      }),
+    ).toBe("0/2 (1 partial, 1 cancelled)");
+  });
+
   it("falls back to the tasks it heard from when no plan was saved", () => {
-    expect(taskCountsCell({ completed: 2, failed: 0, cancelled: 0 })).toBe(
-      "2/2",
-    );
+    expect(
+      taskCountsCell({ completed: 2, failed: 0, partial: 0, cancelled: 0 }),
+    ).toBe("2/2");
+  });
+
+  it("counts partial tasks in the fallback denominator so the totals add up", () => {
+    expect(
+      taskCountsCell({ completed: 1, failed: 0, partial: 1, cancelled: 0 }),
+    ).toBe("1/2 (1 partial)");
   });
 });
 
@@ -195,6 +225,40 @@ describe("agent runs", () => {
       status: "failed",
       startedAt: "2023-11-14T22:28:20.000Z",
       taskCounts: { completed: 1, failed: 1, total: 3 },
+    });
+  });
+
+  it("counts a partial task in the listing and under --json", async () => {
+    const store = openStore();
+    try {
+      await seedRun(store, {
+        id: "run-partial",
+        objective: "land the token helper",
+        createdAt: 1_700_000_000_000,
+        status: "failed",
+        plan: SAMPLE_PLAN,
+        tasks: [
+          // A task whose branch could not be merged: work exists, it just
+          // did not land. Neither a completion nor a failure.
+          { id: "T01", agent: "coder", status: "partial" },
+          { id: "T02", agent: "reviewer", status: "cancelled" },
+        ],
+      });
+    } finally {
+      store.close();
+    }
+
+    const human = capture();
+    expect(await runRunsCommand({ cwd: workspace, json: false }, human)).toBe(
+      0,
+    );
+    expect(human.lines[1]).toContain("0/3 (1 partial, 1 cancelled)");
+
+    const json = capture();
+    expect(await runRunsCommand({ cwd: workspace, json: true }, json)).toBe(0);
+    expect(JSON.parse(json.lines[0] ?? "[]")[0]).toMatchObject({
+      id: "run-partial",
+      taskCounts: { completed: 0, failed: 0, partial: 1, cancelled: 1 },
     });
   });
 

@@ -48,6 +48,14 @@ export interface PersistedRun {
 export interface RunTaskCounts {
   readonly completed: number;
   readonly failed: number;
+  /**
+   * Tasks whose work exists but did not fully land — a worker that came back
+   * `partial`, or one whose branch could not be merged. Counted in its own
+   * bucket rather than folded into `completed` or `failed`, because a run
+   * whose partial tasks were invisible reported totals that did not add up
+   * ("0/2 (1 cancelled)" for a run with a partial and a cancellation).
+   */
+  readonly partial: number;
   readonly cancelled: number;
   /** Total planned tasks — only known once a plan has been saved. */
   readonly total?: number;
@@ -464,6 +472,7 @@ export class SqliteSessionStore implements SessionStore {
         taskCounts: {
           completed: by.get("success") ?? 0,
           failed: by.get("failed") ?? 0,
+          partial: by.get("partial") ?? 0,
           cancelled: by.get("cancelled") ?? 0,
           ...(typeof total === "number" ? { total } : {}),
         },

@@ -69,6 +69,15 @@ export interface RuntimeTask {
     readonly from: string;
     readonly to: string;
   };
+  /**
+   * Ids of escalation rules that have already bought this task an attempt it
+   * would not otherwise have had (see the scheduler's `#grantEscalatedAttempt`).
+   * Each rule may do so at most once per task, which is what keeps a chain of
+   * escalations finite: junior→coder→senior is three agents and two rules, so
+   * it walks to the top and stops, and a policy whose rules point back at each
+   * other runs out of unused rules instead of retrying forever.
+   */
+  escalationsGranted?: Set<string>;
 }
 
 /** Results a task's direct dependencies produced, handed to its worker. */

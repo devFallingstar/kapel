@@ -2077,13 +2077,20 @@ export async function runInteractive(
       onCustomCommandsChanged: (names) => {
         customCommandNames.current = names;
       },
+      // `chatAlias`, not `alias`: on a delegated backend the conversation
+      // already decided what it honestly calls its model — the chosen id, or
+      // `default` when nobody chose one — and `/plan` and `/orchestrate` must
+      // report and forward the same thing the chat does. On the native path
+      // the two are the same value.
       orchestrate: (objective) =>
         runOrchestrate(
           objective,
-          orchestrateOptionsFor(options, alias, backend),
+          orchestrateOptionsFor(options, chatAlias, backend),
         ),
       plan: (objective, output) =>
-        runPlan(objective, planOptionsFor(options, alias, backend), { output }),
+        runPlan(objective, planOptionsFor(options, chatAlias, backend), {
+          output,
+        }),
       runs: (output) =>
         runRunsCommand({ cwd: options.cwd, json: false }, { output }),
       resumeRun: (runId, output) =>
