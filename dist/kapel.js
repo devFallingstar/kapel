@@ -38,7 +38,7 @@ function finishTuiState(state, outcome) {
 }
 function reduceTuiEvent(state, event2) {
   const base = adoptEnvelope(state, event2);
-  const data = isRecord10(event2.data) ? event2.data : {};
+  const data = isRecord11(event2.data) ? event2.data : {};
   const tasks = reduceTasks(base.tasks, event2, data);
   const line = formatEventLine(event2);
   const log = line === void 0 ? base.log : appendLog(base.log, line);
@@ -47,7 +47,7 @@ function reduceTuiEvent(state, event2) {
   return { ...base, tasks, log };
 }
 function formatEventLine(event2) {
-  const data = isRecord10(event2.data) ? event2.data : {};
+  const data = isRecord11(event2.data) ? event2.data : {};
   if (event2.type.startsWith("codex."))
     return formatCodexLine(data);
   const taskId = taskIdOf2(event2, data);
@@ -71,7 +71,7 @@ function formatEventLine(event2) {
       return `\u25B6 ${taskId} \u2192 ${agent} (attempt ${num2(data.attempt) ?? 1})`;
     }
     case "task.completed": {
-      const result = isRecord10(data.result) ? data.result : {};
+      const result = isRecord11(data.result) ? data.result : {};
       const glyph2 = result.status === "success" ? "\u2714" : "\u2716";
       const suffix = data.final === false ? " (retrying)" : "";
       return `${glyph2} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
@@ -148,7 +148,7 @@ function reduceTasks(tasks, event2, data) {
         break;
       }
       case "task.completed": {
-        const result = isRecord10(data.result) ? data.result : {};
+        const result = isRecord11(data.result) ? data.result : {};
         const summary = str2(result.summary);
         if (summary !== void 0)
           draft.summary = firstLine3(summary);
@@ -240,7 +240,7 @@ function appendLog(log, line) {
   const next = [...log, line];
   return next.length <= MAX_LOG_LINES ? next : next.slice(next.length - MAX_LOG_LINES);
 }
-function isRecord10(value) {
+function isRecord11(value) {
   return typeof value === "object" && value !== null;
 }
 function str2(value) {
@@ -300,9 +300,9 @@ function formatCodexLine(data) {
   }
 }
 function codexItem(data) {
-  if (isRecord10(data.item))
+  if (isRecord11(data.item))
     return data.item;
-  if (isRecord10(data.msg) && isRecord10(data.msg.item))
+  if (isRecord11(data.msg) && isRecord11(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -315,7 +315,7 @@ function codexMessageText2(item) {
     return str2(content);
   if (!Array.isArray(content))
     return void 0;
-  const joined = content.map((part) => typeof part === "string" ? part : isRecord10(part) ? str2(part.text) ?? "" : "").join("");
+  const joined = content.map((part) => typeof part === "string" ? part : isRecord11(part) ? str2(part.text) ?? "" : "").join("");
   return str2(joined);
 }
 function codexCommandText2(item) {
@@ -336,10 +336,10 @@ function codexFileText(item) {
   for (const change of changes) {
     if (typeof change === "string")
       paths.push(change);
-    else if (isRecord10(change)) {
-      const path15 = str2(change.path) ?? str2(change.file);
-      if (path15 !== void 0)
-        paths.push(path15);
+    else if (isRecord11(change)) {
+      const path18 = str2(change.path) ?? str2(change.file);
+      if (path18 !== void 0)
+        paths.push(path18);
     }
   }
   return paths.length === 0 ? void 0 : paths.join(", ");
@@ -383,8 +383,8 @@ function footer(state, done, failed) {
   return `\u25A0 finished \u2014 ${counts}${state.outcome === void 0 ? "" : ` \xB7 ${state.outcome}`}`;
 }
 function taskRow2(task, idWidth, agentWidth) {
-  const head = `${GLYPHS[task.status]} ${pad(task.id, idWidth)}`;
-  const agent = agentWidth === 0 ? "" : ` ${pad(task.agent ?? "", agentWidth)}`;
+  const head = `${GLYPHS[task.status]} ${pad2(task.id, idWidth)}`;
+  const agent = agentWidth === 0 ? "" : ` ${pad2(task.agent ?? "", agentWidth)}`;
   const attempts = task.attempts > 1 ? ` \xD7${task.attempts}` : "";
   const detailText = [task.note, task.summary].find((part) => part !== void 0 && part !== "");
   const prefix = `${head}${agent}${attempts}`;
@@ -410,7 +410,7 @@ function columnWidth(values, min, max) {
   const widest = values.reduce((width, value) => Math.max(width, value.length), min);
   return Math.min(widest, max);
 }
-function pad(value, width) {
+function pad2(value, width) {
   const text2 = truncate4(value, width);
   return text2.padEnd(width, " ");
 }
@@ -547,8 +547,11 @@ var init_dist = __esm({
 });
 
 // apps/cli/dist/program.js
-import path14 from "node:path";
+import path17 from "node:path";
 import { Command } from "commander";
+
+// apps/cli/dist/backend.js
+import { spawn as spawn5 } from "node:child_process";
 
 // packages/orchestration/dist/conflicts.js
 var MUTATING_TASK_TYPES = /* @__PURE__ */ new Set([
@@ -1645,11 +1648,11 @@ function fieldChanges(before, after) {
   const keys = /* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)]);
   keys.delete("id");
   const changes = [];
-  for (const field of [...keys].sort()) {
-    const beforeValue = before[field];
-    const afterValue = after[field];
+  for (const field2 of [...keys].sort()) {
+    const beforeValue = before[field2];
+    const afterValue = after[field2];
     if (!valuesEqual(beforeValue, afterValue)) {
-      changes.push({ field, before: beforeValue, after: afterValue });
+      changes.push({ field: field2, before: beforeValue, after: afterValue });
     }
   }
   return changes;
@@ -1689,9 +1692,9 @@ var DEFAULT_FIELDS = [
 ];
 function diffDefaults(before, after) {
   const changes = [];
-  for (const field of DEFAULT_FIELDS) {
-    if (before[field] !== after[field]) {
-      changes.push({ field, before: before[field], after: after[field] });
+  for (const field2 of DEFAULT_FIELDS) {
+    if (before[field2] !== after[field2]) {
+      changes.push({ field: field2, before: before[field2], after: after[field2] });
     }
   }
   return changes;
@@ -1880,8 +1883,8 @@ function serializeLockfile(lock) {
 }
 function describeIssues(error) {
   return error.issues.map((issue) => {
-    const path15 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
-    return `${path15}: ${issue.message}`;
+    const path18 = issue.path.length === 0 ? "(root)" : issue.path.join(".");
+    return `${path18}: ${issue.message}`;
   }).join("; ");
 }
 function parseLockfile(content) {
@@ -4386,8 +4389,8 @@ function isNotFound(err) {
 }
 function formatZodIssues(error) {
   return error.issues.map((issue) => {
-    const path15 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    return `${path15}: ${issue.message}`;
+    const path18 = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    return `${path18}: ${issue.message}`;
   });
 }
 
@@ -4528,7 +4531,8 @@ ${problems.map((problem) => `  - ${problem}`).join("\n")}`);
 // packages/coding-agent/dist/project/config.js
 var ModelRefSchema = z8.object({
   provider: z8.string().min(1, "must not be empty"),
-  model: z8.string().min(1, "must not be empty")
+  model: z8.string().min(1, "must not be empty"),
+  backend: z8.enum(["native", "codex", "claude-code"]).optional()
 }).strict();
 var ValidatorSchema = z8.object({
   name: z8.string().min(1, "must not be empty"),
@@ -4580,7 +4584,11 @@ async function loadProjectConfig(agentDir) {
   }
   const models = {};
   for (const [alias, ref] of Object.entries(result.data.models ?? {})) {
-    models[alias] = { provider: ref.provider, model: ref.model };
+    models[alias] = {
+      provider: ref.provider,
+      model: ref.model,
+      ...ref.backend === void 0 ? {} : { backend: ref.backend }
+    };
   }
   const validators = (result.data.validation ?? []).map((entry) => ({
     name: entry.name,
@@ -5850,9 +5858,9 @@ function parsePorcelain(stdout) {
       continue;
     const x = record[0] ?? " ";
     const y = record[1] ?? " ";
-    const path15 = record.slice(3);
-    if (path15 !== "")
-      paths.add(path15);
+    const path18 = record.slice(3);
+    if (path18 !== "")
+      paths.add(path18);
     if (x === "R" || x === "C" || y === "R" || y === "C")
       index2 += 1;
   }
@@ -6286,6 +6294,50 @@ function createDelegatedModelResolver(project) {
   };
 }
 
+// packages/coding-agent/dist/workers/mixed-executor.js
+function createAgentBackendResolver(project) {
+  return (agent) => {
+    const projectAgent = project.agent(agent);
+    if (projectAgent === void 0)
+      return void 0;
+    return project.config.models[projectAgent.modelAlias]?.backend;
+  };
+}
+function referencedBackends(project, defaultBackend) {
+  const resolve5 = createAgentBackendResolver(project);
+  const backends = /* @__PURE__ */ new Set([defaultBackend]);
+  for (const agent of project.agents) {
+    backends.add(resolve5(agent.name) ?? defaultBackend);
+  }
+  return backends;
+}
+var MixedBackendWorkerExecutor = class {
+  #options;
+  #executors = /* @__PURE__ */ new Map();
+  constructor(options) {
+    this.#options = options;
+  }
+  /** The backend `agent` runs on: its own, or the run's when it names none. */
+  backendFor(agent) {
+    return this.#options.resolveAgentBackend(agent) ?? this.#options.defaultBackend;
+  }
+  #executorFor(agent) {
+    const backend = this.backendFor(agent);
+    const existing = this.#executors.get(backend);
+    if (existing !== void 0)
+      return existing;
+    const created = this.#options.createExecutor(backend);
+    this.#executors.set(backend, created);
+    return created;
+  }
+  describeAgent(agent) {
+    return this.#executorFor(agent).describeAgent?.(agent);
+  }
+  async execute(task, agent, signal, context) {
+    return this.#executorFor(agent).execute(task, agent, signal, context);
+  }
+};
+
 // packages/workspace/dist/index.js
 import { execFile as execFile7 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
@@ -6381,20 +6433,20 @@ function splitLines(stdout) {
 }
 function parseWorktreeList(stdout) {
   const entries = [];
-  let path15;
+  let path18;
   let branch;
   const flush = () => {
-    if (path15 !== void 0) {
-      entries.push({ path: path15, branch });
+    if (path18 !== void 0) {
+      entries.push({ path: path18, branch });
     }
-    path15 = void 0;
+    path18 = void 0;
     branch = void 0;
   };
   for (const line of stdout.split("\n")) {
     const value = line.trimEnd();
     if (value.startsWith("worktree ")) {
       flush();
-      path15 = value.slice("worktree ".length);
+      path18 = value.slice("worktree ".length);
     } else if (value.startsWith("branch refs/heads/")) {
       branch = value.slice("branch refs/heads/".length);
     }
@@ -6402,11 +6454,11 @@ function parseWorktreeList(stdout) {
   flush();
   return entries;
 }
-async function realPathOrSelf(path15) {
+async function realPathOrSelf(path18) {
   try {
-    return await realpath(path15);
+    return await realpath(path18);
   } catch {
-    return resolve2(path15);
+    return resolve2(path18);
   }
 }
 function isUnder(parent, child) {
@@ -6454,12 +6506,12 @@ var TaskWorktreeManager = class {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path15 = join7(this.worktreesDir, safeRunId, safeTaskId);
+    const path18 = join7(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
-    await this.#removeLeftovers(path15, branch, signal);
-    await mkdir2(dirname2(path15), { recursive: true });
-    await this.#addWorktree(path15, branch, baseCommit, signal);
-    return { path: path15, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+    await this.#removeLeftovers(path18, branch, signal);
+    await mkdir2(dirname2(path18), { recursive: true });
+    await this.#addWorktree(path18, branch, baseCommit, signal);
+    return { path: path18, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
   }
   /**
    * Runs `git worktree add`, retrying past {@link isWorktreeAddRace} up to
@@ -6467,9 +6519,9 @@ var TaskWorktreeManager = class {
    * race-shaped one on the final attempt — surfaces immediately as a
    * {@link WorktreeError}, exactly as a single `runGit` call would have.
    */
-  async #addWorktree(path15, branch, baseCommit, signal) {
+  async #addWorktree(path18, branch, baseCommit, signal) {
     for (let attempt = 1; attempt <= WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
-      const result = await tryGit(["worktree", "add", path15, "-b", branch, baseCommit], { cwd: this.repoRoot, operation: "create", signal });
+      const result = await tryGit(["worktree", "add", path18, "-b", branch, baseCommit], { cwd: this.repoRoot, operation: "create", signal });
       if (result.exitCode === 0) {
         return;
       }
@@ -6477,16 +6529,16 @@ var TaskWorktreeManager = class {
       if (isLastAttempt || !isWorktreeAddRace(result.stderr)) {
         throw new WorktreeError({
           operation: "create",
-          message: `git worktree add ${path15} -b ${branch} ${baseCommit} failed with exit code ${result.exitCode}`,
+          message: `git worktree add ${path18} -b ${branch} ${baseCommit} failed with exit code ${result.exitCode}`,
           stderr: result.stderr.trim() || void 0
         });
       }
-      await tryGit(["worktree", "remove", "--force", path15], {
+      await tryGit(["worktree", "remove", "--force", path18], {
         cwd: this.repoRoot,
         operation: "create.retry-cleanup-worktree",
         signal
       });
-      await rm(path15, { recursive: true, force: true });
+      await rm(path18, { recursive: true, force: true });
       await tryGit(["worktree", "prune"], {
         cwd: this.repoRoot,
         operation: "create.retry-prune",
@@ -6677,8 +6729,8 @@ var TaskWorktreeManager = class {
     });
     const prunedWorktrees = [];
     for (const entry of parseWorktreeList(listed.stdout)) {
-      const real = await realPathOrSelf(entry.path);
-      if (real === realRepoRoot || !isUnder(realWorktreesDir, real)) {
+      const real2 = await realPathOrSelf(entry.path);
+      if (real2 === realRepoRoot || !isUnder(realWorktreesDir, real2)) {
         continue;
       }
       await tryGit(["worktree", "remove", "--force", entry.path], {
@@ -6745,13 +6797,13 @@ var TaskWorktreeManager = class {
     }
     return head.stdout.trim();
   }
-  async #removeLeftovers(path15, branch, signal) {
-    await tryGit(["worktree", "remove", "--force", path15], {
+  async #removeLeftovers(path18, branch, signal) {
+    await tryGit(["worktree", "remove", "--force", path18], {
       cwd: this.repoRoot,
       operation: "create.cleanup-worktree",
       signal
     });
-    await rm(path15, { recursive: true, force: true });
+    await rm(path18, { recursive: true, force: true });
     await tryGit(["worktree", "prune"], {
       cwd: this.repoRoot,
       operation: "create.prune",
@@ -6782,14 +6834,14 @@ var TaskWorktreeManager = class {
     const ignored = this.#worktreesPrefix();
     const paths = [];
     for (const record of splitNul(status.stdout)) {
-      const path15 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
-      if (ignored !== void 0 && path15.startsWith(ignored)) {
+      const path18 = record.length > 3 && record[2] === " " ? record.slice(3) : record;
+      if (ignored !== void 0 && path18.startsWith(ignored)) {
         continue;
       }
-      if (isAgentStatePath(path15)) {
+      if (isAgentStatePath(path18)) {
         continue;
       }
-      paths.push(path15);
+      paths.push(path18);
     }
     return paths;
   }
@@ -6802,8 +6854,8 @@ var TaskWorktreeManager = class {
     return `${rel.split(sep3).join("/")}/`;
   }
 };
-function isAgentStatePath(path15) {
-  return path15 === AGENT_STATE_DIR || path15 === `${AGENT_STATE_DIR}/` || path15.startsWith(`${AGENT_STATE_DIR}/`);
+function isAgentStatePath(path18) {
+  return path18 === AGENT_STATE_DIR || path18 === `${AGENT_STATE_DIR}/` || path18.startsWith(`${AGENT_STATE_DIR}/`);
 }
 function truncateDiff(diff) {
   if (diff.length <= MAX_DIFF_CHARS2) {
@@ -7051,7 +7103,7 @@ function codexLoginGuidance(availability) {
 function claudeCodeInstallGuidance(availability) {
   const lines = [
     "The Claude Code CLI is not installed.",
-    "Install it with `npm install -g @anthropic-ai/claude-code`, then run `claude` once and log in with your Claude subscription."
+    "Install it with `npm install -g @anthropic-ai/claude-code`, then authenticate with `claude auth login`."
   ];
   if (availability.detail !== void 0 && availability.detail !== "") {
     lines.push(availability.detail);
@@ -7061,7 +7113,7 @@ function claudeCodeInstallGuidance(availability) {
 function claudeCodeLoginGuidance(availability) {
   const lines = [
     "The Claude Code CLI is installed but you are not logged in.",
-    "Run `claude` once and log in with your Claude subscription \u2014 no Anthropic API key needed."
+    "Run `claude auth login` to authenticate with your Claude subscription \u2014 no Anthropic API key needed."
   ];
   if (availability.detail !== void 0 && availability.detail !== "") {
     lines.push(availability.detail);
@@ -7095,6 +7147,59 @@ async function delegatedBackendError(backend) {
   if (!availability.loggedIn)
     return codexLoginGuidance(availability);
   return void 0;
+}
+function spawnCodexLogin(cwd = process.cwd()) {
+  const candidates = executableCandidates("codex");
+  const attempt = (index2) => {
+    const binary = candidates[index2];
+    if (binary === void 0) {
+      return Promise.resolve({
+        error: "could not find the codex CLI on PATH."
+      });
+    }
+    return new Promise((resolve5) => {
+      const child = spawn5(binary, ["login"], { cwd, stdio: "inherit" });
+      child.once("error", (error) => {
+        if (error.code === "ENOENT" && index2 + 1 < candidates.length) {
+          resolve5(attempt(index2 + 1));
+          return;
+        }
+        resolve5({ error: error.message });
+      });
+      child.once("exit", (code) => {
+        resolve5({ exitCode: code });
+      });
+    });
+  };
+  return attempt(0);
+}
+function spawnClaudeCodeLogin(cwd = process.cwd()) {
+  const candidates = executableCandidates("claude");
+  const attempt = (index2) => {
+    const binary = candidates[index2];
+    if (binary === void 0) {
+      return Promise.resolve({
+        error: "could not find the claude CLI on PATH."
+      });
+    }
+    return new Promise((resolve5) => {
+      const child = spawn5(binary, ["auth", "login"], {
+        cwd,
+        stdio: "inherit"
+      });
+      child.once("error", (error) => {
+        if (error.code === "ENOENT" && index2 + 1 < candidates.length) {
+          resolve5(attempt(index2 + 1));
+          return;
+        }
+        resolve5({ error: error.message });
+      });
+      child.once("exit", (code) => {
+        resolve5({ exitCode: code });
+      });
+    });
+  };
+  return attempt(0);
 }
 
 // apps/cli/dist/config.js
@@ -7223,13 +7328,13 @@ async function* parseSse(stream, signal) {
     if (line.startsWith(":"))
       return void 0;
     const colon = line.indexOf(":");
-    const field = colon === -1 ? line : line.slice(0, colon);
+    const field2 = colon === -1 ? line : line.slice(0, colon);
     let value = colon === -1 ? "" : line.slice(colon + 1);
     if (value.startsWith(" "))
       value = value.slice(1);
-    if (field === "event")
+    if (field2 === "event")
       eventName = value;
-    else if (field === "data")
+    else if (field2 === "data")
       dataLines.push(value);
     return void 0;
   };
@@ -8020,8 +8125,14 @@ function usageRecordingProvider(provider, recorder, tags) {
 }
 
 // apps/cli/dist/config.js
-var KAPEL_CONFIG_VERSION = 2;
+var KAPEL_CONFIG_VERSION = 3;
 var BACKENDS = ["claude-code", "codex", "native"];
+var KAPEL_ROLES = [
+  "orchestrator",
+  "complex",
+  "middle",
+  "low"
+];
 function envValue(env, name) {
   const value = (env ?? process.env)[name];
   return value === void 0 || value === "" ? void 0 : value;
@@ -8080,24 +8191,52 @@ function parsePermissionBlock(raw) {
   }
   return { rules, warnings };
 }
-function migrateV1Models(modelRecord) {
-  const orchestrator = modelString(modelRecord.orchestrator);
-  const worker = modelString(modelRecord.worker);
-  const cheap = modelString(modelRecord.cheap);
-  if (orchestrator === void 0 || worker === void 0 || cheap === void 0) {
+function parseBackendList(raw) {
+  if (!Array.isArray(raw) || raw.length === 0)
     return void 0;
+  const backends = [];
+  for (const entry of raw) {
+    if (!isBackend(entry) || backends.includes(entry))
+      return void 0;
+    backends.push(entry);
   }
-  return { orchestrator, complex: worker, middle: worker, low: cheap };
+  return backends;
 }
-function parseV2Models(modelRecord) {
+function parseRoleModel(raw, allowed) {
+  if (!isRecord6(raw))
+    return void 0;
+  const backend = raw.backend;
+  if (!isBackend(backend) || !allowed.includes(backend))
+    return void 0;
+  const model = modelString(raw.model);
+  if (model === void 0)
+    return void 0;
+  return { backend, model };
+}
+function migrateLegacyModels(version, modelRecord, backend) {
   const orchestrator = modelString(modelRecord.orchestrator);
-  const complex = modelString(modelRecord.complex);
-  const middle = modelString(modelRecord.middle);
-  const low = modelString(modelRecord.low);
+  const complex = version === 1 ? modelString(modelRecord.worker) : modelString(modelRecord.complex);
+  const middle = version === 1 ? modelString(modelRecord.worker) : modelString(modelRecord.middle);
+  const low = version === 1 ? modelString(modelRecord.cheap) : modelString(modelRecord.low);
   if (orchestrator === void 0 || complex === void 0 || middle === void 0 || low === void 0) {
     return void 0;
   }
-  return { orchestrator, complex, middle, low };
+  return {
+    orchestrator: { backend, model: orchestrator },
+    complex: { backend, model: complex },
+    middle: { backend, model: middle },
+    low: { backend, model: low }
+  };
+}
+function parseV3Models(modelRecord, backends) {
+  const models = {};
+  for (const role of KAPEL_ROLES) {
+    const parsed = parseRoleModel(modelRecord[role], backends);
+    if (parsed === void 0)
+      return void 0;
+    models[role] = parsed;
+  }
+  return models;
 }
 function parseConfig(raw) {
   const none = { config: void 0, warnings: [] };
@@ -8105,15 +8244,18 @@ function parseConfig(raw) {
     return none;
   const record = raw;
   const version = record.version;
-  if (version !== KAPEL_CONFIG_VERSION && version !== 1)
+  const legacy = version === 1 || version === 2;
+  if (version !== KAPEL_CONFIG_VERSION && !legacy)
     return none;
-  if (!isBackend(record.backend))
+  const backends = legacy ? isBackend(record.backend) ? [record.backend] : void 0 : parseBackendList(record.backends);
+  if (backends === void 0)
     return none;
   const models = record.models;
   if (typeof models !== "object" || models === null)
     return none;
   const modelRecord = models;
-  const parsed = version === 1 ? migrateV1Models(modelRecord) : parseV2Models(modelRecord);
+  const firstBackend = backends[0];
+  const parsed = legacy && firstBackend !== void 0 ? migrateLegacyModels(version, modelRecord, firstBackend) : parseV3Models(modelRecord, backends);
   if (parsed === void 0)
     return none;
   const { rules: permission, warnings } = parsePermissionBlock(record.permission);
@@ -8121,7 +8263,7 @@ function parseConfig(raw) {
   return {
     config: {
       version: KAPEL_CONFIG_VERSION,
-      backend: record.backend,
+      backends,
       models: parsed,
       updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
       ...Object.keys(permission).length > 0 ? { permission } : {}
@@ -8154,7 +8296,7 @@ async function saveKapelConfig(config, env) {
   await mkdir3(path.dirname(filePath), { recursive: true });
   const full = {
     version: KAPEL_CONFIG_VERSION,
-    backend: config.backend,
+    backends: [...config.backends],
     models: {
       orchestrator: config.models.orchestrator,
       complex: config.models.complex,
@@ -8242,14 +8384,42 @@ function choicesForBackend(backend) {
     return codexChoices();
   return nativeChoices();
 }
-function modelChoicesFor(backend, role) {
-  const suggested = defaultModelsFor(backend)[role];
-  return choicesForBackend(backend).map((choice) => {
-    if (choice.value !== suggested)
-      return choice;
-    const hint = choice.hint === void 0 ? "suggested for this role" : `${choice.hint} \xB7 suggested for this role`;
-    return { value: choice.value, label: choice.label, hint };
-  });
+function encodeRoleModel(entry) {
+  return `${entry.backend}:${entry.model}`;
+}
+function decodeRoleModel(value) {
+  const separator = value.indexOf(":");
+  if (separator === -1)
+    return void 0;
+  const backend = value.slice(0, separator);
+  const model = value.slice(separator + 1);
+  if (!isBackend(backend) || model === "")
+    return void 0;
+  return { backend, model };
+}
+function modelChoicesFor(backends, role) {
+  const suggested = defaultRoleModel(backends, role);
+  const qualify = backends.length > 1;
+  const choices = [];
+  for (const backend of backends) {
+    for (const choice of choicesForBackend(backend)) {
+      const parts = [];
+      if (qualify)
+        parts.push(backendLabel(backend));
+      if (choice.hint !== void 0)
+        parts.push(choice.hint);
+      if (backend === suggested.backend && choice.value === suggested.model) {
+        parts.push("suggested for this role");
+      }
+      const hint = parts.join(" \xB7 ");
+      choices.push({
+        value: encodeRoleModel({ backend, model: choice.value }),
+        label: choice.label,
+        ...hint === "" ? {} : { hint }
+      });
+    }
+  }
+  return choices;
 }
 function pickNative(preferred) {
   const catalog = defaultModelCatalog();
@@ -8283,54 +8453,307 @@ function defaultModelsFor(backend) {
     low: pickNative("claude-haiku-4-5")
   };
 }
+var DEFAULT_MODEL_PREFERENCE = [
+  "claude-code",
+  "codex",
+  "native"
+];
+function defaultRoleModel(backends, role) {
+  const backend = DEFAULT_MODEL_PREFERENCE.find((candidate) => backends.includes(candidate)) ?? backends[0] ?? "native";
+  return { backend, model: defaultModelsFor(backend)[role] };
+}
+function soleExecutionBackend(config) {
+  return config.models.orchestrator.backend;
+}
 function backendLabel(backend) {
   return backendChoices().find((choice) => choice.value === backend)?.label ?? backend;
 }
+var ROLE_DESCRIPTIONS = {
+  orchestrator: "orchestrator model",
+  complex: "worker model (complex tasks)",
+  middle: "worker model (everyday tasks)",
+  low: "worker model (small tasks)"
+};
+function describeBackends(backends) {
+  return backends.map((backend) => `${backendLabel(backend)} (${backend})`).join(", ");
+}
+function describeRoleModel(entry) {
+  return `${entry.model} (${entry.backend})`;
+}
 function describeConfig(config) {
   return [
-    `backend: ${backendLabel(config.backend)} (${config.backend})`,
-    `orchestrator model: ${config.models.orchestrator}`,
-    `worker model (complex tasks): ${config.models.complex}`,
-    `worker model (everyday tasks): ${config.models.middle}`,
-    `worker model (small tasks): ${config.models.low}`,
+    `backends: ${describeBackends(config.backends)}`,
+    ...KAPEL_ROLES.map((role) => `${ROLE_DESCRIPTIONS[role]}: ${describeRoleModel(config.models[role])}`),
+    `updated: ${new Date(config.updatedAt).toISOString()}`
+  ];
+}
+
+// apps/cli/dist/config-cmd.js
+import path3 from "node:path";
+
+// apps/cli/dist/config-project.js
+import { readFile as readFile9, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+import path2 from "node:path";
+var PROJECT_CONFIG_RELATIVE = path2.join(".agent", "config.local.json");
+function projectConfigPath(workspacePath) {
+  return path2.join(workspacePath, PROJECT_CONFIG_RELATIVE);
+}
+function projectAgentDir(workspacePath) {
+  return path2.join(workspacePath, ".agent");
+}
+async function hasProjectAgentDir(workspacePath) {
+  try {
+    return (await stat4(projectAgentDir(workspacePath))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+var ALL_BACKENDS = [
+  "claude-code",
+  "codex",
+  "native"
+];
+function isRecord7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseProjectConfig(raw) {
+  if (!isRecord7(raw))
+    return void 0;
+  let backends;
+  if (raw.backends !== void 0) {
+    backends = parseBackendList(raw.backends);
+    if (backends === void 0)
+      return void 0;
+  }
+  let models;
+  if (raw.models !== void 0) {
+    if (!isRecord7(raw.models))
+      return void 0;
+    const allowed = backends ?? ALL_BACKENDS;
+    const parsed = {};
+    for (const role of KAPEL_ROLES) {
+      const entry = raw.models[role];
+      if (entry === void 0)
+        continue;
+      const roleModel = parseRoleModel(entry, allowed);
+      if (roleModel === void 0)
+        return void 0;
+      parsed[role] = roleModel;
+    }
+    models = parsed;
+  }
+  return {
+    ...backends === void 0 ? {} : { backends },
+    ...models === void 0 ? {} : { models }
+  };
+}
+var consoleWarn = (line) => {
+  console.error(line);
+};
+async function loadProjectConfig2(workspacePath, warn = consoleWarn) {
+  const filePath = projectConfigPath(workspacePath);
+  let text2;
+  try {
+    text2 = await readFile9(filePath, "utf8");
+  } catch {
+    return void 0;
+  }
+  let parsed;
+  try {
+    parsed = parseProjectConfig(JSON.parse(text2));
+  } catch {
+    parsed = void 0;
+  }
+  if (parsed === void 0) {
+    warn(`warning: ignoring ${filePath} \u2014 it is not a readable kapel project config (expected {"backends": [...], "models": {"<role>": {"backend": "...", "model": "..."}}}).`);
+    return void 0;
+  }
+  return parsed;
+}
+async function saveProjectConfig(workspacePath, config) {
+  if (!await hasProjectAgentDir(workspacePath)) {
+    throw new MissingAgentDirError(projectAgentDir(workspacePath));
+  }
+  const filePath = projectConfigPath(workspacePath);
+  const body = {};
+  if (config.backends !== void 0)
+    body.backends = [...config.backends];
+  if (config.models !== void 0)
+    body.models = config.models;
+  await writeFile4(filePath, `${JSON.stringify(body, null, 2)}
+`, "utf8");
+  return filePath;
+}
+var MissingAgentDirError = class extends Error {
+  agentDir;
+  constructor(agentDir) {
+    super(`${agentDir} does not exist \u2014 run \`kapel init\` in this directory first.`);
+    this.agentDir = agentDir;
+    this.name = "MissingAgentDirError";
+  }
+};
+function mergeKapelConfigs(machine, project) {
+  const projectModels = project?.models ?? {};
+  const hasProjectModels = KAPEL_ROLES.some((role) => projectModels[role] !== void 0);
+  if (machine === void 0 && project?.backends === void 0 && !hasProjectModels) {
+    return void 0;
+  }
+  const backends = project?.backends ?? machine?.backends ?? derivedBackends(projectModels) ?? ["native"];
+  const backendsSource = project?.backends !== void 0 ? "project" : machine !== void 0 ? "machine" : "default";
+  const models = {};
+  const sources = {};
+  for (const role of KAPEL_ROLES) {
+    const fromProject = projectModels[role];
+    const fromMachine = machine?.models[role];
+    if (fromProject !== void 0 && backends.includes(fromProject.backend)) {
+      models[role] = fromProject;
+      sources[role] = "project";
+    } else if (fromMachine !== void 0 && backends.includes(fromMachine.backend)) {
+      models[role] = fromMachine;
+      sources[role] = "machine";
+    } else {
+      models[role] = defaultRoleModel(backends, role);
+      sources[role] = "default";
+    }
+  }
+  return {
+    config: {
+      version: KAPEL_CONFIG_VERSION,
+      backends,
+      models,
+      updatedAt: machine?.updatedAt ?? 0,
+      ...machine?.permission === void 0 ? {} : { permission: machine.permission }
+    },
+    sources: {
+      backends: backendsSource,
+      models: sources
+    }
+  };
+}
+function derivedBackends(models) {
+  const backends = [];
+  for (const role of KAPEL_ROLES) {
+    const entry = models[role];
+    if (entry !== void 0 && !backends.includes(entry.backend)) {
+      backends.push(entry.backend);
+    }
+  }
+  return backends.length === 0 ? void 0 : backends;
+}
+function describeEffectiveConfig(effective, paths) {
+  const { config, sources } = effective;
+  const from = (origin) => {
+    if (origin === "project")
+      return `  (from ${paths.project})`;
+    if (origin === "machine")
+      return `  (from ${paths.machine})`;
+    return "  (built-in default)";
+  };
+  return [
+    `backends: ${describeBackends(config.backends)}${from(sources.backends)}`,
+    ...KAPEL_ROLES.map((role) => `${ROLE_DESCRIPTIONS[role]}: ${describeRoleModel(config.models[role])}${from(sources.models[role])}`),
     `updated: ${new Date(config.updatedAt).toISOString()}`
   ];
 }
 
 // apps/cli/dist/config-wizard.js
-var BACKEND_TITLE = "Which coding backend should kapel use?";
+var BACKEND_TITLE = "Which coding backends should kapel use? (space to toggle, enter to confirm)";
+var BACKEND_FOOTER = "\u2191\u2193 move \xB7 space toggle \xB7 enter confirm (at least one) \xB7 esc cancel";
 var ROLE_TITLES = {
   orchestrator: "Main orchestrator model",
   complex: "Worker model \u2014 most complex coding tasks",
   middle: "Worker model \u2014 everyday tasks",
   low: "Worker model \u2014 small, single-function tasks"
 };
-var ROLES = [
-  "orchestrator",
-  "complex",
-  "middle",
-  "low"
-];
 var BACKEND_FIX = {
-  "claude-code": "fix: npm install -g @anthropic-ai/claude-code, then run `claude` once and log in",
+  "claude-code": "fix: npm install -g @anthropic-ai/claude-code, then `claude auth login`",
   codex: "fix: npm install -g @openai/codex, then `codex login`",
   native: "fix: set ANTHROPIC_API_KEY or OPENAI_API_KEY in your shell environment"
 };
-function isBackend2(value) {
-  return value === "claude-code" || value === "codex" || value === "native";
-}
 async function ask(deps, title, choices, initial) {
   const values = await deps.prompt.select({ title, choices, initial });
   if (values === void 0)
     return void 0;
   return values[0];
 }
-function initialFor(backend, role, choices, current) {
+async function askBackends(deps) {
+  const values = await deps.prompt.select({
+    title: BACKEND_TITLE,
+    choices: backendChoices(),
+    multi: true,
+    required: true,
+    footer: BACKEND_FOOTER,
+    initial: deps.current?.backends ?? ["claude-code"]
+  });
+  if (values === void 0)
+    return void 0;
+  return parseBackendList(values);
+}
+function initialFor(backends, role, choices, current) {
   const previous = current?.models[role];
-  if (previous !== void 0 && choices.some((choice) => choice.value === previous)) {
-    return previous;
+  if (previous !== void 0) {
+    const encoded = encodeRoleModel(previous);
+    if (choices.some((choice) => choice.value === encoded))
+      return encoded;
   }
-  return defaultModelsFor(backend)[role];
+  return encodeRoleModel(defaultRoleModel(backends, role));
+}
+var CONTINUING_LINE = "continuing setup \u2014 you can fix this later and re-run `kapel config`.";
+async function offerCodexLogin(deps) {
+  const runLogin = deps.runCodexLogin;
+  if (runLogin === void 0)
+    return false;
+  const answer = await ask(deps, "Codex is installed but not logged in \u2014 run `codex login` now?", [
+    { value: "yes", label: "Yes" },
+    { value: "no", label: "No" }
+  ], "no");
+  if (answer !== "yes")
+    return false;
+  deps.write("running `codex login` \u2014 follow the prompts in your terminal\u2026");
+  let result;
+  try {
+    result = await runLogin();
+  } catch (error) {
+    result = {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+  if (result.ok) {
+    deps.write("codex: now logged in.");
+    return true;
+  }
+  const detail = result.detail === void 0 ? "" : `: ${result.detail}`;
+  deps.write(`codex: still not logged in${detail}`);
+  return false;
+}
+async function offerClaudeCodeLogin(deps) {
+  const runLogin = deps.runClaudeCodeLogin;
+  if (runLogin === void 0)
+    return false;
+  const answer = await ask(deps, "Claude Code is installed but not logged in \u2014 run `claude auth login` now?", [
+    { value: "yes", label: "Yes" },
+    { value: "no", label: "No" }
+  ], "no");
+  if (answer !== "yes")
+    return false;
+  deps.write("running `claude auth login` \u2014 follow the prompts in your terminal\u2026");
+  let result;
+  try {
+    result = await runLogin();
+  } catch (error) {
+    result = {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+  if (result.ok) {
+    deps.write("claude-code: now logged in.");
+    return true;
+  }
+  const detail = result.detail === void 0 ? "" : `: ${result.detail}`;
+  deps.write(`claude-code: still not logged in${detail}`);
+  return false;
 }
 async function warnIfUnavailable(deps, backend) {
   const check = deps.checkBackend;
@@ -8349,38 +8772,50 @@ async function warnIfUnavailable(deps, backend) {
     return;
   const detail = result.detail === void 0 ? "" : `: ${result.detail}`;
   deps.write(`warning: ${backend} does not look ready${detail}`);
+  if (backend === "codex" && result.installed === true) {
+    if (await offerCodexLogin(deps))
+      return;
+    deps.write(BACKEND_FIX.codex);
+    deps.write(CONTINUING_LINE);
+    return;
+  }
+  if (backend === "claude-code" && result.installed === true) {
+    if (await offerClaudeCodeLogin(deps))
+      return;
+    deps.write(BACKEND_FIX["claude-code"]);
+    deps.write(CONTINUING_LINE);
+    return;
+  }
   deps.write(BACKEND_FIX[backend]);
-  deps.write("continuing setup \u2014 you can fix this later and re-run `kapel config`.");
+  deps.write(CONTINUING_LINE);
 }
 async function runConfigWizard(deps) {
   const cancelled = () => {
     deps.write("setup cancelled");
     return void 0;
   };
-  const backendValue = await ask(deps, BACKEND_TITLE, backendChoices(), deps.current?.backend ?? "claude-code");
-  if (backendValue === void 0 || !isBackend2(backendValue)) {
+  const backends = await askBackends(deps);
+  if (backends === void 0 || backends.length === 0)
     return cancelled();
-  }
-  const backend = backendValue;
-  await warnIfUnavailable(deps, backend);
+  for (const backend of backends)
+    await warnIfUnavailable(deps, backend);
   const picked = {};
-  for (const role of ROLES) {
-    const choices = modelChoicesFor(backend, role);
-    const answer = await ask(deps, ROLE_TITLES[role], choices, initialFor(backend, role, choices, deps.current));
+  for (const role of KAPEL_ROLES) {
+    const choices = modelChoicesFor(backends, role);
+    const answer = await ask(deps, ROLE_TITLES[role], choices, initialFor(backends, role, choices, deps.current));
     if (answer === void 0)
       return cancelled();
-    picked[role] = answer;
+    picked[role] = decodeRoleModel(answer) ?? defaultRoleModel(backends, role);
   }
-  const defaults = defaultModelsFor(backend);
   const models = {
-    orchestrator: picked.orchestrator ?? defaults.orchestrator,
-    complex: picked.complex ?? defaults.complex,
-    middle: picked.middle ?? defaults.middle,
-    low: picked.low ?? defaults.low
+    orchestrator: picked.orchestrator ?? defaultRoleModel(backends, "orchestrator"),
+    complex: picked.complex ?? defaultRoleModel(backends, "complex"),
+    middle: picked.middle ?? defaultRoleModel(backends, "middle"),
+    low: picked.low ?? defaultRoleModel(backends, "low")
   };
   const config = {
     version: KAPEL_CONFIG_VERSION,
-    backend,
+    backends,
     models,
     updatedAt: (deps.now ?? Date.now)(),
     ...deps.current?.permission === void 0 ? {} : { permission: deps.current.permission }
@@ -8388,12 +8823,13 @@ async function runConfigWizard(deps) {
   for (const line of describeConfig(config))
     deps.write(line);
   if (deps.save !== false) {
-    const filePath = await saveKapelConfig({
-      backend,
+    const persist = deps.writeConfig ?? ((saved) => saveKapelConfig(saved, deps.env));
+    const filePath = await persist({
+      backends,
       models,
       updatedAt: config.updatedAt,
       ...config.permission === void 0 ? {} : { permission: config.permission }
-    }, deps.env);
+    });
     deps.write(`saved to ${filePath}`);
   }
   return config;
@@ -8545,7 +8981,8 @@ function initialSelectState(choices, options) {
     choices,
     cursor: cursorFrom === -1 ? 0 : cursorFrom,
     selected,
-    multi
+    multi,
+    required: options?.required ?? false
   };
 }
 function wrap(index2, length) {
@@ -8570,7 +9007,12 @@ function toggle(state) {
   return { type: "state", state: { ...state, selected } };
 }
 function submit(state) {
-  if (state.multi || state.selected.length > 0) {
+  if (state.multi) {
+    if (state.required && state.selected.length === 0)
+      return NOOP;
+    return { type: "submit", values: state.selected };
+  }
+  if (state.selected.length > 0) {
     return { type: "submit", values: state.selected };
   }
   const current = state.choices[state.cursor];
@@ -8645,7 +9087,8 @@ function summarizeSelection(choices, values, options) {
 function runSelectPrompt(io, options) {
   const stateOptions = {
     ...options.initial === void 0 ? {} : { initial: options.initial },
-    ...options.multi === void 0 ? {} : { multi: options.multi }
+    ...options.multi === void 0 ? {} : { multi: options.multi },
+    ...options.required === void 0 ? {} : { required: options.required }
   };
   let state = initialSelectState(options.choices, stateOptions);
   if (io.input.isTTY !== true) {
@@ -8711,7 +9154,7 @@ function runSelectPrompt(io, options) {
 function present(value) {
   return value !== void 0 && value !== "";
 }
-function resolveBackendSetting(flag, env, config) {
+function resolveBackendSetting(flag, env, config, project) {
   if (present(flag)) {
     return { value: validateBackendName(flag), source: "flag" };
   }
@@ -8719,8 +9162,12 @@ function resolveBackendSetting(flag, env, config) {
   if (present(fromEnv)) {
     return { value: validateBackendName(fromEnv), source: "env" };
   }
-  if (config !== void 0) {
-    return { value: config.backend, source: "config" };
+  const effective = mergeKapelConfigs(config, project);
+  if (effective !== void 0) {
+    return {
+      value: soleExecutionBackend(effective.config),
+      source: effective.sources.models.orchestrator === "project" || effective.sources.backends === "project" ? "project" : "config"
+    };
   }
   return { value: DEFAULT_BACKEND, source: "default" };
 }
@@ -8746,8 +9193,8 @@ async function probeBackend(probe3, env) {
     return "native";
   return void 0;
 }
-async function detectBackendSetting(flag, env, config, deps = {}) {
-  const chosen = resolveBackendSetting(flag, env, config);
+async function detectBackendSetting(flag, env, config, project, deps = {}) {
+  const chosen = resolveBackendSetting(flag, env, config, project);
   if (chosen.source !== "default")
     return chosen;
   detectionCache ??= probeBackend(deps.probe ?? defaultBackendDetectionProbe, env);
@@ -8763,26 +9210,38 @@ async function detectBackendSetting(flag, env, config, deps = {}) {
   }
   return { value: detected, source: "detected" };
 }
-function resolveRoleModel(role, flag, env, config) {
-  if (present(flag))
-    return { value: flag, source: "flag" };
-  const fromEnv = env.AGENT_MODEL;
-  if (present(fromEnv))
-    return { value: fromEnv, source: "env" };
-  if (config !== void 0) {
-    return { value: config.models[role], source: "config" };
+function resolveRoleModel(role, flag, env, config, project) {
+  const effective = mergeKapelConfigs(config, project);
+  const configured = effective?.config.models[role];
+  const backend = configured?.backend ?? DEFAULT_BACKEND;
+  if (present(flag)) {
+    return { value: { backend, model: flag }, source: "flag" };
   }
-  return { value: DEFAULT_MODEL_ALIAS, source: "default" };
+  const fromEnv = env.AGENT_MODEL;
+  if (present(fromEnv)) {
+    return { value: { backend, model: fromEnv }, source: "env" };
+  }
+  if (effective !== void 0 && configured !== void 0) {
+    return {
+      value: configured,
+      source: effective.sources.models[role] === "project" ? "project" : "config"
+    };
+  }
+  return {
+    value: { backend, model: DEFAULT_MODEL_ALIAS },
+    source: "default"
+  };
 }
-function resolveOrchestratorModel(flag, env, config) {
-  return resolveRoleModel("orchestrator", flag, env, config);
+function resolveOrchestratorModel(flag, env, config, project) {
+  return resolveRoleModel("orchestrator", flag, env, config, project);
 }
 function delegatedModelOverride(resolved) {
   if (resolved.source === "default")
     return void 0;
-  if (resolved.value === "default")
+  const model = typeof resolved.value === "string" ? resolved.value : resolved.value.model;
+  if (model === "default")
     return void 0;
-  return resolved.value;
+  return model;
 }
 var FIRST_RUN_INTRO = [
   "kapel is not configured yet \u2014 a few questions, once (skip with --no-setup).",
@@ -8802,6 +9261,7 @@ async function checkBackendAvailability(backend, env = process.env) {
     const availability = await ClaudeCodeBackend.checkAvailability();
     return {
       ok: availability.installed && availability.loggedIn,
+      installed: availability.installed,
       ...availability.detail === void 0 ? {} : { detail: availability.detail }
     };
   }
@@ -8809,11 +9269,36 @@ async function checkBackendAvailability(backend, env = process.env) {
     const availability = await CodexBackend.checkAvailability();
     return {
       ok: availability.installed && availability.loggedIn,
+      installed: availability.installed,
       ...availability.detail === void 0 ? {} : { detail: availability.detail }
     };
   }
   const configured = present(env.ANTHROPIC_API_KEY) || present(env.ANTHROPIC_AUTH_TOKEN) || present(env.OPENAI_API_KEY);
   return configured ? { ok: true } : { ok: false, detail: "no provider credential is set in this shell" };
+}
+function codexLoginRunner(suspend = noSuspend, env = process.env) {
+  return async () => {
+    const outcome = await suspend(() => spawnCodexLogin());
+    if ("error" in outcome)
+      return { ok: false, detail: outcome.error };
+    const result = await checkBackendAvailability("codex", env);
+    return result.ok ? { ok: true } : {
+      ok: false,
+      ...result.detail === void 0 ? {} : { detail: result.detail }
+    };
+  };
+}
+function claudeCodeLoginRunner(suspend = noSuspend, env = process.env) {
+  return async () => {
+    const outcome = await suspend(() => spawnClaudeCodeLogin());
+    if ("error" in outcome)
+      return { ok: false, detail: outcome.error };
+    const result = await checkBackendAvailability("claude-code", env);
+    return result.ok ? { ok: true } : {
+      ok: false,
+      ...result.detail === void 0 ? {} : { detail: result.detail }
+    };
+  };
 }
 async function ensureFirstRunConfig(options) {
   const interactive = options.interactive && options.noSetup !== true;
@@ -8838,6 +9323,13 @@ async function ensureFirstRunConfig(options) {
     prompt: announcingPrompt,
     write,
     checkBackend: (backend) => checkBackendAvailability(backend, options.env ?? process.env),
+    // Only wired when there is actually a human to ask — a non-interactive
+    // run never reaches the wizard at all (see `ensureKapelConfig`), but this
+    // keeps `runCodexLogin`/`runClaudeCodeLogin` from implying otherwise.
+    ...interactive ? {
+      runCodexLogin: codexLoginRunner(options.suspend, options.env ?? process.env),
+      runClaudeCodeLogin: claudeCodeLoginRunner(options.suspend, options.env ?? process.env)
+    } : {},
     ...options.env === void 0 ? {} : { env: options.env }
   });
 }
@@ -8846,43 +9338,74 @@ async function ensureFirstRunConfig(options) {
 var NOT_CONFIGURED = "not configured yet \u2014 run `kapel config`";
 async function runConfigCommand(options, deps) {
   const env = deps.env;
-  const filePath = kapelConfigPath(env);
+  const workspacePath = path3.resolve(deps.cwd ?? process.cwd());
+  const machinePath = kapelConfigPath(env);
+  const localPath = projectConfigPath(workspacePath);
+  const forProject = options.project === true;
   if (options.path === true) {
-    deps.log(filePath);
+    deps.log(forProject ? localPath : machinePath);
     return 0;
   }
   const load = deps.load ?? loadKapelConfig;
-  const current = await load(env);
+  const loadLocal = deps.loadProject ?? loadProjectConfig2;
+  const machine = await load(env);
+  const project = await loadLocal(workspacePath);
   if (options.show === true) {
-    if (current === void 0) {
+    const effective = mergeKapelConfigs(machine, project);
+    if (effective === void 0) {
       deps.log(NOT_CONFIGURED);
-      deps.log(`path: ${filePath}`);
+      deps.log(`path: ${machinePath}`);
+      deps.log(`project path: ${localPath} (none)`);
       return 0;
     }
-    for (const line of describeConfig(current))
+    for (const line of describeEffectiveConfig(effective, {
+      machine: machinePath,
+      project: localPath
+    })) {
       deps.log(line);
-    deps.log(`path: ${filePath}`);
+    }
+    deps.log(`path: ${machinePath}`);
+    deps.log(`project path: ${localPath}${project === void 0 ? " (none)" : ""}`);
     return 0;
   }
   if (!deps.interactive) {
     deps.error("`kapel config` needs an interactive terminal. Use `kapel config --show` to print the current configuration.");
     return 1;
   }
+  if (forProject && !await hasProjectAgentDir(workspacePath)) {
+    deps.error(new MissingAgentDirError(projectAgentDir(workspacePath)).message);
+    return 1;
+  }
+  const seed = forProject ? mergeKapelConfigs(machine, project)?.config : machine;
   const wizard = deps.wizard ?? runConfigWizard;
   const wizardDeps = {
     prompt: ttyWizardPrompt(),
     write: deps.log,
     checkBackend: (backend) => checkBackendAvailability(backend, env),
-    ...current === void 0 ? {} : { current },
-    ...env === void 0 ? {} : { env }
+    ...seed === void 0 ? {} : { current: seed },
+    ...env === void 0 ? {} : { env },
+    ...forProject ? {
+      writeConfig: (saved) => saveProjectConfig(workspacePath, {
+        backends: saved.backends,
+        models: saved.models
+      })
+    } : {}
   };
-  await wizard(wizardDeps);
+  try {
+    await wizard(wizardDeps);
+  } catch (error) {
+    if (error instanceof MissingAgentDirError) {
+      deps.error(error.message);
+      return 1;
+    }
+    throw error;
+  }
   return 0;
 }
 
 // apps/cli/dist/env.js
-import { readFile as readFile9 } from "node:fs/promises";
-import path2 from "node:path";
+import { readFile as readFile10 } from "node:fs/promises";
+import path4 from "node:path";
 var LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
 function unquote(raw) {
   const value = raw.trim();
@@ -8918,10 +9441,10 @@ function applyDotEnv(parsed, target = process.env) {
   }
 }
 async function loadDotEnvFile(workspaceRoot, target = process.env) {
-  const filePath = path2.join(workspaceRoot, ".env");
+  const filePath = path4.join(workspaceRoot, ".env");
   let content;
   try {
-    content = await readFile9(filePath, "utf8");
+    content = await readFile10(filePath, "utf8");
   } catch {
     return;
   }
@@ -8929,8 +9452,8 @@ async function loadDotEnvFile(workspaceRoot, target = process.env) {
 }
 
 // apps/cli/dist/plan.js
-import { readFile as readFile10 } from "node:fs/promises";
-import path3 from "node:path";
+import { readFile as readFile11 } from "node:fs/promises";
+import path5 from "node:path";
 
 // apps/cli/dist/project-models.js
 var ASSUMED_CAPABILITIES = {
@@ -9047,7 +9570,7 @@ function errorMessage8(error) {
 }
 async function readOptionalFile(filePath) {
   try {
-    return await readFile10(filePath, "utf8");
+    return await readFile11(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -9078,7 +9601,7 @@ async function resolvePlannerModel(project, policy, options, output) {
       output.error(`Note: planning with the default model instead of the orchestrator agent "${policy.orchestrator}" \u2014 ${errorMessage8(error)}`);
     }
   }
-  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config, options.projectConfig).value.model;
   return resolveModelAndProvider(process.env, alias);
 }
 function delegatedPlannerModelId(project, policy, options) {
@@ -9090,7 +9613,7 @@ function delegatedPlannerModelId(project, policy, options) {
 async function preparePlan(objective, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
   const { json } = options;
-  const workspacePath = path3.resolve(options.cwd);
+  const workspacePath = path5.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   let project;
   try {
@@ -9111,7 +9634,7 @@ async function preparePlan(objective, options, deps = {}) {
   if (markdown === void 0 || markdown.trim() === "") {
     return fail(output, json, "No orchestration policy found \u2014 .agent/orchestration.md is missing or empty");
   }
-  const lockPath = path3.join(project.root, LOCK_FILE_NAME);
+  const lockPath = path5.join(project.root, LOCK_FILE_NAME);
   const status = checkLock(markdown, await readOptionalFile(lockPath));
   if (!status.fresh) {
     if (status.reason === "missing") {
@@ -9320,7 +9843,25 @@ async function runPlan(objective, options, deps = {}) {
 
 // apps/cli/dist/sessions.js
 import { existsSync } from "node:fs";
-import path4 from "node:path";
+import path6 from "node:path";
+
+// packages/session/dist/activity.js
+function isIdleActivity(totals) {
+  return totals.runs === 0 && totals.chatSessions === 0 && totals.tasksCompleted === 0 && totals.tasksFailed === 0 && totals.inputTokens === 0 && totals.outputTokens === 0;
+}
+var WEEK_DAYS = 7;
+function startOfDay(now) {
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+function startOfWindow(now, days = WEEK_DAYS) {
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - (Math.max(1, Math.trunc(days)) - 1));
+  return date.getTime();
+}
+var UNKNOWN_BACKEND = "unknown";
 
 // packages/session/dist/resolve.js
 var SHORT_ID_LENGTH = 8;
@@ -9362,7 +9903,7 @@ function resolveChatSessionReference(records, reference, options = {}) {
 
 // packages/session/dist/schema.js
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 var RUN_STATUSES = [
   "running",
   "completed",
@@ -9441,6 +9982,27 @@ var chatMessages = sqliteTable("chat_messages", {
   primaryKey({ columns: [table.sessionId, table.seq] }),
   index("chat_messages_session_id_idx").on(table.sessionId)
 ]);
+var USAGE_EVENT_KINDS = [
+  "chat",
+  "run"
+];
+var usageEvents = sqliteTable("usage_events", {
+  id: text("id").primaryKey(),
+  timestamp: integer("timestamp").notNull(),
+  kind: text("kind", { enum: USAGE_EVENT_KINDS }).notNull(),
+  /** The chat session id or run id this usage is attributed to. */
+  sourceId: text("source_id").notNull(),
+  /** `native`, `codex`, `claude-code` — whoever spent it, when known. */
+  backend: text("backend"),
+  model: text("model"),
+  inputTokens: integer("input_tokens").notNull(),
+  outputTokens: integer("output_tokens").notNull(),
+  cachedInputTokens: integer("cached_input_tokens"),
+  costUsd: real("cost_usd")
+}, (table) => [
+  index("usage_events_timestamp_idx").on(table.timestamp),
+  index("usage_events_source_id_idx").on(table.sourceId)
+]);
 var BOOTSTRAP_DDL = `
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
@@ -9502,13 +10064,30 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session_id_idx
   ON chat_messages (session_id);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  timestamp INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  backend TEXT,
+  model TEXT,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cached_input_tokens INTEGER,
+  cost_usd REAL
+);
+CREATE INDEX IF NOT EXISTS usage_events_timestamp_idx
+  ON usage_events (timestamp);
+CREATE INDEX IF NOT EXISTS usage_events_source_id_idx
+  ON usage_events (source_id);
 `;
 var eventRowid = sql`rowid`;
 
 // packages/session/dist/sqlite.js
 import { join as join8 } from "node:path";
 import Database from "better-sqlite3";
-import { and, asc, desc, eq, sql as sql2 } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql as sql2 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 function defaultSessionDbPath(agentDir) {
   return join8(agentDir, "sessions.db");
@@ -9889,6 +10468,108 @@ var SqliteSessionStore = class {
     });
     return newId;
   }
+  // --- Usage and activity -------------------------------------------------
+  /**
+   * Appends one usage sample. A sample with no tokens and no price is
+   * dropped rather than stored: a turn the backend reported nothing for is
+   * an absence of information, and a row of zeroes would turn it into a
+   * claim that the turn was free.
+   *
+   * Append-only — re-recording is not idempotent by `sourceId`, because a
+   * chat session spends tokens once per turn and each of those turns is its
+   * own fact. Callers that can retry pass their own `id`.
+   */
+  async recordUsage(entry) {
+    const priced = entry.costUsd !== void 0 && entry.costUsd > 0;
+    if (entry.inputTokens === 0 && entry.outputTokens === 0 && !priced)
+      return;
+    this.#db.insert(usageEvents).values({
+      id: entry.id ?? crypto.randomUUID(),
+      timestamp: entry.timestamp ?? Date.now(),
+      kind: entry.kind,
+      sourceId: entry.sourceId,
+      backend: entry.backend ?? null,
+      model: entry.model ?? null,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      cachedInputTokens: entry.cachedInputTokens ?? null,
+      costUsd: entry.costUsd ?? null
+    }).onConflictDoNothing().run();
+  }
+  /**
+   * Everything the dashboard counts for one half-open `[since, until)`
+   * window, in four small aggregate queries.
+   *
+   * Each count reads the timestamp that means "this happened": runs and chat
+   * sessions by when they *started*, tasks by when their result last moved
+   * (a task that finished today belongs to today even if its run started
+   * last week), usage by when it was spent.
+   */
+  async activityTotals(window) {
+    const within = (column) => window.until === void 0 ? gte(column, window.since) : and(gte(column, window.since), lt(column, window.until));
+    const runCount = this.#db.select({ n: sql2`count(*)` }).from(runs).where(within(runs.createdAt)).get();
+    const chatCount = this.#db.select({ n: sql2`count(*)` }).from(chatSessions).where(within(chatSessions.createdAt)).get();
+    const taskRows = this.#db.select({ status: taskResults.status, n: sql2`count(*)` }).from(taskResults).where(within(taskResults.updatedAt)).groupBy(taskResults.status).all();
+    const byStatus = new Map(taskRows.map((row) => [row.status, Number(row.n)]));
+    const usage = this.#db.select({
+      input: sql2`sum(${usageEvents.inputTokens})`,
+      output: sql2`sum(${usageEvents.outputTokens})`,
+      cost: sql2`sum(${usageEvents.costUsd})`
+    }).from(usageEvents).where(within(usageEvents.timestamp)).get();
+    const cost = usage?.cost ?? null;
+    return {
+      runs: Number(runCount?.n ?? 0),
+      chatSessions: Number(chatCount?.n ?? 0),
+      tasksCompleted: byStatus.get("success") ?? 0,
+      tasksFailed: byStatus.get("failed") ?? 0,
+      inputTokens: Number(usage?.input ?? 0),
+      outputTokens: Number(usage?.output ?? 0),
+      ...cost === null ? {} : { costUsd: Number(cost) }
+    };
+  }
+  /**
+   * The two windows the dashboard shows: today, and the last seven calendar
+   * days including today. Both start at *local* midnight — see
+   * `startOfWindow` for why that is calendar arithmetic and not subtraction.
+   */
+  async activity(options = {}) {
+    const now = options.now ?? Date.now();
+    const todaySince = startOfDay(now);
+    const weekSince = startOfWindow(now);
+    return {
+      today: await this.activityTotals({ since: todaySince }),
+      week: await this.activityTotals({ since: weekSince }),
+      todaySince,
+      weekSince
+    };
+  }
+  /**
+   * The same usage numbers split by which backend spent them, biggest first.
+   *
+   * This is what stands in for a subscription quota: neither the Claude Code
+   * nor the Codex CLI exposes remaining allowance outside its own interactive
+   * session, so the honest thing to show beside a backend's name is what
+   * kapel itself watched it spend. Rows that never named a backend are
+   * bucketed under {@link UNKNOWN_BACKEND} rather than dropped.
+   */
+  async usageByBackend(window) {
+    const predicate = window.until === void 0 ? gte(usageEvents.timestamp, window.since) : and(gte(usageEvents.timestamp, window.since), lt(usageEvents.timestamp, window.until));
+    const rows = this.#db.select({
+      backend: usageEvents.backend,
+      input: sql2`sum(${usageEvents.inputTokens})`,
+      output: sql2`sum(${usageEvents.outputTokens})`,
+      cost: sql2`sum(${usageEvents.costUsd})`
+    }).from(usageEvents).where(predicate).groupBy(usageEvents.backend).all();
+    return rows.map((row) => {
+      const cost = row.cost ?? null;
+      return {
+        backend: row.backend ?? UNKNOWN_BACKEND,
+        inputTokens: Number(row.input ?? 0),
+        outputTokens: Number(row.output ?? 0),
+        ...cost === null ? {} : { costUsd: Number(cost) }
+      };
+    }).sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens) || a.backend.localeCompare(b.backend));
+  }
   close() {
     this.#sqlite.close();
   }
@@ -9964,10 +10645,10 @@ function storeSink(store) {
   };
 }
 function sessionDbPathFor(workspacePath) {
-  return defaultSessionDbPath(path4.join(path4.resolve(workspacePath), ".agent"));
+  return defaultSessionDbPath(path6.join(path6.resolve(workspacePath), ".agent"));
 }
 async function openRunStore(workspacePath) {
-  const agentDir = await findAgentDir(path4.resolve(workspacePath));
+  const agentDir = await findAgentDir(path6.resolve(workspacePath));
   if (agentDir === void 0)
     return void 0;
   try {
@@ -10001,6 +10682,19 @@ async function recordRunStatus(store, runId, status) {
   if (store === void 0)
     return;
   await bestEffort(() => store.setRunStatus(runId, status));
+}
+async function recordRunUsage(store, runId, totals, backend) {
+  if (store === void 0)
+    return;
+  await bestEffort(() => store.recordUsage({
+    kind: "run",
+    sourceId: runId,
+    inputTokens: totals.usage.inputTokens,
+    outputTokens: totals.usage.outputTokens,
+    ...totals.usage.cachedInputTokens === void 0 ? {} : { cachedInputTokens: totals.usage.cachedInputTokens },
+    ...totals.costUsd > 0 ? { costUsd: totals.costUsd } : {},
+    ...backend === void 0 ? {} : { backend }
+  }));
 }
 function closeRunStore(store) {
   if (store === void 0)
@@ -10037,7 +10731,7 @@ async function runSessionsListCommand(options, deps = {}) {
     return 0;
   }
   try {
-    const records = await store.listChatSessions(path4.resolve(options.cwd), {
+    const records = await store.listChatSessions(path6.resolve(options.cwd), {
       limit: options.limit ?? DEFAULT_SESSIONS_LIST_LIMIT
     });
     if (options.json) {
@@ -10074,7 +10768,7 @@ async function runSessionsForkCommand(options, deps = {}) {
     return 1;
   }
   try {
-    const records = await store.listChatSessions(path4.resolve(options.cwd));
+    const records = await store.listChatSessions(path6.resolve(options.cwd));
     const resolved = resolveChatSessionReference(records, options.session, {
       onNote: (note) => output.error(note)
     });
@@ -10100,7 +10794,7 @@ async function runSessionsForkCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/explain-cmd.js
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null;
 }
 function str(value) {
@@ -10132,7 +10826,7 @@ function routeSentence(route) {
   return route.fallback === "suggestedAgent" ? `routed to ${route.agent} \u2014 no routing rule matched, so the plan's suggestedAgent was used` : `routed to ${route.agent} \u2014 no routing rule matched and the task suggested no agent, so it fell back to the policy's orchestrator`;
 }
 function digestEvent(event2) {
-  const data = isRecord7(event2.data) ? event2.data : {};
+  const data = isRecord8(event2.data) ? event2.data : {};
   switch (event2.type) {
     case "task.held": {
       const blocker = str(data.conflictsWith);
@@ -10167,7 +10861,7 @@ function digestEvent(event2) {
       return detail === void 0 ? `not merged \u2014 ${reason}` : `not merged \u2014 ${reason}: ${detail}`;
     }
     case "task.completed": {
-      const result = isRecord7(data.result) ? data.result : {};
+      const result = isRecord8(data.result) ? data.result : {};
       const status = str(result.status) ?? "?";
       const retrying = data.final === false ? " (retrying)" : "";
       return `completed \u2014 ${status}: ${firstLine(result.summary)}${retrying}`;
@@ -10261,8 +10955,8 @@ async function runExplainCommand(taskId, options, deps = {}) {
 }
 
 // apps/cli/dist/init.js
-import { cp, readFile as readFile11, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
-import path5 from "node:path";
+import { cp, readFile as readFile12, rm as rm2, stat as stat5, writeFile as writeFile5 } from "node:fs/promises";
+import path7 from "node:path";
 import { fileURLToPath } from "node:url";
 var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
 var MAX_WALK_LEVELS = 6;
@@ -10288,8 +10982,8 @@ function providerForModel(model, backend) {
 function renderModelsBlock(config) {
   const lines = ["models:"];
   for (const [projectRole, role] of PROJECT_ROLE_SOURCES) {
-    const model = config.models[role];
-    lines.push(`  ${projectRole}:`, `    provider: ${providerForModel(model, config.backend)}`, `    model: ${model}`);
+    const { backend, model } = config.models[role];
+    lines.push(`  ${projectRole}:`, `    provider: ${providerForModel(model, backend)}`, `    model: ${model}`, `    backend: ${backend}`);
   }
   return lines;
 }
@@ -10316,7 +11010,7 @@ var VALIDATOR_SCRIPT_NAMES = ["typecheck", "test", "lint"];
 async function detectValidatorCommands(cwd) {
   let raw;
   try {
-    raw = await readFile11(path5.join(cwd, "package.json"), "utf8");
+    raw = await readFile12(path7.join(cwd, "package.json"), "utf8");
   } catch {
     return [];
   }
@@ -10367,14 +11061,15 @@ function seedValidatorsInto(templateYaml, validators) {
 }
 var GITIGNORE_ENTRIES = [
   ".agent/sessions.db*",
-  ".agent/worktrees/"
+  ".agent/worktrees/",
+  ".agent/config.local.json"
 ];
 var GITIGNORE_HEADER = "# kapel state (see .agent/)";
 async function ensureGitignoreEntries(cwd) {
-  const gitignorePath = path5.join(cwd, ".gitignore");
+  const gitignorePath = path7.join(cwd, ".gitignore");
   let existing = "";
   try {
-    existing = await readFile11(gitignorePath, "utf8");
+    existing = await readFile12(gitignorePath, "utf8");
   } catch {
   }
   const present2 = new Set(existing.split("\n").map((line) => line.trim()));
@@ -10388,13 +11083,13 @@ async function ensureGitignoreEntries(cwd) {
   if (!present2.has(GITIGNORE_HEADER))
     lines.push(GITIGNORE_HEADER);
   lines.push(...missing);
-  await writeFile4(gitignorePath, `${lines.join("\n")}
+  await writeFile5(gitignorePath, `${lines.join("\n")}
 `, "utf8");
   return missing;
 }
 async function pathExists(candidate) {
   try {
-    await stat4(candidate);
+    await stat5(candidate);
     return true;
   } catch {
     return false;
@@ -10403,60 +11098,66 @@ async function pathExists(candidate) {
 async function locateTemplate(startDir, maxLevels = MAX_WALK_LEVELS) {
   let dir = startDir;
   for (let level = 0; level <= maxLevels; level += 1) {
-    const candidate = path5.join(dir, ...TEMPLATE_RELATIVE);
+    const candidate = path7.join(dir, ...TEMPLATE_RELATIVE);
     if (await pathExists(candidate))
       return candidate;
-    const parent = path5.dirname(dir);
+    const parent = path7.dirname(dir);
     if (parent === dir)
       break;
     dir = parent;
   }
   throw new Error(`Could not find ${TEMPLATE_RELATIVE.join("/")} by walking up from ${startDir} (searched ${maxLevels} levels up). Is this CLI running from within the multi-model-orchestration-agent repo?`);
 }
+var consoleOutput2 = {
+  log: (line) => console.log(line),
+  error: (line) => console.error(line)
+};
 async function runInit(options) {
-  const entryDir = path5.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
+  const output = options.output ?? consoleOutput2;
+  const entryDir = path7.dirname(fileURLToPath(options.entryUrl ?? import.meta.url));
   let templateDir;
   try {
     templateDir = await locateTemplate(entryDir);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    output.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const target = path5.join(options.cwd, ".agent");
+  const target = path7.join(options.cwd, ".agent");
   const exists = await pathExists(target);
-  if (exists && options.force !== true) {
-    console.error(`${target} already exists. Re-run with --force to overwrite it.`);
+  if (exists && options.force !== true && options.fill !== true) {
+    output.error(`${target} already exists. Re-run with --force to overwrite it.`);
     return 1;
   }
-  if (exists)
+  if (exists && options.force === true) {
     await rm2(target, { recursive: true, force: true });
+  }
   await cp(templateDir, target, { recursive: true });
-  console.log(`Created ${target}`);
-  console.log(`  (from ${templateDir})`);
+  output.log(`Created ${target}`);
+  output.log(`  (from ${templateDir})`);
   const config = options.config;
   try {
-    const configPath = path5.join(target, "config.yaml");
-    let seeded = await readFile11(configPath, "utf8");
+    const configPath = path7.join(target, "config.yaml");
+    let seeded = await readFile12(configPath, "utf8");
     let changed = false;
     if (config !== void 0) {
       seeded = seedModelsInto(seeded, config);
       changed = true;
-      console.log("  (models seeded from your kapel configuration)");
+      output.log("  (models seeded from your kapel configuration)");
     }
     const validators = await detectValidatorCommands(options.cwd);
     if (validators.length > 0) {
       seeded = seedValidatorsInto(seeded, validators);
       changed = true;
-      console.log(`  (validation enabled from package.json: ${validators.map((validator) => validator.name).join(", ")})`);
+      output.log(`  (validation enabled from package.json: ${validators.map((validator) => validator.name).join(", ")})`);
     }
     if (changed)
-      await writeFile4(configPath, seeded, "utf8");
+      await writeFile5(configPath, seeded, "utf8");
   } catch {
   }
   try {
     const added = await ensureGitignoreEntries(options.cwd);
     if (added.length > 0) {
-      console.log(`  (added to .gitignore: ${added.join(", ")})`);
+      output.log(`  (added to .gitignore: ${added.join(", ")})`);
     }
   } catch {
   }
@@ -10465,14 +11166,14 @@ async function runInit(options) {
 
 // apps/cli/dist/interactive.js
 import { mkdir as mkdir6 } from "node:fs/promises";
-import path12 from "node:path";
+import path16 from "node:path";
 import * as readline4 from "node:readline";
 
 // apps/cli/dist/checkpoint.js
 import { execFile as execFile8 } from "node:child_process";
-import { copyFile, mkdir as mkdir4, mkdtemp, rm as rm3, rmdir as rmdir2, stat as stat5, utimes } from "node:fs/promises";
+import { copyFile, mkdir as mkdir4, mkdtemp, rm as rm3, rmdir as rmdir2, stat as stat6, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import path6 from "node:path";
+import path8 from "node:path";
 import { promisify as promisify5 } from "node:util";
 var execFileAsync5 = promisify5(execFile8);
 var MAX_BUFFER_BYTES4 = 64 * 1024 * 1024;
@@ -10566,13 +11267,13 @@ async function tempRoot() {
   return root;
 }
 async function withTempIndex(repo, seed, fn) {
-  const dir = await mkdtemp(path6.join(await tempRoot(), "kapel-checkpoint-"));
+  const dir = await mkdtemp(path8.join(await tempRoot(), "kapel-checkpoint-"));
   try {
-    const indexPath = path6.join(dir, "index");
+    const indexPath = path8.join(dir, "index");
     if (seed) {
-      const source = path6.join(repo.gitDir, "index");
+      const source = path8.join(repo.gitDir, "index");
       try {
-        const original = await stat5(source);
+        const original = await stat6(source);
         await copyFile(source, indexPath);
         const asOf = new Date(original.mtimeMs - RACY_MARGIN_MS);
         await utimes(indexPath, asOf, asOf);
@@ -10641,14 +11342,14 @@ async function diffTrees(repo, from, to) {
   return changes;
 }
 async function pruneEmptyParents(root, filePath) {
-  let dir = path6.dirname(path6.join(root, filePath));
-  while (dir !== root && dir.startsWith(`${root}${path6.sep}`)) {
+  let dir = path8.dirname(path8.join(root, filePath));
+  while (dir !== root && dir.startsWith(`${root}${path8.sep}`)) {
     try {
       await rmdir2(dir);
     } catch {
       return;
     }
-    dir = path6.dirname(dir);
+    dir = path8.dirname(dir);
   }
 }
 async function checkoutPaths(repo, tree, paths) {
@@ -10669,7 +11370,7 @@ async function checkoutPaths(repo, tree, paths) {
 async function inProgressOperation(gitDir) {
   for (const [entry, description] of IN_PROGRESS) {
     try {
-      await stat5(path6.join(gitDir, entry));
+      await stat6(path8.join(gitDir, entry));
       return description;
     } catch {
     }
@@ -10737,7 +11438,7 @@ function createCheckpointStore(options) {
       const writes = changes.filter((change) => change.status !== "D");
       await checkoutPaths(info, entry.tree, writes.map((change) => change.path));
       for (const change of removals) {
-        await rm3(path6.join(info.root, change.path), { force: true });
+        await rm3(path8.join(info.root, change.path), { force: true });
         await pruneEmptyParents(info.root, change.path);
       }
       stack.pop();
@@ -10763,8 +11464,8 @@ function createCheckpointStore(options) {
 }
 
 // apps/cli/dist/commands.js
-import { readdir as readdir4, readFile as readFile12 } from "node:fs/promises";
-import path7 from "node:path";
+import { readdir as readdir4, readFile as readFile13 } from "node:fs/promises";
+import path9 from "node:path";
 import { parse as parseYaml3 } from "yaml";
 var CUSTOM_COMMAND_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 var ARGUMENTS_PLACEHOLDER = "$ARGUMENTS";
@@ -10825,7 +11526,7 @@ async function loadCustomCommands(workspacePath, builtinNames) {
   const agentDir = await findAgentDir(workspacePath);
   if (agentDir === void 0)
     return { commands: [], warnings: [] };
-  const commandsDir = path7.join(agentDir, "commands");
+  const commandsDir = path9.join(agentDir, "commands");
   let entryNames;
   try {
     const entries = await readdir4(commandsDir, { withFileTypes: true });
@@ -10837,7 +11538,7 @@ async function loadCustomCommands(workspacePath, builtinNames) {
   const warnings = [];
   for (const fileName of entryNames) {
     const displayPath = `.agent/commands/${fileName}`;
-    const stem = path7.basename(fileName, ".md");
+    const stem = path9.basename(fileName, ".md");
     if (!CUSTOM_COMMAND_NAME_PATTERN.test(stem)) {
       warnings.push(`skipping ${displayPath}: "${stem}" is not a valid command name (expected ${CUSTOM_COMMAND_NAME_PATTERN.source})`);
       continue;
@@ -10846,10 +11547,10 @@ async function loadCustomCommands(workspacePath, builtinNames) {
       warnings.push(`skipping ${displayPath}: "/${stem}" is a built-in command and cannot be overridden`);
       continue;
     }
-    const filePath = path7.join(commandsDir, fileName);
+    const filePath = path9.join(commandsDir, fileName);
     let raw;
     try {
-      raw = await readFile12(filePath, "utf8");
+      raw = await readFile13(filePath, "utf8");
     } catch (error) {
       warnings.push(`skipping ${displayPath}: ${errorMessage9(error)}`);
       continue;
@@ -10869,6 +11570,1209 @@ function expandCustomCommand(command, argumentsText) {
   return argumentsText === "" ? command.template : `${command.template}
 
 ${argumentsText}`;
+}
+
+// apps/cli/dist/prompter.js
+import * as readline2 from "node:readline";
+
+// apps/cli/dist/preview.js
+var PREVIEW_MAX = 120;
+var PREVIEW_MAX_LINES = 40;
+var DIFF_CONTEXT = 3;
+var LCS_MAX_LINES = 300;
+var WRITE_PREVIEW_LINES = 20;
+var RED = "31";
+var GREEN = "32";
+var DIM = "2";
+function ansi2(code, text2, enabled) {
+  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
+}
+function isRecord9(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringField(input, key) {
+  if (!isRecord9(input))
+    return void 0;
+  const value = input[key];
+  return typeof value === "string" ? value : void 0;
+}
+function previewInput(input) {
+  let text2;
+  try {
+    text2 = JSON.stringify(input) ?? String(input);
+  } catch {
+    text2 = String(input);
+  }
+  if (text2.length <= PREVIEW_MAX)
+    return text2;
+  return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
+}
+function lcsDiff(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const width = m + 1;
+  const dp = new Array((n + 1) * width).fill(0);
+  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ marker: " ", text: a[i] ?? "" });
+      i += 1;
+      j += 1;
+    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
+      out.push({ marker: "-", text: a[i] ?? "" });
+      i += 1;
+    } else {
+      out.push({ marker: "+", text: b[j] ?? "" });
+      j += 1;
+    }
+  }
+  for (; i < n; i += 1)
+    out.push({ marker: "-", text: a[i] ?? "" });
+  for (; j < m; j += 1)
+    out.push({ marker: "+", text: b[j] ?? "" });
+  return out;
+}
+function diffLines(oldText, newText) {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head])
+    head += 1;
+  let tail3 = 0;
+  while (tail3 < a.length - head && tail3 < b.length - head && a[a.length - 1 - tail3] === b[b.length - 1 - tail3]) {
+    tail3 += 1;
+  }
+  const midA = a.slice(head, a.length - tail3);
+  const midB = b.slice(head, b.length - tail3);
+  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
+    ...midA.map((text2) => ({ marker: "-", text: text2 })),
+    ...midB.map((text2) => ({ marker: "+", text: text2 }))
+  ] : lcsDiff(midA, midB);
+  return [
+    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
+    ...middle,
+    ...a.slice(a.length - tail3).map((text2) => ({ marker: " ", text: text2 }))
+  ];
+}
+function paint(line, color) {
+  const text2 = `  ${line.marker} ${line.text}`;
+  if (line.marker === "-")
+    return ansi2(RED, text2, color);
+  if (line.marker === "+")
+    return ansi2(GREEN, text2, color);
+  return text2;
+}
+function moreTail(count, color) {
+  return ansi2(DIM, `  \u2026 (+${count} more)`, color);
+}
+function capLines(lines, color) {
+  if (lines.length <= PREVIEW_MAX_LINES)
+    return [...lines];
+  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
+  return [...kept, moreTail(lines.length - kept.length, color)];
+}
+function renderDiff(lines, options = {}) {
+  const color = options.color === true;
+  const keep = lines.map((line) => line.marker !== " ");
+  lines.forEach((line, index2) => {
+    if (line.marker === " ")
+      return;
+    const from = Math.max(0, index2 - DIFF_CONTEXT);
+    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
+    for (let near = from; near <= to; near += 1)
+      keep[near] = true;
+  });
+  const out = [];
+  let elided = false;
+  lines.forEach((line, index2) => {
+    if (keep[index2] === true) {
+      out.push(paint(line, color));
+      elided = false;
+      return;
+    }
+    if (!elided) {
+      out.push(ansi2(DIM, "  \u22EE", color));
+      elided = true;
+    }
+  });
+  return capLines(out, color);
+}
+function previewBash(input, options = {}) {
+  const command = stringField(input, "command");
+  if (command === void 0)
+    return void 0;
+  const lines = command.split("\n").map((line) => `  ${line}`);
+  return capLines(lines, options.color === true).join("\n");
+}
+function previewEdit(input, options = {}) {
+  const path18 = stringField(input, "path");
+  const oldText = stringField(input, "oldText");
+  const newText = stringField(input, "newText");
+  if (path18 === void 0 || oldText === void 0 || newText === void 0) {
+    return void 0;
+  }
+  const replaceAll = isRecord9(input) && input.replaceAll === true ? " (all occurrences)" : "";
+  const header = ansi2(DIM, `  ${path18}${replaceAll}`, options.color === true);
+  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
+}
+function previewWrite(input, options = {}) {
+  const path18 = stringField(input, "path");
+  const content = stringField(input, "content");
+  if (path18 === void 0 || content === void 0)
+    return void 0;
+  const color = options.color === true;
+  const lines = content.split("\n");
+  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
+  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
+  if (lines.length > shown.length) {
+    body.push(moreTail(lines.length - shown.length, color));
+  }
+  const header = ansi2(DIM, `  ${path18} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
+  return [header, ...body].join("\n");
+}
+function formatToolPreview(tool, input, options = {}) {
+  switch (tool) {
+    case "bash":
+      return previewBash(input, options);
+    case "edit_file":
+      return previewEdit(input, options);
+    case "write_file":
+      return previewWrite(input, options);
+    default:
+      return void 0;
+  }
+}
+
+// apps/cli/dist/prompter.js
+var ERASE_LINE = "\x1B[2K\r";
+function createPromptState() {
+  return { active: false };
+}
+function parsePermissionAnswer(answer) {
+  if (typeof answer !== "string")
+    return "deny";
+  const normalized = answer.trim().toLowerCase();
+  if (normalized === "y" || normalized === "yes")
+    return "once";
+  if (normalized === "a" || normalized === "always")
+    return "always";
+  return "deny";
+}
+function createPrompter(options) {
+  if (options.yes) {
+    return { ask: async () => true };
+  }
+  if (!options.interactive) {
+    return void 0;
+  }
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const state = options.state;
+  const ask2 = options.ask;
+  const allowlist = options.allowlist;
+  const color = options.color ?? output.isTTY === true;
+  return {
+    ask: async (request) => {
+      state.active = true;
+      try {
+        const prompt = formatPermissionPrompt(request, { color });
+        const lines = previewBlockLines(request, prompt, {
+          color,
+          offerAlways: allowlist !== void 0
+        });
+        if (color)
+          output.write(ERASE_LINE);
+        if (lines.length > 0)
+          output.write(`${lines.join("\n")}
+`);
+        const raw = ask2 === void 0 ? await askOnce(prompt.query, input, output) : await ask2(prompt.query);
+        const answer = parsePermissionAnswer(raw);
+        if (answer === "deny")
+          return false;
+        if (answer === "always" && allowlist !== void 0) {
+          const rule = allowlist.remember(request);
+          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
+`);
+        }
+        return true;
+      } finally {
+        state.active = false;
+      }
+    }
+  };
+}
+function dim(text2, enabled) {
+  return enabled ? `\x1B[2m${text2}\x1B[0m` : text2;
+}
+function previewBlockLines(request, prompt, options) {
+  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
+  if (!options.offerAlways)
+    return lines;
+  const rule = sessionRuleFor(request);
+  if (rule === void 0)
+    return lines;
+  return [
+    ...lines,
+    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
+  ];
+}
+function formatPermissionPrompt(request, options = {}) {
+  const block = formatToolPreview(request.tool, request.input, {
+    ...options.color === void 0 ? {} : { color: options.color }
+  });
+  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] ` : `allow ${request.tool}? [y/n/a] `;
+  return { block, query };
+}
+function askOnce(query, input, output) {
+  const rl = readline2.createInterface({ input, output, terminal: true });
+  return new Promise((resolve5) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled)
+        return;
+      settled = true;
+      rl.close();
+      resolve5(value);
+    };
+    rl.on("SIGINT", () => finish(void 0));
+    rl.question(query, (answer) => finish(answer));
+  });
+}
+
+// apps/cli/dist/status-line.js
+var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+var TICK_MS = 120;
+var ERASE = "\r\x1B[2K";
+var DEFAULT_COLUMNS = 80;
+function defaultTicker(tick) {
+  const timer = setInterval(tick, TICK_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+function formatTokenCount(tokens) {
+  if (tokens < 1e3)
+    return String(Math.round(tokens));
+  return `${(tokens / 1e3).toFixed(1)}k`;
+}
+function formatStatus(label, elapsedMs2, tokens) {
+  const seconds = Math.max(0, Math.floor(elapsedMs2 / 1e3));
+  const parts = [`${label} ${seconds}s`];
+  if (tokens !== void 0 && tokens > 0) {
+    parts.push(`${formatTokenCount(tokens)} tokens`);
+  }
+  return parts.join(" \xB7 ");
+}
+var StatusLine = class {
+  #output;
+  #enabled;
+  #now;
+  #tokens;
+  #suspended;
+  #ticker;
+  #cancel;
+  #label = "";
+  #startedAt = 0;
+  #frame = 0;
+  #painted = false;
+  constructor(options = {}) {
+    this.#output = options.output ?? process.stdout;
+    this.#enabled = options.tty ?? this.#output.isTTY === true;
+    this.#now = options.now ?? (() => Date.now());
+    this.#tokens = options.tokens;
+    this.#suspended = options.suspended ?? (() => false);
+    this.#ticker = options.ticker ?? defaultTicker;
+  }
+  /** Whether this line will ever paint anything — false off a TTY. */
+  get enabled() {
+    return this.#enabled;
+  }
+  /** Whether a status is currently being kept up to date. */
+  get running() {
+    return this.#cancel !== void 0;
+  }
+  /**
+   * Starts the status, or relabels a running one.
+   *
+   * The elapsed clock runs from the *start*, not from each relabel: it is the
+   * age of the current wait, and a wait that changes phase (model → tool) is a
+   * new wait, so {@link stop} then `start` is how the caller resets it.
+   */
+  start(label) {
+    if (!this.#enabled)
+      return;
+    this.#label = label;
+    if (this.#cancel === void 0) {
+      this.#startedAt = this.#now();
+      this.#frame = 0;
+      this.#cancel = this.#ticker(() => {
+        this.#frame += 1;
+        this.#paint();
+      });
+    }
+    this.#paint();
+  }
+  /**
+   * Erases the painted line but keeps the status running: the next tick (or
+   * {@link refresh}) puts it back. This is what the renderer calls before
+   * writing real output.
+   */
+  erase() {
+    if (!this.#painted)
+      return;
+    this.#painted = false;
+    this.#output.write(ERASE);
+  }
+  /** Repaints immediately, if a status is running. */
+  refresh() {
+    this.#paint();
+  }
+  /** Ends the status: no more repainting, and nothing left on screen. */
+  stop() {
+    const cancel = this.#cancel;
+    this.#cancel = void 0;
+    cancel?.();
+    this.erase();
+  }
+  #paint() {
+    if (!this.#enabled || this.#cancel === void 0)
+      return;
+    if (this.#suspended()) {
+      this.erase();
+      return;
+    }
+    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
+    const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
+    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
+    const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
+    this.#output.write(`${ERASE}\x1B[2m${text2}\x1B[0m`);
+    this.#painted = true;
+  }
+};
+
+// apps/cli/dist/render.js
+function formatTokenCount2(tokens) {
+  if (tokens < 1e3)
+    return String(tokens);
+  if (tokens < 1e6)
+    return `${(tokens / 1e3).toFixed(1)}k`;
+  return `${(tokens / 1e6).toFixed(1)}M`;
+}
+function formatCostUsd(costUsd, pricing) {
+  if (pricing === "unknown")
+    return "n/a";
+  const amount = costUsd >= 0.01 ? costUsd.toFixed(2) : costUsd.toFixed(4);
+  return pricing === "partial" ? `$${amount}+` : `$${amount}`;
+}
+function formatTokenFlow(usage) {
+  const cached = usage.cachedInputTokens;
+  const input = cached === void 0 || cached === 0 ? `${formatTokenCount2(usage.inputTokens)} in` : `${formatTokenCount2(usage.inputTokens)} in (${formatTokenCount2(cached)} cached)`;
+  return `${input} / ${formatTokenCount2(usage.outputTokens)} out`;
+}
+function usageBreakdownLine(entry, options = {}) {
+  const parts = [];
+  if (options.countTasks === true) {
+    const tasks = entry.tasks.filter((id) => id !== UNATTRIBUTED).length;
+    parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`);
+  }
+  parts.push(formatTokenFlow(entry.usage));
+  parts.push(formatCostUsd(entry.costUsd, entry.pricing));
+  return `${entry.key}: ${parts.join(" \xB7 ")}`;
+}
+function usageRollupLines(breakdown, options = {}) {
+  return [...breakdown.values()].sort((a, b) => b.costUsd - a.costUsd || b.usage.inputTokens + b.usage.outputTokens - (a.usage.inputTokens + a.usage.outputTokens) || a.key.localeCompare(b.key)).map((entry) => usageBreakdownLine(entry, options));
+}
+function isRecord10(value) {
+  return typeof value === "object" && value !== null;
+}
+function isDelegatedResult(result) {
+  return "events" in result;
+}
+var CODEX_PREFIX = "codex.";
+var CLAUDE_CODE_PREFIX = "claude-code.";
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "")
+      return value;
+  }
+  return void 0;
+}
+function codexItemFrom(data) {
+  if (isRecord10(data.item))
+    return data.item;
+  if (isRecord10(data.msg) && isRecord10(data.msg.item))
+    return data.msg.item;
+  return void 0;
+}
+function codexMessageText(item) {
+  const direct = firstNonEmptyString(item.text, item.message);
+  if (direct !== void 0)
+    return direct;
+  const content = item.content;
+  if (typeof content === "string" && content.trim() !== "")
+    return content;
+  if (Array.isArray(content)) {
+    const parts = [];
+    for (const part of content) {
+      if (typeof part === "string")
+        parts.push(part);
+      else if (isRecord10(part) && typeof part.text === "string") {
+        parts.push(part.text);
+      }
+    }
+    const joined = parts.join("");
+    if (joined !== "")
+      return joined;
+  }
+  return void 0;
+}
+function codexCommandText(item) {
+  const direct = firstNonEmptyString(item.command, item.cmd);
+  if (direct !== void 0)
+    return direct;
+  const argv = item.argv ?? item.command;
+  if (Array.isArray(argv)) {
+    const parts = argv.filter((part) => typeof part === "string");
+    if (parts.length > 0)
+      return parts.join(" ");
+  }
+  return void 0;
+}
+function codexFileChangeText(item) {
+  const direct = firstNonEmptyString(item.path, item.file, item.summary);
+  if (direct !== void 0)
+    return direct;
+  const changes = item.changes;
+  if (Array.isArray(changes)) {
+    const paths = [];
+    for (const change of changes) {
+      if (typeof change === "string")
+        paths.push(change);
+      else if (isRecord10(change)) {
+        const p = firstNonEmptyString(change.path, change.file);
+        if (p !== void 0)
+          paths.push(p);
+      }
+    }
+    if (paths.length > 0)
+      return paths.join(", ");
+  }
+  return void 0;
+}
+function truncate3(text2, limit) {
+  return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
+}
+function taskIdOf(event2, data) {
+  return event2.taskId ?? stringOrUndefined(data.taskId) ?? "?";
+}
+function stringOrUndefined(value) {
+  return typeof value === "string" && value !== "" ? value : void 0;
+}
+function routingLabel(routing) {
+  if (!isRecord10(routing))
+    return void 0;
+  const rule = stringOrUndefined(routing.rule);
+  switch (routing.reason) {
+    case "rule":
+      return rule === void 0 ? "rule" : `rule: ${rule}`;
+    case "escalation":
+      return rule === void 0 ? "escalation" : `escalation: ${rule}`;
+    case "suggestedAgent":
+      return "suggested";
+    case "orchestrator":
+      return "default";
+    default:
+      return void 0;
+  }
+}
+function firstLine2(text2) {
+  if (typeof text2 !== "string")
+    return "(no summary)";
+  const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
+  return line === void 0 ? "(no summary)" : truncate3(line, 120);
+}
+function ansi3(code, text2, enabled) {
+  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
+}
+var EXIT_LABEL = {
+  success: "success",
+  partial: "partial",
+  failed: "failed"
+};
+var THINKING_LABEL = "thinking";
+var TextRenderer = class {
+  #output;
+  #color;
+  #status;
+  /** A streamed line is open — text was written with no newline after it. */
+  #streaming = false;
+  /** Deltas were streamed for the model turn now in flight. */
+  #streamed = false;
+  /** A turn this renderer is showing progress for is in flight. */
+  #inTurn = false;
+  /**
+   * Text of the Claude Code block currently streaming, for the one case that
+   * cannot be streamed to the screen: a delegated *task* inside an
+   * orchestration run, whose output shares the terminal with other tasks.
+   */
+  #claudeText = "";
+  constructor(output = process.stdout, options = {}) {
+    this.#output = output;
+    this.#color = "isTTY" in output && output.isTTY === true;
+    this.#status = options.status ?? new StatusLine({
+      output,
+      ...options.tokens === void 0 ? {} : { tokens: options.tokens },
+      ...options.suspended === void 0 ? {} : { suspended: options.suspended }
+    });
+  }
+  /**
+   * Writes one line of output, taking the screen back from the status line and
+   * from any partially streamed text first.
+   */
+  #write(line) {
+    this.#endStream();
+    this.#status.erase();
+    this.#output.write(`${line}
+`);
+    this.#status.refresh();
+  }
+  /**
+   * Writes one line of caller-owned output (the REPL's own notices) through
+   * the same discipline, and ends any status the turn left running.
+   *
+   * The interactive shell prints its per-turn lines itself rather than through
+   * an event; routing them here is what keeps them from landing on top of a
+   * spinner.
+   */
+  line(text2) {
+    this.#endTurn();
+    this.#write(text2);
+  }
+  /** Appends streamed assistant text, with no line terminator of its own. */
+  #stream(text2) {
+    if (text2 === "")
+      return;
+    this.#status.stop();
+    this.#output.write(text2);
+    this.#streaming = true;
+    this.#streamed = true;
+  }
+  /** Terminates an open streamed line, if there is one. */
+  #endStream() {
+    if (!this.#streaming)
+      return;
+    this.#streaming = false;
+    this.#output.write("\n");
+  }
+  /** A turn started: from here on there is something to show progress for. */
+  #beginTurn() {
+    this.#inTurn = true;
+    this.#streamed = false;
+    this.#status.start(THINKING_LABEL);
+  }
+  /**
+   * Relabels the status, but only while a turn is actually in flight — which
+   * is never the case for an orchestration run, whose turns all carry a task
+   * id and so never call {@link #beginTurn}.
+   */
+  #waiting(label) {
+    if (!this.#inTurn)
+      return;
+    this.#status.start(label);
+  }
+  /** A turn ended (or output took over): nothing is pending on screen. */
+  #endTurn() {
+    this.#inTurn = false;
+    this.#endStream();
+    this.#status.stop();
+  }
+  #dim(text2) {
+    return ansi3("2", text2, this.#color);
+  }
+  #bold(text2) {
+    return ansi3("1", text2, this.#color);
+  }
+  emit(event2) {
+    const data = isRecord10(event2.data) ? event2.data : {};
+    const single = event2.taskId === void 0;
+    if (event2.type.startsWith(CODEX_PREFIX)) {
+      this.#emitCodex(data);
+      return;
+    }
+    if (event2.type.startsWith(CLAUDE_CODE_PREFIX)) {
+      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data, single);
+      return;
+    }
+    switch (event2.type) {
+      case "chat.turn.started":
+      case "loop.started": {
+        if (single)
+          this.#beginTurn();
+        break;
+      }
+      case "chat.turn.completed":
+      case "loop.completed": {
+        if (single)
+          this.#endTurn();
+        break;
+      }
+      case MODEL_TEXT_DELTA_EVENT: {
+        if (!single)
+          break;
+        if (typeof data.text === "string")
+          this.#stream(data.text);
+        break;
+      }
+      case "model.turn.completed": {
+        const text2 = typeof data.text === "string" ? data.text : "";
+        if (this.#streamed) {
+          this.#endStream();
+          this.#streamed = false;
+        } else if (text2 !== "") {
+          this.#write(text2);
+        }
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      case "tool.execution.started": {
+        const tool = typeof data.tool === "string" ? data.tool : "?";
+        this.#write(`${this.#dim("\u2192")} ${tool} ${this.#dim(previewInput(data.input))}`);
+        this.#waiting(tool);
+        break;
+      }
+      case "tool.execution.completed": {
+        const ok = data.ok === true;
+        const denied = data.denied === true;
+        this.#write(ok ? "  \u2713" : `  \u2717 (${denied ? "denied" : "error"})`);
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      case "context.compacted": {
+        const elided = typeof data.elided === "number" ? data.elided : 0;
+        const savedChars = typeof data.savedChars === "number" ? data.savedChars : 0;
+        this.#write(this.#dim(`\u2248 context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`));
+        break;
+      }
+      case "task.started":
+      case "task.completed":
+      case "task.escalated":
+      case "task.cancelled":
+      case "task.low_confidence":
+        this.#emitTaskLifecycle(event2.type, taskIdOf(event2, data), data);
+        break;
+      case "worktree.created":
+      case "worktree.integrated":
+      case "worktree.removed":
+        this.#emitWorktree(event2.type, taskIdOf(event2, data), data);
+        break;
+      case "validation.started":
+      case "validation.completed":
+        this.#emitValidation(event2.type, taskIdOf(event2, data), data);
+        break;
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders the scheduler's `task.*` events — the orchestration run's spine.
+   *
+   * These share the sink with the worker loop's own events, so a task line has
+   * to be identifiable on its own: every one of them leads with the task id.
+   */
+  #emitTaskLifecycle(type, taskId, data) {
+    switch (type) {
+      case "task.started": {
+        const agent = stringOrUndefined(data.agent) ?? "?";
+        const attempt = typeof data.attempt === "number" ? data.attempt : 1;
+        const model = stringOrUndefined(data.model);
+        const modelSuffix = model === void 0 ? "" : ` [${model}]`;
+        const routing = routingLabel(data.routing);
+        const parens = routing === void 0 ? `attempt ${attempt}` : `${routing}, attempt ${attempt}`;
+        this.#write(`\u25B6 ${taskId} \u2192 ${agent}${modelSuffix} (${parens})`);
+        break;
+      }
+      case "task.completed": {
+        const result = isRecord10(data.result) ? data.result : {};
+        const ok = result.status === "success";
+        const retrying = data.final === false;
+        const suffix = retrying ? this.#dim(" (retrying)") : "";
+        this.#write(`${ok ? "\u2714" : "\u2716"} ${taskId} \u2014 ${firstLine2(result.summary)}${suffix}`);
+        break;
+      }
+      case "task.escalated": {
+        const from = stringOrUndefined(data.from) ?? "(unassigned)";
+        const to = stringOrUndefined(data.to) ?? "?";
+        this.#write(`\u2191 ${taskId} rerouted ${from} \u2192 ${to}`);
+        break;
+      }
+      case "task.cancelled": {
+        const reason = stringOrUndefined(data.reason) ?? "cancelled";
+        this.#write(`\u2298 ${taskId} (${reason})`);
+        break;
+      }
+      case "task.low_confidence": {
+        const confidence = typeof data.confidence === "number" ? data.confidence : 0;
+        const threshold = typeof data.threshold === "number" ? data.threshold : 0;
+        const verdict = data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
+        this.#write(`\u21BB ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} \u2014 ${verdict}`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders the worktree isolation layer's `worktree.*` events.
+   *
+   * Only the moments that change what is in the repository get a line: a task
+   * got its own checkout, its work landed (or did not), and a branch outlived
+   * the run and is waiting for a human. A clean removal is the expected case
+   * and stays silent.
+   */
+  #emitWorktree(type, taskId, data) {
+    switch (type) {
+      case "worktree.created": {
+        const branch = stringOrUndefined(data.branch) ?? "?";
+        this.#write(`\u2387 ${taskId} worktree created (${branch})`);
+        break;
+      }
+      case "worktree.integrated": {
+        if (data.merged === true) {
+          const commit = stringOrUndefined(data.commit);
+          const suffix = commit === void 0 ? "" : ` \u2192 ${commit.slice(0, 8)}`;
+          this.#write(`\u21E1 ${taskId} merged${suffix}`);
+          break;
+        }
+        const files = Array.isArray(data.conflictFiles) ? data.conflictFiles.filter((file) => typeof file === "string") : [];
+        if (files.length > 0) {
+          this.#write(`\u26A0 ${taskId} merge conflict: ${files.join(", ")}`);
+          break;
+        }
+        const reason = stringOrUndefined(data.reason) ?? "unknown reason";
+        const detail = stringOrUndefined(data.detail);
+        this.#write(detail === void 0 ? `\u26A0 ${taskId} not merged (${reason})` : `\u26A0 ${taskId} not merged (${reason}): ${detail}`);
+        break;
+      }
+      case "worktree.removed": {
+        if (data.keptBranch !== true)
+          break;
+        const branch = stringOrUndefined(data.branch) ?? "?";
+        this.#write(this.#dim(`\u2387 ${taskId} branch kept: ${branch}`));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders the `validation.*` events {@link ValidatingExecutor} emits around
+   * each configured validator command.
+   *
+   * Kept quiet and dim on the way in — a validator starting is background
+   * noise most of the time — but its result always lands, pass or fail, since
+   * that is what decides whether the task's work is going to be kept.
+   */
+  #emitValidation(type, taskId, data) {
+    switch (type) {
+      case "validation.started": {
+        const name = stringOrUndefined(data.name) ?? "?";
+        this.#write(this.#dim(`\u2699 ${taskId} validator ${name}\u2026`));
+        break;
+      }
+      case "validation.completed": {
+        const name = stringOrUndefined(data.name) ?? "?";
+        const passed = data.passed === true;
+        const seconds = typeof data.durationMs === "number" ? data.durationMs / 1e3 : 0;
+        const duration = `${seconds.toFixed(1)}s`;
+        if (passed) {
+          this.#write(`  \u2713 ${name} (${duration})`);
+          break;
+        }
+        const exitCode = typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
+        this.#write(`  \u2717 ${name} (exit ${exitCode}, ${duration})`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders a normalized `codex.*` event. Only `item.*` events whose nested
+   * item is `agent_message` / `command_execution` / `file_change` produce
+   * output — everything else (`turn.completed` usage rollups, the synthetic
+   * `codex.completed` marker, and any event type this wrapper doesn't
+   * recognize yet) stays quiet, matching the native renderer's silence on
+   * unknown event types.
+   */
+  #emitCodex(data) {
+    const item = codexItemFrom(data);
+    if (item === void 0)
+      return;
+    const itemType = typeof item.type === "string" ? item.type : void 0;
+    switch (itemType) {
+      case "agent_message": {
+        const text2 = codexMessageText(item);
+        if (text2 !== void 0 && text2.trim() !== "")
+          this.#write(text2);
+        break;
+      }
+      case "command_execution": {
+        const command = codexCommandText(item);
+        if (command !== void 0) {
+          this.#write(`\u2192 codex: ${truncate3(command, 120)}`);
+        }
+        break;
+      }
+      case "file_change": {
+        const summary = codexFileChangeText(item);
+        if (summary !== void 0)
+          this.#write(`\u270E ${summary}`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  /**
+   * Renders a normalized `claude-code.*` event.
+   *
+   * The payload is a raw Claude API streaming line, so the two things worth
+   * showing are pulled out of it by hand: the assistant's own text, streamed a
+   * delta at a time exactly like the native loop's (buffered to the end of the
+   * block only when the events belong to one task among several, where partial
+   * lines from different tasks would interleave), and the name of each tool
+   * as it starts, which is what makes a long turn legible. Everything else —
+   * `message_start`, usage rollups, the synthetic `completed` marker, and any
+   * event type this wrapper does not model yet — stays quiet, exactly as the
+   * native renderer does for unknown types.
+   */
+  #emitClaudeCode(kind, data, single) {
+    const event2 = isRecord10(data.event) ? data.event : data;
+    switch (kind) {
+      case "tool_use": {
+        const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
+        this.#write(`${this.#dim("\u2192")} claude: ${name}`);
+        this.#waiting(name);
+        break;
+      }
+      case "content_block_delta": {
+        const delta = isRecord10(event2.delta) ? event2.delta : void 0;
+        if (delta?.type !== "text_delta")
+          break;
+        if (typeof delta.text !== "string")
+          break;
+        if (single)
+          this.#stream(delta.text);
+        else
+          this.#claudeText += delta.text;
+        break;
+      }
+      case "content_block_stop":
+      case "message_stop": {
+        this.#endStream();
+        const buffered = this.#claudeText.trim();
+        this.#claudeText = "";
+        if (buffered !== "")
+          this.#write(buffered);
+        this.#waiting(THINKING_LABEL);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  result(result, usage) {
+    this.#endTurn();
+    this.#write("");
+    this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
+    this.#write(result.summary);
+    if (isDelegatedResult(result)) {
+      if (result.exitCode !== null && result.exitCode !== 0) {
+        this.#write(this.#dim(`exit code: ${result.exitCode}`));
+      }
+      if (result.usage !== void 0) {
+        this.#write(this.#dim(`tokens \u2014 input: ${result.usage.inputTokens}, output: ${result.usage.outputTokens}`));
+      }
+      return;
+    }
+    this.#write(this.#dim(`iterations: ${result.iterations}  tool calls: ${result.toolCalls}`));
+    const { usage: totals, costUsd } = usage;
+    const tokenParts = [
+      `input: ${totals.inputTokens}`,
+      `output: ${totals.outputTokens}`
+    ];
+    if (totals.cachedInputTokens !== void 0) {
+      tokenParts.push(`cached: ${totals.cachedInputTokens}`);
+    }
+    let usageLine2 = `tokens \u2014 ${tokenParts.join(", ")}`;
+    if (costUsd > 0)
+      usageLine2 += `  (~$${costUsd.toFixed(4)})`;
+    this.#write(this.#dim(usageLine2));
+  }
+};
+var JsonRenderer = class {
+  #output;
+  constructor(output = process.stdout) {
+    this.#output = output;
+  }
+  emit(event2) {
+    this.#output.write(`${JSON.stringify(event2)}
+`);
+  }
+  result(result, usage) {
+    const trackerIsEmpty = usage.usage.inputTokens === 0 && usage.usage.outputTokens === 0;
+    const reported = trackerIsEmpty && "usage" in result && result.usage !== void 0 ? result.usage : usage.usage;
+    const line = {
+      type: "result",
+      ...result,
+      usage: reported,
+      costUsd: usage.costUsd
+    };
+    this.#output.write(`${JSON.stringify(line)}
+`);
+  }
+};
+
+// apps/cli/dist/dashboard.js
+function backendStateFrom(result) {
+  if (result.ok)
+    return "ok";
+  return result.installed === false ? "missing" : "logged-out";
+}
+function dashboardRoles(models, overrides) {
+  if (models === void 0)
+    return [];
+  return KAPEL_ROLES.map((role) => ({
+    role,
+    backend: models[role].backend,
+    model: models[role].model,
+    overridden: overrides?.[role] !== void 0
+  }));
+}
+function quotaBlockFrom(backends, usage, days) {
+  if (backends.length === 0)
+    return void 0;
+  const byBackend = new Map(usage.map((row) => [row.backend, row]));
+  return {
+    heading: `usage (kapel-tracked, ${days} days)`,
+    cells: backends.map((backend) => {
+      const row = byBackend.get(backend);
+      return {
+        backend,
+        value: formatTokens(row?.inputTokens ?? 0, row?.outputTokens ?? 0)
+      };
+    })
+  };
+}
+var DEFAULT_COLUMNS2 = 80;
+var NARROW_COLUMNS = 80;
+var MIN_COLUMNS = 28;
+var MAX_COLUMNS = 110;
+var LEFT_SHARE = 0.5;
+var SGR = {
+  dim: "2",
+  bold: "1",
+  ok: "32",
+  warn: "33"
+};
+function renderLine(line, cells, color) {
+  let remaining = cells;
+  let out = "";
+  for (const segment of line) {
+    if (remaining <= 0)
+      break;
+    const text2 = segment.text.length <= remaining ? segment.text : segment.text.slice(0, remaining);
+    remaining -= text2.length;
+    out += segment.style === void 0 ? text2 : ansi3(SGR[segment.style], text2, color);
+  }
+  return out + " ".repeat(Math.max(0, remaining));
+}
+function field(label, labelWidth, ...value) {
+  const gutter = Math.max(1, labelWidth - label.length);
+  const text2 = label === "" ? " ".repeat(labelWidth) : label + " ".repeat(gutter);
+  return [{ text: text2, style: "dim" }, ...value];
+}
+function formatCount(value) {
+  const n = Math.max(0, Math.round(value));
+  if (n < 1e3)
+    return String(n);
+  if (n < 1e6)
+    return `${(n / 1e3).toFixed(1)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+function formatTokens(inputTokens, outputTokens) {
+  return `${formatCount(inputTokens)} in \xB7 ${formatCount(outputTokens)} out`;
+}
+var STATE_GLYPH = {
+  ok: "\u2713",
+  "logged-out": "!",
+  missing: "\u2717",
+  pending: "\u2026"
+};
+var STATE_STYLE = {
+  ok: "ok",
+  "logged-out": "warn",
+  missing: "dim",
+  pending: "dim"
+};
+function shortenPath(value, max) {
+  if (value.length <= max)
+    return value;
+  const tail3 = value.slice(value.length - (max - 1));
+  const cut = tail3.indexOf("/");
+  return `\u2026${cut === -1 ? tail3 : tail3.slice(cut)}`;
+}
+var SETUP_LABEL_WIDTH = 13;
+function backendSegments(backend) {
+  return [
+    { text: STATE_GLYPH[backend.state], style: STATE_STYLE[backend.state] },
+    { text: ` ${backend.name}` }
+  ];
+}
+function backendLines(backends, cells) {
+  if (backends.length === 0) {
+    return [
+      field("backends", SETUP_LABEL_WIDTH, {
+        text: "none configured",
+        style: "dim"
+      })
+    ];
+  }
+  const joined = [];
+  for (const backend of backends) {
+    if (joined.length > 0)
+      joined.push({ text: "  " });
+    joined.push(...backendSegments(backend));
+  }
+  const used = joined.reduce((total, segment) => total + segment.text.length, 0);
+  if (used <= cells - SETUP_LABEL_WIDTH) {
+    return [field("backends", SETUP_LABEL_WIDTH, ...joined)];
+  }
+  return backends.map((backend, index2) => field(index2 === 0 ? "backends" : "", SETUP_LABEL_WIDTH, ...backendSegments(backend)));
+}
+function setupLines(model, cells) {
+  const lines = [
+    [{ text: "setup", style: "bold" }],
+    field("workspace", SETUP_LABEL_WIDTH, {
+      text: shortenPath(model.workspacePath, Math.max(8, cells - SETUP_LABEL_WIDTH))
+    }),
+    field("session", SETUP_LABEL_WIDTH, { text: model.sessionId }),
+    field("chat", SETUP_LABEL_WIDTH, { text: model.chat }),
+    ...backendLines(model.backends, cells),
+    []
+  ];
+  if (model.roles.length === 0) {
+    lines.push([{ text: "no role models configured", style: "dim" }]);
+  }
+  for (const role of model.roles) {
+    lines.push(field(role.role, SETUP_LABEL_WIDTH, { text: `${role.backend}:${role.model}` }, ...role.overridden ? [{ text: " *", style: "warn" }] : []));
+  }
+  if (model.projectOverride) {
+    lines.push([]);
+    lines.push([{ text: "* from .agent/config.local.json", style: "dim" }]);
+  }
+  return lines;
+}
+var ACTIVITY_LABEL_WIDTH = 9;
+var QUOTA_LABEL_WIDTH = 13;
+function windowLines(label, totals, cells) {
+  if (isIdleActivity(totals)) {
+    return [
+      field(label, ACTIVITY_LABEL_WIDTH, {
+        text: "no runs yet",
+        style: "dim"
+      })
+    ];
+  }
+  const lines = [
+    field(label, ACTIVITY_LABEL_WIDTH, {
+      text: `${totals.runs} run${totals.runs === 1 ? "" : "s"} \xB7 ${totals.chatSessions} chat${totals.chatSessions === 1 ? "" : "s"}`
+    })
+  ];
+  if (totals.tasksCompleted > 0 || totals.tasksFailed > 0) {
+    lines.push(field("", ACTIVITY_LABEL_WIDTH, {
+      text: `${totals.tasksCompleted} task${totals.tasksCompleted === 1 ? "" : "s"} ok`
+    }, { text: " \xB7 " }, {
+      text: `${totals.tasksFailed} failed`,
+      style: totals.tasksFailed > 0 ? "warn" : "dim"
+    }));
+  }
+  const tokens = formatTokens(totals.inputTokens, totals.outputTokens);
+  const cost = totals.costUsd === void 0 || totals.costUsd <= 0 ? void 0 : `~$${totals.costUsd.toFixed(2)}`;
+  const together = ACTIVITY_LABEL_WIDTH + tokens.length + 2 + (cost?.length ?? 0);
+  if (cost === void 0 || together > cells) {
+    lines.push(field("", ACTIVITY_LABEL_WIDTH, { text: tokens }));
+    if (cost !== void 0) {
+      lines.push(field("", ACTIVITY_LABEL_WIDTH, { text: cost, style: "dim" }));
+    }
+    return lines;
+  }
+  lines.push(field("", ACTIVITY_LABEL_WIDTH, { text: tokens }, { text: `  ${cost}`, style: "dim" }));
+  return lines;
+}
+function activityLines(model, cells) {
+  const lines = [[{ text: "activity", style: "bold" }]];
+  if (model.activity === void 0) {
+    lines.push([{ text: "not recorded (--no-save)", style: "dim" }]);
+  } else {
+    lines.push(...windowLines("today", model.activity.today, cells));
+    lines.push(...windowLines("7 days", model.activity.week, cells));
+  }
+  const quota = model.quota;
+  if (quota !== void 0 && quota.cells.length > 0) {
+    lines.push([]);
+    lines.push([{ text: quota.heading, style: "bold" }]);
+    for (const cell of quota.cells) {
+      lines.push(field(cell.backend, QUOTA_LABEL_WIDTH, cell.value === void 0 ? { text: "\u2026", style: "dim" } : { text: cell.value }));
+    }
+  }
+  return lines;
+}
+function pad(line, cells, color) {
+  return renderLine(line ?? [], cells, color);
+}
+function renderDashboard(model, options = {}) {
+  const color = options.color ?? false;
+  const terminal = Math.max(MIN_COLUMNS, Math.min(options.columns ?? DEFAULT_COLUMNS2, MAX_COLUMNS));
+  const title = [{ text: `kapel v${model.version}`, style: "bold" }];
+  if (terminal < NARROW_COLUMNS) {
+    const inner2 = terminal - 4;
+    const body2 = [
+      ...setupLines(model, inner2),
+      [],
+      ...activityLines(model, inner2)
+    ];
+    return [
+      `\u256D${"\u2500".repeat(terminal - 2)}\u256E`,
+      `\u2502 ${pad(title, inner2, color)} \u2502`,
+      `\u251C${"\u2500".repeat(terminal - 2)}\u2524`,
+      ...body2.map((line) => `\u2502 ${pad(line, inner2, color)} \u2502`),
+      `\u2570${"\u2500".repeat(terminal - 2)}\u256F`
+    ];
+  }
+  const inner = terminal - 7;
+  const left = Math.max(20, Math.round(inner * LEFT_SHARE));
+  const right = inner - left;
+  const leftLines = setupLines(model, left);
+  const rightLines = activityLines(model, right);
+  const rows = Math.max(leftLines.length, rightLines.length);
+  const body = [];
+  for (let i = 0; i < rows; i += 1) {
+    body.push(`\u2502 ${pad(leftLines[i], left, color)} \u2502 ${pad(rightLines[i], right, color)} \u2502`);
+  }
+  return [
+    `\u256D${"\u2500".repeat(terminal - 2)}\u256E`,
+    `\u2502 ${pad(title, terminal - 4, color)} \u2502`,
+    `\u251C${"\u2500".repeat(left + 2)}\u252C${"\u2500".repeat(right + 2)}\u2524`,
+    ...body,
+    `\u2570${"\u2500".repeat(left + 2)}\u2534${"\u2500".repeat(right + 2)}\u256F`
+  ];
 }
 
 // apps/cli/dist/delegated-chat.js
@@ -10933,17 +12837,17 @@ function createDelegatedChatSession(options) {
 }
 
 // apps/cli/dist/history.js
-import { mkdir as mkdir5, readFile as readFile13, writeFile as writeFile5 } from "node:fs/promises";
-import path8 from "node:path";
+import { mkdir as mkdir5, readFile as readFile14, writeFile as writeFile6 } from "node:fs/promises";
+import path10 from "node:path";
 var HISTORY_LIMIT = 1e3;
 var TRIM_THRESHOLD = HISTORY_LIMIT * 2;
 function historyFilePath(env) {
-  return path8.join(kapelConfigDir(env), "history");
+  return path10.join(kapelConfigDir(env), "history");
 }
 async function loadHistory(env) {
   let raw;
   try {
-    raw = await readFile13(historyFilePath(env), "utf8");
+    raw = await readFile14(historyFilePath(env), "utf8");
   } catch {
     return [];
   }
@@ -10960,12 +12864,12 @@ function createHistoryAppender(env) {
   async function ensureDir() {
     if (dirEnsured)
       return;
-    await mkdir5(path8.dirname(filePath), { recursive: true });
+    await mkdir5(path10.dirname(filePath), { recursive: true });
     dirEnsured = true;
   }
   async function currentLineCount() {
     try {
-      const raw = await readFile13(filePath, "utf8");
+      const raw = await readFile14(filePath, "utf8");
       return raw.split("\n").filter((line) => line.trim() !== "").length;
     } catch {
       return 0;
@@ -10974,7 +12878,7 @@ function createHistoryAppender(env) {
   async function appendOne(entry) {
     try {
       await ensureDir();
-      await writeFile5(filePath, `${entry}
+      await writeFile6(filePath, `${entry}
 `, { flag: "a" });
       lineCount = lineCount === void 0 ? await currentLineCount() : lineCount + 1;
       if (lineCount > TRIM_THRESHOLD) {
@@ -10986,13 +12890,13 @@ function createHistoryAppender(env) {
   async function trim() {
     let raw;
     try {
-      raw = await readFile13(filePath, "utf8");
+      raw = await readFile14(filePath, "utf8");
     } catch {
       return;
     }
     const lines = raw.split("\n").filter((line) => line.trim() !== "");
     const trimmed = lines.slice(-HISTORY_LIMIT);
-    await writeFile5(filePath, `${trimmed.join("\n")}
+    await writeFile6(filePath, `${trimmed.join("\n")}
 `);
     lineCount = trimmed.length;
   }
@@ -11005,7 +12909,7 @@ function createHistoryAppender(env) {
 }
 
 // apps/cli/dist/input.js
-import * as readline2 from "node:readline";
+import * as readline3 from "node:readline";
 function initialAssembly() {
   return { pending: [] };
 }
@@ -11056,7 +12960,7 @@ function rlHistory(rl) {
 }
 function createInputManager(options) {
   const pasteWindowMs = options.pasteWindowMs ?? DEFAULT_PASTE_WINDOW_MS;
-  const rl = readline2.createInterface({
+  const rl = readline3.createInterface({
     input: options.input,
     output: options.output,
     terminal: true,
@@ -11216,29 +13120,29 @@ ${action.text}`;
 // apps/cli/dist/instructions.js
 import { readFileSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import path9 from "node:path";
+import path11 from "node:path";
 var MAX_INSTRUCTIONS_BYTES = 32 * 1024;
 var TRUNCATION_MARKER2 = "[instructions truncated]";
 var PREAMBLE = "Project instructions (from AGENTS.md files):";
 function abbreviateHome(absPath, home) {
   if (absPath === home)
     return "~";
-  const prefix = home.endsWith(path9.sep) ? home : `${home}${path9.sep}`;
+  const prefix = home.endsWith(path11.sep) ? home : `${home}${path11.sep}`;
   if (!absPath.startsWith(prefix))
     return absPath;
-  return `~${path9.sep}${absPath.slice(prefix.length)}`;
+  return `~${path11.sep}${absPath.slice(prefix.length)}`;
 }
 function sourcesFor(workspacePath, env) {
-  const configPath = path9.join(kapelConfigDir(env), "AGENTS.md");
-  const projectPath = path9.join(workspacePath, "AGENTS.md");
-  const agentPath = path9.join(workspacePath, ".agent", "AGENTS.md");
+  const configPath = path11.join(kapelConfigDir(env), "AGENTS.md");
+  const projectPath = path11.join(workspacePath, "AGENTS.md");
+  const agentPath = path11.join(workspacePath, ".agent", "AGENTS.md");
   return [
     { absPath: configPath, display: abbreviateHome(configPath, homedir2()) },
     {
       absPath: projectPath,
-      display: path9.relative(workspacePath, projectPath)
+      display: path11.relative(workspacePath, projectPath)
     },
-    { absPath: agentPath, display: path9.relative(workspacePath, agentPath) }
+    { absPath: agentPath, display: path11.relative(workspacePath, agentPath) }
   ];
 }
 function capSize(text2) {
@@ -11282,8 +13186,8 @@ ${instructions.text}`;
 
 // apps/cli/dist/mention.js
 import { execFile as execFile9 } from "node:child_process";
-import { readdir as readdir5, readFile as readFile14, stat as stat6 } from "node:fs/promises";
-import path10 from "node:path";
+import { readdir as readdir5, readFile as readFile15, stat as stat7 } from "node:fs/promises";
+import path12 from "node:path";
 import { promisify as promisify6 } from "node:util";
 var execFileAsync6 = promisify6(execFile9);
 var MATCH_BONUS = 4;
@@ -11367,7 +13271,7 @@ async function gitListFiles(workspacePath) {
   }
 }
 function toPosix(relativePath) {
-  return relativePath.split(path10.sep).join("/");
+  return relativePath.split(path12.sep).join("/");
 }
 async function walkFiles(workspacePath, maxEntries) {
   const found = [];
@@ -11379,7 +13283,7 @@ async function walkFiles(workspacePath, maxEntries) {
         return found;
       let entries;
       try {
-        entries = await readdir5(path10.join(workspacePath, relativeDir), {
+        entries = await readdir5(path12.join(workspacePath, relativeDir), {
           withFileTypes: true
         });
       } catch {
@@ -11457,12 +13361,12 @@ var TRAILING_PUNCTUATION = /* @__PURE__ */ new Set([
 ]);
 var MENTION_PATTERN = /(?:^|[^\w@])@([^\s]+)/g;
 function workspaceFileExists(workspacePath, relativePath) {
-  const root = path10.resolve(workspacePath);
-  const resolved = path10.resolve(root, relativePath);
-  const inside = resolved === root || resolved.startsWith(root + path10.sep);
+  const root = path12.resolve(workspacePath);
+  const resolved = path12.resolve(root, relativePath);
+  const inside = resolved === root || resolved.startsWith(root + path12.sep);
   if (!inside)
     return Promise.resolve(false);
-  return stat6(resolved).then((stats) => stats.isFile(), () => false);
+  return stat7(resolved).then((stats) => stats.isFile(), () => false);
 }
 function mentionCandidates(text2) {
   const out = [];
@@ -11508,12 +13412,12 @@ function formatBytes(count) {
   return `${(count / (1024 * 1024)).toFixed(1)} MiB`;
 }
 async function resolveWorkspaceImage(root, relativePath, maxBytes) {
-  const resolved = path10.resolve(root, relativePath);
-  if (resolved !== root && !resolved.startsWith(root + path10.sep)) {
+  const resolved = path12.resolve(root, relativePath);
+  if (resolved !== root && !resolved.startsWith(root + path12.sep)) {
     return { error: "it is outside this workspace" };
   }
   try {
-    const info = await stat6(resolved);
+    const info = await stat7(resolved);
     if (!info.isFile())
       return { error: "it is not a file" };
     if (info.size > maxBytes) {
@@ -11527,13 +13431,13 @@ async function resolveWorkspaceImage(root, relativePath, maxBytes) {
   }
 }
 function workspaceImageReader(workspacePath, maxBytes = MAX_MENTION_IMAGE_BYTES) {
-  const root = path10.resolve(workspacePath);
+  const root = path12.resolve(workspacePath);
   return async (relativePath) => {
     const resolved = await resolveWorkspaceImage(root, relativePath, maxBytes);
     if ("error" in resolved)
       return resolved;
     try {
-      return { bytes: await readFile14(resolved.path), path: resolved.path };
+      return { bytes: await readFile15(resolved.path), path: resolved.path };
     } catch (error) {
       return {
         error: error instanceof Error ? error.message : String(error)
@@ -11542,7 +13446,7 @@ function workspaceImageReader(workspacePath, maxBytes = MAX_MENTION_IMAGE_BYTES)
   };
 }
 function workspaceImagePathReader(workspacePath, maxBytes = MAX_MENTION_IMAGE_BYTES) {
-  const root = path10.resolve(workspacePath);
+  const root = path12.resolve(workspacePath);
   return async (relativePath) => await resolveWorkspaceImage(root, relativePath, maxBytes);
 }
 async function prepareMentions(text2, options) {
@@ -11611,979 +13515,88 @@ ${blocks.join("\n")}`,
   };
 }
 
+// apps/cli/dist/onboard.js
+import { stat as stat8 } from "node:fs/promises";
+import path13 from "node:path";
+var ORCHESTRATION_FILE = "orchestration.md";
+var LOCK_FILE = "orchestration.lock.json";
+async function pathExists2(candidate) {
+  try {
+    await stat8(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function detectProjectSetup(workspacePath) {
+  const agentDir = path13.join(workspacePath, ".agent");
+  if (!await pathExists2(path13.join(agentDir, ORCHESTRATION_FILE))) {
+    return "needs-init";
+  }
+  if (!await pathExists2(path13.join(agentDir, LOCK_FILE))) {
+    return "needs-policy";
+  }
+  return "ready";
+}
+function setupQuestion(state) {
+  return state === "needs-init" ? "This project isn't set up for kapel yet. Set it up now? (creates .agent/ with default agents and compiles the orchestration policy \u2014 one model call)" : "This project's orchestration policy isn't compiled yet. Compile it now? (one model call)";
+}
+function setupDeclinedLine(state, context) {
+  const commands = state === "needs-init" ? "`kapel init` and `kapel policy compile`" : "`kapel policy compile`";
+  return context === "startup" ? `ok \u2014 run ${commands} on the shell when you want it, or /plan and /orchestrate will offer again.` : `ok \u2014 run ${commands} on the shell when you want it.`;
+}
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function createProjectSetup(deps) {
+  const detect = deps.detect ?? detectProjectSetup;
+  let settled = false;
+  const step = async (label, run, output) => {
+    let code;
+    try {
+      code = await run(output);
+    } catch (error) {
+      output.error(`${label} failed: ${errorText(error)}`);
+      return false;
+    }
+    if (code === 0)
+      return true;
+    output.error(`${label} did not finish \u2014 kapel keeps working without it.`);
+    return false;
+  };
+  return {
+    ensure: async (output, context) => {
+      if (settled)
+        return false;
+      const state = await detect(deps.workspacePath);
+      if (state === "ready")
+        return true;
+      if (deps.confirm === void 0)
+        return false;
+      if (!await deps.confirm(setupQuestion(state))) {
+        settled = true;
+        output.log(setupDeclinedLine(state, context));
+        return false;
+      }
+      if (state === "needs-init") {
+        if (!await step("`kapel init`", deps.init, output)) {
+          settled = true;
+          return false;
+        }
+      }
+      if (!await step("`kapel policy compile`", deps.compile, output)) {
+        settled = true;
+        return false;
+      }
+      return true;
+    }
+  };
+}
+
 // apps/cli/dist/orchestrate.js
 import { execFile as execFile10 } from "node:child_process";
 import { resolve as resolve4 } from "node:path";
 import { promisify as promisify7 } from "node:util";
-
-// apps/cli/dist/prompter.js
-import * as readline3 from "node:readline";
-
-// apps/cli/dist/preview.js
-var PREVIEW_MAX = 120;
-var PREVIEW_MAX_LINES = 40;
-var DIFF_CONTEXT = 3;
-var LCS_MAX_LINES = 300;
-var WRITE_PREVIEW_LINES = 20;
-var RED = "31";
-var GREEN = "32";
-var DIM = "2";
-function ansi2(code, text2, enabled) {
-  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
-}
-function isRecord8(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function stringField(input, key) {
-  if (!isRecord8(input))
-    return void 0;
-  const value = input[key];
-  return typeof value === "string" ? value : void 0;
-}
-function previewInput(input) {
-  let text2;
-  try {
-    text2 = JSON.stringify(input) ?? String(input);
-  } catch {
-    text2 = String(input);
-  }
-  if (text2.length <= PREVIEW_MAX)
-    return text2;
-  return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
-}
-function lcsDiff(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const width = m + 1;
-  const dp = new Array((n + 1) * width).fill(0);
-  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
-    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
-      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
-    }
-  }
-  const out = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      out.push({ marker: " ", text: a[i] ?? "" });
-      i += 1;
-      j += 1;
-    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
-      out.push({ marker: "-", text: a[i] ?? "" });
-      i += 1;
-    } else {
-      out.push({ marker: "+", text: b[j] ?? "" });
-      j += 1;
-    }
-  }
-  for (; i < n; i += 1)
-    out.push({ marker: "-", text: a[i] ?? "" });
-  for (; j < m; j += 1)
-    out.push({ marker: "+", text: b[j] ?? "" });
-  return out;
-}
-function diffLines(oldText, newText) {
-  const a = oldText.split("\n");
-  const b = newText.split("\n");
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head])
-    head += 1;
-  let tail3 = 0;
-  while (tail3 < a.length - head && tail3 < b.length - head && a[a.length - 1 - tail3] === b[b.length - 1 - tail3]) {
-    tail3 += 1;
-  }
-  const midA = a.slice(head, a.length - tail3);
-  const midB = b.slice(head, b.length - tail3);
-  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
-    ...midA.map((text2) => ({ marker: "-", text: text2 })),
-    ...midB.map((text2) => ({ marker: "+", text: text2 }))
-  ] : lcsDiff(midA, midB);
-  return [
-    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
-    ...middle,
-    ...a.slice(a.length - tail3).map((text2) => ({ marker: " ", text: text2 }))
-  ];
-}
-function paint(line, color) {
-  const text2 = `  ${line.marker} ${line.text}`;
-  if (line.marker === "-")
-    return ansi2(RED, text2, color);
-  if (line.marker === "+")
-    return ansi2(GREEN, text2, color);
-  return text2;
-}
-function moreTail(count, color) {
-  return ansi2(DIM, `  \u2026 (+${count} more)`, color);
-}
-function capLines(lines, color) {
-  if (lines.length <= PREVIEW_MAX_LINES)
-    return [...lines];
-  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
-  return [...kept, moreTail(lines.length - kept.length, color)];
-}
-function renderDiff(lines, options = {}) {
-  const color = options.color === true;
-  const keep = lines.map((line) => line.marker !== " ");
-  lines.forEach((line, index2) => {
-    if (line.marker === " ")
-      return;
-    const from = Math.max(0, index2 - DIFF_CONTEXT);
-    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
-    for (let near = from; near <= to; near += 1)
-      keep[near] = true;
-  });
-  const out = [];
-  let elided = false;
-  lines.forEach((line, index2) => {
-    if (keep[index2] === true) {
-      out.push(paint(line, color));
-      elided = false;
-      return;
-    }
-    if (!elided) {
-      out.push(ansi2(DIM, "  \u22EE", color));
-      elided = true;
-    }
-  });
-  return capLines(out, color);
-}
-function previewBash(input, options = {}) {
-  const command = stringField(input, "command");
-  if (command === void 0)
-    return void 0;
-  const lines = command.split("\n").map((line) => `  ${line}`);
-  return capLines(lines, options.color === true).join("\n");
-}
-function previewEdit(input, options = {}) {
-  const path15 = stringField(input, "path");
-  const oldText = stringField(input, "oldText");
-  const newText = stringField(input, "newText");
-  if (path15 === void 0 || oldText === void 0 || newText === void 0) {
-    return void 0;
-  }
-  const replaceAll = isRecord8(input) && input.replaceAll === true ? " (all occurrences)" : "";
-  const header = ansi2(DIM, `  ${path15}${replaceAll}`, options.color === true);
-  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
-}
-function previewWrite(input, options = {}) {
-  const path15 = stringField(input, "path");
-  const content = stringField(input, "content");
-  if (path15 === void 0 || content === void 0)
-    return void 0;
-  const color = options.color === true;
-  const lines = content.split("\n");
-  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
-  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
-  if (lines.length > shown.length) {
-    body.push(moreTail(lines.length - shown.length, color));
-  }
-  const header = ansi2(DIM, `  ${path15} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
-  return [header, ...body].join("\n");
-}
-function formatToolPreview(tool, input, options = {}) {
-  switch (tool) {
-    case "bash":
-      return previewBash(input, options);
-    case "edit_file":
-      return previewEdit(input, options);
-    case "write_file":
-      return previewWrite(input, options);
-    default:
-      return void 0;
-  }
-}
-
-// apps/cli/dist/prompter.js
-var ERASE_LINE = "\x1B[2K\r";
-function createPromptState() {
-  return { active: false };
-}
-function parsePermissionAnswer(answer) {
-  if (typeof answer !== "string")
-    return "deny";
-  const normalized = answer.trim().toLowerCase();
-  if (normalized === "y" || normalized === "yes")
-    return "once";
-  if (normalized === "a" || normalized === "always")
-    return "always";
-  return "deny";
-}
-function createPrompter(options) {
-  if (options.yes) {
-    return { ask: async () => true };
-  }
-  if (!options.interactive) {
-    return void 0;
-  }
-  const input = options.input ?? process.stdin;
-  const output = options.output ?? process.stdout;
-  const state = options.state;
-  const ask2 = options.ask;
-  const allowlist = options.allowlist;
-  const color = options.color ?? output.isTTY === true;
-  return {
-    ask: async (request) => {
-      state.active = true;
-      try {
-        const prompt = formatPermissionPrompt(request, { color });
-        const lines = previewBlockLines(request, prompt, {
-          color,
-          offerAlways: allowlist !== void 0
-        });
-        if (color)
-          output.write(ERASE_LINE);
-        if (lines.length > 0)
-          output.write(`${lines.join("\n")}
-`);
-        const raw = ask2 === void 0 ? await askOnce(prompt.query, input, output) : await ask2(prompt.query);
-        const answer = parsePermissionAnswer(raw);
-        if (answer === "deny")
-          return false;
-        if (answer === "always" && allowlist !== void 0) {
-          const rule = allowlist.remember(request);
-          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
-`);
-        }
-        return true;
-      } finally {
-        state.active = false;
-      }
-    }
-  };
-}
-function dim(text2, enabled) {
-  return enabled ? `\x1B[2m${text2}\x1B[0m` : text2;
-}
-function previewBlockLines(request, prompt, options) {
-  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
-  if (!options.offerAlways)
-    return lines;
-  const rule = sessionRuleFor(request);
-  if (rule === void 0)
-    return lines;
-  return [
-    ...lines,
-    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
-  ];
-}
-function formatPermissionPrompt(request, options = {}) {
-  const block = formatToolPreview(request.tool, request.input, {
-    ...options.color === void 0 ? {} : { color: options.color }
-  });
-  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] ` : `allow ${request.tool}? [y/n/a] `;
-  return { block, query };
-}
-function askOnce(query, input, output) {
-  const rl = readline3.createInterface({ input, output, terminal: true });
-  return new Promise((resolve5) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled)
-        return;
-      settled = true;
-      rl.close();
-      resolve5(value);
-    };
-    rl.on("SIGINT", () => finish(void 0));
-    rl.question(query, (answer) => finish(answer));
-  });
-}
-
-// apps/cli/dist/status-line.js
-var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
-var TICK_MS = 120;
-var ERASE = "\r\x1B[2K";
-var DEFAULT_COLUMNS = 80;
-function defaultTicker(tick) {
-  const timer = setInterval(tick, TICK_MS);
-  timer.unref?.();
-  return () => clearInterval(timer);
-}
-function formatTokenCount(tokens) {
-  if (tokens < 1e3)
-    return String(Math.round(tokens));
-  return `${(tokens / 1e3).toFixed(1)}k`;
-}
-function formatStatus(label, elapsedMs2, tokens) {
-  const seconds = Math.max(0, Math.floor(elapsedMs2 / 1e3));
-  const parts = [`${label} ${seconds}s`];
-  if (tokens !== void 0 && tokens > 0) {
-    parts.push(`${formatTokenCount(tokens)} tokens`);
-  }
-  return parts.join(" \xB7 ");
-}
-var StatusLine = class {
-  #output;
-  #enabled;
-  #now;
-  #tokens;
-  #suspended;
-  #ticker;
-  #cancel;
-  #label = "";
-  #startedAt = 0;
-  #frame = 0;
-  #painted = false;
-  constructor(options = {}) {
-    this.#output = options.output ?? process.stdout;
-    this.#enabled = options.tty ?? this.#output.isTTY === true;
-    this.#now = options.now ?? (() => Date.now());
-    this.#tokens = options.tokens;
-    this.#suspended = options.suspended ?? (() => false);
-    this.#ticker = options.ticker ?? defaultTicker;
-  }
-  /** Whether this line will ever paint anything — false off a TTY. */
-  get enabled() {
-    return this.#enabled;
-  }
-  /** Whether a status is currently being kept up to date. */
-  get running() {
-    return this.#cancel !== void 0;
-  }
-  /**
-   * Starts the status, or relabels a running one.
-   *
-   * The elapsed clock runs from the *start*, not from each relabel: it is the
-   * age of the current wait, and a wait that changes phase (model → tool) is a
-   * new wait, so {@link stop} then `start` is how the caller resets it.
-   */
-  start(label) {
-    if (!this.#enabled)
-      return;
-    this.#label = label;
-    if (this.#cancel === void 0) {
-      this.#startedAt = this.#now();
-      this.#frame = 0;
-      this.#cancel = this.#ticker(() => {
-        this.#frame += 1;
-        this.#paint();
-      });
-    }
-    this.#paint();
-  }
-  /**
-   * Erases the painted line but keeps the status running: the next tick (or
-   * {@link refresh}) puts it back. This is what the renderer calls before
-   * writing real output.
-   */
-  erase() {
-    if (!this.#painted)
-      return;
-    this.#painted = false;
-    this.#output.write(ERASE);
-  }
-  /** Repaints immediately, if a status is running. */
-  refresh() {
-    this.#paint();
-  }
-  /** Ends the status: no more repainting, and nothing left on screen. */
-  stop() {
-    const cancel = this.#cancel;
-    this.#cancel = void 0;
-    cancel?.();
-    this.erase();
-  }
-  #paint() {
-    if (!this.#enabled || this.#cancel === void 0)
-      return;
-    if (this.#suspended()) {
-      this.erase();
-      return;
-    }
-    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
-    const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
-    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
-    const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
-    this.#output.write(`${ERASE}\x1B[2m${text2}\x1B[0m`);
-    this.#painted = true;
-  }
-};
-
-// apps/cli/dist/render.js
-function formatTokenCount2(tokens) {
-  if (tokens < 1e3)
-    return String(tokens);
-  if (tokens < 1e6)
-    return `${(tokens / 1e3).toFixed(1)}k`;
-  return `${(tokens / 1e6).toFixed(1)}M`;
-}
-function formatCostUsd(costUsd, pricing) {
-  if (pricing === "unknown")
-    return "n/a";
-  const amount = costUsd >= 0.01 ? costUsd.toFixed(2) : costUsd.toFixed(4);
-  return pricing === "partial" ? `$${amount}+` : `$${amount}`;
-}
-function formatTokenFlow(usage) {
-  const cached = usage.cachedInputTokens;
-  const input = cached === void 0 || cached === 0 ? `${formatTokenCount2(usage.inputTokens)} in` : `${formatTokenCount2(usage.inputTokens)} in (${formatTokenCount2(cached)} cached)`;
-  return `${input} / ${formatTokenCount2(usage.outputTokens)} out`;
-}
-function usageBreakdownLine(entry, options = {}) {
-  const parts = [];
-  if (options.countTasks === true) {
-    const tasks = entry.tasks.filter((id) => id !== UNATTRIBUTED).length;
-    parts.push(`${tasks} task${tasks === 1 ? "" : "s"}`);
-  }
-  parts.push(formatTokenFlow(entry.usage));
-  parts.push(formatCostUsd(entry.costUsd, entry.pricing));
-  return `${entry.key}: ${parts.join(" \xB7 ")}`;
-}
-function usageRollupLines(breakdown, options = {}) {
-  return [...breakdown.values()].sort((a, b) => b.costUsd - a.costUsd || b.usage.inputTokens + b.usage.outputTokens - (a.usage.inputTokens + a.usage.outputTokens) || a.key.localeCompare(b.key)).map((entry) => usageBreakdownLine(entry, options));
-}
-function isRecord9(value) {
-  return typeof value === "object" && value !== null;
-}
-function isDelegatedResult(result) {
-  return "events" in result;
-}
-var CODEX_PREFIX = "codex.";
-var CLAUDE_CODE_PREFIX = "claude-code.";
-function firstNonEmptyString(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim() !== "")
-      return value;
-  }
-  return void 0;
-}
-function codexItemFrom(data) {
-  if (isRecord9(data.item))
-    return data.item;
-  if (isRecord9(data.msg) && isRecord9(data.msg.item))
-    return data.msg.item;
-  return void 0;
-}
-function codexMessageText(item) {
-  const direct = firstNonEmptyString(item.text, item.message);
-  if (direct !== void 0)
-    return direct;
-  const content = item.content;
-  if (typeof content === "string" && content.trim() !== "")
-    return content;
-  if (Array.isArray(content)) {
-    const parts = [];
-    for (const part of content) {
-      if (typeof part === "string")
-        parts.push(part);
-      else if (isRecord9(part) && typeof part.text === "string") {
-        parts.push(part.text);
-      }
-    }
-    const joined = parts.join("");
-    if (joined !== "")
-      return joined;
-  }
-  return void 0;
-}
-function codexCommandText(item) {
-  const direct = firstNonEmptyString(item.command, item.cmd);
-  if (direct !== void 0)
-    return direct;
-  const argv = item.argv ?? item.command;
-  if (Array.isArray(argv)) {
-    const parts = argv.filter((part) => typeof part === "string");
-    if (parts.length > 0)
-      return parts.join(" ");
-  }
-  return void 0;
-}
-function codexFileChangeText(item) {
-  const direct = firstNonEmptyString(item.path, item.file, item.summary);
-  if (direct !== void 0)
-    return direct;
-  const changes = item.changes;
-  if (Array.isArray(changes)) {
-    const paths = [];
-    for (const change of changes) {
-      if (typeof change === "string")
-        paths.push(change);
-      else if (isRecord9(change)) {
-        const p = firstNonEmptyString(change.path, change.file);
-        if (p !== void 0)
-          paths.push(p);
-      }
-    }
-    if (paths.length > 0)
-      return paths.join(", ");
-  }
-  return void 0;
-}
-function truncate3(text2, limit) {
-  return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
-}
-function taskIdOf(event2, data) {
-  return event2.taskId ?? stringOrUndefined(data.taskId) ?? "?";
-}
-function stringOrUndefined(value) {
-  return typeof value === "string" && value !== "" ? value : void 0;
-}
-function routingLabel(routing) {
-  if (!isRecord9(routing))
-    return void 0;
-  const rule = stringOrUndefined(routing.rule);
-  switch (routing.reason) {
-    case "rule":
-      return rule === void 0 ? "rule" : `rule: ${rule}`;
-    case "escalation":
-      return rule === void 0 ? "escalation" : `escalation: ${rule}`;
-    case "suggestedAgent":
-      return "suggested";
-    case "orchestrator":
-      return "default";
-    default:
-      return void 0;
-  }
-}
-function firstLine2(text2) {
-  if (typeof text2 !== "string")
-    return "(no summary)";
-  const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
-  return line === void 0 ? "(no summary)" : truncate3(line, 120);
-}
-function ansi3(code, text2, enabled) {
-  return enabled ? `\x1B[${code}m${text2}\x1B[0m` : text2;
-}
-var EXIT_LABEL = {
-  success: "success",
-  partial: "partial",
-  failed: "failed"
-};
-var THINKING_LABEL = "thinking";
-var TextRenderer = class {
-  #output;
-  #color;
-  #status;
-  /** A streamed line is open — text was written with no newline after it. */
-  #streaming = false;
-  /** Deltas were streamed for the model turn now in flight. */
-  #streamed = false;
-  /** A turn this renderer is showing progress for is in flight. */
-  #inTurn = false;
-  /**
-   * Text of the Claude Code block currently streaming, for the one case that
-   * cannot be streamed to the screen: a delegated *task* inside an
-   * orchestration run, whose output shares the terminal with other tasks.
-   */
-  #claudeText = "";
-  constructor(output = process.stdout, options = {}) {
-    this.#output = output;
-    this.#color = "isTTY" in output && output.isTTY === true;
-    this.#status = options.status ?? new StatusLine({
-      output,
-      ...options.tokens === void 0 ? {} : { tokens: options.tokens },
-      ...options.suspended === void 0 ? {} : { suspended: options.suspended }
-    });
-  }
-  /**
-   * Writes one line of output, taking the screen back from the status line and
-   * from any partially streamed text first.
-   */
-  #write(line) {
-    this.#endStream();
-    this.#status.erase();
-    this.#output.write(`${line}
-`);
-    this.#status.refresh();
-  }
-  /**
-   * Writes one line of caller-owned output (the REPL's own notices) through
-   * the same discipline, and ends any status the turn left running.
-   *
-   * The interactive shell prints its per-turn lines itself rather than through
-   * an event; routing them here is what keeps them from landing on top of a
-   * spinner.
-   */
-  line(text2) {
-    this.#endTurn();
-    this.#write(text2);
-  }
-  /** Appends streamed assistant text, with no line terminator of its own. */
-  #stream(text2) {
-    if (text2 === "")
-      return;
-    this.#status.stop();
-    this.#output.write(text2);
-    this.#streaming = true;
-    this.#streamed = true;
-  }
-  /** Terminates an open streamed line, if there is one. */
-  #endStream() {
-    if (!this.#streaming)
-      return;
-    this.#streaming = false;
-    this.#output.write("\n");
-  }
-  /** A turn started: from here on there is something to show progress for. */
-  #beginTurn() {
-    this.#inTurn = true;
-    this.#streamed = false;
-    this.#status.start(THINKING_LABEL);
-  }
-  /**
-   * Relabels the status, but only while a turn is actually in flight — which
-   * is never the case for an orchestration run, whose turns all carry a task
-   * id and so never call {@link #beginTurn}.
-   */
-  #waiting(label) {
-    if (!this.#inTurn)
-      return;
-    this.#status.start(label);
-  }
-  /** A turn ended (or output took over): nothing is pending on screen. */
-  #endTurn() {
-    this.#inTurn = false;
-    this.#endStream();
-    this.#status.stop();
-  }
-  #dim(text2) {
-    return ansi3("2", text2, this.#color);
-  }
-  #bold(text2) {
-    return ansi3("1", text2, this.#color);
-  }
-  emit(event2) {
-    const data = isRecord9(event2.data) ? event2.data : {};
-    const single = event2.taskId === void 0;
-    if (event2.type.startsWith(CODEX_PREFIX)) {
-      this.#emitCodex(data);
-      return;
-    }
-    if (event2.type.startsWith(CLAUDE_CODE_PREFIX)) {
-      this.#emitClaudeCode(event2.type.slice(CLAUDE_CODE_PREFIX.length), data, single);
-      return;
-    }
-    switch (event2.type) {
-      case "chat.turn.started":
-      case "loop.started": {
-        if (single)
-          this.#beginTurn();
-        break;
-      }
-      case "chat.turn.completed":
-      case "loop.completed": {
-        if (single)
-          this.#endTurn();
-        break;
-      }
-      case MODEL_TEXT_DELTA_EVENT: {
-        if (!single)
-          break;
-        if (typeof data.text === "string")
-          this.#stream(data.text);
-        break;
-      }
-      case "model.turn.completed": {
-        const text2 = typeof data.text === "string" ? data.text : "";
-        if (this.#streamed) {
-          this.#endStream();
-          this.#streamed = false;
-        } else if (text2 !== "") {
-          this.#write(text2);
-        }
-        this.#waiting(THINKING_LABEL);
-        break;
-      }
-      case "tool.execution.started": {
-        const tool = typeof data.tool === "string" ? data.tool : "?";
-        this.#write(`${this.#dim("\u2192")} ${tool} ${this.#dim(previewInput(data.input))}`);
-        this.#waiting(tool);
-        break;
-      }
-      case "tool.execution.completed": {
-        const ok = data.ok === true;
-        const denied = data.denied === true;
-        this.#write(ok ? "  \u2713" : `  \u2717 (${denied ? "denied" : "error"})`);
-        this.#waiting(THINKING_LABEL);
-        break;
-      }
-      case "context.compacted": {
-        const elided = typeof data.elided === "number" ? data.elided : 0;
-        const savedChars = typeof data.savedChars === "number" ? data.savedChars : 0;
-        this.#write(this.#dim(`\u2248 context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`));
-        break;
-      }
-      case "task.started":
-      case "task.completed":
-      case "task.escalated":
-      case "task.cancelled":
-      case "task.low_confidence":
-        this.#emitTaskLifecycle(event2.type, taskIdOf(event2, data), data);
-        break;
-      case "worktree.created":
-      case "worktree.integrated":
-      case "worktree.removed":
-        this.#emitWorktree(event2.type, taskIdOf(event2, data), data);
-        break;
-      case "validation.started":
-      case "validation.completed":
-        this.#emitValidation(event2.type, taskIdOf(event2, data), data);
-        break;
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders the scheduler's `task.*` events — the orchestration run's spine.
-   *
-   * These share the sink with the worker loop's own events, so a task line has
-   * to be identifiable on its own: every one of them leads with the task id.
-   */
-  #emitTaskLifecycle(type, taskId, data) {
-    switch (type) {
-      case "task.started": {
-        const agent = stringOrUndefined(data.agent) ?? "?";
-        const attempt = typeof data.attempt === "number" ? data.attempt : 1;
-        const model = stringOrUndefined(data.model);
-        const modelSuffix = model === void 0 ? "" : ` [${model}]`;
-        const routing = routingLabel(data.routing);
-        const parens = routing === void 0 ? `attempt ${attempt}` : `${routing}, attempt ${attempt}`;
-        this.#write(`\u25B6 ${taskId} \u2192 ${agent}${modelSuffix} (${parens})`);
-        break;
-      }
-      case "task.completed": {
-        const result = isRecord9(data.result) ? data.result : {};
-        const ok = result.status === "success";
-        const retrying = data.final === false;
-        const suffix = retrying ? this.#dim(" (retrying)") : "";
-        this.#write(`${ok ? "\u2714" : "\u2716"} ${taskId} \u2014 ${firstLine2(result.summary)}${suffix}`);
-        break;
-      }
-      case "task.escalated": {
-        const from = stringOrUndefined(data.from) ?? "(unassigned)";
-        const to = stringOrUndefined(data.to) ?? "?";
-        this.#write(`\u2191 ${taskId} rerouted ${from} \u2192 ${to}`);
-        break;
-      }
-      case "task.cancelled": {
-        const reason = stringOrUndefined(data.reason) ?? "cancelled";
-        this.#write(`\u2298 ${taskId} (${reason})`);
-        break;
-      }
-      case "task.low_confidence": {
-        const confidence = typeof data.confidence === "number" ? data.confidence : 0;
-        const threshold = typeof data.threshold === "number" ? data.threshold : 0;
-        const verdict = data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
-        this.#write(`\u21BB ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} \u2014 ${verdict}`);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders the worktree isolation layer's `worktree.*` events.
-   *
-   * Only the moments that change what is in the repository get a line: a task
-   * got its own checkout, its work landed (or did not), and a branch outlived
-   * the run and is waiting for a human. A clean removal is the expected case
-   * and stays silent.
-   */
-  #emitWorktree(type, taskId, data) {
-    switch (type) {
-      case "worktree.created": {
-        const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(`\u2387 ${taskId} worktree created (${branch})`);
-        break;
-      }
-      case "worktree.integrated": {
-        if (data.merged === true) {
-          const commit = stringOrUndefined(data.commit);
-          const suffix = commit === void 0 ? "" : ` \u2192 ${commit.slice(0, 8)}`;
-          this.#write(`\u21E1 ${taskId} merged${suffix}`);
-          break;
-        }
-        const files = Array.isArray(data.conflictFiles) ? data.conflictFiles.filter((file) => typeof file === "string") : [];
-        if (files.length > 0) {
-          this.#write(`\u26A0 ${taskId} merge conflict: ${files.join(", ")}`);
-          break;
-        }
-        const reason = stringOrUndefined(data.reason) ?? "unknown reason";
-        const detail = stringOrUndefined(data.detail);
-        this.#write(detail === void 0 ? `\u26A0 ${taskId} not merged (${reason})` : `\u26A0 ${taskId} not merged (${reason}): ${detail}`);
-        break;
-      }
-      case "worktree.removed": {
-        if (data.keptBranch !== true)
-          break;
-        const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(this.#dim(`\u2387 ${taskId} branch kept: ${branch}`));
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders the `validation.*` events {@link ValidatingExecutor} emits around
-   * each configured validator command.
-   *
-   * Kept quiet and dim on the way in — a validator starting is background
-   * noise most of the time — but its result always lands, pass or fail, since
-   * that is what decides whether the task's work is going to be kept.
-   */
-  #emitValidation(type, taskId, data) {
-    switch (type) {
-      case "validation.started": {
-        const name = stringOrUndefined(data.name) ?? "?";
-        this.#write(this.#dim(`\u2699 ${taskId} validator ${name}\u2026`));
-        break;
-      }
-      case "validation.completed": {
-        const name = stringOrUndefined(data.name) ?? "?";
-        const passed = data.passed === true;
-        const seconds = typeof data.durationMs === "number" ? data.durationMs / 1e3 : 0;
-        const duration = `${seconds.toFixed(1)}s`;
-        if (passed) {
-          this.#write(`  \u2713 ${name} (${duration})`);
-          break;
-        }
-        const exitCode = typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
-        this.#write(`  \u2717 ${name} (exit ${exitCode}, ${duration})`);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders a normalized `codex.*` event. Only `item.*` events whose nested
-   * item is `agent_message` / `command_execution` / `file_change` produce
-   * output — everything else (`turn.completed` usage rollups, the synthetic
-   * `codex.completed` marker, and any event type this wrapper doesn't
-   * recognize yet) stays quiet, matching the native renderer's silence on
-   * unknown event types.
-   */
-  #emitCodex(data) {
-    const item = codexItemFrom(data);
-    if (item === void 0)
-      return;
-    const itemType = typeof item.type === "string" ? item.type : void 0;
-    switch (itemType) {
-      case "agent_message": {
-        const text2 = codexMessageText(item);
-        if (text2 !== void 0 && text2.trim() !== "")
-          this.#write(text2);
-        break;
-      }
-      case "command_execution": {
-        const command = codexCommandText(item);
-        if (command !== void 0) {
-          this.#write(`\u2192 codex: ${truncate3(command, 120)}`);
-        }
-        break;
-      }
-      case "file_change": {
-        const summary = codexFileChangeText(item);
-        if (summary !== void 0)
-          this.#write(`\u270E ${summary}`);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  /**
-   * Renders a normalized `claude-code.*` event.
-   *
-   * The payload is a raw Claude API streaming line, so the two things worth
-   * showing are pulled out of it by hand: the assistant's own text, streamed a
-   * delta at a time exactly like the native loop's (buffered to the end of the
-   * block only when the events belong to one task among several, where partial
-   * lines from different tasks would interleave), and the name of each tool
-   * as it starts, which is what makes a long turn legible. Everything else —
-   * `message_start`, usage rollups, the synthetic `completed` marker, and any
-   * event type this wrapper does not model yet — stays quiet, exactly as the
-   * native renderer does for unknown types.
-   */
-  #emitClaudeCode(kind, data, single) {
-    const event2 = isRecord9(data.event) ? data.event : data;
-    switch (kind) {
-      case "tool_use": {
-        const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
-        this.#write(`${this.#dim("\u2192")} claude: ${name}`);
-        this.#waiting(name);
-        break;
-      }
-      case "content_block_delta": {
-        const delta = isRecord9(event2.delta) ? event2.delta : void 0;
-        if (delta?.type !== "text_delta")
-          break;
-        if (typeof delta.text !== "string")
-          break;
-        if (single)
-          this.#stream(delta.text);
-        else
-          this.#claudeText += delta.text;
-        break;
-      }
-      case "content_block_stop":
-      case "message_stop": {
-        this.#endStream();
-        const buffered = this.#claudeText.trim();
-        this.#claudeText = "";
-        if (buffered !== "")
-          this.#write(buffered);
-        this.#waiting(THINKING_LABEL);
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  result(result, usage) {
-    this.#endTurn();
-    this.#write("");
-    this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
-    this.#write(result.summary);
-    if (isDelegatedResult(result)) {
-      if (result.exitCode !== null && result.exitCode !== 0) {
-        this.#write(this.#dim(`exit code: ${result.exitCode}`));
-      }
-      if (result.usage !== void 0) {
-        this.#write(this.#dim(`tokens \u2014 input: ${result.usage.inputTokens}, output: ${result.usage.outputTokens}`));
-      }
-      return;
-    }
-    this.#write(this.#dim(`iterations: ${result.iterations}  tool calls: ${result.toolCalls}`));
-    const { usage: totals, costUsd } = usage;
-    const tokenParts = [
-      `input: ${totals.inputTokens}`,
-      `output: ${totals.outputTokens}`
-    ];
-    if (totals.cachedInputTokens !== void 0) {
-      tokenParts.push(`cached: ${totals.cachedInputTokens}`);
-    }
-    let usageLine2 = `tokens \u2014 ${tokenParts.join(", ")}`;
-    if (costUsd > 0)
-      usageLine2 += `  (~$${costUsd.toFixed(4)})`;
-    this.#write(this.#dim(usageLine2));
-  }
-};
-var JsonRenderer = class {
-  #output;
-  constructor(output = process.stdout) {
-    this.#output = output;
-  }
-  emit(event2) {
-    this.#output.write(`${JSON.stringify(event2)}
-`);
-  }
-  result(result, usage) {
-    const trackerIsEmpty = usage.usage.inputTokens === 0 && usage.usage.outputTokens === 0;
-    const reported = trackerIsEmpty && "usage" in result && result.usage !== void 0 ? result.usage : usage.usage;
-    const line = {
-      type: "result",
-      ...result,
-      usage: reported,
-      costUsd: usage.costUsd
-    };
-    this.#output.write(`${JSON.stringify(line)}
-`);
-  }
-};
-
-// apps/cli/dist/orchestrate.js
 var DEFAULT_ISOLATION = "worktree";
 var execFileAsync7 = promisify7(execFile10);
 async function worktreeIsolationError(workspacePath) {
@@ -12600,51 +13613,55 @@ function delegatedWorkerUsageSink(backend, usage) {
     modelFor: (model) => delegatedModelIdentity(backend, model)
   };
 }
-async function workspaceExecutorFactory(args) {
+async function claudeCodeWorkspaceFactory(args) {
   const { runId, events: events2, taskTimeoutMs } = args;
   const handoff = args.project.handoff;
-  if (args.backend === "claude-code") {
-    const availability = await ClaudeCodeBackend.checkAvailability();
-    if (!availability.installed) {
-      throw new Error(claudeCodeInstallGuidance(availability));
-    }
-    if (!availability.loggedIn) {
-      throw new Error(claudeCodeLoginGuidance(availability));
-    }
-    const resolveAgentModel = createDelegatedModelResolver(args.project);
-    const resolveAgentTools = createDelegatedToolsResolver(args.project);
-    const usage = delegatedWorkerUsageSink("claude-code", args.usage);
-    return (workspacePath) => new ClaudeCodeWorkerExecutor({
-      workspacePath,
-      runId,
-      events: events2,
-      resolveAgentModel,
-      resolveAgentTools,
-      usage,
-      handoff,
-      ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
-    });
+  const availability = await ClaudeCodeBackend.checkAvailability();
+  if (!availability.installed) {
+    throw new Error(claudeCodeInstallGuidance(availability));
   }
-  if (args.backend === "codex") {
-    const availability = await CodexBackend.checkAvailability();
-    if (!availability.installed) {
-      throw new Error(codexInstallGuidance(availability));
-    }
-    if (!availability.loggedIn) {
-      throw new Error(codexLoginGuidance(availability));
-    }
-    const resolveAgentModel = createDelegatedModelResolver(args.project);
-    const usage = delegatedWorkerUsageSink("codex", args.usage);
-    return (workspacePath) => new CodexWorkerExecutor({
-      workspacePath,
-      runId,
-      events: events2,
-      resolveAgentModel,
-      usage,
-      handoff,
-      ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
-    });
+  if (!availability.loggedIn) {
+    throw new Error(claudeCodeLoginGuidance(availability));
   }
+  const resolveAgentModel = createDelegatedModelResolver(args.project);
+  const resolveAgentTools = createDelegatedToolsResolver(args.project);
+  const usage = delegatedWorkerUsageSink("claude-code", args.usage);
+  return (workspacePath) => new ClaudeCodeWorkerExecutor({
+    workspacePath,
+    runId,
+    events: events2,
+    resolveAgentModel,
+    resolveAgentTools,
+    usage,
+    handoff,
+    ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
+  });
+}
+async function codexWorkspaceFactory(args) {
+  const { runId, events: events2, taskTimeoutMs } = args;
+  const handoff = args.project.handoff;
+  const availability = await CodexBackend.checkAvailability();
+  if (!availability.installed) {
+    throw new Error(codexInstallGuidance(availability));
+  }
+  if (!availability.loggedIn) {
+    throw new Error(codexLoginGuidance(availability));
+  }
+  const resolveAgentModel = createDelegatedModelResolver(args.project);
+  const usage = delegatedWorkerUsageSink("codex", args.usage);
+  return (workspacePath) => new CodexWorkerExecutor({
+    workspacePath,
+    runId,
+    events: events2,
+    resolveAgentModel,
+    usage,
+    handoff,
+    ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
+  });
+}
+async function nativeWorkspaceFactory(args) {
+  const { runId, events: events2, taskTimeoutMs } = args;
+  const handoff = args.project.handoff;
   const resolveModel = await createProjectModelResolver(args.project, process.env);
   return (workspacePath) => new AgentLoopWorkerExecutor({
     project: args.project,
@@ -12657,6 +13674,39 @@ async function workspaceExecutorFactory(args) {
     ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs },
     ...args.maxIterations === void 0 ? {} : { maxIterations: args.maxIterations }
   });
+}
+function backendWorkspaceFactory(args, backend) {
+  if (backend === "claude-code")
+    return claudeCodeWorkspaceFactory(args);
+  if (backend === "codex")
+    return codexWorkspaceFactory(args);
+  return nativeWorkspaceFactory(args);
+}
+async function mixedWorkspaceExecutorFactory(args, backends) {
+  const factories = /* @__PURE__ */ new Map();
+  for (const backend of BACKEND_NAMES) {
+    if (!backends.has(backend))
+      continue;
+    factories.set(backend, await backendWorkspaceFactory(args, backend));
+  }
+  const resolveAgentBackend = createAgentBackendResolver(args.project);
+  return (workspacePath) => new MixedBackendWorkerExecutor({
+    resolveAgentBackend,
+    defaultBackend: args.backend,
+    createExecutor: (backend) => {
+      const factory = factories.get(backend);
+      if (factory === void 0) {
+        throw new Error(`No ${backend} worker was prepared for this run: ${[...backends].join(", ")} were.`);
+      }
+      return factory(workspacePath);
+    }
+  });
+}
+async function workspaceExecutorFactory(args) {
+  const backends = referencedBackends(args.project, args.backend);
+  if (backends.size > 1)
+    return mixedWorkspaceExecutorFactory(args, backends);
+  return backendWorkspaceFactory(args, args.backend);
 }
 function shouldRunValidators(project, backend, validate) {
   return backend !== "codex" && validate && project.config.validators.length > 0;
@@ -12693,7 +13743,7 @@ var defaultTuiFactory = async (init) => {
 function jsonLine2(output, value) {
   output.log(JSON.stringify(value));
 }
-function errorText(error) {
+function errorText2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function tuiJsonConflict(options) {
@@ -12818,7 +13868,7 @@ async function executePreparedPlan(request, deps = {}) {
         }))
       });
     } catch (error) {
-      output.error(`Note: showing plain output \u2014 the dashboard could not start (${errorText(error)})`);
+      output.error(`Note: showing plain output \u2014 the dashboard could not start (${errorText2(error)})`);
     }
   }
   const renderer = tui !== void 0 ? void 0 : deps.renderer ?? (options.json ? new JsonRenderer() : new TextRenderer());
@@ -12852,7 +13902,7 @@ async function executePreparedPlan(request, deps = {}) {
       ...options.maxIterations === void 0 ? {} : { maxIterations: options.maxIterations }
     });
   } catch (error) {
-    return await fail2(errorText(error));
+    return await fail2(errorText2(error));
   }
   const controller = new AbortController();
   const onSigint = () => controller.abort();
@@ -12867,12 +13917,13 @@ async function executePreparedPlan(request, deps = {}) {
   try {
     await new DeterministicScheduler(new PolicyRouter(), executor, events2).run(runId, graph, policy, controller.signal);
   } catch (error) {
-    return await fail2(errorText(error));
+    return await fail2(errorText2(error));
   } finally {
     process.off("SIGINT", onSigint);
   }
   const tasks = graph.all();
   await recordRunStatus(store, runId, runStatusFor(tasks, controller.signal.aborted));
+  await recordRunUsage(store, runId, usage.totals(), options.backend);
   await closeTui(tui, outcomeLine(tasks));
   return renderRunSummary(runId, tasks, usage, output, options.json);
 }
@@ -13015,13 +14066,429 @@ async function loadRepoPermissionRules(workspacePath) {
   }
 }
 
-// apps/cli/dist/resume-cmd.js
-import { readFile as readFile15 } from "node:fs/promises";
-import path11 from "node:path";
+// apps/cli/dist/policy.js
+import { readFile as readFile16, writeFile as writeFile7 } from "node:fs/promises";
+import path14 from "node:path";
+var consoleOutput3 = {
+  log: (line) => console.log(line),
+  error: (line) => console.error(line)
+};
 var LOCK_FILE_NAME2 = "orchestration.lock.json";
+var defaultCompilerFactory = (args) => new LlmPolicyCompiler(args);
+var defaultDelegatedCompilerFactory = (args) => new DelegatedPolicyCompiler(args);
+function jsonLine3(output, value) {
+  output.log(JSON.stringify(value));
+}
 async function readOptionalFile2(filePath) {
   try {
-    return await readFile15(filePath, "utf8");
+    return await readFile16(filePath, "utf8");
+  } catch {
+    return void 0;
+  }
+}
+function printLocatedList(output, label, located) {
+  if (located.length === 0)
+    return;
+  output.log(`${label}:`);
+  for (const item of located) {
+    const suffix = item.location === void 0 ? "" : ` [${formatSourceLocation(item.location)}]`;
+    output.log(`  - ${item.message}${suffix}`);
+  }
+}
+function jsonLocations(messages, markdown) {
+  return locateIssues(messages, markdown).map((issue) => issue.location ?? null);
+}
+function orchestratorTargetWarnings(policy, project) {
+  const isOrchestratorRole = (name) => project.agent(name)?.role === "orchestrator";
+  const warnings = [];
+  for (const rule of policy.routing) {
+    if (isOrchestratorRole(rule.agent)) {
+      warnings.push(`warning: routing rule ${rule.id} targets "${rule.agent}", an orchestrator-role agent \u2014 under codex/claude-code backends it runs without tool scoping`);
+    }
+  }
+  for (const rule of policy.escalation) {
+    if (isOrchestratorRole(rule.toAgent)) {
+      warnings.push(`warning: escalation rule ${rule.id} targets "${rule.toAgent}", an orchestrator-role agent \u2014 under codex/claude-code backends it runs without tool scoping`);
+    }
+  }
+  return warnings;
+}
+async function loadProjectForPolicy(workspacePath, output, json) {
+  let project;
+  try {
+    project = await loadAgentProject(workspacePath);
+  } catch (error) {
+    if (error instanceof ProjectConfigError) {
+      if (json) {
+        jsonLine3(output, {
+          ok: false,
+          error: error.message,
+          file: error.file,
+          problems: error.problems
+        });
+      } else {
+        output.error(error.message);
+      }
+      return { exitCode: 1 };
+    }
+    throw error;
+  }
+  if (project === void 0) {
+    const message = "No .agent directory found \u2014 run `kapel init` first";
+    if (json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return { exitCode: 1 };
+  }
+  const markdown = project.orchestrationMarkdown;
+  if (markdown === void 0 || markdown.trim() === "") {
+    const message = "No orchestration policy found \u2014 .agent/orchestration.md is missing or empty";
+    if (json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return { exitCode: 1 };
+  }
+  return { project, markdown };
+}
+var POLICY_AGENT = "policy";
+async function buildPolicyCompiler(options, deps, context) {
+  const { workspacePath, project, output } = context;
+  const usage = new UsageTracker();
+  const knownAgents = [...project.knownAgentNames()];
+  const fail2 = (error) => {
+    if (options.json)
+      jsonLine3(output, { ok: false, error });
+    else
+      output.error(error);
+    return { exitCode: 1 };
+  };
+  if (isDelegatedBackend(options.backend)) {
+    const backend = options.backend;
+    const modelId = delegatedModelOverride(resolveOrchestratorModel(options.model, process.env, options.config, options.projectConfig));
+    const factory = deps.delegatedCompilerFactory;
+    if (factory === void 0) {
+      const unavailable = await delegatedBackendError(backend);
+      if (unavailable !== void 0)
+        return fail2(unavailable);
+    }
+    const model = delegatedModelIdentity(backend, modelId);
+    const compiler2 = (factory ?? defaultDelegatedCompilerFactory)({
+      backend,
+      workspacePath,
+      knownAgents,
+      ...modelId === void 0 ? {} : { model: modelId },
+      usage: { recorder: usage, model, tags: { agent: POLICY_AGENT } }
+    });
+    return { compiler: compiler2, model, usage, delegatedTo: backend };
+  }
+  const alias = resolveOrchestratorModel(options.model, process.env, options.config, options.projectConfig).value.model;
+  const resolved = await resolveModelAndProvider(process.env, alias);
+  if ("error" in resolved)
+    return fail2(resolved.error);
+  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
+  const compiler = compilerFactory({
+    provider: usageRecordingProvider(resolved.provider, usage, {
+      agent: POLICY_AGENT
+    }),
+    model: resolved.model,
+    knownAgents
+  });
+  return { compiler, model: resolved.model, usage };
+}
+async function runPolicyCompile(options, deps = {}) {
+  const output = deps.output ?? consoleOutput3;
+  const workspacePath = path14.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const built = await buildPolicyCompiler(options, deps, {
+    workspacePath,
+    project,
+    output
+  });
+  if ("exitCode" in built)
+    return built.exitCode;
+  const { compiler, model, usage, delegatedTo } = built;
+  let result;
+  try {
+    result = await compiler.compile(markdown);
+  } catch (error) {
+    if (error instanceof PolicyCompileError) {
+      if (options.json) {
+        jsonLine3(output, {
+          ok: false,
+          error: error.message,
+          attempts: error.attempts,
+          issues: (error.lastIssues ?? []).map((issue) => `${issue.path}: ${issue.message}`)
+        });
+      } else {
+        output.error(error.message);
+      }
+      return 1;
+    }
+    throw error;
+  }
+  const validation = validatePolicy(result.policy, project.knownAgentNames());
+  const validationErrors = validation.filter((issue) => issue.severity === "error");
+  const validationWarnings = validation.filter((issue) => issue.severity === "warning");
+  if (validationErrors.length > 0) {
+    if (options.json) {
+      jsonLine3(output, {
+        ok: false,
+        errors: validationErrors.map((issue) => issue.message)
+      });
+    } else {
+      output.error("Policy validation failed \u2014 no lock was written:");
+      for (const issue of validationErrors)
+        output.error(`  - ${issue.message}`);
+    }
+    return 1;
+  }
+  const lock = createLockfile({ markdown, result, model: model.id });
+  const serialized = serializeLockfile(lock);
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  await writeFile7(lockPath, serialized, "utf8");
+  const warnings = [
+    ...result.warnings,
+    ...validationWarnings.map((issue) => issue.message),
+    ...orchestratorTargetWarnings(result.policy, project)
+  ];
+  const ambiguities = result.ambiguities;
+  if (options.json) {
+    jsonLine3(output, {
+      ok: true,
+      lockPath,
+      policy: result.policy,
+      warnings,
+      ambiguities,
+      // Best-effort `.agent/orchestration.md` locations for each warning/
+      // ambiguity above, one entry per index (`null` when unresolved). See
+      // `locateIssues` in `@agent/policy`.
+      warningLocations: jsonLocations(warnings, markdown),
+      ambiguityLocations: jsonLocations(ambiguities, markdown)
+    });
+    return 0;
+  }
+  output.log(`Compiled policy using ${model.id} (${model.provider})`);
+  output.log(`Lock written to ${lockPath}`);
+  output.log(`Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`);
+  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
+  return 0;
+}
+function policyUsageLine(totals, delegatedTo) {
+  const nothingReported = totals.usage.inputTokens === 0 && totals.usage.outputTokens === 0;
+  if (nothingReported && delegatedTo !== void 0) {
+    return `tokens \u2014 none reported by the ${delegatedTo} CLI`;
+  }
+  const line = `tokens \u2014 input: ${totals.usage.inputTokens}, output: ${totals.usage.outputTokens}`;
+  return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
+}
+async function runPolicyCheck(options, deps = {}) {
+  const output = deps.output ?? consoleOutput3;
+  const workspacePath = path14.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  const lockContent = await readOptionalFile2(lockPath);
+  const status = checkLock(markdown, lockContent);
+  if (!status.fresh) {
+    if (options.json) {
+      jsonLine3(output, {
+        fresh: false,
+        reason: status.reason,
+        ...status.detail === void 0 ? {} : { detail: status.detail }
+      });
+    } else if (status.reason === "missing") {
+      output.error(`No policy lock found at ${lockPath}. Run \`kapel policy compile\` to create one.`);
+    } else if (status.reason === "stale-source") {
+      output.error("orchestration.md has changed since the policy lock was compiled. Run `kapel policy compile` to refresh it.");
+    } else {
+      output.error(`Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}`);
+    }
+    return 1;
+  }
+  const validation = validatePolicy(status.lock.policy, project.knownAgentNames());
+  const validationErrors = validation.filter((issue) => issue.severity === "error");
+  if (validationErrors.length > 0) {
+    if (options.json) {
+      jsonLine3(output, {
+        fresh: true,
+        errors: validationErrors.map((issue) => issue.message)
+      });
+    } else {
+      output.error("Policy lock matches orchestration.md but is no longer valid against the current agents:");
+      for (const issue of validationErrors)
+        output.error(`  - ${issue.message}`);
+    }
+    return 1;
+  }
+  const warningCount = status.lock.warnings.length;
+  if (options.json) {
+    jsonLine3(output, { fresh: true, warnings: warningCount });
+    return 0;
+  }
+  output.log(warningCount > 0 ? `policy lock is up to date (${warningCount} warning${warningCount === 1 ? "" : "s"})` : "policy lock is up to date");
+  return 0;
+}
+async function runPolicyExplain(options, deps = {}) {
+  const output = deps.output ?? consoleOutput3;
+  const workspacePath = path14.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  const lockContent = await readOptionalFile2(lockPath);
+  const status = checkLock(markdown, lockContent);
+  let lock;
+  if (status.fresh) {
+    lock = status.lock;
+  } else if (status.reason === "stale-source" && status.lock !== void 0) {
+    lock = status.lock;
+  } else if (status.reason === "missing") {
+    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` to create one.`;
+    if (options.json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return 1;
+  } else {
+    const message = `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`kapel policy compile\` to recreate it.`;
+    if (options.json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return 1;
+  }
+  if (!status.fresh && !options.json) {
+    output.error("Warning: orchestration.md has changed since this lock was compiled \u2014 this explanation may be stale. Run `kapel policy compile` to refresh it.");
+  }
+  const description = describePolicy(lock.policy);
+  if (options.json) {
+    jsonLine3(output, {
+      policy: lock.policy,
+      description,
+      warnings: lock.warnings,
+      ambiguities: lock.ambiguities,
+      // Located against the *current* orchestration.md — when the lock is
+      // stale (`fresh: false` above) these are still best-effort against
+      // text that may have moved since the lock was compiled.
+      warningLocations: jsonLocations(lock.warnings, markdown),
+      ambiguityLocations: jsonLocations(lock.ambiguities, markdown),
+      fresh: status.fresh
+    });
+    return 0;
+  }
+  output.log(description);
+  printLocatedList(output, "Warnings", locateIssues(lock.warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(lock.ambiguities, markdown));
+  return 0;
+}
+async function runPolicyDiff(options, deps = {}) {
+  const output = deps.output ?? consoleOutput3;
+  const workspacePath = path14.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  const lockContent = await readOptionalFile2(lockPath);
+  if (lockContent === void 0 || lockContent.trim() === "") {
+    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` first \u2014 there is nothing to diff against.`;
+    if (options.json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return 1;
+  }
+  let existingLock;
+  try {
+    existingLock = parseLockfile(lockContent);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (options.json)
+      jsonLine3(output, { ok: false, error: message });
+    else
+      output.error(message);
+    return 1;
+  }
+  const built = await buildPolicyCompiler(options, deps, {
+    workspacePath,
+    project,
+    output
+  });
+  if ("exitCode" in built)
+    return built.exitCode;
+  const { compiler, usage, delegatedTo } = built;
+  let result;
+  try {
+    result = await compiler.compile(markdown);
+  } catch (error) {
+    if (error instanceof PolicyCompileError) {
+      if (options.json) {
+        jsonLine3(output, {
+          ok: false,
+          error: error.message,
+          attempts: error.attempts,
+          issues: (error.lastIssues ?? []).map((issue) => `${issue.path}: ${issue.message}`)
+        });
+      } else {
+        output.error(error.message);
+      }
+      return 1;
+    }
+    throw error;
+  }
+  const diff = diffPolicies(existingLock.policy, result.policy);
+  const warnings = [
+    ...result.warnings,
+    ...orchestratorTargetWarnings(result.policy, project)
+  ];
+  if (options.json) {
+    jsonLine3(output, {
+      ok: true,
+      unchanged: diff.unchanged,
+      defaults: diff.defaults,
+      routing: diff.routing,
+      review: diff.review,
+      escalation: diff.escalation,
+      warnings,
+      ambiguities: result.ambiguities
+    });
+    return 0;
+  }
+  output.log(diff.unchanged ? "No changes from the locked policy." : "Policy diff (locked -> recompiled):");
+  if (!diff.unchanged) {
+    output.log("");
+    for (const line of formatPolicyDiff(diff))
+      output.log(line);
+  }
+  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
+  printLocatedList(output, "Ambiguities", locateIssues(result.ambiguities, markdown));
+  output.log("");
+  output.log("Run `kapel policy compile` to update the lock.");
+  return 0;
+}
+
+// apps/cli/dist/resume-cmd.js
+import { readFile as readFile17 } from "node:fs/promises";
+import path15 from "node:path";
+var LOCK_FILE_NAME3 = "orchestration.lock.json";
+async function readOptionalFile3(filePath) {
+  try {
+    return await readFile17(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -13042,7 +14509,7 @@ function stableJson(value) {
 }
 async function policyDriftWarning(project, snapshot) {
   const markdown = project.orchestrationMarkdown ?? "";
-  const raw = await readOptionalFile2(path11.join(project.root, LOCK_FILE_NAME2));
+  const raw = await readOptionalFile3(path15.join(project.root, LOCK_FILE_NAME3));
   const status = checkLock(markdown, raw);
   const tail3 = "Resuming under the policy snapshot recorded with the run \u2014 start a new `/orchestrate` to plan under the current one.";
   if (!status.fresh) {
@@ -13073,7 +14540,7 @@ async function rebuildGraph(store, runId, plan, completed) {
 }
 async function runResume(runId, options, deps = {}) {
   const output = deps.output ?? consoleOutput;
-  const workspacePath = path11.resolve(options.cwd);
+  const workspacePath = path15.resolve(options.cwd);
   const isolation = options.isolation ?? DEFAULT_ISOLATION;
   const fail2 = (message) => {
     if (options.json)
@@ -13224,7 +14691,8 @@ async function runRunsCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.9.0";
+var CLI_VERSION = "0.10.0";
+var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
 function shortId2(id) {
@@ -13398,7 +14866,17 @@ var SLASH_COMMANDS = [
     usage: "/config",
     help: "re-run setup (backend and models) and apply it here"
   },
+  {
+    name: "login",
+    usage: "/login",
+    help: "check every configured backend's login status and help fix it"
+  },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
+  {
+    name: "stats",
+    usage: "/stats",
+    help: "redraw the startup dashboard with fresh numbers"
+  },
   {
     name: "compact",
     usage: "/compact",
@@ -13457,7 +14935,7 @@ function createReplCompleter(files, customNames) {
     return slashCompleter(line, customNames?.() ?? []);
   };
 }
-function errorText2(error) {
+function errorText3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function bannerModel(backend, modelAlias) {
@@ -13466,6 +14944,14 @@ function bannerModel(backend, modelAlias) {
 function approvalsLine(backend) {
   const cli = backend === "codex" ? "Codex" : "Claude Code";
   return `approvals are enforced by the ${cli} CLI \u2014 kapel does not prompt here`;
+}
+function bannerHints(backend) {
+  return [
+    ...isDelegatedBackend(backend) ? [approvalsLine(backend)] : [],
+    "type /help for commands, /exit to quit",
+    "\\ + Enter for multiline input, \u2191/\u2193 to recall, tab-complete /commands and @files",
+    ""
+  ];
 }
 function instructionsBannerLine(sources) {
   if (sources.length === 0)
@@ -13549,7 +15035,7 @@ async function createInteractiveController(deps) {
       titleDirty = false;
       return true;
     } catch (error) {
-      emit2(`(not saved: ${errorText2(error)})`);
+      emit2(`(not saved: ${errorText3(error)})`);
       return false;
     }
   };
@@ -13569,7 +15055,7 @@ async function createInteractiveController(deps) {
       }
       await store.appendChatMessages(sessionId, snapshot.map((message, seq) => ({ seq, message })));
     } catch (error) {
-      emit2(`(not saved: ${errorText2(error)})`);
+      emit2(`(not saved: ${errorText3(error)})`);
     }
   };
   const rebuildSession = async (keepSessionRef) => {
@@ -13580,6 +15066,26 @@ async function createInteractiveController(deps) {
   const readImage = deps.readImage ?? workspaceImageReader(deps.workspacePath);
   const readImagePath = deps.readImagePath ?? workspaceImagePathReader(deps.workspacePath);
   const imageReaderForTurn = () => backend === "native" ? readImage : readImagePath;
+  const recordTurnUsage = async (before, after) => {
+    const record = deps.store?.recordUsage;
+    if (record === void 0 || deps.store === void 0)
+      return;
+    const inputTokens = after.usage.inputTokens - before.usage.inputTokens;
+    const outputTokens = after.usage.outputTokens - before.usage.outputTokens;
+    const costUsd = after.costUsd - before.costUsd;
+    try {
+      await record.call(deps.store, {
+        kind: "chat",
+        sourceId: sessionId,
+        backend,
+        model: modelAlias,
+        inputTokens: Math.max(0, inputTokens),
+        outputTokens: Math.max(0, outputTokens),
+        ...costUsd > 0 ? { costUsd } : {}
+      });
+    } catch {
+    }
+  };
   const handleMessage = async (text2, signal) => {
     const checkpointWarning = await deps.checkpoints?.capture(text2);
     if (checkpointWarning !== void 0)
@@ -13603,13 +15109,15 @@ async function createInteractiveController(deps) {
         ...signal === void 0 ? {} : { signal }
       }, prepared.images, prepared.imagePaths);
     } catch (error) {
-      emit2(`error: ${errorText2(error)}`);
+      emit2(`error: ${errorText3(error)}`);
     }
     await persist();
     if (result !== void 0 && result.status !== "success") {
       emit2(`(${result.status}) ${result.summary}`);
     }
-    emit2(usageDeltaLine(before, deps.usage.totals()));
+    const after = deps.usage.totals();
+    await recordTurnUsage(before, after);
+    emit2(usageDeltaLine(before, after));
     return drain();
   };
   const listRecords = async () => {
@@ -13734,7 +15242,7 @@ async function createInteractiveController(deps) {
       try {
         await deps.store.renameChatSession(sessionId, sessionName);
       } catch (error) {
-        emit2(`(not saved: ${errorText2(error)})`);
+        emit2(`(not saved: ${errorText3(error)})`);
         return drain();
       }
     }
@@ -13763,7 +15271,7 @@ async function createInteractiveController(deps) {
     try {
       newSessionId = await deps.store.forkChatSession(sessionId, forkName === void 0 ? {} : { name: forkName });
     } catch (error) {
-      emit2(`could not fork: ${errorText2(error)}`);
+      emit2(`could not fork: ${errorText3(error)}`);
       return drain();
     }
     const messages = chat.toModelMessages();
@@ -13808,8 +15316,8 @@ async function createInteractiveController(deps) {
     const config = await deps.configure();
     if (config === void 0)
       return drain();
-    const nextBackend = config.backend;
-    const nextAlias = config.models.orchestrator;
+    const nextBackend = soleExecutionBackend(config);
+    const nextAlias = config.models.orchestrator.model;
     if (nextBackend === backend && nextAlias === modelAlias) {
       emit2("config unchanged.");
       return drain();
@@ -13838,6 +15346,61 @@ async function createInteractiveController(deps) {
     await rebuildSession(!backendChanged);
     emit2(`${changes.join(", ")} \u2014 future turns use it.`);
     return drain("config-changed");
+  };
+  const hasValue = (value) => value !== void 0 && value !== "";
+  const slashLogin = async () => {
+    const login = deps.login;
+    if (login === void 0) {
+      emit2("/login is not available here.");
+      return drain();
+    }
+    for (const target of login.backends) {
+      if (target === "native") {
+        const configured = hasValue(login.env.ANTHROPIC_API_KEY) || hasValue(login.env.ANTHROPIC_AUTH_TOKEN) || hasValue(login.env.OPENAI_API_KEY);
+        emit2(configured ? "native: credential present" : "native: credential missing \u2014 set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY");
+        continue;
+      }
+      const result = await login.check(target);
+      if (result.installed === false) {
+        const detail = result.detail === void 0 ? "" : ` (${result.detail})`;
+        emit2(`${target}: not installed${detail}`);
+        continue;
+      }
+      if (result.ok) {
+        emit2(`${target}: logged in`);
+        continue;
+      }
+      emit2(`${target}: not logged in`);
+      if (target === "codex" || target === "claude-code") {
+        const label = target === "codex" ? "Codex" : "Claude Code";
+        const loginCmd = target === "codex" ? "codex login" : "claude auth login";
+        const runLogin = target === "codex" ? login.runCodexLogin : login.runClaudeCodeLogin;
+        if (login.confirm === void 0 || runLogin === void 0) {
+          continue;
+        }
+        const yes = await login.confirm(`${label} is installed but not logged in \u2014 run \`${loginCmd}\` now?`);
+        if (!yes)
+          continue;
+        emit2(`running \`${loginCmd}\` \u2014 follow the prompts in your terminal\u2026`);
+        const after = await runLogin();
+        emit2(after.ok ? `${target}: now logged in.` : `${target}: still not logged in${after.detail === void 0 ? "" : `: ${after.detail}`}`);
+      }
+    }
+    return drain();
+  };
+  const slashStats = async () => {
+    if (deps.dashboard === void 0) {
+      emit2("/stats is not available here.");
+      return drain();
+    }
+    for (const line of await deps.dashboard({
+      sessionId,
+      backend,
+      modelAlias
+    })) {
+      emit2(line);
+    }
+    return drain();
   };
   const slashCompact = async () => {
     if (chat.compactNow === void 0) {
@@ -13874,10 +15437,11 @@ async function createInteractiveController(deps) {
       emit2('usage: /plan "<objective>"');
       return drain();
     }
+    await deps.ensureProjectSetup?.(replOutput);
     try {
       await deps.plan(objective, replOutput);
     } catch (error) {
-      emit2(errorText2(error));
+      emit2(errorText3(error));
     }
     return drain();
   };
@@ -13889,7 +15453,7 @@ async function createInteractiveController(deps) {
     try {
       await deps.runs(replOutput);
     } catch (error) {
-      emit2(errorText2(error));
+      emit2(errorText3(error));
     }
     return drain();
   };
@@ -13906,7 +15470,7 @@ async function createInteractiveController(deps) {
     try {
       await deps.resumeRun(runId, replOutput);
     } catch (error) {
-      emit2(errorText2(error));
+      emit2(errorText3(error));
     }
     return drain();
   };
@@ -13919,13 +15483,14 @@ async function createInteractiveController(deps) {
       emit2('usage: /orchestrate "<objective>"');
       return drain();
     }
+    await deps.ensureProjectSetup?.(replOutput);
     await registerForRun(objective);
     try {
       const code = await deps.orchestrate(objective);
       if (code !== 0)
         emit2(`orchestrate exited ${code}`);
     } catch (error) {
-      emit2(errorText2(error));
+      emit2(errorText3(error));
     }
     return drain();
   };
@@ -13984,12 +15549,16 @@ async function createInteractiveController(deps) {
         return await slashModel(argument);
       case "config":
         return await slashConfig();
+      case "login":
+        return await slashLogin();
       case "usage":
         emit2(usageTotalsLine(deps.usage.totals()));
         for (const line2 of usageRollupLines(deps.usage.breakdownBy?.("model") ?? /* @__PURE__ */ new Map())) {
           emit2(`  ${line2}`);
         }
         return drain();
+      case "stats":
+        return await slashStats();
       case "compact":
         return await slashCompact();
       case "undo":
@@ -14023,10 +15592,7 @@ async function createInteractiveController(deps) {
     banner: (cwd) => [
       `kapel v${CLI_VERSION}  ${bannerModel(backend, modelAlias)}  session ${shortId2(sessionId)}`,
       cwd,
-      ...isDelegatedBackend(backend) ? [approvalsLine(backend)] : [],
-      "type /help for commands, /exit to quit",
-      "\\ + Enter for multiline input, \u2191/\u2193 to recall, tab-complete /commands and @files",
-      ""
+      ...bannerHints(backend)
     ],
     handleLine: async (line, signal) => {
       const trimmed = line.trim();
@@ -14039,7 +15605,7 @@ async function createInteractiveController(deps) {
   };
 }
 async function openChatStore(workspacePath) {
-  const agentDir = path12.join(workspacePath, ".agent");
+  const agentDir = path16.join(workspacePath, ".agent");
   try {
     await mkdir6(agentDir, { recursive: true });
     return new SqliteSessionStore({ path: defaultSessionDbPath(agentDir) });
@@ -14096,6 +15662,28 @@ function pipedLineSource() {
     close: () => rl.close()
   };
 }
+function withDeadline(promise, ms, fallback) {
+  return new Promise((resolve5) => {
+    const timer = setTimeout(() => {
+      resolve5(fallback);
+    }, ms);
+    timer.unref?.();
+    promise.then((value) => {
+      clearTimeout(timer);
+      resolve5(value);
+    }, () => {
+      clearTimeout(timer);
+      resolve5(fallback);
+    });
+  });
+}
+async function bestEffortValue(read) {
+  try {
+    return await read();
+  } catch {
+    return void 0;
+  }
+}
 function dim2(text2, color) {
   return color ? `\x1B[2m${text2}\x1B[0m` : text2;
 }
@@ -14123,14 +15711,14 @@ async function startDelegatedOrNative(backend, alias) {
   return await resolveModelAndProvider(process.env, alias);
 }
 async function runInteractive(options) {
-  const workspacePath = path12.resolve(options.cwd);
+  const workspacePath = path16.resolve(options.cwd);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
   const repoPermission = await loadRepoPermissionRules(workspacePath);
   const permissionRules = resolvePermissionRules(DEFAULT_PERMISSIONS, options.config?.permission, repoPermission);
-  const backend = (await detectBackendSetting(options.backend, process.env, options.config)).value;
-  const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config);
-  const alias = modelSetting.value;
+  const backend = (await detectBackendSetting(options.backend, process.env, options.config, options.projectConfig)).value;
+  const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config, options.projectConfig);
+  const alias = modelSetting.value.model;
   const delegatedModel = delegatedModelOverride(modelSetting);
   const chatAlias = isDelegatedBackend(backend) ? delegatedModel ?? "default" : alias;
   const startup = await startDelegatedOrNative(backend, alias);
@@ -14138,6 +15726,49 @@ async function runInteractive(options) {
     console.error(startup.error);
     return 1;
   }
+  const interactiveTty = process.stdin.isTTY === true;
+  const promptTty = interactiveTty && process.stdout.isTTY === true;
+  const onboardingTty = promptTty && options.setup !== false;
+  const effectiveConfig = mergeKapelConfigs(options.config, options.projectConfig)?.config;
+  let inputManager;
+  const withSuspended = (fn) => inputManager === void 0 ? fn() : inputManager.withSuspended(fn);
+  const confirmAtPrompt = async (question, initial) => {
+    const answer = await withSuspended(() => runSelectPrompt({ input: process.stdin, output: process.stdout }, {
+      title: question,
+      choices: [
+        { value: "yes", label: "Yes" },
+        { value: "no", label: "No" }
+      ],
+      initial
+    }));
+    return answer?.[0] === "yes";
+  };
+  const projectSetup = createProjectSetup({
+    workspacePath,
+    init: (output) => runInit({
+      cwd: workspacePath,
+      // The `.agent/` a previous, declined run left behind holds nothing
+      // but kapel's session database — fill it in, never delete it.
+      fill: true,
+      output,
+      ...effectiveConfig === void 0 ? {} : { config: effectiveConfig }
+    }),
+    compile: (output) => runPolicyCompile(policyCompileOptionsFor(options, chatAlias, backend), {
+      output
+    }),
+    // No question where nobody can answer one — a piped or redirected REPL is
+    // never auto-onboarded, exactly as it is never asked to configure itself
+    // — and none where `--no-setup` has already said not to ask.
+    ...onboardingTty ? { confirm: (question) => confirmAtPrompt(question, "yes") } : {}
+  });
+  await projectSetup.ensure({
+    log: (line) => {
+      console.log(line);
+    },
+    error: (line) => {
+      console.error(line);
+    }
+  }, "startup");
   const store = options.save === false ? void 0 : await openChatStore(workspacePath);
   try {
     const started = await resolveStartSession(store, workspacePath, {
@@ -14148,7 +15779,6 @@ async function runInteractive(options) {
       console.error(started.error);
       return 1;
     }
-    const interactiveTty = process.stdin.isTTY === true;
     const promptState = createPromptState();
     const sessionAllowlist = new SessionAllowlist();
     const nativeUsage = new UsageTracker();
@@ -14181,7 +15811,7 @@ async function runInteractive(options) {
     };
     const mentionFiles = createFileLister({ workspacePath });
     const customCommandNames = { current: [] };
-    const inputManager = interactiveTty ? createInputManager({
+    const manager = interactiveTty ? createInputManager({
       input: process.stdin,
       output: process.stdout,
       history: await loadHistory(),
@@ -14189,6 +15819,7 @@ async function runInteractive(options) {
       completer: createReplCompleter(mentionFiles, () => customCommandNames.current),
       onIdleSigint: () => activeTurn.current?.abort()
     }) : void 0;
+    inputManager = manager;
     const prompter = createPrompter({
       // There is no `-y` here any more: the REPL is the one place a human is
       // definitely present, so every write still gets asked about.
@@ -14196,7 +15827,7 @@ async function runInteractive(options) {
       interactive: interactiveTty,
       state: promptState,
       allowlist: sessionAllowlist,
-      ...inputManager === void 0 ? {} : { ask: (query) => inputManager.question(query) }
+      ...manager === void 0 ? {} : { ask: (query) => manager.question(query) }
     });
     const delegatedModelFor = (aliasForBuild) => aliasForBuild === chatAlias ? delegatedModel : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
     const delegatedSession = (target, args) => {
@@ -14253,7 +15884,37 @@ async function runInteractive(options) {
       }), args.messages);
     };
     const createSession = (args) => args.backend === "native" ? nativeSession(args) : delegatedSession(args.backend, args);
-    const wizardTty = interactiveTty && process.stdout.isTTY === true;
+    const wizardTty = promptTty;
+    const loginConfirm = (question) => confirmAtPrompt(question, "no");
+    const loginBackends = effectiveConfig?.backends ?? [DEFAULT_BACKEND];
+    const dashboardBackends = loginBackends.includes(backend) ? loginBackends : [backend, ...loginBackends];
+    const probeBackends = async (budgetMs) => await Promise.all(dashboardBackends.map(async (name) => {
+      const pending = checkBackendAvailability(name, process.env).then((result) => ({ name, state: backendStateFrom(result) })).catch(() => ({ name, state: "pending" }));
+      return budgetMs === void 0 ? await pending : await withDeadline(pending, budgetMs, {
+        name,
+        state: "pending"
+      });
+    }));
+    const buildDashboard = async (context, budgetMs) => {
+      const activity = await bestEffortValue(() => store?.activity());
+      const usage2 = store === void 0 ? [] : await bestEffortValue(() => store.usageByBackend({ since: startOfWindow(Date.now()) })) ?? [];
+      const quota = store === void 0 ? void 0 : quotaBlockFrom([...dashboardBackends], usage2, WEEK_DAYS);
+      const dashboardModel = {
+        version: CLI_VERSION,
+        workspacePath,
+        sessionId: shortId2(context.sessionId),
+        chat: bannerModel(context.backend, context.modelAlias),
+        backends: await probeBackends(budgetMs),
+        roles: dashboardRoles(effectiveConfig?.models, options.projectConfig?.models),
+        projectOverride: options.projectConfig !== void 0,
+        ...activity === void 0 ? {} : { activity },
+        ...quota === void 0 ? {} : { quota }
+      };
+      return renderDashboard(dashboardModel, {
+        color: process.stdout.isTTY === true,
+        ...process.stdout.columns === void 0 ? {} : { columns: process.stdout.columns }
+      });
+    };
     const controller = await createInteractiveController({
       workspacePath,
       ...store === void 0 ? {} : { store },
@@ -14270,6 +15931,8 @@ async function runInteractive(options) {
       ...startup.provider === void 0 ? {} : { provider: startup.provider },
       start: started.start,
       usage,
+      // `/stats`, with no probe budget: an explicit request may wait.
+      dashboard: (context) => buildDashboard(context),
       // One store for the whole REPL: the checkpoints outlive `/new`,
       // `/resume` and `/model`, because the working tree does too.
       checkpoints: createCheckpointStore({ workspacePath }),
@@ -14286,24 +15949,68 @@ async function runInteractive(options) {
         output
       }),
       runs: (output) => runRunsCommand({ cwd: options.cwd, json: false }, { output }),
+      // The same offer startup made, through the same object — so a decline
+      // there is remembered here, and an accept here is not asked about
+      // twice.
+      ensureProjectSetup: (output) => projectSetup.ensure(output, "command"),
       resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), { output }),
+      login: {
+        backends: loginBackends,
+        check: (target) => checkBackendAvailability(target),
+        env: process.env,
+        // `confirm`/`runCodexLogin`/`runClaudeCodeLogin` are only ever wired
+        // when there is a human at a terminal to ask — a piped
+        // `kapel < script.txt` has no `InputManager`, and `/login` must
+        // report status only there, never spawn anything nobody can answer.
+        ...manager === void 0 ? {} : {
+          confirm: loginConfirm,
+          runCodexLogin: codexLoginRunner(withSuspended, process.env),
+          runClaudeCodeLogin: claudeCodeLoginRunner(withSuspended, process.env)
+        }
+      },
       ...wizardTty ? {
-        configure: () => runConfigWizard({
-          // `/config` runs while the REPL's own InputManager still owns
-          // stdin — suspend it around the picker so the two don't fight
-          // over raw-mode keypresses.
-          prompt: ttyWizardPrompt(void 0, inputManager === void 0 ? void 0 : (fn) => inputManager.withSuspended(fn)),
-          write: (line) => {
-            console.log(line);
-          },
-          checkBackend: (target) => checkBackendAvailability(target),
-          ...options.config === void 0 ? {} : { current: options.config }
-        })
+        // `/config` writes the machine-level file, so what this
+        // conversation then obeys is that answer *with this workspace's
+        // `.agent/config.local.json` still on top* — an override the
+        // directory asked for does not lose to a wizard run somewhere
+        // else in the same session.
+        configure: async () => {
+          const saved = await runConfigWizard({
+            // `/config` runs while the REPL's own InputManager still owns
+            // stdin — suspend it around the picker (and around a spawned
+            // `codex login`/`claude auth login`) so the two don't fight
+            // over raw-mode keypresses.
+            prompt: ttyWizardPrompt(void 0, withSuspended),
+            write: (line) => {
+              console.log(line);
+            },
+            checkBackend: (target) => checkBackendAvailability(target),
+            runCodexLogin: codexLoginRunner(withSuspended, process.env),
+            runClaudeCodeLogin: claudeCodeLoginRunner(withSuspended, process.env),
+            ...options.config === void 0 ? {} : { current: options.config }
+          });
+          if (saved === void 0)
+            return void 0;
+          return mergeKapelConfigs(saved, options.projectConfig)?.config ?? saved;
+        }
       } : {}
     });
     const color = process.stdout.isTTY === true;
-    for (const line of controller.banner(workspacePath))
-      console.log(line);
+    if (color) {
+      for (const line of await buildDashboard({
+        sessionId: controller.sessionId(),
+        backend: controller.backend(),
+        modelAlias: controller.modelAlias()
+      }, STARTUP_PROBE_BUDGET_MS)) {
+        console.log(line);
+      }
+      for (const line of bannerHints(controller.backend())) {
+        console.log(dim2(line, color));
+      }
+    } else {
+      for (const line of controller.banner(workspacePath))
+        console.log(line);
+    }
     const instructionsLine = instructionsBannerLine(instructions.sources);
     if (instructionsLine !== void 0)
       console.log(dim2(instructionsLine, color));
@@ -14314,7 +16021,7 @@ async function runInteractive(options) {
     if ("note" in started && started.note !== void 0) {
       console.log(dim2(started.note, color));
     }
-    const lineSource = inputManager === void 0 ? pipedLineSource() : inputManagerLineSource(inputManager);
+    const lineSource = manager === void 0 ? pipedLineSource() : inputManagerLineSource(manager);
     try {
       return await replLoop({
         controller,
@@ -14383,7 +16090,18 @@ function planOptionsFor(options, alias, backend) {
     model: alias,
     backend,
     why: true,
-    ...options.config === void 0 ? {} : { config: options.config }
+    ...options.config === void 0 ? {} : { config: options.config },
+    ...options.projectConfig === void 0 ? {} : { projectConfig: options.projectConfig }
+  };
+}
+function policyCompileOptionsFor(options, alias, backend) {
+  return {
+    cwd: options.cwd,
+    json: false,
+    model: alias,
+    backend,
+    ...options.config === void 0 ? {} : { config: options.config },
+    ...options.projectConfig === void 0 ? {} : { projectConfig: options.projectConfig }
   };
 }
 function orchestrateOptionsFor(options, alias, backend) {
@@ -14399,6 +16117,7 @@ function orchestrateOptionsFor(options, alias, backend) {
     tui: false,
     maxIterations: DEFAULT_MAX_ITERATIONS2,
     ...options.config === void 0 ? {} : { config: options.config },
+    ...options.projectConfig === void 0 ? {} : { projectConfig: options.projectConfig },
     ...options.timeoutSeconds === void 0 ? {} : { timeoutSeconds: options.timeoutSeconds }
   };
 }
@@ -14415,422 +16134,6 @@ function resumeOptionsFor(options, backend) {
   };
 }
 
-// apps/cli/dist/policy.js
-import { readFile as readFile16, writeFile as writeFile6 } from "node:fs/promises";
-import path13 from "node:path";
-var consoleOutput2 = {
-  log: (line) => console.log(line),
-  error: (line) => console.error(line)
-};
-var LOCK_FILE_NAME3 = "orchestration.lock.json";
-var defaultCompilerFactory = (args) => new LlmPolicyCompiler(args);
-var defaultDelegatedCompilerFactory = (args) => new DelegatedPolicyCompiler(args);
-function jsonLine3(output, value) {
-  output.log(JSON.stringify(value));
-}
-async function readOptionalFile3(filePath) {
-  try {
-    return await readFile16(filePath, "utf8");
-  } catch {
-    return void 0;
-  }
-}
-function printLocatedList(output, label, located) {
-  if (located.length === 0)
-    return;
-  output.log(`${label}:`);
-  for (const item of located) {
-    const suffix = item.location === void 0 ? "" : ` [${formatSourceLocation(item.location)}]`;
-    output.log(`  - ${item.message}${suffix}`);
-  }
-}
-function jsonLocations(messages, markdown) {
-  return locateIssues(messages, markdown).map((issue) => issue.location ?? null);
-}
-function orchestratorTargetWarnings(policy, project) {
-  const isOrchestratorRole = (name) => project.agent(name)?.role === "orchestrator";
-  const warnings = [];
-  for (const rule of policy.routing) {
-    if (isOrchestratorRole(rule.agent)) {
-      warnings.push(`warning: routing rule ${rule.id} targets "${rule.agent}", an orchestrator-role agent \u2014 under codex/claude-code backends it runs without tool scoping`);
-    }
-  }
-  for (const rule of policy.escalation) {
-    if (isOrchestratorRole(rule.toAgent)) {
-      warnings.push(`warning: escalation rule ${rule.id} targets "${rule.toAgent}", an orchestrator-role agent \u2014 under codex/claude-code backends it runs without tool scoping`);
-    }
-  }
-  return warnings;
-}
-async function loadProjectForPolicy(workspacePath, output, json) {
-  let project;
-  try {
-    project = await loadAgentProject(workspacePath);
-  } catch (error) {
-    if (error instanceof ProjectConfigError) {
-      if (json) {
-        jsonLine3(output, {
-          ok: false,
-          error: error.message,
-          file: error.file,
-          problems: error.problems
-        });
-      } else {
-        output.error(error.message);
-      }
-      return { exitCode: 1 };
-    }
-    throw error;
-  }
-  if (project === void 0) {
-    const message = "No .agent directory found \u2014 run `kapel init` first";
-    if (json)
-      jsonLine3(output, { ok: false, error: message });
-    else
-      output.error(message);
-    return { exitCode: 1 };
-  }
-  const markdown = project.orchestrationMarkdown;
-  if (markdown === void 0 || markdown.trim() === "") {
-    const message = "No orchestration policy found \u2014 .agent/orchestration.md is missing or empty";
-    if (json)
-      jsonLine3(output, { ok: false, error: message });
-    else
-      output.error(message);
-    return { exitCode: 1 };
-  }
-  return { project, markdown };
-}
-var POLICY_AGENT = "policy";
-async function buildPolicyCompiler(options, deps, context) {
-  const { workspacePath, project, output } = context;
-  const usage = new UsageTracker();
-  const knownAgents = [...project.knownAgentNames()];
-  const fail2 = (error) => {
-    if (options.json)
-      jsonLine3(output, { ok: false, error });
-    else
-      output.error(error);
-    return { exitCode: 1 };
-  };
-  if (isDelegatedBackend(options.backend)) {
-    const backend = options.backend;
-    const modelId = delegatedModelOverride(resolveOrchestratorModel(options.model, process.env, options.config));
-    const factory = deps.delegatedCompilerFactory;
-    if (factory === void 0) {
-      const unavailable = await delegatedBackendError(backend);
-      if (unavailable !== void 0)
-        return fail2(unavailable);
-    }
-    const model = delegatedModelIdentity(backend, modelId);
-    const compiler2 = (factory ?? defaultDelegatedCompilerFactory)({
-      backend,
-      workspacePath,
-      knownAgents,
-      ...modelId === void 0 ? {} : { model: modelId },
-      usage: { recorder: usage, model, tags: { agent: POLICY_AGENT } }
-    });
-    return { compiler: compiler2, model, usage, delegatedTo: backend };
-  }
-  const alias = resolveOrchestratorModel(options.model, process.env, options.config).value;
-  const resolved = await resolveModelAndProvider(process.env, alias);
-  if ("error" in resolved)
-    return fail2(resolved.error);
-  const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;
-  const compiler = compilerFactory({
-    provider: usageRecordingProvider(resolved.provider, usage, {
-      agent: POLICY_AGENT
-    }),
-    model: resolved.model,
-    knownAgents
-  });
-  return { compiler, model: resolved.model, usage };
-}
-async function runPolicyCompile(options, deps = {}) {
-  const output = deps.output ?? consoleOutput2;
-  const workspacePath = path13.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
-  if ("exitCode" in loaded)
-    return loaded.exitCode;
-  const { project, markdown } = loaded;
-  const built = await buildPolicyCompiler(options, deps, {
-    workspacePath,
-    project,
-    output
-  });
-  if ("exitCode" in built)
-    return built.exitCode;
-  const { compiler, model, usage, delegatedTo } = built;
-  let result;
-  try {
-    result = await compiler.compile(markdown);
-  } catch (error) {
-    if (error instanceof PolicyCompileError) {
-      if (options.json) {
-        jsonLine3(output, {
-          ok: false,
-          error: error.message,
-          attempts: error.attempts,
-          issues: (error.lastIssues ?? []).map((issue) => `${issue.path}: ${issue.message}`)
-        });
-      } else {
-        output.error(error.message);
-      }
-      return 1;
-    }
-    throw error;
-  }
-  const validation = validatePolicy(result.policy, project.knownAgentNames());
-  const validationErrors = validation.filter((issue) => issue.severity === "error");
-  const validationWarnings = validation.filter((issue) => issue.severity === "warning");
-  if (validationErrors.length > 0) {
-    if (options.json) {
-      jsonLine3(output, {
-        ok: false,
-        errors: validationErrors.map((issue) => issue.message)
-      });
-    } else {
-      output.error("Policy validation failed \u2014 no lock was written:");
-      for (const issue of validationErrors)
-        output.error(`  - ${issue.message}`);
-    }
-    return 1;
-  }
-  const lock = createLockfile({ markdown, result, model: model.id });
-  const serialized = serializeLockfile(lock);
-  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
-  await writeFile6(lockPath, serialized, "utf8");
-  const warnings = [
-    ...result.warnings,
-    ...validationWarnings.map((issue) => issue.message),
-    ...orchestratorTargetWarnings(result.policy, project)
-  ];
-  const ambiguities = result.ambiguities;
-  if (options.json) {
-    jsonLine3(output, {
-      ok: true,
-      lockPath,
-      policy: result.policy,
-      warnings,
-      ambiguities,
-      // Best-effort `.agent/orchestration.md` locations for each warning/
-      // ambiguity above, one entry per index (`null` when unresolved). See
-      // `locateIssues` in `@agent/policy`.
-      warningLocations: jsonLocations(warnings, markdown),
-      ambiguityLocations: jsonLocations(ambiguities, markdown)
-    });
-    return 0;
-  }
-  output.log(`Compiled policy using ${model.id} (${model.provider})`);
-  output.log(`Lock written to ${lockPath}`);
-  output.log(`Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`);
-  output.log(policyUsageLine(usage.totals(), delegatedTo));
-  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
-  printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
-  return 0;
-}
-function policyUsageLine(totals, delegatedTo) {
-  const nothingReported = totals.usage.inputTokens === 0 && totals.usage.outputTokens === 0;
-  if (nothingReported && delegatedTo !== void 0) {
-    return `tokens \u2014 none reported by the ${delegatedTo} CLI`;
-  }
-  const line = `tokens \u2014 input: ${totals.usage.inputTokens}, output: ${totals.usage.outputTokens}`;
-  return totals.costUsd > 0 ? `${line}  (~$${totals.costUsd.toFixed(4)})` : line;
-}
-async function runPolicyCheck(options, deps = {}) {
-  const output = deps.output ?? consoleOutput2;
-  const workspacePath = path13.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
-  if ("exitCode" in loaded)
-    return loaded.exitCode;
-  const { project, markdown } = loaded;
-  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
-  const lockContent = await readOptionalFile3(lockPath);
-  const status = checkLock(markdown, lockContent);
-  if (!status.fresh) {
-    if (options.json) {
-      jsonLine3(output, {
-        fresh: false,
-        reason: status.reason,
-        ...status.detail === void 0 ? {} : { detail: status.detail }
-      });
-    } else if (status.reason === "missing") {
-      output.error(`No policy lock found at ${lockPath}. Run \`kapel policy compile\` to create one.`);
-    } else if (status.reason === "stale-source") {
-      output.error("orchestration.md has changed since the policy lock was compiled. Run `kapel policy compile` to refresh it.");
-    } else {
-      output.error(`Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}`);
-    }
-    return 1;
-  }
-  const validation = validatePolicy(status.lock.policy, project.knownAgentNames());
-  const validationErrors = validation.filter((issue) => issue.severity === "error");
-  if (validationErrors.length > 0) {
-    if (options.json) {
-      jsonLine3(output, {
-        fresh: true,
-        errors: validationErrors.map((issue) => issue.message)
-      });
-    } else {
-      output.error("Policy lock matches orchestration.md but is no longer valid against the current agents:");
-      for (const issue of validationErrors)
-        output.error(`  - ${issue.message}`);
-    }
-    return 1;
-  }
-  const warningCount = status.lock.warnings.length;
-  if (options.json) {
-    jsonLine3(output, { fresh: true, warnings: warningCount });
-    return 0;
-  }
-  output.log(warningCount > 0 ? `policy lock is up to date (${warningCount} warning${warningCount === 1 ? "" : "s"})` : "policy lock is up to date");
-  return 0;
-}
-async function runPolicyExplain(options, deps = {}) {
-  const output = deps.output ?? consoleOutput2;
-  const workspacePath = path13.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
-  if ("exitCode" in loaded)
-    return loaded.exitCode;
-  const { project, markdown } = loaded;
-  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
-  const lockContent = await readOptionalFile3(lockPath);
-  const status = checkLock(markdown, lockContent);
-  let lock;
-  if (status.fresh) {
-    lock = status.lock;
-  } else if (status.reason === "stale-source" && status.lock !== void 0) {
-    lock = status.lock;
-  } else if (status.reason === "missing") {
-    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` to create one.`;
-    if (options.json)
-      jsonLine3(output, { ok: false, error: message });
-    else
-      output.error(message);
-    return 1;
-  } else {
-    const message = `Invalid policy lock at ${lockPath}: ${status.detail ?? "unknown error"}. Run \`kapel policy compile\` to recreate it.`;
-    if (options.json)
-      jsonLine3(output, { ok: false, error: message });
-    else
-      output.error(message);
-    return 1;
-  }
-  if (!status.fresh && !options.json) {
-    output.error("Warning: orchestration.md has changed since this lock was compiled \u2014 this explanation may be stale. Run `kapel policy compile` to refresh it.");
-  }
-  const description = describePolicy(lock.policy);
-  if (options.json) {
-    jsonLine3(output, {
-      policy: lock.policy,
-      description,
-      warnings: lock.warnings,
-      ambiguities: lock.ambiguities,
-      // Located against the *current* orchestration.md — when the lock is
-      // stale (`fresh: false` above) these are still best-effort against
-      // text that may have moved since the lock was compiled.
-      warningLocations: jsonLocations(lock.warnings, markdown),
-      ambiguityLocations: jsonLocations(lock.ambiguities, markdown),
-      fresh: status.fresh
-    });
-    return 0;
-  }
-  output.log(description);
-  printLocatedList(output, "Warnings", locateIssues(lock.warnings, markdown));
-  printLocatedList(output, "Ambiguities", locateIssues(lock.ambiguities, markdown));
-  return 0;
-}
-async function runPolicyDiff(options, deps = {}) {
-  const output = deps.output ?? consoleOutput2;
-  const workspacePath = path13.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
-  if ("exitCode" in loaded)
-    return loaded.exitCode;
-  const { project, markdown } = loaded;
-  const lockPath = path13.join(project.root, LOCK_FILE_NAME3);
-  const lockContent = await readOptionalFile3(lockPath);
-  if (lockContent === void 0 || lockContent.trim() === "") {
-    const message = `No policy lock found at ${lockPath}. Run \`kapel policy compile\` first \u2014 there is nothing to diff against.`;
-    if (options.json)
-      jsonLine3(output, { ok: false, error: message });
-    else
-      output.error(message);
-    return 1;
-  }
-  let existingLock;
-  try {
-    existingLock = parseLockfile(lockContent);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (options.json)
-      jsonLine3(output, { ok: false, error: message });
-    else
-      output.error(message);
-    return 1;
-  }
-  const built = await buildPolicyCompiler(options, deps, {
-    workspacePath,
-    project,
-    output
-  });
-  if ("exitCode" in built)
-    return built.exitCode;
-  const { compiler, usage, delegatedTo } = built;
-  let result;
-  try {
-    result = await compiler.compile(markdown);
-  } catch (error) {
-    if (error instanceof PolicyCompileError) {
-      if (options.json) {
-        jsonLine3(output, {
-          ok: false,
-          error: error.message,
-          attempts: error.attempts,
-          issues: (error.lastIssues ?? []).map((issue) => `${issue.path}: ${issue.message}`)
-        });
-      } else {
-        output.error(error.message);
-      }
-      return 1;
-    }
-    throw error;
-  }
-  const diff = diffPolicies(existingLock.policy, result.policy);
-  const warnings = [
-    ...result.warnings,
-    ...orchestratorTargetWarnings(result.policy, project)
-  ];
-  if (options.json) {
-    jsonLine3(output, {
-      ok: true,
-      unchanged: diff.unchanged,
-      defaults: diff.defaults,
-      routing: diff.routing,
-      review: diff.review,
-      escalation: diff.escalation,
-      warnings,
-      ambiguities: result.ambiguities
-    });
-    return 0;
-  }
-  output.log(diff.unchanged ? "No changes from the locked policy." : "Policy diff (locked -> recompiled):");
-  if (!diff.unchanged) {
-    output.log("");
-    for (const line of formatPolicyDiff(diff))
-      output.log(line);
-  }
-  output.log(policyUsageLine(usage.totals(), delegatedTo));
-  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
-  printLocatedList(output, "Ambiguities", locateIssues(result.ambiguities, markdown));
-  output.log("");
-  output.log("Run `kapel policy compile` to update the lock.");
-  return 0;
-}
-
 // apps/cli/dist/program.js
 async function runtimeConfig(raw, json = false) {
   return await ensureFirstRunConfig({
@@ -14845,7 +16148,10 @@ function parsePositive(raw, flag, integer2) {
   }
   return value;
 }
-function toInteractiveOptions(raw, chat = {}, config) {
+async function projectConfigFor(raw) {
+  return await loadProjectConfig2(path17.resolve(raw.cwd));
+}
+function toInteractiveOptions(raw, chat = {}, config, projectConfig) {
   const timeoutSeconds = raw.timeout === void 0 ? void 0 : parsePositive(raw.timeout, "--timeout", false);
   return {
     cwd: raw.cwd,
@@ -14855,13 +16161,18 @@ function toInteractiveOptions(raw, chat = {}, config) {
     ...chat.continue === void 0 ? {} : { continue: chat.continue },
     ...chat.session === void 0 ? {} : { session: chat.session },
     ...raw.backend === void 0 ? {} : { backend: raw.backend },
-    ...config === void 0 ? {} : { config }
+    // Carried through so the REPL's own setup question — the automatic
+    // project onboarding offer — obeys the same flag the wizard does.
+    ...raw.setup === void 0 ? {} : { setup: raw.setup },
+    ...config === void 0 ? {} : { config },
+    ...projectConfig === void 0 ? {} : { projectConfig }
   };
 }
 async function chatAndExit(raw, chat = {}) {
   try {
     const config = await runtimeConfig(raw);
-    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat, config));
+    const projectConfig = await projectConfigFor(raw);
+    process.exitCode = await runInteractive(toInteractiveOptions(raw, chat, config, projectConfig));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
@@ -14886,15 +16197,17 @@ function createProgram() {
     await chatAndExit(command.optsWithGlobals(), opts);
   });
   program.command("init").description("Create a .agent configuration in the current repository").option("--force", "overwrite an existing .agent directory", false).action(async (opts, command) => {
-    const cwd = command.optsWithGlobals().cwd;
-    const config = await loadKapelConfig();
+    const raw = command.optsWithGlobals();
+    const cwd = path17.resolve(raw.cwd);
+    const config = mergeKapelConfigs(await loadKapelConfig(), await loadProjectConfig2(cwd))?.config;
     process.exitCode = await runInit({
-      cwd: path14.resolve(cwd),
+      cwd,
       force: opts.force,
       ...config === void 0 ? {} : { config }
     });
   });
-  program.command("config").description("Manage which backend and models kapel uses (stored in ~/.kapel/config.json)").option("--show", "print the current configuration and where it lives", false).option("--path", "print the configuration file path", false).action(async (opts) => {
+  program.command("config").description("Manage which backends and models kapel uses (stored in ~/.kapel/config.json, or this directory's .agent/config.local.json with --project)").option("--show", "print the effective configuration and which file each value came from", false).option("--path", "print the configuration file path", false).option("--project", "read/write this directory's .agent/config.local.json instead of the machine-level file", false).action(async (opts, command) => {
+    const raw = command.optsWithGlobals();
     process.exitCode = await runConfigCommand(opts, {
       log: (line) => {
         console.log(line);
@@ -14902,12 +16215,13 @@ function createProgram() {
       error: (line) => {
         console.error(line);
       },
+      cwd: path17.resolve(raw.cwd),
       interactive: process.stdin.isTTY === true && process.stdout.isTTY === true
     });
   });
   program.command("models").description("List available model aliases and provider credential status").action(async (_opts, command) => {
     const cwd = command.optsWithGlobals().cwd;
-    await loadDotEnvFile(path14.resolve(cwd));
+    await loadDotEnvFile(path17.resolve(cwd));
     const entries = await listModels(process.env);
     if (entries.length === 0) {
       console.log("(no models registered)");
@@ -14974,20 +16288,22 @@ function createProgram() {
       process.exitCode = 1;
     }
   });
-  function policyOptions(command, json, config) {
+  function policyOptions(command, json, config, projectConfig) {
     const raw = command.optsWithGlobals();
     return {
       cwd: raw.cwd,
       json,
       ...raw.model === void 0 ? {} : { model: raw.model },
-      ...config === void 0 ? {} : { config }
+      ...config === void 0 ? {} : { config },
+      ...projectConfig === void 0 ? {} : { projectConfig }
     };
   }
   async function policyCompileOptions(command, json, config) {
     const raw = command.optsWithGlobals();
+    const projectConfig = await projectConfigFor(raw);
     return {
-      ...policyOptions(command, json, config),
-      backend: (await detectBackendSetting(raw.backend, process.env, config)).value
+      ...policyOptions(command, json, config, projectConfig),
+      backend: (await detectBackendSetting(raw.backend, process.env, config, projectConfig)).value
     };
   }
   const POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"];

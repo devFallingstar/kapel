@@ -52,10 +52,10 @@ and defaults, so nothing in CI ever blocks on a prompt.
 
 If the npm registry is unreachable from your network, the same package ships
 as a committed tarball in this repo: `npm install -g
-https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.9.0.tgz`,
+https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.10.0.tgz`,
 or the two-step form `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.9.0.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.10.0.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
@@ -69,7 +69,7 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 ```text
 $ kapel
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ kapel v0.9.0                                                                                     │
+│ kapel v0.10.0                                                                                    │
 ├─────────────────────────────────────────────────┬────────────────────────────────────────────────┤
 │ setup                                           │ activity                                       │
 │ workspace    /path/to/your/repo                 │ today    1 run · 1 chat                        │
