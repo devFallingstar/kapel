@@ -156,12 +156,13 @@ kapel chat --no-save            # …or don't record this one at all
 
 `kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`) work the same either way.
 
-Images attach through `@` mentions: `@screenshot.png` in a message sends the
-image itself alongside your text — up to 4 images of 5 MiB each per turn
-(png/jpg/jpeg/gif/webp). Anything over a limit, or unreadable, is reported in
-the REPL and sent as a path instead, and the turn always goes. Native backend
-only for now: under `--backend codex`/`claude-code` the REPL says so in one
-line and sends the path.
+Images attach through `@` mentions on every backend: `@screenshot.png` in a
+message attaches the image to that turn — up to 4 images of 5 MiB each
+(png/jpg/jpeg/gif/webp). How it travels depends on who answers: the native
+backend sends the image itself, Codex receives the path through its own
+image input, and Claude Code is told to open the path with its Read tool.
+Anything over a limit, or unreadable, is reported in the REPL and sent as a
+plain path mention instead, and the turn always goes.
 
 ### Commands on the shell
 

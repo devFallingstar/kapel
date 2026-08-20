@@ -317,21 +317,24 @@ kapel
 
 ## 2.6. 이미지 첨부 — `@` 멘션
 
-이미지는 REPL의 `@` 멘션으로 첨부합니다. 메시지에 `@screenshot.png`처럼
-이미지 파일(png/jpg/jpeg/gif/webp)을 멘션하면 경로가 아니라 **이미지 자체**가
-그 턴에 실려 전송됩니다. 한 턴에 최대 4장, 장당 5 MiB.
+이미지는 REPL의 `@` 멘션으로 첨부하며, **세 백엔드 모두** 동작합니다.
+메시지에 `@screenshot.png`처럼 이미지 파일(png/jpg/jpeg/gif/webp)을 멘션하면
+그 턴에 이미지가 첨부됩니다. 한 턴에 최대 4장, 장당 5 MiB — 이 한도는
+백엔드와 무관하게 동일합니다.
 
 ```text
 kapel> @screenshot.png 이 화면에서 뭐가 잘못됐어?
 ```
 
 **기대 동작**: 프롬프트에 `[attached images: screenshot.png]`가 표시되고
-모델이 이미지 내용을 근거로 답합니다. 한도 초과·읽기 실패 시에는
-`note: @huge.png was not attached — …` 안내 후 경로 멘션으로 강등되어 턴은
-그대로 전송됩니다. 네이티브 백엔드 전용: `--backend codex`/`claude-code`에서는
-한 줄 안내(`images are not supported on the codex backend yet — sent as file
-paths.`)와 함께 경로만 전달됩니다. 원샷 플래그는 여전히 없습니다
-(`kapel -i x.png` → `error: unknown option '-i'`, 종료 코드 1).
+모델이 이미지 내용을 근거로 답합니다. 전달 방식은 백엔드에 따라 다릅니다 —
+네이티브는 이미지 자체를 전송, `--backend codex`는 Codex CLI의 자체 이미지
+입력(`-i <경로>`)으로 경로를 전달, `--backend claude-code`는 프롬프트의
+`<attached-images>` 블록으로 경로를 전달해 에이전트가 Read 도구로 직접
+열어 봅니다. 한도 초과·읽기 실패 시에는 `note: @huge.png was not attached
+— …` 안내 후 경로 멘션으로 강등되어 턴은 그대로 전송됩니다. 원샷 플래그는
+여전히 없습니다 (`kapel -i x.png` → `error: unknown option '-i'`, 종료
+코드 1).
 
 ## 2.7. 시나리오 A-3 — 커스텀 슬래시 명령 (P1-4)
 
