@@ -1,1 +1,1 @@
-v0.8.1 release — field-test fixes: variadic-flag prompt swallowing, .agent/ state no longer blocks merges (init writes .gitignore), Claude Code 2.x streaming render, blocking reviews real on delegated backends (specificity routing + JSON verdict), reachable escalation ladders, "default" model sentinel, partial-result counting
+v0.8.2 release — the default escalation ladder stops at senior (a senior failure fails the task instead of dispatching the tool-less orchestrator agent as a worker); adds docs/FUTURE_WORK.md

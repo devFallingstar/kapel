@@ -1,6 +1,6 @@
 {
   "name": "@devfallingstar/kapel",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Kapel — a multi-model orchestration coding agent for your terminal. The strongest model plans; cheaper or specialized workers execute, under a natural-language policy compiled to a deterministic runtime.",
   "type": "module",
   "license": "MIT",

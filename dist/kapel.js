@@ -12818,7 +12818,7 @@ async function runRunsCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.8.1";
+var CLI_VERSION = "0.8.2";
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
 function shortId2(id) {
