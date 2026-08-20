@@ -4,6 +4,8 @@ import { BACKEND_NAMES } from "./backend.js";
 import type { KapelConfig } from "./config.js";
 import { loadKapelConfig } from "./config.js";
 import { runConfigCommand } from "./config-cmd.js";
+import type { KapelProjectConfig } from "./config-project.js";
+import { loadProjectConfig, mergeKapelConfigs } from "./config-project.js";
 import {
   detectBackendSetting,
   ensureFirstRunConfig,
@@ -90,10 +92,24 @@ interface RawChatOpts {
   readonly save?: boolean;
 }
 
+/**
+ * This directory's `.agent/config.local.json`, if it has one.
+ *
+ * Loaded per command rather than once, because `--cwd` makes the workspace a
+ * per-invocation fact; a malformed file warns once on stderr from inside the
+ * loader and is then ignored.
+ */
+async function projectConfigFor(
+  raw: GlobalOpts,
+): Promise<KapelProjectConfig | undefined> {
+  return await loadProjectConfig(path.resolve(raw.cwd));
+}
+
 function toInteractiveOptions(
   raw: GlobalOpts,
   chat: RawChatOpts = {},
   config?: KapelConfig,
+  projectConfig?: KapelProjectConfig,
 ): InteractiveOptions {
   const timeoutSeconds =
     raw.timeout === undefined
@@ -109,6 +125,7 @@ function toInteractiveOptions(
     ...(chat.session === undefined ? {} : { session: chat.session }),
     ...(raw.backend === undefined ? {} : { backend: raw.backend }),
     ...(config === undefined ? {} : { config }),
+    ...(projectConfig === undefined ? {} : { projectConfig }),
   };
 }
 
@@ -119,8 +136,9 @@ async function chatAndExit(
 ): Promise<void> {
   try {
     const config = await runtimeConfig(raw);
+    const projectConfig = await projectConfigFor(raw);
     process.exitCode = await runInteractive(
-      toInteractiveOptions(raw, chat, config),
+      toInteractiveOptions(raw, chat, config, projectConfig),
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -213,13 +231,19 @@ export function createProgram(): Command {
     .description("Create a .agent configuration in the current repository")
     .option("--force", "overwrite an existing .agent directory", false)
     .action(async (opts: { force: boolean }, command: Command) => {
-      const cwd = (command.optsWithGlobals() as GlobalOpts).cwd;
+      const raw = command.optsWithGlobals() as GlobalOpts;
+      const cwd = path.resolve(raw.cwd);
       // Read-only: `kapel init` seeds the project from an existing setup, but
       // scaffolding a repository is not a reason to ask someone to configure a
-      // backend they may not have chosen yet.
-      const config = await loadKapelConfig();
+      // backend they may not have chosen yet. A re-init over a directory that
+      // already has an override seeds from the effective view, so the models
+      // written into `.agent/config.yaml` are the ones this directory runs.
+      const config = mergeKapelConfigs(
+        await loadKapelConfig(),
+        await loadProjectConfig(cwd),
+      )?.config;
       process.exitCode = await runInit({
-        cwd: path.resolve(cwd),
+        cwd,
         force: opts.force,
         ...(config === undefined ? {} : { config }),
       });
@@ -228,26 +252,38 @@ export function createProgram(): Command {
   program
     .command("config")
     .description(
-      "Manage which backend and models kapel uses (stored in ~/.kapel/config.json)",
+      "Manage which backends and models kapel uses (stored in ~/.kapel/config.json, or this directory's .agent/config.local.json with --project)",
     )
     .option(
       "--show",
-      "print the current configuration and where it lives",
+      "print the effective configuration and which file each value came from",
       false,
     )
     .option("--path", "print the configuration file path", false)
-    .action(async (opts: { show: boolean; path: boolean }) => {
-      process.exitCode = await runConfigCommand(opts, {
-        log: (line) => {
-          console.log(line);
-        },
-        error: (line) => {
-          console.error(line);
-        },
-        interactive:
-          process.stdin.isTTY === true && process.stdout.isTTY === true,
-      });
-    });
+    .option(
+      "--project",
+      "read/write this directory's .agent/config.local.json instead of the machine-level file",
+      false,
+    )
+    .action(
+      async (
+        opts: { show: boolean; path: boolean; project: boolean },
+        command: Command,
+      ) => {
+        const raw = command.optsWithGlobals() as GlobalOpts;
+        process.exitCode = await runConfigCommand(opts, {
+          log: (line) => {
+            console.log(line);
+          },
+          error: (line) => {
+            console.error(line);
+          },
+          cwd: path.resolve(raw.cwd),
+          interactive:
+            process.stdin.isTTY === true && process.stdout.isTTY === true,
+        });
+      },
+    );
 
   program
     .command("models")
@@ -389,6 +425,7 @@ export function createProgram(): Command {
     command: Command,
     json: boolean,
     config: KapelConfig | undefined,
+    projectConfig?: KapelProjectConfig,
   ): PolicyCommandOptions {
     const raw = command.optsWithGlobals() as GlobalOpts;
     return {
@@ -396,6 +433,7 @@ export function createProgram(): Command {
       json,
       ...(raw.model === undefined ? {} : { model: raw.model }),
       ...(config === undefined ? {} : { config }),
+      ...(projectConfig === undefined ? {} : { projectConfig }),
     };
   }
 
@@ -417,10 +455,17 @@ export function createProgram(): Command {
     config: KapelConfig | undefined,
   ): Promise<PolicyCompileOptions> {
     const raw = command.optsWithGlobals() as GlobalOpts;
+    const projectConfig = await projectConfigFor(raw);
     return {
-      ...policyOptions(command, json, config),
-      backend: (await detectBackendSetting(raw.backend, process.env, config))
-        .value,
+      ...policyOptions(command, json, config, projectConfig),
+      backend: (
+        await detectBackendSetting(
+          raw.backend,
+          process.env,
+          config,
+          projectConfig,
+        )
+      ).value,
     };
   }
 

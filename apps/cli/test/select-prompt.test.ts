@@ -24,7 +24,11 @@ const CHOICES: readonly SelectChoice[] = [
 
 function state(
   overrides: Partial<SelectState> = {},
-  options?: { readonly initial?: string; readonly multi?: boolean },
+  options?: {
+    readonly initial?: string;
+    readonly multi?: boolean;
+    readonly required?: boolean;
+  },
 ): SelectState {
   return { ...initialSelectState(CHOICES, options), ...overrides };
 }
@@ -272,6 +276,28 @@ describe("reduceSelectKey submit and cancel", () => {
     expect(reduceSelectKey(multi, key("return"))).toEqual({
       type: "submit",
       values: [],
+    });
+  });
+
+  it("refuses to submit a required multi-select with nothing ticked", () => {
+    const multi = initialSelectState(CHOICES, {
+      multi: true,
+      required: true,
+    });
+    // Not a submit of the highlighted item either: an answer nobody chose is
+    // exactly what `required` exists to prevent.
+    expect(reduceSelectKey(multi, key("return"))).toEqual({ type: "noop" });
+  });
+
+  it("submits a required multi-select as soon as one value is ticked", () => {
+    const multi = initialSelectState(CHOICES, {
+      multi: true,
+      required: true,
+      initial: ["b"],
+    });
+    expect(reduceSelectKey(multi, key("return"))).toEqual({
+      type: "submit",
+      values: ["b"],
     });
   });
 

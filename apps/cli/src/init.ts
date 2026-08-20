@@ -39,14 +39,22 @@ export function providerForModel(
   return "openai";
 }
 
-/** The `models:` block a config seeds into `.agent/config.yaml`. */
+/**
+ * The `models:` block a config seeds into `.agent/config.yaml`.
+ *
+ * Each alias's provider comes from that role's *own* backend, not from one
+ * global answer: with a mixed configuration — say a Claude Code orchestrator
+ * and a Codex middle tier — `lead` is an Anthropic model and `worker` an
+ * OpenAI one, and a seeded file that claimed otherwise would send the run at
+ * the wrong provider.
+ */
 export function renderModelsBlock(config: KapelConfig): readonly string[] {
   const lines = ["models:"];
   for (const [projectRole, role] of PROJECT_ROLE_SOURCES) {
-    const model = config.models[role];
+    const { backend, model } = config.models[role];
     lines.push(
       `  ${projectRole}:`,
-      `    provider: ${providerForModel(model, config.backend)}`,
+      `    provider: ${providerForModel(model, backend)}`,
       `    model: ${model}`,
     );
   }
@@ -213,12 +221,17 @@ export function seedValidatorsInto(
  * kapel's own state and neither belongs in a project's history — and an
  * untracked `sessions.db` in particular used to make every merge report
  * `dirty-base`, which is why this is written rather than merely recommended.
+ * `config.local.json` is this checkout's backend and model override (see
+ * `config-project.ts`): which backend *you* are logged into is a fact about
+ * your machine even when you only want it here, so it is ignored for the same
+ * reason `~/.kapel/config.json` is not in the repo at all.
  * The rest of `.agent/` (the policy, the agent prompts) is a project's own
  * configuration and is deliberately left committable.
  */
 export const GITIGNORE_ENTRIES: readonly string[] = [
   ".agent/sessions.db*",
   ".agent/worktrees/",
+  ".agent/config.local.json",
 ];
 
 const GITIGNORE_HEADER = "# kapel state (see .agent/)";

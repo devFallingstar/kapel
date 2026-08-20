@@ -22,6 +22,13 @@ export interface SelectState {
   readonly cursor: number;
   readonly selected: readonly string[];
   readonly multi: boolean;
+  /**
+   * Multi-select only: whether enter with nothing ticked is refused rather
+   * than submitting an empty answer. Off by default — a filter list may
+   * legitimately match nothing — and turned on by questions that have no
+   * "none" answer, such as the wizard's backend step.
+   */
+  readonly required: boolean;
 }
 
 /** The subset of node's `readline` keypress event this reducer reads. */
@@ -63,6 +70,7 @@ export function initialSelectState(
   options?: {
     readonly initial?: string | readonly string[];
     readonly multi?: boolean;
+    readonly required?: boolean;
   },
 ): SelectState {
   const multi = options?.multi ?? false;
@@ -79,6 +87,7 @@ export function initialSelectState(
     cursor: cursorFrom === -1 ? 0 : cursorFrom,
     selected,
     multi,
+    required: options?.required ?? false,
   };
 }
 
@@ -114,7 +123,14 @@ function toggle(state: SelectState): SelectAction {
 }
 
 function submit(state: SelectState): SelectAction {
-  if (state.multi || state.selected.length > 0) {
+  if (state.multi) {
+    // A required multi-select simply does not answer to enter until something
+    // is ticked. Taking the highlighted item instead would put an answer
+    // nobody chose into a config file.
+    if (state.required && state.selected.length === 0) return NOOP;
+    return { type: "submit", values: state.selected };
+  }
+  if (state.selected.length > 0) {
     return { type: "submit", values: state.selected };
   }
   // Single-select with nothing chosen yet: enter takes the highlighted item,
@@ -253,6 +269,8 @@ export interface SelectPromptOptions {
   readonly title: string;
   readonly choices: readonly SelectChoice[];
   readonly multi?: boolean;
+  /** See {@link SelectState.required}. Multi-select only. */
+  readonly required?: boolean;
   readonly initial?: string | readonly string[];
   readonly footer?: string;
 }
@@ -274,6 +292,7 @@ export function runSelectPrompt(
   const stateOptions = {
     ...(options.initial === undefined ? {} : { initial: options.initial }),
     ...(options.multi === undefined ? {} : { multi: options.multi }),
+    ...(options.required === undefined ? {} : { required: options.required }),
   };
   let state = initialSelectState(options.choices, stateOptions);
 

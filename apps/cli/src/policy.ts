@@ -37,6 +37,7 @@ import {
   isDelegatedBackend,
 } from "./backend.js";
 import type { KapelConfig } from "./config.js";
+import type { KapelProjectConfig } from "./config-project.js";
 import {
   delegatedModelOverride,
   resolveOrchestratorModel,
@@ -51,6 +52,8 @@ export interface PolicyCommandOptions {
   readonly json: boolean;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
+  /** This workspace's `.agent/config.local.json` override, when it has one. */
+  readonly projectConfig?: KapelProjectConfig;
 }
 
 /** Where a policy subcommand writes its output. Overridable in tests. */
@@ -319,7 +322,12 @@ async function buildPolicyCompiler(
     // model setting decides, since compiling the policy is the orchestrator's
     // kind of job; `undefined` lets the CLI pick.
     const modelId = delegatedModelOverride(
-      resolveOrchestratorModel(options.model, process.env, options.config),
+      resolveOrchestratorModel(
+        options.model,
+        process.env,
+        options.config,
+        options.projectConfig,
+      ),
     );
     const factory = deps.delegatedCompilerFactory;
     if (factory === undefined) {
@@ -341,7 +349,8 @@ async function buildPolicyCompiler(
     options.model,
     process.env,
     options.config,
-  ).value;
+    options.projectConfig,
+  ).value.model;
   const resolved = await resolveModelAndProvider(process.env, alias);
   if ("error" in resolved) return fail(resolved.error);
   const compilerFactory = deps.compilerFactory ?? defaultCompilerFactory;

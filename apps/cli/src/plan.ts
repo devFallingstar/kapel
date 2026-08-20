@@ -29,6 +29,7 @@ import {
   isDelegatedBackend,
 } from "./backend.js";
 import type { KapelConfig } from "./config.js";
+import type { KapelProjectConfig } from "./config-project.js";
 import {
   delegatedModelOverride,
   resolveOrchestratorModel,
@@ -61,6 +62,8 @@ export interface PlanCommandOptions {
   readonly backend: BackendName;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
+  /** This workspace's `.agent/config.local.json` override, when it has one. */
+  readonly projectConfig?: KapelProjectConfig;
   /**
    * After planning, print the routing rationale instead of executing
    * anything. `true` means "every task"; a string is the one task id
@@ -229,7 +232,8 @@ async function resolvePlannerModel(
     options.model,
     process.env,
     options.config,
-  ).value;
+    options.projectConfig,
+  ).value.model;
   return resolveModelAndProvider(process.env, alias);
 }
 

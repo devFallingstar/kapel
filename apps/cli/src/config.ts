@@ -16,7 +16,7 @@ import type { SelectChoice } from "./select-prompt.js";
  * it.
  */
 
-export const KAPEL_CONFIG_VERSION = 2;
+export const KAPEL_CONFIG_VERSION = 3;
 
 export type KapelBackend = "claude-code" | "codex" | "native";
 
@@ -24,19 +24,48 @@ const BACKENDS: readonly KapelBackend[] = ["claude-code", "codex", "native"];
 
 export type KapelRole = "orchestrator" | "complex" | "middle" | "low";
 
-export interface KapelModels {
-  readonly orchestrator: string;
-  /** The most complex coding work: cross-cutting changes, gnarly debugging. */
-  readonly complex: string;
-  /** Everyday, moderate implementation work. */
-  readonly middle: string;
-  /** Small, single-function-sized changes and read-only exploration. */
-  readonly low: string;
+/**
+ * The four roles, in the order the wizard asks about them and every summary
+ * prints them.
+ *
+ * - `orchestrator` — plans, routes and reviews.
+ * - `complex` — the most complex coding work: cross-cutting changes, gnarly
+ *   debugging.
+ * - `middle` — everyday, moderate implementation work.
+ * - `low` — small, single-function-sized changes and read-only exploration.
+ */
+export const KAPEL_ROLES: readonly KapelRole[] = [
+  "orchestrator",
+  "complex",
+  "middle",
+  "low",
+];
+
+/**
+ * One role's answer: *which* model, and *whose* — because with more than one
+ * backend configured, a bare model id no longer says who runs it (`opus` is a
+ * Claude Code alias, `gpt-5.1` a Codex one, and `claude-opus-5` exists on both
+ * the native and the Claude Code list).
+ */
+export interface KapelRoleModel {
+  readonly backend: KapelBackend;
+  readonly model: string;
 }
+
+/** Every role's chosen backend+model pair. */
+export type KapelModels = Readonly<Record<KapelRole, KapelRoleModel>>;
+
+/** One backend's bare per-role model ids — what {@link defaultModelsFor} suggests. */
+export type KapelBackendModels = Readonly<Record<KapelRole, string>>;
 
 export interface KapelConfig {
   readonly version: number;
-  readonly backend: KapelBackend;
+  /**
+   * Every backend this machine may use, in the order they were chosen. Never
+   * empty and never repeating; the first entry is the default for anything
+   * that still needs a single backend and has no role to read one from.
+   */
+  readonly backends: readonly KapelBackend[];
   readonly models: KapelModels;
   readonly updatedAt: number;
   /**
@@ -149,10 +178,44 @@ function parsePermissionBlock(raw: unknown): ParsedPermission {
 }
 
 /**
- * Migrates a version-1 `models` block onto the version-2 slots.
+ * A `backends` list as written on disk: a non-empty array of known backend
+ * names with no repeats. Anything else is `undefined`, which every caller
+ * treats as "this file is unreadable".
+ */
+export function parseBackendList(
+  raw: unknown,
+): readonly KapelBackend[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const backends: KapelBackend[] = [];
+  for (const entry of raw) {
+    if (!isBackend(entry) || backends.includes(entry)) return undefined;
+    backends.push(entry);
+  }
+  return backends;
+}
+
+/**
+ * One `{backend, model}` pair as written on disk, checked against the
+ * backends the file declares: a role may only name a backend the config
+ * actually enables, or the pair is meaningless.
+ */
+export function parseRoleModel(
+  raw: unknown,
+  allowed: readonly KapelBackend[],
+): KapelRoleModel | undefined {
+  if (!isRecord(raw)) return undefined;
+  const backend = raw.backend;
+  if (!isBackend(backend) || !allowed.includes(backend)) return undefined;
+  const model = modelString(raw.model);
+  if (model === undefined) return undefined;
+  return { backend, model };
+}
+
+/**
+ * Migrates a version-1 or version-2 `models` block onto the version-3 slots.
  *
  * Version 1 had three slots — `orchestrator`, `worker` ("normal complexity")
- * and `cheap` ("low complexity / exploration"). Version 2 splits the worker
+ * and `cheap` ("low complexity / exploration"). Version 2 split the worker
  * tier in two, so the mapping is:
  *
  *     orchestrator := orchestrator
@@ -167,33 +230,32 @@ function parsePermissionBlock(raw: unknown): ParsedPermission {
  * than anyone asked for is worse than under-reaching, and `kapel config`
  * re-runs the wizard with these values pre-selected.
  *
+ * Version 3 keeps the four slots but pairs each with the backend that runs
+ * it; a version-1 or -2 file had exactly one backend, so every role migrates
+ * onto that one.
+ *
  * Migration happens in memory only. Nothing is rewritten on disk until the
  * user saves a config, which {@link saveKapelConfig} always writes as
- * version 2.
+ * version 3.
  */
-function migrateV1Models(
+function migrateLegacyModels(
+  version: 1 | 2,
   modelRecord: Record<string, unknown>,
+  backend: KapelBackend,
 ): KapelModels | undefined {
   const orchestrator = modelString(modelRecord.orchestrator);
-  const worker = modelString(modelRecord.worker);
-  const cheap = modelString(modelRecord.cheap);
-  if (
-    orchestrator === undefined ||
-    worker === undefined ||
-    cheap === undefined
-  ) {
-    return undefined;
-  }
-  return { orchestrator, complex: worker, middle: worker, low: cheap };
-}
-
-function parseV2Models(
-  modelRecord: Record<string, unknown>,
-): KapelModels | undefined {
-  const orchestrator = modelString(modelRecord.orchestrator);
-  const complex = modelString(modelRecord.complex);
-  const middle = modelString(modelRecord.middle);
-  const low = modelString(modelRecord.low);
+  const complex =
+    version === 1
+      ? modelString(modelRecord.worker)
+      : modelString(modelRecord.complex);
+  const middle =
+    version === 1
+      ? modelString(modelRecord.worker)
+      : modelString(modelRecord.middle);
+  const low =
+    version === 1
+      ? modelString(modelRecord.cheap)
+      : modelString(modelRecord.low);
   if (
     orchestrator === undefined ||
     complex === undefined ||
@@ -202,7 +264,25 @@ function parseV2Models(
   ) {
     return undefined;
   }
-  return { orchestrator, complex, middle, low };
+  return {
+    orchestrator: { backend, model: orchestrator },
+    complex: { backend, model: complex },
+    middle: { backend, model: middle },
+    low: { backend, model: low },
+  };
+}
+
+function parseV3Models(
+  modelRecord: Record<string, unknown>,
+  backends: readonly KapelBackend[],
+): KapelModels | undefined {
+  const models: Partial<Record<KapelRole, KapelRoleModel>> = {};
+  for (const role of KAPEL_ROLES) {
+    const parsed = parseRoleModel(modelRecord[role], backends);
+    if (parsed === undefined) return undefined;
+    models[role] = parsed;
+  }
+  return models as KapelModels;
 }
 
 interface ParsedConfig {
@@ -215,14 +295,24 @@ function parseConfig(raw: unknown): ParsedConfig {
   if (typeof raw !== "object" || raw === null) return none;
   const record = raw as Record<string, unknown>;
   const version = record.version;
-  if (version !== KAPEL_CONFIG_VERSION && version !== 1) return none;
-  if (!isBackend(record.backend)) return none;
+  const legacy = version === 1 || version === 2;
+  if (version !== KAPEL_CONFIG_VERSION && !legacy) return none;
+
+  const backends = legacy
+    ? isBackend(record.backend)
+      ? [record.backend]
+      : undefined
+    : parseBackendList(record.backends);
+  if (backends === undefined) return none;
 
   const models = record.models;
   if (typeof models !== "object" || models === null) return none;
   const modelRecord = models as Record<string, unknown>;
+  const firstBackend = backends[0];
   const parsed =
-    version === 1 ? migrateV1Models(modelRecord) : parseV2Models(modelRecord);
+    legacy && firstBackend !== undefined
+      ? migrateLegacyModels(version, modelRecord, firstBackend)
+      : parseV3Models(modelRecord, backends);
   if (parsed === undefined) return none;
 
   // The permission block is version-independent: it was never part of the
@@ -235,7 +325,7 @@ function parseConfig(raw: unknown): ParsedConfig {
   return {
     config: {
       version: KAPEL_CONFIG_VERSION,
-      backend: record.backend,
+      backends,
       models: parsed,
       updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
       ...(Object.keys(permission).length > 0 ? { permission } : {}),
@@ -252,9 +342,10 @@ function parseConfig(raw: unknown): ParsedConfig {
  * the only consequence of an unusable config is that the wizard offers to
  * write a new one, which is strictly better than refusing to start.
  *
- * A version-1 file is *not* unreadable: it is migrated in memory by
- * {@link migrateV1Models}, because throwing away a working setup over a slot
- * rename would be hostile.
+ * A version-1 or version-2 file is *not* unreadable: it is migrated in memory
+ * by {@link migrateLegacyModels}, because throwing away a working setup over a
+ * slot rename — or over multi-backend support the file predates — would be
+ * hostile.
  */
 export async function loadKapelConfig(
   env?: NodeJS.ProcessEnv,
@@ -297,7 +388,7 @@ export async function saveKapelConfig(
 
   const full: KapelConfig = {
     version: KAPEL_CONFIG_VERSION,
-    backend: config.backend,
+    backends: [...config.backends],
     models: {
       orchestrator: config.models.orchestrator,
       complex: config.models.complex,
@@ -323,7 +414,12 @@ export async function saveKapelConfig(
 
 // --- Choice lists -----------------------------------------------------------
 
-/** Step 1 of the wizard: how kapel talks to a model at all. */
+/**
+ * Step 1 of the wizard: how kapel talks to a model at all.
+ *
+ * Multi-select since version 3 — picking Claude Code *and* Codex is a real
+ * answer, and the role questions then offer the union of both lists.
+ */
 export function backendChoices(): readonly SelectChoice[] {
   return [
     {
@@ -444,22 +540,63 @@ function choicesForBackend(backend: KapelBackend): readonly SelectChoice[] {
 }
 
 /**
- * The models on offer for one role, with the one this role defaults to marked
- * so the list explains itself without a second prompt.
+ * How a role's answer is encoded as one picker value: `"<backend>:<model>"`.
+ *
+ * The prefix is what makes a union list unambiguous — `claude-opus-5` is on
+ * both the native and the Claude Code list, and `default` is on two of the
+ * three. Backend names never contain a colon and model ids never start with
+ * one, so splitting at the first colon round-trips every pair.
+ */
+export function encodeRoleModel(entry: KapelRoleModel): string {
+  return `${entry.backend}:${entry.model}`;
+}
+
+/** {@link encodeRoleModel} in reverse; `undefined` for anything unparseable. */
+export function decodeRoleModel(value: string): KapelRoleModel | undefined {
+  const separator = value.indexOf(":");
+  if (separator === -1) return undefined;
+  const backend = value.slice(0, separator);
+  const model = value.slice(separator + 1);
+  if (!isBackend(backend) || model === "") return undefined;
+  return { backend, model };
+}
+
+/**
+ * The models on offer for one role across every selected backend, with the
+ * one this role defaults to marked so the list explains itself without a
+ * second prompt.
+ *
+ * With a single backend selected this is exactly that backend's own list, in
+ * its own order. With several, the lists are concatenated in the order the
+ * backends were chosen and every hint is prefixed with the backend's name, so
+ * two identically-named models stay tellable apart on screen — the values
+ * themselves are qualified either way (see {@link encodeRoleModel}).
  */
 export function modelChoicesFor(
-  backend: KapelBackend,
+  backends: readonly KapelBackend[],
   role: KapelRole,
 ): readonly SelectChoice[] {
-  const suggested = defaultModelsFor(backend)[role];
-  return choicesForBackend(backend).map((choice) => {
-    if (choice.value !== suggested) return choice;
-    const hint =
-      choice.hint === undefined
-        ? "suggested for this role"
-        : `${choice.hint} · suggested for this role`;
-    return { value: choice.value, label: choice.label, hint };
-  });
+  const suggested = defaultRoleModel(backends, role);
+  const qualify = backends.length > 1;
+  const choices: SelectChoice[] = [];
+
+  for (const backend of backends) {
+    for (const choice of choicesForBackend(backend)) {
+      const parts: string[] = [];
+      if (qualify) parts.push(backendLabel(backend));
+      if (choice.hint !== undefined) parts.push(choice.hint);
+      if (backend === suggested.backend && choice.value === suggested.model) {
+        parts.push("suggested for this role");
+      }
+      const hint = parts.join(" · ");
+      choices.push({
+        value: encodeRoleModel({ backend, model: choice.value }),
+        label: choice.label,
+        ...(hint === "" ? {} : { hint }),
+      });
+    }
+  }
+  return choices;
 }
 
 /**
@@ -478,7 +615,7 @@ function pickNative(preferred: string): string {
 }
 
 /** The per-role defaults the wizard pre-selects for a backend. */
-export function defaultModelsFor(backend: KapelBackend): KapelModels {
+export function defaultModelsFor(backend: KapelBackend): KapelBackendModels {
   if (backend === "claude-code") {
     return {
       orchestrator: "opus",
@@ -503,23 +640,111 @@ export function defaultModelsFor(backend: KapelBackend): KapelModels {
   };
 }
 
+/**
+ * Which selected backend's tier defaults a role's suggestion comes from,
+ * in preference order: Claude Code, then Codex, then native.
+ *
+ * The order is not a quality ranking — it is a *specificity* one. Claude
+ * Code's defaults are the only ones that actually spread the four roles
+ * across different models (opus / opus / sonnet / haiku), so when it is on the
+ * list its suggestions carry the most information. Codex's are all the
+ * `"default"` sentinel, which suggests nothing in particular, and native's
+ * repeat Claude Code's spread through catalog aliases that need a key. A
+ * suggestion is only ever a pre-selection; every list still offers every
+ * model of every selected backend.
+ */
+const DEFAULT_MODEL_PREFERENCE: readonly KapelBackend[] = [
+  "claude-code",
+  "codex",
+  "native",
+];
+
+/** The backend+model pair the wizard pre-selects for one role. */
+export function defaultRoleModel(
+  backends: readonly KapelBackend[],
+  role: KapelRole,
+): KapelRoleModel {
+  const backend =
+    DEFAULT_MODEL_PREFERENCE.find((candidate) =>
+      backends.includes(candidate),
+    ) ??
+    backends[0] ??
+    "native";
+  return { backend, model: defaultModelsFor(backend)[role] };
+}
+
+/** {@link defaultRoleModel} for every role — a whole default `models` block. */
+export function defaultModelsForBackends(
+  backends: readonly KapelBackend[],
+): KapelModels {
+  return {
+    orchestrator: defaultRoleModel(backends, "orchestrator"),
+    complex: defaultRoleModel(backends, "complex"),
+    middle: defaultRoleModel(backends, "middle"),
+    low: defaultRoleModel(backends, "low"),
+  };
+}
+
+// --- The one backend a single-backend consumer runs on -----------------------
+
+/**
+ * The single backend to run everything on, for the consumers that still only
+ * understand one: the REPL's chat turns, the planner, the policy compiler and
+ * the orchestration executor factory.
+ *
+ * It is the **orchestrator role's** backend — the orchestrator is the agent
+ * those consumers actually are (a chat turn, a plan, a compile are all its
+ * work), so reading its answer is the honest single choice among several. A
+ * config always has one; the merge in `config-project.ts` falls back to the
+ * first entry of `backends` when no layer named a model for the role.
+ *
+ * Every call site of this is a place mixed execution has not reached yet: the
+ * follow-up that runs each agent on its own role's backend narrows this down
+ * to the few spots that genuinely have no role in hand, instead of standing in
+ * for four different answers.
+ */
+export function soleExecutionBackend(config: KapelConfig): KapelBackend {
+  return config.models.orchestrator.backend;
+}
+
 // --- Display ----------------------------------------------------------------
 
-function backendLabel(backend: KapelBackend): string {
+/** The wizard's label for a backend (`"Claude Code"`), or the raw name. */
+export function backendLabel(backend: KapelBackend): string {
   return (
     backendChoices().find((choice) => choice.value === backend)?.label ??
     backend
   );
 }
 
+/** What each role is called in a printed summary. */
+export const ROLE_DESCRIPTIONS: Readonly<Record<KapelRole, string>> = {
+  orchestrator: "orchestrator model",
+  complex: "worker model (complex tasks)",
+  middle: "worker model (everyday tasks)",
+  low: "worker model (small tasks)",
+};
+
+/** `"Claude Code (claude-code), Codex (codex)"`. */
+export function describeBackends(backends: readonly KapelBackend[]): string {
+  return backends
+    .map((backend) => `${backendLabel(backend)} (${backend})`)
+    .join(", ");
+}
+
+/** `"opus (claude-code)"` — the model, and who runs it. */
+export function describeRoleModel(entry: KapelRoleModel): string {
+  return `${entry.model} (${entry.backend})`;
+}
+
 /** The human-readable form, as printed by `kapel config --show`. */
 export function describeConfig(config: KapelConfig): readonly string[] {
   return [
-    `backend: ${backendLabel(config.backend)} (${config.backend})`,
-    `orchestrator model: ${config.models.orchestrator}`,
-    `worker model (complex tasks): ${config.models.complex}`,
-    `worker model (everyday tasks): ${config.models.middle}`,
-    `worker model (small tasks): ${config.models.low}`,
+    `backends: ${describeBackends(config.backends)}`,
+    ...KAPEL_ROLES.map(
+      (role) =>
+        `${ROLE_DESCRIPTIONS[role]}: ${describeRoleModel(config.models[role])}`,
+    ),
     `updated: ${new Date(config.updatedAt).toISOString()}`,
   ];
 }

@@ -47,6 +47,9 @@ import { createCheckpointStore, undoLines } from "./checkpoint.js";
 import type { CustomCommand, LoadCustomCommandsResult } from "./commands.js";
 import { expandCustomCommand, loadCustomCommands } from "./commands.js";
 import type { KapelConfig } from "./config.js";
+import { soleExecutionBackend } from "./config.js";
+import type { KapelProjectConfig } from "./config-project.js";
+import { mergeKapelConfigs } from "./config-project.js";
 import {
   checkBackendAvailability,
   delegatedModelOverride,
@@ -1382,8 +1385,11 @@ export async function createInteractiveController(
     const config = await deps.configure();
     if (config === undefined) return drain();
 
-    const nextBackend = config.backend;
-    const nextAlias = config.models.orchestrator;
+    // Still one backend per conversation in this phase: the orchestrator's,
+    // since a chat turn is the orchestrator's own work (see
+    // `soleExecutionBackend`).
+    const nextBackend = soleExecutionBackend(config);
+    const nextAlias = config.models.orchestrator.model;
     if (nextBackend === backend && nextAlias === modelAlias) {
       emit("config unchanged.");
       return drain();
@@ -1753,6 +1759,11 @@ export interface InteractiveOptions {
   readonly backend?: string;
   /** The machine's configuration, when there is one; see `config-runtime.ts`. */
   readonly config?: KapelConfig;
+  /**
+   * This workspace's `.agent/config.local.json` override, when it has one —
+   * loaded by the caller, which is the layer that knows the cwd.
+   */
+  readonly projectConfig?: KapelProjectConfig;
 }
 
 /**
@@ -1929,14 +1940,20 @@ export async function runInteractive(
   // `.env` is loaded first so a workspace-local `AGENT_BACKEND`/`AGENT_MODEL`
   // takes part in the precedence chain exactly like a shell variable.
   const backend = (
-    await detectBackendSetting(options.backend, process.env, options.config)
+    await detectBackendSetting(
+      options.backend,
+      process.env,
+      options.config,
+      options.projectConfig,
+    )
   ).value;
   const modelSetting = resolveOrchestratorModel(
     options.model,
     process.env,
     options.config,
+    options.projectConfig,
   );
-  const alias = modelSetting.value;
+  const alias = modelSetting.value.model;
   const delegatedModel = delegatedModelOverride(modelSetting);
   // What the conversation calls its model. On a delegated backend with nothing
   // chosen, that is honestly `default` — naming the native catalog's default
@@ -2199,8 +2216,13 @@ export async function runInteractive(
         runResume(runId, resumeOptionsFor(options, backend), { output }),
       ...(wizardTty
         ? {
-            configure: () =>
-              runConfigWizard({
+            // `/config` writes the machine-level file, so what this
+            // conversation then obeys is that answer *with this workspace's
+            // `.agent/config.local.json` still on top* — an override the
+            // directory asked for does not lose to a wizard run somewhere
+            // else in the same session.
+            configure: async () => {
+              const saved = await runConfigWizard({
                 // `/config` runs while the REPL's own InputManager still owns
                 // stdin — suspend it around the picker so the two don't fight
                 // over raw-mode keypresses.
@@ -2217,7 +2239,12 @@ export async function runInteractive(
                 ...(options.config === undefined
                   ? {}
                   : { current: options.config }),
-              }),
+              });
+              if (saved === undefined) return undefined;
+              return (
+                mergeKapelConfigs(saved, options.projectConfig)?.config ?? saved
+              );
+            },
           }
         : {}),
     });
@@ -2366,6 +2393,9 @@ function planOptionsFor(
     backend,
     why: true,
     ...(options.config === undefined ? {} : { config: options.config }),
+    ...(options.projectConfig === undefined
+      ? {}
+      : { projectConfig: options.projectConfig }),
   };
 }
 
@@ -2387,6 +2417,9 @@ function orchestrateOptionsFor(
     tui: false,
     maxIterations: DEFAULT_MAX_ITERATIONS,
     ...(options.config === undefined ? {} : { config: options.config }),
+    ...(options.projectConfig === undefined
+      ? {}
+      : { projectConfig: options.projectConfig }),
     ...(options.timeoutSeconds === undefined
       ? {}
       : { timeoutSeconds: options.timeoutSeconds }),

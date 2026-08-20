@@ -12,7 +12,7 @@ Like other terminal coding agents, `kapel` runs inside the repository you want i
 npm install -g @devfallingstar/kapel
 
 cd /path/to/your/repo
-kapel                                 # first run asks which backend and models to use
+kapel                                 # first run asks which backends and models to use
 ```
 
 `kapel` opens a prompt and stays there. **All agent work happens in that
@@ -21,10 +21,11 @@ REPL** — talking, planning, orchestrating, resuming. The commands on the shell
 up and inspect what it did; none of them do the work themselves.
 
 The first time you run `kapel` on a terminal it asks five questions — which
-coding backend (Claude Code, Codex, or a plain API key) and which model to use
-for the orchestrator and for each of the three worker tiers — and stores the
-answers in
-`~/.kapel/config.json`. See [First-run setup](#first-run-setup). Piped,
+coding backends you have (Claude Code, Codex, a plain API key: tick as many as
+apply) and which model, on which of them, to use for the orchestrator and for
+each of the three worker tiers — and stores the answers in
+`~/.kapel/config.json`. A single directory can override any of it in
+`.agent/config.local.json`. See [First-run setup](#first-run-setup). Piped,
 redirected or `--no-setup` runs skip it and fall back to environment variables
 and defaults, so nothing in CI ever blocks on a prompt.
 
@@ -172,7 +173,7 @@ Everything outside the REPL is setup and inspection:
 kapel                    # open the REPL — this is where the work happens
 kapel chat               # the same thing, spelled out (--continue, --session, --no-save)
 kapel init               # copy the default .agent/ configuration into this repo
-kapel config             # re-run setup (--show prints it, --path prints the file path)
+kapel config             # re-run setup (--show prints it, --path prints the file path, --project scopes it to this directory)
 kapel models             # model aliases and their credential status
 kapel runs               # orchestration runs recorded here (--limit, --json)
 kapel sessions           # chat sessions recorded here (--limit, --json)
@@ -204,40 +205,88 @@ error: unknown command 'plan'
 `kapel` needs to know two things before it can do anything: how to talk to a
 model, and which models to use. On a terminal it asks once, on the first run of
 any command that needs an answer, and stores what you say in
-`~/.kapel/config.json` (`$KAPEL_CONFIG_DIR` overrides the directory):
+`~/.kapel/config.json` (`$KAPEL_CONFIG_DIR` overrides the directory).
+
+The first question is a **multi-select**: tick every backend you actually have,
+not just one.
 
 ```text
-Which coding backend should kapel use?
-❯ ◉ Claude Code (use your Claude Code subscription login — no API key)
-    ◯ Codex (use your ChatGPT login via the OpenAI Codex CLI — no API key)
-    ◯ API key (Anthropic/OpenAI) (call model APIs directly with a key or token)
+Which coding backends should kapel use? (space to toggle, enter to confirm)
+❯ ☑ Claude Code (use your Claude Code subscription login — no API key)
+    ☑ Codex (use your ChatGPT login via the OpenAI Codex CLI — no API key)
+    ☐ API key (Anthropic/OpenAI) (call model APIs directly with a key or token)
+  ↑↓ move · space toggle · enter confirm (at least one) · esc cancel
 ```
 
 …followed by the orchestrator model and the three worker models — the complex
 tier (the hardest coding work), the everyday tier, and the small-task tier
-(single-function changes and exploration). The chosen backend is probed as you
-pick it, so a missing or logged-out CLI is reported there and then rather than
-on your first objective.
+(single-function changes and exploration). With one backend ticked those four
+lists are that backend's models, exactly as before. With several, each list is
+the **union** of every ticked backend's models, each line naming who runs it,
+so a role can be put on any of them:
 
-```bash
-kapel config            # re-run the wizard at any time
-kapel config --show     # what is configured, and where the file lives
-kapel config --path     # just the path
-kapel --no-setup "…"    # never ask; use environment variables and defaults
+```text
+Worker model — everyday tasks
+    ◯ opus     (Claude Code · Claude Opus — highest capability)
+❯ ◉ sonnet   (Claude Code · Claude Sonnet — balanced · suggested for this role)
+    ◯ default  (Codex · let the Codex CLI choose)
+    ◯ gpt-5.1  (Codex · errors at run time if your plan lacks it)
 ```
 
-Inside the interactive agent, `/config` runs the same wizard and applies the
-answers to the conversation you are already in — the thread is kept, only the
+A Claude Code orchestrator with a Codex middle tier is a normal answer. The
+pre-selected suggestion for each role comes from Claude Code's tiers when it is
+ticked (they are the only defaults that actually differ per tier), otherwise
+Codex's, otherwise the API-key list's. Every ticked backend is probed as you
+go, so a missing or logged-out CLI is reported there and then rather than on
+your first objective.
+
+```bash
+kapel config              # re-run the wizard at any time
+kapel config --show       # the effective configuration, and which file each value came from
+kapel config --path       # just the path
+kapel config --project    # same wizard, saved to this directory's .agent/config.local.json
+kapel config --path --project   # …and where that file is
+kapel --no-setup "…"      # never ask; use environment variables and defaults
+```
+
+**Per-project overrides.** `~/.kapel/config.json` says what your *machine* is
+logged into; `<repo>/.agent/config.local.json` says what *this directory*
+should use instead. It is a partial — override the backend list, or one role,
+or everything — and the machine config fills every gap:
+
+```jsonc
+// .agent/config.local.json — this repo runs its everyday tier on Codex
+{
+  "backends": ["claude-code", "codex"],
+  "models": { "middle": { "backend": "codex", "model": "gpt-5.1" } }
+}
+```
+
+`kapel config --project` writes it for you (it needs a `kapel init`-ed
+directory — it will not create `.agent/` itself), `kapel init` adds it to
+`.gitignore` next to `sessions.db`, and a malformed file warns once on stderr
+and is ignored rather than failing the command. `kapel config --show` prints
+the merged result with the file each value came from.
+
+Inside the interactive agent, `/config` runs the same wizard against the
+machine file and applies the answers — still with this directory's override on
+top — to the conversation you are already in: the thread is kept, only the
 turns that follow change backend or model.
 
 **Everything resolves in one order**, wherever a backend or a model is chosen
 (the REPL, `/plan`, `/orchestrate`, `policy compile`):
 
 ```text
-explicit CLI flag  >  environment variable  >  ~/.kapel/config.json  >  detected  >  built-in default
-     --backend            AGENT_BACKEND              backend                            native
-     -m/--model           AGENT_MODEL                models.orchestrator                claude-sonnet-5
+explicit CLI flag  >  environment variable  >  .agent/config.local.json  >  ~/.kapel/config.json  >  detected  >  built-in default
+     --backend            AGENT_BACKEND              backends / models                  backends / models                     native
+     -m/--model           AGENT_MODEL                models.<role>.model                models.<role>.model                   claude-sonnet-5
 ```
+
+Execution itself is still single-backend for now: a chat turn, a plan and a
+policy compile all run on the **orchestrator role's** backend, whatever the
+other three roles say. The per-role backends are honoured today where they are
+written down — `kapel init` seeds each `.agent/config.yaml` alias with its own
+role's provider — and a follow-up will run each worker on its own.
 
 **Backend auto-detection** fills the gap in the last step but one. If nothing
 has chosen a backend — no `--backend`, no `AGENT_BACKEND`, no stored config
@@ -256,11 +305,13 @@ it in the order has an answer. With nothing usable found, `native` stands, in
 silence — at that point the thing worth hearing about is the missing
 credential, not the detection.
 
-`.agent/config.yaml` is a separate, per-project thing: it says which model each
-*agent* of an orchestration run uses. `kapel init` seeds it from your global
-config when you have one (`lead` and `reviewer` from the orchestrator model,
-`complex`, `worker` and `cheap` from the three worker models), and copies the
-template unchanged when you don't.
+`.agent/config.yaml` is a third, committed file, and a different question
+again: it says which model each *agent* of an orchestration run uses. `kapel
+init` seeds it from your effective configuration when you have one (`lead` and
+`reviewer` from the orchestrator model, `complex`, `worker` and `cheap` from
+the three worker models), giving each alias the provider of *its own* role's
+backend — so a Claude Code lead and a Codex worker seed `anthropic` and
+`openai` respectively — and copies the template unchanged when you don't.
 
 ### Permissions
 
@@ -273,7 +324,7 @@ asks and what doesn't — opencode's syntax, unchanged:
 ```jsonc
 // ~/.kapel/config.json
 {
-  "version": 1, "backend": "…", "models": { "…": "…" },
+  "version": 3, "backends": ["…"], "models": { "…": { "backend": "…", "model": "…" } },
   "permission": {
     "edit_file": "allow",
     "bash": { "*": "ask", "git *": "allow", "rm *": "deny" }
@@ -422,7 +473,7 @@ Both `/plan` and `/orchestrate` require a fresh `.agent/orchestration.lock.json`
 
 Under `--backend codex` or `--backend claude-code` the planning conversation is delegated to that CLI too, so **planning needs no API key either** — it runs as one read-only `codex exec --sandbox read-only` / `claude -p --permission-mode plan` call in your workspace, on the orchestrator agent's configured model (or whatever `-m/--model` names, verbatim), and the plan it replies with is validated against the same schema and the same rules as on the native path.
 
-`kapel policy compile` is delegated the same way on those backends — the same single read-only call, the same IR schema, the same warnings and ambiguities in the lock — on whatever model your `orchestrator` setting names (`-m/--model` > `AGENT_MODEL` > `~/.kapel/config.json`), or the CLI's own default when nothing names one, in which case the lock records it as `<codex default>`/`<claude-code default>`. `kapel policy diff` recompiles through the same delegated path. **So the whole pipeline — compile, diff, plan, orchestrate — runs on a Codex or Claude Code subscription with no API key anywhere.**
+`kapel policy compile` is delegated the same way on those backends — the same single read-only call, the same IR schema, the same warnings and ambiguities in the lock — on whatever model your `orchestrator` setting names (`-m/--model` > `AGENT_MODEL` > `.agent/config.local.json` > `~/.kapel/config.json`), or the CLI's own default when nothing names one, in which case the lock records it as `<codex default>`/`<claude-code default>`. `kapel policy diff` recompiles through the same delegated path. **So the whole pipeline — compile, diff, plan, orchestrate — runs on a Codex or Claude Code subscription with no API key anywhere.**
 
 `/plan` prints one row per task — id, type, complexity, the agent the router would pick, dependencies, title — plus any reviews the policy injected and any notes from the rewrite.
 

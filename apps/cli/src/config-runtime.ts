@@ -1,7 +1,15 @@
 import { ClaudeCodeBackend, CodexBackend } from "@agent/coding-agent";
 import type { BackendName, EnvLike } from "./backend.js";
 import { DEFAULT_BACKEND, validateBackendName } from "./backend.js";
-import type { KapelBackend, KapelConfig, KapelRole } from "./config.js";
+import type {
+  KapelBackend,
+  KapelConfig,
+  KapelRole,
+  KapelRoleModel,
+} from "./config.js";
+import { soleExecutionBackend } from "./config.js";
+import type { KapelProjectConfig } from "./config-project.js";
+import { mergeKapelConfigs } from "./config-project.js";
 import type { ConfigWizardDeps, WizardPrompt } from "./config-wizard.js";
 import { ensureKapelConfig } from "./config-wizard.js";
 import { DEFAULT_MODEL_ALIAS } from "./models.js";
@@ -11,11 +19,13 @@ import { runSelectPrompt } from "./select-prompt.js";
 /**
  * Where a runtime setting came from, and the one order every command applies:
  *
- *     explicit CLI flag > environment variable > ~/.kapel/config.json > default
+ *     explicit CLI flag > environment variable
+ *       > <cwd>/.agent/config.local.json > ~/.kapel/config.json > default
  *
  * The order is spelled out once, here, as pure functions over their inputs —
- * every caller passes the flag it parsed, an env bag and the loaded config,
- * and nothing else in the CLI is allowed to invent its own precedence.
+ * every caller passes the flag it parsed, an env bag, the loaded machine
+ * config and this directory's override, and nothing else in the CLI is
+ * allowed to invent its own precedence.
  *
  * The *source* travels with the value because some callers need it: a
  * delegating backend is only told which model to use when a human actually
@@ -23,7 +33,13 @@ import { runSelectPrompt } from "./select-prompt.js";
  * is not a choice.
  */
 
-export type SettingSource = "flag" | "env" | "config" | "detected" | "default";
+export type SettingSource =
+  | "flag"
+  | "env"
+  | "project"
+  | "config"
+  | "detected"
+  | "default";
 
 export interface ResolvedSetting<T> {
   readonly value: T;
@@ -35,12 +51,17 @@ function present(value: string | undefined): value is string {
 }
 
 /**
- * The effective backend: `--backend`, then `AGENT_BACKEND`, then the stored
- * config, then `native`.
+ * The effective backend: `--backend`, then `AGENT_BACKEND`, then this
+ * directory's `.agent/config.local.json`, then the stored machine config,
+ * then `native`.
  *
  * Both the flag and the environment variable are validated, so a typo in
- * either is a printable error rather than a silent fallback; the config's
- * backend is already a checked value by the time it is parsed.
+ * either is a printable error rather than a silent fallback; a config's
+ * backends are already checked values by the time they are parsed.
+ *
+ * Which backend a config yields is {@link soleExecutionBackend}'s decision —
+ * the orchestrator role's — because runtime execution is still
+ * single-backend in this phase.
  *
  * Callers that can await should prefer {@link detectBackendSetting}, which
  * only differs in the `default` case — where it looks for a backend that is
@@ -50,6 +71,7 @@ export function resolveBackendSetting(
   flag: string | undefined,
   env: EnvLike,
   config: KapelConfig | undefined,
+  project?: KapelProjectConfig | undefined,
 ): ResolvedSetting<BackendName> {
   if (present(flag)) {
     return { value: validateBackendName(flag), source: "flag" };
@@ -58,8 +80,16 @@ export function resolveBackendSetting(
   if (present(fromEnv)) {
     return { value: validateBackendName(fromEnv), source: "env" };
   }
-  if (config !== undefined) {
-    return { value: config.backend, source: "config" };
+  const effective = mergeKapelConfigs(config, project);
+  if (effective !== undefined) {
+    return {
+      value: soleExecutionBackend(effective.config),
+      source:
+        effective.sources.models.orchestrator === "project" ||
+        effective.sources.backends === "project"
+          ? "project"
+          : "config",
+    };
   }
   return { value: DEFAULT_BACKEND, source: "default" };
 }
@@ -149,9 +179,10 @@ export async function detectBackendSetting(
   flag: string | undefined,
   env: EnvLike,
   config: KapelConfig | undefined,
+  project?: KapelProjectConfig | undefined,
   deps: DetectBackendDeps = {},
 ): Promise<ResolvedSetting<BackendName>> {
-  const chosen = resolveBackendSetting(flag, env, config);
+  const chosen = resolveBackendSetting(flag, env, config, project);
   if (chosen.source !== "default") return chosen;
 
   detectionCache ??= probeBackend(
@@ -176,26 +207,46 @@ export async function detectBackendSetting(
 }
 
 /**
- * The effective model for one role: `--model`, then `AGENT_MODEL`, then the
- * stored config's model for that role, then the built-in default alias.
+ * The effective model for one role, and the backend that runs it: `--model`,
+ * then `AGENT_MODEL`, then this directory's `.agent/config.local.json`, then
+ * the stored machine config, then the built-in default alias.
  *
- * `AGENT_MODEL` outranks the config for every role on purpose — it is the
- * per-shell override, and a config that could not be overridden from the
- * environment would make a one-off `AGENT_MODEL=… kapel …` impossible.
+ * `AGENT_MODEL` outranks both config layers for every role on purpose — it is
+ * the per-shell override, and a config that could not be overridden from the
+ * environment would make a one-off `AGENT_MODEL=… kapel …` impossible. A
+ * model that came from the flag or the environment keeps the *configured*
+ * backend for that role: naming a model says nothing about who should run it,
+ * and `--backend`/`AGENT_BACKEND` is how that half is overridden.
  */
 export function resolveRoleModel(
   role: KapelRole,
   flag: string | undefined,
   env: EnvLike,
   config: KapelConfig | undefined,
-): ResolvedSetting<string> {
-  if (present(flag)) return { value: flag, source: "flag" };
-  const fromEnv = env.AGENT_MODEL;
-  if (present(fromEnv)) return { value: fromEnv, source: "env" };
-  if (config !== undefined) {
-    return { value: config.models[role], source: "config" };
+  project?: KapelProjectConfig | undefined,
+): ResolvedSetting<KapelRoleModel> {
+  const effective = mergeKapelConfigs(config, project);
+  const configured = effective?.config.models[role];
+  const backend: KapelBackend = configured?.backend ?? DEFAULT_BACKEND;
+
+  if (present(flag)) {
+    return { value: { backend, model: flag }, source: "flag" };
   }
-  return { value: DEFAULT_MODEL_ALIAS, source: "default" };
+  const fromEnv = env.AGENT_MODEL;
+  if (present(fromEnv)) {
+    return { value: { backend, model: fromEnv }, source: "env" };
+  }
+  if (effective !== undefined && configured !== undefined) {
+    return {
+      value: configured,
+      source:
+        effective.sources.models[role] === "project" ? "project" : "config",
+    };
+  }
+  return {
+    value: { backend, model: DEFAULT_MODEL_ALIAS },
+    source: "default",
+  };
 }
 
 /** {@link resolveRoleModel} for the orchestrator — the model a chat or a one-shot run uses. */
@@ -203,13 +254,17 @@ export function resolveOrchestratorModel(
   flag: string | undefined,
   env: EnvLike,
   config: KapelConfig | undefined,
-): ResolvedSetting<string> {
-  return resolveRoleModel("orchestrator", flag, env, config);
+  project?: KapelProjectConfig | undefined,
+): ResolvedSetting<KapelRoleModel> {
+  return resolveRoleModel("orchestrator", flag, env, config, project);
 }
 
 /**
  * The model id to hand a delegating CLI through its own `--model`/`-m` flag,
  * or `undefined` to let that CLI pick.
+ *
+ * Takes either a bare model setting or a whole {@link KapelRoleModel} pair —
+ * the pair's backend is not this function's business, only its model is.
  *
  * Two values are deliberately never forwarded: the CLI's built-in default
  * alias (`claude-sonnet-5` — an Anthropic catalog name Codex would reject),
@@ -217,11 +272,13 @@ export function resolveOrchestratorModel(
  * defaults to" and is not a model id at all.
  */
 export function delegatedModelOverride(
-  resolved: ResolvedSetting<string>,
+  resolved: ResolvedSetting<string | KapelRoleModel>,
 ): string | undefined {
   if (resolved.source === "default") return undefined;
-  if (resolved.value === "default") return undefined;
-  return resolved.value;
+  const model =
+    typeof resolved.value === "string" ? resolved.value : resolved.value.model;
+  if (model === "default") return undefined;
+  return model;
 }
 
 // --- First-run setup --------------------------------------------------------

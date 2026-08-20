@@ -416,18 +416,22 @@ describe("interactive controller — delegated backend", () => {
 
 // --- /config ----------------------------------------------------------------
 
-function savedConfig(overrides: Partial<KapelConfig> = {}): KapelConfig {
+/** Every role on one backend and one model — what a single-backend answer is. */
+function savedConfig(
+  backend: "native" | "claude-code" | "codex" = "native",
+  model = "claude-sonnet-5",
+): KapelConfig {
+  const entry = { backend, model } as const;
   return {
     version: KAPEL_CONFIG_VERSION,
-    backend: "native",
+    backends: [backend],
     models: {
-      orchestrator: "claude-sonnet-5",
-      complex: "claude-sonnet-5",
-      middle: "claude-sonnet-5",
-      low: "claude-sonnet-5",
+      orchestrator: entry,
+      complex: entry,
+      middle: entry,
+      low: entry,
     },
     updatedAt: 3,
-    ...overrides,
   };
 }
 
@@ -453,18 +457,33 @@ describe("interactive controller — /config", () => {
     expect(rebuilt?.sessionRef).toBeUndefined();
   });
 
+  it("follows the orchestrator role when the config names several backends", async () => {
+    // Codex leads the backend list, but the orchestrator runs on native —
+    // and a chat turn is the orchestrator's work, so native is what the
+    // conversation switches to.
+    const h = await delegatedHarness({
+      configure: async () => ({
+        version: KAPEL_CONFIG_VERSION,
+        backends: ["codex", "native"],
+        models: {
+          orchestrator: { backend: "native", model: "claude-sonnet-5" },
+          complex: { backend: "codex", model: "gpt-5.1" },
+          middle: { backend: "codex", model: "gpt-5.1" },
+          low: { backend: "codex", model: "gpt-5-mini" },
+        },
+        updatedAt: 3,
+      }),
+    });
+
+    const result = await h.controller.handleLine("/config");
+    expect(result.effect).toBe("config-changed");
+    expect(h.controller.backend()).toBe("native");
+    expect(h.controller.modelAlias()).toBe("claude-sonnet-5");
+  });
+
   it("says nothing changed when the answers match the live session", async () => {
     const h = await delegatedHarness({
-      configure: async () =>
-        savedConfig({
-          backend: "claude-code",
-          models: {
-            orchestrator: "opus",
-            complex: "opus",
-            middle: "sonnet",
-            low: "haiku",
-          },
-        }),
+      configure: async () => savedConfig("claude-code", "opus"),
     });
     const built = h.built.length;
     const result = await h.controller.handleLine("/config");
@@ -475,15 +494,7 @@ describe("interactive controller — /config", () => {
 
   it("keeps the current backend when the new native model cannot be resolved", async () => {
     const h = await delegatedHarness({
-      configure: async () =>
-        savedConfig({
-          models: {
-            orchestrator: "nonsense",
-            complex: "nonsense",
-            middle: "nonsense",
-            low: "nonsense",
-          },
-        }),
+      configure: async () => savedConfig("native", "nonsense"),
     });
     const result = await h.controller.handleLine("/config");
     expect(result.output[0]).toBe('Unknown model alias "nonsense".');

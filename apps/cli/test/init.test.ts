@@ -115,15 +115,17 @@ const TEMPLATE_VALIDATION_YAML = [
   "#     command: npm test",
 ].join("\n");
 
+const cc = (model: string) => ({ backend: "claude-code", model }) as const;
+
 function kapelConfig(overrides: Partial<KapelConfig> = {}): KapelConfig {
   return {
     version: KAPEL_CONFIG_VERSION,
-    backend: "claude-code",
+    backends: ["claude-code"],
     models: {
-      orchestrator: "opus",
-      complex: "opus",
-      middle: "sonnet",
-      low: "haiku",
+      orchestrator: cc("opus"),
+      complex: cc("opus"),
+      middle: cc("sonnet"),
+      low: cc("haiku"),
     },
     updatedAt: 1,
     ...overrides,
@@ -142,12 +144,12 @@ describe("seedModelsInto", () => {
     const seeded = seedModelsInto(
       TEMPLATE_YAML,
       kapelConfig({
-        backend: "codex",
+        backends: ["codex"],
         models: {
-          orchestrator: "gpt-5.1",
-          complex: "gpt-5.1-codex",
-          middle: "gpt-5.1",
-          low: "gpt-5-mini",
+          orchestrator: { backend: "codex", model: "gpt-5.1" },
+          complex: { backend: "codex", model: "gpt-5.1-codex" },
+          middle: { backend: "codex", model: "gpt-5.1" },
+          low: { backend: "codex", model: "gpt-5-mini" },
         },
       }),
     );
@@ -170,6 +172,33 @@ describe("seedModelsInto", () => {
         "    provider: openai",
         "    model: gpt-5.1",
       ].join("\n"),
+    );
+  });
+
+  it("derives each alias's provider from that role's own backend", () => {
+    const seeded = seedModelsInto(
+      TEMPLATE_YAML,
+      kapelConfig({
+        backends: ["claude-code", "codex"],
+        models: {
+          orchestrator: cc("opus"),
+          complex: cc("opus"),
+          middle: { backend: "codex", model: "gpt-5.1" },
+          low: { backend: "codex", model: "default" },
+        },
+      }),
+    );
+    // A Claude Code lead and a Codex worker seed honest, different providers.
+    expect(seeded).toContain(
+      "  lead:\n    provider: anthropic\n    model: opus",
+    );
+    expect(seeded).toContain(
+      "  worker:\n    provider: openai\n    model: gpt-5.1",
+    );
+    // The `default` sentinel resolves through the role's backend, not a
+    // single global one.
+    expect(seeded).toContain(
+      "  cheap:\n    provider: openai\n    model: default",
     );
   });
 
@@ -321,6 +350,14 @@ describe("ensureGitignoreEntries", () => {
 
     expect(await ensureGitignoreEntries(cwd)).toEqual([...GITIGNORE_ENTRIES]);
     expect(await ensureGitignoreEntries(cwd)).toEqual([]);
+  });
+
+  it("ignores kapel's state and the per-directory config override", async () => {
+    expect([...GITIGNORE_ENTRIES]).toEqual([
+      ".agent/sessions.db*",
+      ".agent/worktrees/",
+      ".agent/config.local.json",
+    ]);
   });
 
   it("preserves a file with no trailing newline", async () => {

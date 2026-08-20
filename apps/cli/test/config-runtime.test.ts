@@ -18,18 +18,36 @@ import {
 import type { ConfigWizardDeps } from "../src/config-wizard.js";
 import { DEFAULT_MODEL_ALIAS } from "../src/models.js";
 
+const cc = (model: string) => ({ backend: "claude-code", model }) as const;
+
 function config(overrides: Partial<KapelConfig> = {}): KapelConfig {
   return {
     version: KAPEL_CONFIG_VERSION,
-    backend: "claude-code",
+    backends: ["claude-code"],
     models: {
-      orchestrator: "opus",
-      complex: "opus",
-      middle: "sonnet",
-      low: "haiku",
+      orchestrator: cc("opus"),
+      complex: cc("opus"),
+      middle: cc("sonnet"),
+      low: cc("haiku"),
     },
     updatedAt: 1_700_000_000_000,
     ...overrides,
+  };
+}
+
+/** A single-backend config, spelled the way the wizard would have written it. */
+function configOn(backend: "codex" | "native"): KapelConfig {
+  const model = backend === "codex" ? "gpt-5.1" : "claude-sonnet-5";
+  return {
+    version: KAPEL_CONFIG_VERSION,
+    backends: [backend],
+    models: {
+      orchestrator: { backend, model },
+      complex: { backend, model },
+      middle: { backend, model },
+      low: { backend, model },
+    },
+    updatedAt: 1,
   };
 }
 
@@ -53,6 +71,50 @@ describe("resolveBackendSetting", () => {
       value: "claude-code",
       source: "config",
     });
+  });
+
+  it("reads the orchestrator role's backend, not the first of the list", () => {
+    const mixed = config({
+      backends: ["codex", "claude-code"],
+      models: {
+        orchestrator: cc("opus"),
+        complex: cc("opus"),
+        middle: { backend: "codex", model: "gpt-5.1" },
+        low: { backend: "codex", model: "gpt-5-mini" },
+      },
+    });
+    expect(resolveBackendSetting(undefined, {}, mixed)).toEqual({
+      value: "claude-code",
+      source: "config",
+    });
+  });
+
+  it("lets a project override outrank the machine config", () => {
+    expect(
+      resolveBackendSetting(undefined, {}, config(), {
+        backends: ["codex"],
+        models: { orchestrator: { backend: "codex", model: "gpt-5.1" } },
+      }),
+    ).toEqual({ value: "codex", source: "project" });
+  });
+
+  it("still loses to the flag and the environment", () => {
+    const project = {
+      backends: ["codex"] as const,
+      models: { orchestrator: { backend: "codex", model: "gpt-5.1" } as const },
+    };
+    expect(resolveBackendSetting("native", {}, config(), project)).toEqual({
+      value: "native",
+      source: "flag",
+    });
+    expect(
+      resolveBackendSetting(
+        undefined,
+        { AGENT_BACKEND: "native" },
+        config(),
+        project,
+      ),
+    ).toEqual({ value: "native", source: "env" });
   });
 
   it("falls back to the built-in default with no config at all", () => {
@@ -133,7 +195,7 @@ describe("detectBackendSetting", () => {
       {
         flag: undefined,
         env: {},
-        stored: config({ backend: "codex" }),
+        stored: configOn("codex"),
         source: "config",
       },
     ] as const;
@@ -142,7 +204,10 @@ describe("detectBackendSetting", () => {
       resetBackendDetection();
       const spy = probe({ claudeCode: true });
       expect(
-        await detectBackendSetting(flag, env, stored, { probe: spy, announce }),
+        await detectBackendSetting(flag, env, stored, undefined, {
+          probe: spy,
+          announce,
+        }),
       ).toEqual({ value: "codex", source });
       expect(spy.calls).toEqual([]);
     }
@@ -152,10 +217,13 @@ describe("detectBackendSetting", () => {
   it("picks a logged-in Claude Code before anything else", async () => {
     const lines: string[] = [];
     const spy = probe({ claudeCode: true, codex: true });
-    const resolved = await detectBackendSetting(undefined, {}, undefined, {
-      probe: spy,
-      announce: (line) => lines.push(line),
-    });
+    const resolved = await detectBackendSetting(
+      undefined,
+      {},
+      undefined,
+      undefined,
+      { probe: spy, announce: (line) => lines.push(line) },
+    );
     expect(resolved).toEqual({ value: "claude-code", source: "detected" });
     expect(spy.calls).toEqual(["claude-code"]);
     expect(lines).toEqual([
@@ -165,10 +233,13 @@ describe("detectBackendSetting", () => {
 
   it("falls to codex when Claude Code is not usable", async () => {
     const spy = probe({ codex: true, nativeCredential: true });
-    const resolved = await detectBackendSetting(undefined, {}, undefined, {
-      probe: spy,
-      announce: () => undefined,
-    });
+    const resolved = await detectBackendSetting(
+      undefined,
+      {},
+      undefined,
+      undefined,
+      { probe: spy, announce: () => undefined },
+    );
     expect(resolved).toEqual({ value: "codex", source: "detected" });
     expect(spy.calls).toEqual(["claude-code", "codex"]);
   });
@@ -176,10 +247,13 @@ describe("detectBackendSetting", () => {
   it("picks native when neither CLI is usable but a credential is set", async () => {
     const lines: string[] = [];
     const spy = probe({ nativeCredential: true });
-    const resolved = await detectBackendSetting(undefined, {}, undefined, {
-      probe: spy,
-      announce: (line) => lines.push(line),
-    });
+    const resolved = await detectBackendSetting(
+      undefined,
+      {},
+      undefined,
+      undefined,
+      { probe: spy, announce: (line) => lines.push(line) },
+    );
     expect(resolved).toEqual({ value: "native", source: "detected" });
     expect(spy.calls).toEqual(["claude-code", "codex", "native"]);
     expect(lines).toEqual([
@@ -189,10 +263,13 @@ describe("detectBackendSetting", () => {
 
   it("keeps the old silent native default when there is nothing to detect", async () => {
     const lines: string[] = [];
-    const resolved = await detectBackendSetting(undefined, {}, undefined, {
-      probe: probe({}),
-      announce: (line) => lines.push(line),
-    });
+    const resolved = await detectBackendSetting(
+      undefined,
+      {},
+      undefined,
+      undefined,
+      { probe: probe({}), announce: (line) => lines.push(line) },
+    );
     expect(resolved).toEqual({ value: "native", source: "default" });
     expect(lines).toEqual([]);
   });
@@ -202,7 +279,7 @@ describe("detectBackendSetting", () => {
     const spy = probe({ codex: true });
     for (let i = 0; i < 3; i += 1) {
       expect(
-        await detectBackendSetting(undefined, {}, undefined, {
+        await detectBackendSetting(undefined, {}, undefined, undefined, {
           probe: spy,
           announce: (line) => lines.push(line),
         }),
@@ -226,32 +303,75 @@ describe("resolveOrchestratorModel", () => {
   it("prefers the flag over everything else", () => {
     expect(
       resolveOrchestratorModel("gpt-mini", { AGENT_MODEL: "sonnet" }, config()),
-    ).toEqual({ value: "gpt-mini", source: "flag" });
+    ).toEqual({ value: cc("gpt-mini"), source: "flag" });
   });
 
   it("falls back to AGENT_MODEL, then the config, then the default", () => {
     expect(
       resolveOrchestratorModel(undefined, { AGENT_MODEL: "sonnet" }, config()),
-    ).toEqual({ value: "sonnet", source: "env" });
+    ).toEqual({ value: cc("sonnet"), source: "env" });
     expect(resolveOrchestratorModel(undefined, {}, config())).toEqual({
-      value: "opus",
+      value: cc("opus"),
       source: "config",
     });
     expect(resolveOrchestratorModel(undefined, {}, undefined)).toEqual({
-      value: DEFAULT_MODEL_ALIAS,
+      value: { backend: "native", model: DEFAULT_MODEL_ALIAS },
       source: "default",
     });
   });
 
-  it("reads the per-role model out of the config", () => {
-    expect(resolveRoleModel("complex", undefined, {}, config()).value).toBe(
-      "opus",
+  it("keeps the configured backend when the model came from a flag or the shell", () => {
+    const codex = configOn("codex");
+    expect(resolveOrchestratorModel("gpt-5.1-codex", {}, codex).value).toEqual({
+      backend: "codex",
+      model: "gpt-5.1-codex",
+    });
+    expect(
+      resolveOrchestratorModel(undefined, { AGENT_MODEL: "o3" }, codex).value,
+    ).toEqual({ backend: "codex", model: "o3" });
+  });
+
+  it("reads the per-role model, and its backend, out of the config", () => {
+    expect(resolveRoleModel("complex", undefined, {}, config()).value).toEqual(
+      cc("opus"),
     );
-    expect(resolveRoleModel("middle", undefined, {}, config()).value).toBe(
-      "sonnet",
+    expect(resolveRoleModel("middle", undefined, {}, config()).value).toEqual(
+      cc("sonnet"),
     );
-    expect(resolveRoleModel("low", undefined, {}, config()).value).toBe(
-      "haiku",
+    expect(resolveRoleModel("low", undefined, {}, config()).value).toEqual(
+      cc("haiku"),
+    );
+  });
+
+  it("prefers a project override for the roles it names, per role", () => {
+    const project = {
+      backends: ["claude-code", "codex"] as const,
+      models: { middle: { backend: "codex", model: "gpt-5.1" } as const },
+    };
+    expect(
+      resolveRoleModel("middle", undefined, {}, config(), project),
+    ).toEqual({
+      value: { backend: "codex", model: "gpt-5.1" },
+      source: "project",
+    });
+    // Untouched roles still come from the machine config.
+    expect(resolveRoleModel("low", undefined, {}, config(), project)).toEqual({
+      value: cc("haiku"),
+      source: "config",
+    });
+  });
+
+  it("works off a project override alone, with no machine config at all", () => {
+    const project = {
+      models: {
+        orchestrator: { backend: "codex", model: "gpt-5.1" } as const,
+      },
+    };
+    expect(resolveOrchestratorModel(undefined, {}, undefined, project)).toEqual(
+      {
+        value: { backend: "codex", model: "gpt-5.1" },
+        source: "project",
+      },
     );
   });
 });
@@ -267,6 +387,18 @@ describe("delegatedModelOverride", () => {
     expect(delegatedModelOverride({ value: "opus", source: "config" })).toBe(
       "opus",
     );
+  });
+
+  it("reads the model out of a whole role pair", () => {
+    expect(
+      delegatedModelOverride({ value: cc("opus"), source: "config" }),
+    ).toBe("opus");
+    expect(
+      delegatedModelOverride({
+        value: { backend: "codex", model: "default" },
+        source: "config",
+      }),
+    ).toBeUndefined();
   });
 
   it("forwards neither the built-in default nor the `default` sentinel", () => {

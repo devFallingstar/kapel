@@ -58,7 +58,7 @@ kapel은 **REPL 전용**입니다 — 에이전트 작업은 전부 `kapel`이 �
 ## 1.5. 시나리오 A-0 — 첫 실행 마법사 (설정)
 
 아직 설정한 적이 없는 머신에서 `kapel`을 터미널로 처음 실행하면, 어떤 백엔드와
-모델을 쓸지 네 가지를 물어본 뒤 `~/.kapel/config.json`에 저장합니다. 깨끗한
+모델을 쓸지 다섯 가지를 물어본 뒤 `~/.kapel/config.json`에 저장합니다. 깨끗한
 상태에서 확인하려면 설정 디렉터리를 임시로 바꿔서 실행하세요:
 
 ```bash
@@ -68,18 +68,29 @@ kapel                                         # 목적 없이 실행 → 마법�
 ```
 
 **기대 동작**: `kapel is not configured yet …` 안내 후 다섯 개의 화살표 목록이
-차례로 나옵니다.
+차례로 나옵니다. **첫 질문은 다중 선택**이라 가진 백엔드를 여러 개 함께 고를 수
+있습니다(`space` 토글, `enter` 확정, 최소 하나 필수 — 아무것도 안 고른 상태에서
+`enter`는 무시됩니다).
 
 ```text
-Which coding backend should kapel use?       ← Claude Code / Codex / API key
+Which coding backends should kapel use? (space to toggle, enter to confirm)
+                                             ← ☑ Claude Code / ☑ Codex / ☐ API key
 Main orchestrator model                      ← 예: opus
 Worker model — most complex coding tasks     ← 예: opus
 Worker model — everyday tasks                ← 예: sonnet
 Worker model — small, single-function tasks  ← 예: haiku
 ```
 
+백엔드를 하나만 골랐다면 모델 목록 4개는 예전과 똑같이 그 백엔드의 목록입니다.
+둘 이상 골랐다면 각 목록이 **선택한 모든 백엔드의 합집합**이 되고, 각 줄의 힌트
+앞에 `Claude Code · ` / `Codex · `처럼 어느 백엔드인지가 붙습니다. 즉
+오케스트레이터는 Claude Code의 `opus`, everyday 워커는 Codex의 `gpt-5.1`처럼
+섞어서 고를 수 있습니다(기본 선택은 Claude Code를 골랐으면 그 티어 기본값,
+아니면 Codex, 그다음 API 키 목록 순).
+
 선택한 백엔드가 설치/로그인되어 있지 않으면 `warning: … does not look ready`와
-설치·로그인 방법을 알려 준 뒤 설정은 계속 진행됩니다(경고일 뿐 중단하지 않음).
+설치·로그인 방법을 알려 준 뒤 설정은 계속 진행됩니다(경고일 뿐 중단하지 않음 —
+여러 개를 골랐다면 고른 순서대로 각각 검사합니다).
 답을 마치면 요약과 `saved to …/config.json`이 출력되고, 이어서 원래 하려던
 명령(여기서는 대화형 모드)이 그대로 실행됩니다. `esc`로 취소하면
 `setup cancelled`만 남고 아무것도 저장되지 않습니다.
@@ -87,17 +98,39 @@ Worker model — small, single-function tasks  ← 예: haiku
 확인 항목:
 
 ```bash
-kapel config --show     # 저장된 백엔드·모델 4종 + 파일 경로
-kapel config --path     # 경로만
+kapel config --show     # 병합된 실효 설정(값마다 어느 파일에서 왔는지) + 두 파일 경로
+kapel config --path     # 머신 설정 경로만
 kapel config            # 언제든 다시 설정 (현재 값이 기본 선택으로 뜸)
 kapel --no-setup        # 마법사를 건너뛰고 환경변수/기본값으로 실행
 echo "" | kapel         # 파이프(비-TTY) — 마법사 없이 도움말만 출력
 ```
 
+**디렉터리별 설정(`--project`)** — 이 저장소에서만 다른 백엔드/모델을 쓰고 싶을
+때는 `<저장소>/.agent/config.local.json`이 머신 설정을 덮어씁니다. 일부만 적어도
+되고(백엔드 목록만, 역할 하나만, 또는 전부), 나머지는 머신 설정이 채웁니다:
+
+```bash
+kapel init                       # .agent/ 가 있어야 함 (--project 는 디렉터리를 만들지 않음)
+kapel config --project           # 같은 마법사 → .agent/config.local.json 에 저장
+kapel config --path --project    # 그 파일 경로만
+kapel config --show              # 병합 결과 + 각 값의 출처 파일
+```
+
+**기대 동작**: `.agent/`가 없는 디렉터리에서 `kapel config --project`는 질문을
+하나도 하지 않고 `… does not exist — run \`kapel init\` …`를 출력하며 종료 코드
+1. `kapel init`은 `.gitignore`에 `.agent/config.local.json`을
+`.agent/sessions.db*`·`.agent/worktrees/`와 함께 추가합니다. 파일이 깨져 있으면
+`warning: ignoring …` 한 줄만 stderr로 뜨고 무시된 채 명령은 그대로 실행됩니다.
+
 우선순위 확인: `--backend`/`-m` 플래그 → `AGENT_BACKEND`/`AGENT_MODEL` 환경변수
-→ `~/.kapel/config.json` → **자동 감지** → 내장 기본값 순으로 먼저 잡히는 값이
-이깁니다. 예를 들어 설정이 `claude-code`여도 `kapel --backend native`는 네이티브
-경로로 실행됩니다.
+→ `.agent/config.local.json` → `~/.kapel/config.json` → **자동 감지** → 내장
+기본값 순으로 먼저 잡히는 값이 이깁니다. 예를 들어 설정이 `claude-code`여도
+`kapel --backend native`는 네이티브 경로로 실행됩니다.
+
+이번 단계에서 **실행 자체는 아직 단일 백엔드**입니다 — 채팅 턴, `/plan`,
+`policy compile`은 모두 **오케스트레이터 역할의 백엔드**로 돕니다. 역할별
+백엔드는 `kapel init`이 `.agent/config.yaml`의 각 별칭에 그 역할의 provider를
+심는 데까지 반영되고, 워커별 혼합 실행은 후속 작업입니다.
 
 **백엔드 자동 감지** 확인 — 아무도 백엔드를 고르지 않은 상태(플래그 없음,
 `AGENT_BACKEND` 없음, 설정 파일 없음)에서만 동작합니다:
@@ -115,9 +148,11 @@ stderr로 뜨고 그 백엔드로 REPL이 열립니다. Claude Code가 없으면
 감지는 프로세스당 한 번만 수행되고, 안내 줄도 한 번만 나옵니다.
 
 설정을 마친 뒤 `kapel init`을 실행하면 `.agent/config.yaml`의 `models:`가
-전역 설정에서 채워집니다(`lead`/`reviewer` ← 오케스트레이터 모델,
-`complex`·`worker`·`cheap` ← 워커 모델 3종). 설정이 없으면 템플릿 그대로
-복사됩니다.
+실효 설정에서 채워집니다(`lead`/`reviewer` ← 오케스트레이터 모델,
+`complex`·`worker`·`cheap` ← 워커 모델 3종). 각 별칭의 `provider:`는 그 역할이
+쓰는 **자기 백엔드**에서 나오므로, Claude Code 리드 + Codex 워커 설정이라면
+`lead: anthropic` / `worker: openai`로 정직하게 적힙니다. 설정이 없으면 템플릿
+그대로 복사됩니다.
 
 ## 1.6. 시나리오 A-1 — 권한 규칙 설정 파일 (P1-5)
 
@@ -127,7 +162,7 @@ stderr로 뜨고 그 백엔드로 REPL이 열립니다. Claude Code가 없으면
 명령만 자동 허용/차단되는지 확인하세요:
 
 ```bash
-# config.json의 최상위에 아래를 추가 (backend/models와 같은 레벨)
+# config.json의 최상위에 아래를 추가 (backends/models와 같은 레벨)
 #   "permission": {
 #     "edit_file": "allow",
 #     "bash": { "*": "ask", "git *": "allow", "rm *": "deny" }
@@ -258,8 +293,10 @@ kapel chat --continue     # 방금 그 대화를 그대로 이어받음 ("resume
 붙인 이름 모두 가능)와 `--no-save`도 확인할 수 있습니다. 프롬프트에서
 `/new`(새 대화), `/resume <id|name>`(전환), `/name`(이 대화 이름 보기/짓기),
 `/fork [name]`(지금까지 대화를 새 세션으로 복제하고 그쪽으로 전환),
-`/model <alias>`(이후 턴부터 모델 교체), `/config`(설정 마법사를 다시 돌려
-백엔드·모델을 이 대화에 바로 적용 — 대화 내용은 유지됨), `/compact`(지금 바로
+`/model <alias>`(이후 턴부터 모델 교체), `/config`(머신 설정 마법사를 다시 돌려
+백엔드·모델을 이 대화에 바로 적용 — 이 디렉터리의 `.agent/config.local.json`
+덮어쓰기는 그대로 유지되고, 백엔드는 오케스트레이터 역할의 것을 따릅니다;
+대화 내용은 유지됨), `/compact`(지금 바로
 컨텍스트 압축), `/undo`(직전 프롬프트 이전으로 파일 복구), `/help`도 함께 눌러 보세요. `/config`는 터미널에서만 동작하며,
 파이프로 실행 중이면 `/config needs a terminal —` 안내가 나옵니다.
 
@@ -572,11 +609,13 @@ validation:
   네이티브 OpenAI 경로를 쓸 때는 `config.yaml`/`-m`에 실제 사용 가능한
   모델 ID를 지정하세요. (Codex 백엔드는 무관)
 - `ant` OAuth 토큰은 단기 토큰이라 매우 긴 런은 만료될 수 있습니다.
-- `~/.kapel/config.json`은 머신 단위 설정입니다. 저장소에 커밋되는
+- `~/.kapel/config.json`은 머신 단위 설정이고, `.agent/config.local.json`은
+  같은 모양의 디렉터리 단위 덮어쓰기(커밋되지 않음)입니다. 저장소에 커밋되는
   `.agent/config.yaml`(에이전트별 모델)과는 별개이며, `kapel init`이 전자에서
   후자를 채워 줄 뿐입니다.
-- `.agent/sessions.db*`와 `.agent/worktrees/`는 대상 저장소의 `.gitignore`에
-  추가하는 것을 권장합니다.
+- `.agent/sessions.db*`·`.agent/worktrees/`·`.agent/config.local.json`은 대상
+  저장소의 `.gitignore`에 추가하는 것을 권장합니다(`kapel init`이 자동으로
+  넣어 줍니다).
 
 ## 문제 리포트
 

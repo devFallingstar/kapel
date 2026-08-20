@@ -3,22 +3,31 @@ import type {
   KapelConfig,
   KapelModels,
   KapelRole,
+  KapelRoleModel,
 } from "./config.js";
 import {
   backendChoices,
-  defaultModelsFor,
+  decodeRoleModel,
+  defaultRoleModel,
   describeConfig,
+  encodeRoleModel,
   KAPEL_CONFIG_VERSION,
+  KAPEL_ROLES,
   loadKapelConfig,
   modelChoicesFor,
+  parseBackendList,
   saveKapelConfig,
 } from "./config.js";
 import type { SelectChoice } from "./select-prompt.js";
 
 /**
- * The first-run setup wizard: five questions, in order, each one an arrow-key
- * list. It is written against a {@link WizardPrompt} rather than against a
- * terminal so the flow can be tested by scripting answers — the real terminal
+ * The setup wizard: five questions, in order, each one an arrow-key list —
+ * the first a multi-select (which backends this machine may use at all), the
+ * next four single-selects (which model, on which of those backends, each
+ * role runs).
+ *
+ * It is written against a {@link WizardPrompt} rather than against a terminal
+ * so the flow can be tested by scripting answers — the real terminal
  * implementation is `runSelectPrompt` in `select-prompt.ts`.
  */
 
@@ -27,6 +36,8 @@ export interface WizardPrompt {
     readonly title: string;
     readonly choices: readonly SelectChoice[];
     readonly initial?: string | readonly string[];
+    readonly multi?: boolean;
+    readonly required?: boolean;
     readonly footer?: string;
   }): Promise<readonly string[] | undefined>;
 }
@@ -35,6 +46,10 @@ export interface BackendCheckResult {
   readonly ok: boolean;
   readonly detail?: string;
 }
+
+/** What {@link runConfigWizard} hands to whoever persists its answers. */
+export type SavedWizardConfig = Omit<KapelConfig, "version" | "updatedAt"> &
+  Partial<Pick<KapelConfig, "updatedAt">>;
 
 export interface ConfigWizardDeps {
   readonly prompt: WizardPrompt;
@@ -48,10 +63,20 @@ export interface ConfigWizardDeps {
   readonly env?: NodeJS.ProcessEnv;
   /** `false` runs the whole flow without touching disk. Defaults to `true`. */
   readonly save?: boolean;
+  /**
+   * Where a saved config goes, returning the path written. Defaults to the
+   * machine-level `~/.kapel/config.json`; `kapel config --project` passes one
+   * that writes `<cwd>/.agent/config.local.json` instead.
+   */
+  readonly writeConfig?: (config: SavedWizardConfig) => Promise<string>;
   readonly now?: () => number;
 }
 
-const BACKEND_TITLE = "Which coding backend should kapel use?";
+export const BACKEND_TITLE =
+  "Which coding backends should kapel use? (space to toggle, enter to confirm)";
+
+const BACKEND_FOOTER =
+  "↑↓ move · space toggle · enter confirm (at least one) · esc cancel";
 
 const ROLE_TITLES: Readonly<Record<KapelRole, string>> = {
   orchestrator: "Main orchestrator model",
@@ -59,13 +84,6 @@ const ROLE_TITLES: Readonly<Record<KapelRole, string>> = {
   middle: "Worker model — everyday tasks",
   low: "Worker model — small, single-function tasks",
 };
-
-const ROLES: readonly KapelRole[] = [
-  "orchestrator",
-  "complex",
-  "middle",
-  "low",
-];
 
 /** How to get each backend working, printed when its check comes back bad. */
 const BACKEND_FIX: Readonly<Record<KapelBackend, string>> = {
@@ -76,13 +94,9 @@ const BACKEND_FIX: Readonly<Record<KapelBackend, string>> = {
     "fix: set ANTHROPIC_API_KEY or OPENAI_API_KEY in your shell environment",
 };
 
-function isBackend(value: string): value is KapelBackend {
-  return value === "claude-code" || value === "codex" || value === "native";
-}
-
 /**
  * Runs one single-select step. `undefined` means the user cancelled — an
- * empty answer counts as one too, since none of these five questions has a
+ * empty answer counts as one too, since none of these questions has a
  * meaningful "nothing" answer.
  */
 async function ask(
@@ -97,25 +111,42 @@ async function ask(
 }
 
 /**
+ * Step 1: every backend this machine may use. At least one is required, and
+ * a re-run comes in with the previous answer already ticked.
+ */
+async function askBackends(
+  deps: ConfigWizardDeps,
+): Promise<readonly KapelBackend[] | undefined> {
+  const values = await deps.prompt.select({
+    title: BACKEND_TITLE,
+    choices: backendChoices(),
+    multi: true,
+    required: true,
+    footer: BACKEND_FOOTER,
+    initial: deps.current?.backends ?? ["claude-code"],
+  });
+  if (values === undefined) return undefined;
+  return parseBackendList(values);
+}
+
+/**
  * The initial for a role: the current config's answer when the new backend
- * still offers it, otherwise that backend's own default. Re-running the
- * wizard after switching backends therefore never pre-selects a model the
- * chosen backend cannot use.
+ * selection still offers it, otherwise the suggested default for those
+ * backends. Re-running the wizard after dropping a backend therefore never
+ * pre-selects a model that backend was the only one to serve.
  */
 function initialFor(
-  backend: KapelBackend,
+  backends: readonly KapelBackend[],
   role: KapelRole,
   choices: readonly SelectChoice[],
   current: KapelConfig | undefined,
 ): string {
   const previous = current?.models[role];
-  if (
-    previous !== undefined &&
-    choices.some((choice) => choice.value === previous)
-  ) {
-    return previous;
+  if (previous !== undefined) {
+    const encoded = encodeRoleModel(previous);
+    if (choices.some((choice) => choice.value === encoded)) return encoded;
   }
-  return defaultModelsFor(backend)[role];
+  return encodeRoleModel(defaultRoleModel(backends, role));
 }
 
 async function warnIfUnavailable(
@@ -160,38 +191,36 @@ export async function runConfigWizard(
     return undefined;
   };
 
-  const backendValue = await ask(
-    deps,
-    BACKEND_TITLE,
-    backendChoices(),
-    deps.current?.backend ?? "claude-code",
-  );
-  if (backendValue === undefined || !isBackend(backendValue)) {
-    return cancelled();
-  }
-  const backend: KapelBackend = backendValue;
+  const backends = await askBackends(deps);
+  if (backends === undefined || backends.length === 0) return cancelled();
 
-  await warnIfUnavailable(deps, backend);
+  // Every chosen backend is probed, in the order they were chosen: with two
+  // selected, a logged-out one is worth hearing about even when the other is
+  // fine, because roles can be pointed at either.
+  for (const backend of backends) await warnIfUnavailable(deps, backend);
 
-  const picked: Record<string, string> = {};
-  for (const role of ROLES) {
-    const choices = modelChoicesFor(backend, role);
+  const picked: Partial<Record<KapelRole, KapelRoleModel>> = {};
+  for (const role of KAPEL_ROLES) {
+    const choices = modelChoicesFor(backends, role);
     const answer = await ask(
       deps,
       ROLE_TITLES[role],
       choices,
-      initialFor(backend, role, choices, deps.current),
+      initialFor(backends, role, choices, deps.current),
     );
     if (answer === undefined) return cancelled();
-    picked[role] = answer;
+    // A picker can only return one of the values it was given, so a value
+    // that will not decode is a bug rather than a user answer — fall back to
+    // the suggestion instead of writing nonsense to disk.
+    picked[role] = decodeRoleModel(answer) ?? defaultRoleModel(backends, role);
   }
 
-  const defaults = defaultModelsFor(backend);
   const models: KapelModels = {
-    orchestrator: picked.orchestrator ?? defaults.orchestrator,
-    complex: picked.complex ?? defaults.complex,
-    middle: picked.middle ?? defaults.middle,
-    low: picked.low ?? defaults.low,
+    orchestrator:
+      picked.orchestrator ?? defaultRoleModel(backends, "orchestrator"),
+    complex: picked.complex ?? defaultRoleModel(backends, "complex"),
+    middle: picked.middle ?? defaultRoleModel(backends, "middle"),
+    low: picked.low ?? defaultRoleModel(backends, "low"),
   };
 
   // The wizard has no permission-editing step (P1-5 is file-edited only) —
@@ -199,7 +228,7 @@ export async function runConfigWizard(
   // unchanged rather than being dropped by this rewrite.
   const config: KapelConfig = {
     version: KAPEL_CONFIG_VERSION,
-    backend,
+    backends,
     models,
     updatedAt: (deps.now ?? Date.now)(),
     ...(deps.current?.permission === undefined
@@ -210,17 +239,17 @@ export async function runConfigWizard(
   for (const line of describeConfig(config)) deps.write(line);
 
   if (deps.save !== false) {
-    const filePath = await saveKapelConfig(
-      {
-        backend,
-        models,
-        updatedAt: config.updatedAt,
-        ...(config.permission === undefined
-          ? {}
-          : { permission: config.permission }),
-      },
-      deps.env,
-    );
+    const persist =
+      deps.writeConfig ??
+      ((saved: SavedWizardConfig) => saveKapelConfig(saved, deps.env));
+    const filePath = await persist({
+      backends,
+      models,
+      updatedAt: config.updatedAt,
+      ...(config.permission === undefined
+        ? {}
+        : { permission: config.permission }),
+    });
     deps.write(`saved to ${filePath}`);
   }
 

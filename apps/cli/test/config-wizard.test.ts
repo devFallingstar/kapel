@@ -9,8 +9,16 @@ import {
   loadKapelConfig,
   saveKapelConfig,
 } from "../src/config.js";
-import type { ConfigWizardDeps, WizardPrompt } from "../src/config-wizard.js";
-import { ensureKapelConfig, runConfigWizard } from "../src/config-wizard.js";
+import type {
+  ConfigWizardDeps,
+  SavedWizardConfig,
+  WizardPrompt,
+} from "../src/config-wizard.js";
+import {
+  BACKEND_TITLE,
+  ensureKapelConfig,
+  runConfigWizard,
+} from "../src/config-wizard.js";
 
 // Session-provided scratch dir when set (keeps CI and local machines on the
 // OS temp dir).
@@ -18,16 +26,28 @@ const SCRATCHPAD = process.env.AGENT_TEST_TMPDIR || tmpdir();
 
 type SelectOptions = Parameters<WizardPrompt["select"]>[0];
 
-/** A prompt that answers from a script and records what it was asked. */
+/**
+ * A prompt that answers from a script and records what it was asked.
+ *
+ * A scripted answer is a single value (a role step) or a list (the backend
+ * multi-select); `undefined` is a cancellation.
+ */
 class ScriptedPrompt implements WizardPrompt {
   readonly calls: SelectOptions[] = [];
 
-  constructor(private readonly answers: readonly (string | undefined)[]) {}
+  constructor(
+    private readonly answers: readonly (
+      | string
+      | readonly string[]
+      | undefined
+    )[],
+  ) {}
 
   async select(options: SelectOptions): Promise<readonly string[] | undefined> {
     this.calls.push(options);
     const answer = this.answers[this.calls.length - 1];
-    return answer === undefined ? undefined : [answer];
+    if (answer === undefined) return undefined;
+    return typeof answer === "string" ? [answer] : answer;
   }
 
   get titles(): string[] {
@@ -66,13 +86,22 @@ function deps(
   };
 }
 
+const cc = (model: string) => ({ backend: "claude-code", model }) as const;
+
 const CLAUDE_ANSWERS = [
-  "claude-code",
-  "opus",
-  "opus",
-  "sonnet",
-  "haiku",
+  ["claude-code"],
+  "claude-code:opus",
+  "claude-code:opus",
+  "claude-code:sonnet",
+  "claude-code:haiku",
 ] as const;
+
+const CLAUDE_MODELS = {
+  orchestrator: cc("opus"),
+  complex: cc("opus"),
+  middle: cc("sonnet"),
+  low: cc("haiku"),
+};
 
 // --- the happy path ---------------------------------------------------------
 
@@ -81,7 +110,7 @@ describe("runConfigWizard", () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt));
     expect(prompt.titles).toEqual([
-      "Which coding backend should kapel use?",
+      BACKEND_TITLE,
       "Main orchestrator model",
       "Worker model — most complex coding tasks",
       "Worker model — everyday tasks",
@@ -89,18 +118,25 @@ describe("runConfigWizard", () => {
     ]);
   });
 
+  it("asks the backend question as a required multi-select", async () => {
+    const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
+    await runConfigWizard(deps(prompt));
+    const step = prompt.calls[0];
+    expect(step?.multi).toBe(true);
+    expect(step?.required).toBe(true);
+    expect(step?.title).toContain("space to toggle");
+    expect(step?.footer).toContain("at least one");
+    // The role steps stay single-select.
+    expect(prompt.calls[1]?.multi).toBeUndefined();
+  });
+
   it("returns and saves the answers", async () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     const config = await runConfigWizard(deps(prompt));
     expect(config).toEqual({
       version: KAPEL_CONFIG_VERSION,
-      backend: "claude-code",
-      models: {
-        orchestrator: "opus",
-        complex: "opus",
-        middle: "sonnet",
-        low: "haiku",
-      },
+      backends: ["claude-code"],
+      models: CLAUDE_MODELS,
       updatedAt: 1_700_000_000_000,
     });
     expect(await loadKapelConfig(env)).toEqual(config);
@@ -109,65 +145,131 @@ describe("runConfigWizard", () => {
   it("prints the summary and where it was written", async () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt));
-    expect(lines).toContain("backend: Claude Code (claude-code)");
-    expect(lines).toContain("orchestrator model: opus");
+    expect(lines).toContain("backends: Claude Code (claude-code)");
+    expect(lines).toContain("orchestrator model: opus (claude-code)");
     expect(lines).toContain(`saved to ${kapelConfigPath(env)}`);
   });
 
   it("offers each backend its own model list", async () => {
     const prompt = new ScriptedPrompt([
-      "codex",
-      "gpt-5.1",
-      "default",
-      "default",
-      "default",
+      ["codex"],
+      "codex:gpt-5.1",
+      "codex:default",
+      "codex:default",
+      "codex:default",
     ]);
     const config = await runConfigWizard(deps(prompt));
-    expect(config?.models.orchestrator).toBe("gpt-5.1");
+    expect(config?.models.orchestrator).toEqual({
+      backend: "codex",
+      model: "gpt-5.1",
+    });
     const modelStep = prompt.calls[1];
     // `default` leads; the rest is every named/catalog id sorted
     // alphabetically (see `codexChoices` in `src/config.ts`).
     expect(modelStep?.choices.map((choice) => choice.value)).toEqual([
-      "default",
-      "gpt-5-mini",
-      "gpt-5.1",
-      "gpt-5.1-codex",
+      "codex:default",
+      "codex:gpt-5-mini",
+      "codex:gpt-5.1",
+      "codex:gpt-5.1-codex",
     ]);
+  });
+
+  it("offers the union of every selected backend, and stores each answer's backend", async () => {
+    const prompt = new ScriptedPrompt([
+      ["claude-code", "codex"],
+      "claude-code:opus",
+      "claude-code:opus",
+      "codex:gpt-5.1",
+      "codex:gpt-5-mini",
+    ]);
+    const config = await runConfigWizard(deps(prompt));
+    expect(config?.backends).toEqual(["claude-code", "codex"]);
+    expect(config?.models).toEqual({
+      orchestrator: cc("opus"),
+      complex: cc("opus"),
+      middle: { backend: "codex", model: "gpt-5.1" },
+      low: { backend: "codex", model: "gpt-5-mini" },
+    });
+
+    const values = prompt.calls[1]?.choices.map((choice) => choice.value) ?? [];
+    expect(values).toContain("claude-code:opus");
+    expect(values).toContain("codex:gpt-5.1-codex");
+    expect(await loadKapelConfig(env)).toEqual(config);
+  });
+
+  it("names the backend beside every model once several are selected", async () => {
+    const prompt = new ScriptedPrompt([
+      ["claude-code", "codex"],
+      "claude-code:opus",
+      "claude-code:opus",
+      "codex:gpt-5.1",
+      "codex:gpt-5-mini",
+    ]);
+    await runConfigWizard(deps(prompt));
+    const choices = prompt.calls[1]?.choices ?? [];
+    expect(
+      choices.find((choice) => choice.value === "codex:gpt-5.1")?.hint,
+    ).toContain("Codex · ");
+    expect(
+      choices.find((choice) => choice.value === "claude-code:opus")?.hint,
+    ).toContain("Claude Code · ");
   });
 
   it("defaults the first step to Claude Code with no stored config", async () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt));
-    expect(prompt.initials[0]).toBe("claude-code");
+    expect(prompt.initials[0]).toEqual(["claude-code"]);
   });
 
   it("seeds every step from the current config when re-run", async () => {
     const current: KapelConfig = {
       version: KAPEL_CONFIG_VERSION,
-      backend: "codex",
+      backends: ["codex"],
       models: {
-        orchestrator: "gpt-5.1-codex",
-        complex: "gpt-5.1-codex",
-        middle: "gpt-5.1",
-        low: "gpt-5-mini",
+        orchestrator: { backend: "codex", model: "gpt-5.1-codex" },
+        complex: { backend: "codex", model: "gpt-5.1-codex" },
+        middle: { backend: "codex", model: "gpt-5.1" },
+        low: { backend: "codex", model: "gpt-5-mini" },
       },
       updatedAt: 5,
     };
     const prompt = new ScriptedPrompt([
-      "codex",
-      "gpt-5.1-codex",
-      "gpt-5.1-codex",
-      "gpt-5.1",
-      "gpt-5-mini",
+      ["codex"],
+      "codex:gpt-5.1-codex",
+      "codex:gpt-5.1-codex",
+      "codex:gpt-5.1",
+      "codex:gpt-5-mini",
     ]);
     await runConfigWizard(deps(prompt, { current }));
     expect(prompt.initials).toEqual([
-      "codex",
-      "gpt-5.1-codex",
-      "gpt-5.1-codex",
-      "gpt-5.1",
-      "gpt-5-mini",
+      ["codex"],
+      "codex:gpt-5.1-codex",
+      "codex:gpt-5.1-codex",
+      "codex:gpt-5.1",
+      "codex:gpt-5-mini",
     ]);
+  });
+
+  it("pre-ticks every backend a multi-backend config already has", async () => {
+    const current: KapelConfig = {
+      version: KAPEL_CONFIG_VERSION,
+      backends: ["claude-code", "codex"],
+      models: {
+        ...CLAUDE_MODELS,
+        middle: { backend: "codex", model: "gpt-5.1" },
+      },
+      updatedAt: 5,
+    };
+    const prompt = new ScriptedPrompt([
+      ["claude-code", "codex"],
+      "claude-code:opus",
+      "claude-code:opus",
+      "codex:gpt-5.1",
+      "claude-code:haiku",
+    ]);
+    await runConfigWizard(deps(prompt, { current }));
+    expect(prompt.initials[0]).toEqual(["claude-code", "codex"]);
+    expect(prompt.initials[3]).toBe("codex:gpt-5.1");
   });
 
   it("seeds the steps from a migrated version-1 config", async () => {
@@ -186,43 +288,76 @@ describe("runConfigWizard", () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt, { current }));
     expect(prompt.initials).toEqual([
-      "claude-code",
-      "opus",
-      "sonnet",
-      "sonnet",
-      "haiku",
+      ["claude-code"],
+      "claude-code:opus",
+      "claude-code:sonnet",
+      "claude-code:sonnet",
+      "claude-code:haiku",
     ]);
   });
 
-  it("falls back to the backend default when the old model is not on offer", async () => {
+  it("falls back to the suggested default when the old model is not on offer", async () => {
     const current: KapelConfig = {
       version: KAPEL_CONFIG_VERSION,
-      backend: "codex",
+      backends: ["codex"],
       models: {
-        orchestrator: "gpt-5.1-codex",
-        complex: "gpt-5.1-codex",
-        middle: "gpt-5.1",
-        low: "gpt-5-mini",
+        orchestrator: { backend: "codex", model: "gpt-5.1-codex" },
+        complex: { backend: "codex", model: "gpt-5.1-codex" },
+        middle: { backend: "codex", model: "gpt-5.1" },
+        low: { backend: "codex", model: "gpt-5-mini" },
       },
       updatedAt: 5,
     };
-    // Switching to claude-code: none of the stored ids exist in that list.
+    // Switching to claude-code: none of the stored pairs exist in that list.
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt, { current }));
     expect(prompt.initials.slice(1)).toEqual([
-      "opus",
-      "opus",
-      "sonnet",
-      "haiku",
+      "claude-code:opus",
+      "claude-code:opus",
+      "claude-code:sonnet",
+      "claude-code:haiku",
     ]);
   });
 
   it("does not touch disk when save is false", async () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     const config = await runConfigWizard(deps(prompt, { save: false }));
-    expect(config?.backend).toBe("claude-code");
+    expect(config?.backends).toEqual(["claude-code"]);
     expect(await loadKapelConfig(env)).toBeUndefined();
     expect(lines.some((line) => line.startsWith("saved to"))).toBe(false);
+  });
+
+  it("saves through a given writeConfig instead of the machine file", async () => {
+    const saved: SavedWizardConfig[] = [];
+    const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
+    await runConfigWizard(
+      deps(prompt, {
+        writeConfig: async (config) => {
+          saved.push(config);
+          return "/somewhere/.agent/config.local.json";
+        },
+      }),
+    );
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.backends).toEqual(["claude-code"]);
+    expect(saved[0]?.models).toEqual(CLAUDE_MODELS);
+    expect(lines).toContain("saved to /somewhere/.agent/config.local.json");
+    expect(await loadKapelConfig(env)).toBeUndefined();
+  });
+
+  it("carries a hand-edited permission block through a re-save", async () => {
+    const current: KapelConfig = {
+      version: KAPEL_CONFIG_VERSION,
+      backends: ["claude-code"],
+      models: CLAUDE_MODELS,
+      updatedAt: 1,
+      permission: { edit_file: "allow" },
+    };
+    const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
+    await runConfigWizard(deps(prompt, { current }));
+    expect((await loadKapelConfig(env))?.permission).toEqual({
+      edit_file: "allow",
+    });
   });
 });
 
@@ -241,6 +376,14 @@ describe("runConfigWizard cancellation", () => {
       expect(await loadKapelConfig(env)).toBeUndefined();
     });
   }
+
+  it("treats an empty backend selection as a cancellation", async () => {
+    const prompt = new ScriptedPrompt([[]]);
+    expect(await runConfigWizard(deps(prompt))).toBeUndefined();
+    expect(prompt.calls).toHaveLength(1);
+    expect(lines).toEqual(["setup cancelled"]);
+    expect(await loadKapelConfig(env)).toBeUndefined();
+  });
 });
 
 // --- backend availability ---------------------------------------------------
@@ -261,6 +404,26 @@ describe("runConfigWizard backend check", () => {
     expect(lines.some((line) => line.startsWith("warning:"))).toBe(false);
   });
 
+  it("probes every selected backend, in order", async () => {
+    const prompt = new ScriptedPrompt([
+      ["codex", "claude-code"],
+      "codex:default",
+      "codex:default",
+      "codex:default",
+      "codex:default",
+    ]);
+    const seen: KapelBackend[] = [];
+    await runConfigWizard(
+      deps(prompt, {
+        checkBackend: async (backend) => {
+          seen.push(backend);
+          return { ok: true };
+        },
+      }),
+    );
+    expect(seen).toEqual(["codex", "claude-code"]);
+  });
+
   it("warns with the detail and the fix, then carries on", async () => {
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     const config = await runConfigWizard(
@@ -272,17 +435,17 @@ describe("runConfigWizard backend check", () => {
     expect(lines[1]).toContain("npm install -g @anthropic-ai/claude-code");
     expect(lines[1]).toContain("log in");
     expect(prompt.calls).toHaveLength(5);
-    expect(config?.backend).toBe("claude-code");
+    expect(config?.backends).toEqual(["claude-code"]);
     expect(await loadKapelConfig(env)).toEqual(config);
   });
 
   it("gives the Codex fix when Codex is the one missing", async () => {
     const prompt = new ScriptedPrompt([
-      "codex",
-      "default",
-      "default",
-      "default",
-      "default",
+      ["codex"],
+      "codex:default",
+      "codex:default",
+      "codex:default",
+      "codex:default",
     ]);
     await runConfigWizard(
       deps(prompt, { checkBackend: async () => ({ ok: false }) }),
@@ -302,7 +465,7 @@ describe("runConfigWizard backend check", () => {
       }),
     );
     expect(lines[0]).toContain("spawn EACCES");
-    expect(config?.backend).toBe("claude-code");
+    expect(config?.backends).toEqual(["claude-code"]);
   });
 });
 
@@ -312,12 +475,12 @@ describe("ensureKapelConfig", () => {
   it("returns the stored config without asking anything", async () => {
     await saveKapelConfig(
       {
-        backend: "native",
+        backends: ["native"],
         models: {
-          orchestrator: "claude-opus-5",
-          complex: "claude-opus-5",
-          middle: "claude-sonnet-5",
-          low: "claude-haiku-4-5",
+          orchestrator: { backend: "native", model: "claude-opus-5" },
+          complex: { backend: "native", model: "claude-opus-5" },
+          middle: { backend: "native", model: "claude-sonnet-5" },
+          low: { backend: "native", model: "claude-haiku-4-5" },
         },
         updatedAt: 42,
       },
@@ -328,7 +491,7 @@ describe("ensureKapelConfig", () => {
       ...deps(prompt),
       interactive: true,
     });
-    expect(config?.backend).toBe("native");
+    expect(config?.backends).toEqual(["native"]);
     expect(config?.updatedAt).toBe(42);
     expect(prompt.calls).toEqual([]);
     expect(lines).toEqual([]);
@@ -341,9 +504,9 @@ describe("ensureKapelConfig", () => {
       interactive: true,
     });
     expect(prompt.calls).toHaveLength(5);
-    expect(config?.models.complex).toBe("opus");
-    expect(config?.models.middle).toBe("sonnet");
-    expect(config?.models.low).toBe("haiku");
+    expect(config?.models.complex).toEqual(cc("opus"));
+    expect(config?.models.middle).toEqual(cc("sonnet"));
+    expect(config?.models.low).toEqual(cc("haiku"));
     expect(await loadKapelConfig(env)).toEqual(config);
   });
 
