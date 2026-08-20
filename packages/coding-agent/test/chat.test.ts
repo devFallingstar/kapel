@@ -5,7 +5,12 @@ import type {
   ModelProvider,
   ModelRequest,
 } from "@agent/ai";
-import type { AgentDefinition, Tool, ToolContext } from "@agent/core";
+import type {
+  AgentDefinition,
+  AgentImageAttachment,
+  Tool,
+  ToolContext,
+} from "@agent/core";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
 import { AgentChatSession } from "../src/chat.js";
@@ -256,6 +261,63 @@ describe("AgentChatSession — conversation continuity", () => {
       "user",
     ]);
     expect(unansweredToolCallIds(messages)).toEqual([]);
+  });
+});
+
+describe("AgentChatSession — image attachments", () => {
+  const shot: AgentImageAttachment = {
+    mediaType: "image/png",
+    base64: "cG5n",
+    path: "/workspace/shot.png",
+  };
+
+  it("attaches images to the seeded turn and to a later one, and only to those turns", async () => {
+    const provider = new ScriptedProvider([
+      text("Seen it."),
+      text("Nothing new."),
+      text("Seen that too."),
+    ]);
+    const session = new AgentChatSession(options(provider));
+
+    await session.send("what is this?", RUN_CONTEXT, [shot]);
+    // The seeded user turn carries the image (`AgentLoopEngine.seed`).
+    expect(provider.requests[0]?.messages[1]).toEqual({
+      role: "user",
+      content: "what is this?",
+      images: [shot],
+    });
+
+    // A turn with no images says nothing about them at all.
+    await session.send("and now?", RUN_CONTEXT);
+    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: "and now?",
+    });
+
+    // A later turn attaches its own, and the earlier image is still in history.
+    const second: AgentImageAttachment = { ...shot, path: "/workspace/b.png" };
+    await session.send("this one?", RUN_CONTEXT, [second]);
+    const messages = provider.requests[2]?.messages ?? [];
+    expect(messages[1]?.images).toEqual([shot]);
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: "this one?",
+      images: [second],
+    });
+  });
+
+  it("keeps images in the snapshot, safely copied", async () => {
+    const provider = new ScriptedProvider([text("Seen it.")]);
+    const session = new AgentChatSession(options(provider));
+    await session.send("what is this?", RUN_CONTEXT, [shot]);
+
+    const snapshot = session.messages();
+    const copied = snapshot[1]?.images as { base64: string }[];
+    expect(copied).toEqual([shot]);
+    // Mutating the snapshot cannot reach the retained history.
+    const first = copied[0] ?? { base64: "" };
+    first.base64 = "tampered";
+    expect(session.messages()[1]?.images?.[0]?.base64).toBe("cG5n");
   });
 });
 

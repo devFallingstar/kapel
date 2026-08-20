@@ -10,12 +10,18 @@ import {
   createFileLister,
   type FileLister,
   fuzzyScore,
+  imageAnnotation,
+  MAX_MENTION_IMAGE_BYTES,
+  MAX_MENTION_IMAGES,
   MAX_WALK_DEPTH,
+  type MentionImageReader,
   mentionAnnotation,
   mentionTokenAt,
+  prepareMentions,
   rankMentionMatches,
   resolveMentions,
   workspaceFileExists,
+  workspaceImageReader,
 } from "../src/mention.js";
 
 const execFileAsync = promisify(execFile);
@@ -486,5 +492,177 @@ describe("mentionAnnotation", () => {
     expect(mentionAnnotation(["a.ts", "b.ts"])).toBe(
       "[mentioned files: a.ts, b.ts]",
     );
+    expect(imageAnnotation(["shot.png"])).toBe("[attached images: shot.png]");
+  });
+});
+
+// --- image mentions ----------------------------------------------------------
+
+/** A minimal well-formed-enough PNG: the magic bytes plus a little payload. */
+function pngBytes(payload = "pixels"): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from(payload, "utf8"),
+  ]);
+}
+
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02]);
+
+describe("prepareMentions — images", () => {
+  const exists = (): boolean => true;
+  /** Every image reads back as a PNG whose payload is its own path. */
+  const readImage: MentionImageReader = async (relativePath) => ({
+    bytes: pngBytes(relativePath),
+    path: `/repo/${relativePath}`,
+  });
+  const reader =
+    (bytes: Buffer): MentionImageReader =>
+    async (relativePath) => ({ bytes, path: `/repo/${relativePath}` });
+
+  it("attaches an image mention as base64 and names it on its own line", async () => {
+    const prepared = await prepareMentions("look at @shot.png", {
+      exists,
+      readImage,
+    });
+
+    expect(prepared.images).toEqual([
+      {
+        mediaType: "image/png",
+        base64: pngBytes("shot.png").toString("base64"),
+        path: "/repo/shot.png",
+      },
+    ]);
+    expect(prepared.instruction).toBe(
+      "look at @shot.png\n\n[attached images: shot.png]",
+    );
+    expect(prepared.imageMentions).toEqual(["shot.png"]);
+    expect(prepared.notices).toEqual([]);
+  });
+
+  it("keeps text mentions on the paths line and images on the images line", async () => {
+    const prepared = await prepareMentions("compare @src/a.ts with @shot.png", {
+      exists,
+      readImage,
+    });
+
+    expect(prepared.instruction).toBe(
+      "compare @src/a.ts with @shot.png\n\n" +
+        "[mentioned files: src/a.ts]\n[attached images: shot.png]",
+    );
+  });
+
+  it("declares what the bytes really are, not what the extension claims", async () => {
+    const prepared = await prepareMentions("look at @renamed.png", {
+      exists,
+      readImage: reader(JPEG_BYTES),
+    });
+    expect(prepared.images[0]?.mediaType).toBe("image/jpeg");
+  });
+
+  it("falls back to the extension when the sniffer recognizes nothing", async () => {
+    const prepared = await prepareMentions("look at @odd.webp", {
+      exists,
+      readImage: reader(Buffer.from("not really an image", "utf8")),
+    });
+    expect(prepared.images[0]?.mediaType).toBe("image/webp");
+  });
+
+  it("attaches at most the per-turn count, and the rest stay paths", async () => {
+    const mentions = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    expect(mentions).toHaveLength(MAX_MENTION_IMAGES + 1);
+
+    const prepared = await prepareMentions(
+      mentions.map((name) => `@${name}`).join(" "),
+      { exists, readImage },
+    );
+
+    expect(prepared.images).toHaveLength(MAX_MENTION_IMAGES);
+    expect(prepared.imageMentions).toEqual(mentions);
+    expect(prepared.notices).toEqual([
+      "note: @e.png was not attached — at most 4 images can ride with one message.",
+    ]);
+    expect(prepared.instruction).toContain("[mentioned files: e.png]");
+    expect(prepared.instruction).toContain(
+      "[attached images: a.png, b.png, c.png, d.png]",
+    );
+  });
+
+  it("turns an unreadable image into a note and an ordinary path mention", async () => {
+    const prepared = await prepareMentions("look at @broken.png", {
+      exists,
+      readImage: async () => ({ error: "EACCES: permission denied" }),
+    });
+
+    expect(prepared.images).toEqual([]);
+    expect(prepared.notices).toEqual([
+      "note: @broken.png was not attached — EACCES: permission denied.",
+    ]);
+    expect(prepared.instruction).toBe(
+      "look at @broken.png\n\n[mentioned files: broken.png]",
+    );
+  });
+
+  it("leaves images as paths, silently, when nothing can read them", async () => {
+    const prepared = await prepareMentions("look at @shot.png", { exists });
+
+    expect(prepared.images).toEqual([]);
+    expect(prepared.notices).toEqual([]);
+    // Still reported as an image mention, which is how the caller knows to say
+    // that this backend cannot carry it.
+    expect(prepared.imageMentions).toEqual(["shot.png"]);
+    expect(prepared.instruction).toBe(
+      "look at @shot.png\n\n[mentioned files: shot.png]",
+    );
+  });
+
+  it("honors a lowered count limit", async () => {
+    const prepared = await prepareMentions("@a.png @b.png", {
+      exists,
+      readImage,
+      maxImages: 1,
+    });
+    expect(prepared.images).toHaveLength(1);
+    expect(prepared.notices).toEqual([
+      "note: @b.png was not attached — at most 1 image can ride with one message.",
+    ]);
+  });
+});
+
+describe("workspaceImageReader", () => {
+  it("reads an image inside the workspace, with its absolute path", async () => {
+    const root = await tempDir("kapel-mention-image-");
+    await mkdir(path.join(root, "docs"), { recursive: true });
+    await writeFile(path.join(root, "docs", "shot.png"), pngBytes());
+
+    const read = await workspaceImageReader(root)("docs/shot.png");
+    expect("error" in read).toBe(false);
+    if ("error" in read) return;
+    expect(Buffer.from(read.bytes)).toEqual(pngBytes());
+    expect(read.path).toBe(path.join(root, "docs", "shot.png"));
+  });
+
+  it("refuses a file over the per-image limit without reading it", async () => {
+    const root = await tempDir("kapel-mention-big-");
+    await writeFile(path.join(root, "big.png"), pngBytes("x".repeat(2048)));
+
+    const read = await workspaceImageReader(root, 1024)("big.png");
+    expect(read).toEqual({
+      error: "it is 2.0 KiB, over the 1.0 KiB per-image limit",
+    });
+    expect(MAX_MENTION_IMAGE_BYTES).toBe(5 * 1024 * 1024);
+  });
+
+  it("refuses a directory, a missing file, and an escape upward", async () => {
+    const root = await tempDir("kapel-mention-image-escape-");
+    await mkdir(path.join(root, "assets"), { recursive: true });
+    await writeFile(path.join(path.dirname(root), "outside.png"), pngBytes());
+
+    const reader = workspaceImageReader(root);
+    expect(await reader("assets")).toEqual({ error: "it is not a file" });
+    expect(await reader("../outside.png")).toEqual({
+      error: "it is outside this workspace",
+    });
+    const missing = await reader("nope.png");
+    expect("error" in missing && missing.error).toContain("ENOENT");
   });
 });

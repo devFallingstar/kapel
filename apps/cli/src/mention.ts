@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { mediaTypeFromExtension, sniffImageMediaType } from "@agent/ai";
+import type { AgentImageAttachment } from "@agent/core";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,12 +20,17 @@ const execFileAsync = promisify(execFile);
  *    by `git ls-files` when there is a git repo and by a bounded walk when
  *    there isn't, cached behind a short TTL so holding Tab down does not
  *    spawn a process per keystroke.
- * 3. {@link annotateMentions} — the send-time rewrite that turns the mentions
- *    a message *contains* into one line the agent can act on.
+ * 3. {@link prepareMentions} — the send-time rewrite that turns the mentions
+ *    a message *contains* into something the agent can act on.
  *
- * Nothing here ever reads a mentioned file's contents. The agent has
- * `read_file`; inlining the bytes would duplicate that tool, bloat every
- * following turn's context, and lie about how fresh the snapshot is.
+ * Text files are never inlined: the agent has `read_file`, and pasting the
+ * bytes in would duplicate that tool, bloat every following turn's context,
+ * and lie about how fresh the snapshot is — so a text mention becomes one
+ * `[mentioned files: …]` line naming it. An *image* has no such tool (no
+ * model reads a PNG through `read_file`), so `@shot.png` is the one mention
+ * whose bytes do travel: it is read, validated and attached to the turn as
+ * vision content, under the same count and size caps the removed
+ * `-i/--image` flag enforced.
  */
 
 // --- Fuzzy ranking (pure) ----------------------------------------------------
@@ -430,20 +437,205 @@ export function mentionAnnotation(paths: readonly string[]): string {
   return `[mentioned files: ${paths.join(", ")}]`;
 }
 
+/** The line appended to a message whose image mentions rode along as bytes. */
+export function imageAnnotation(paths: readonly string[]): string {
+  return `[attached images: ${paths.join(", ")}]`;
+}
+
+// --- Image mentions ----------------------------------------------------------
+
+/**
+ * At most this many images ride with one turn — the cap the removed
+ * `-i/--image` flag enforced per run, kept because the reasons did not change:
+ * each image rides inline in the request body, and a coding turn rarely needs
+ * more than a screenshot or two.
+ */
+export const MAX_MENTION_IMAGES = 4;
+
+/**
+ * Per-image ceiling, checked from `stat` before any bytes are read. The old
+ * flag also carried a 20 MiB combined cap; at four images of 5 MiB that is
+ * exactly this cap times that count, so it has nothing left to reject.
+ */
+export const MAX_MENTION_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * What a reader gives back for one image mention: the bytes and the absolute
+ * path they came from, or the reason (a printable clause) it did not work out.
+ * A failure is never fatal — {@link prepareMentions} turns it into a note and
+ * lets the mention fall back to being just a path.
+ */
+export type MentionImageRead =
+  | { readonly bytes: Uint8Array; readonly path: string }
+  | { readonly error: string };
+
+export type MentionImageReader = (
+  relativePath: string,
+) => Promise<MentionImageRead>;
+
+function formatBytes(count: number): string {
+  if (count < 1024 * 1024) return `${(count / 1024).toFixed(1)} KiB`;
+  return `${(count / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/**
+ * The real reader: a mentioned image, read from under `workspacePath`.
+ *
+ * Containment is re-checked here even though {@link workspaceFileExists}
+ * already checked it, because this is the layer that opens the file — a reader
+ * that trusts its caller for that is one refactor away from reading
+ * `@../../.ssh/id_rsa` into a request body. The size cap is applied from
+ * `stat`, before the read, so an enormous file is refused rather than pulled
+ * into memory first.
+ */
+export function workspaceImageReader(
+  workspacePath: string,
+  maxBytes = MAX_MENTION_IMAGE_BYTES,
+): MentionImageReader {
+  const root = path.resolve(workspacePath);
+  return async (relativePath: string): Promise<MentionImageRead> => {
+    const resolved = path.resolve(root, relativePath);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      return { error: "it is outside this workspace" };
+    }
+    try {
+      const info = await stat(resolved);
+      if (!info.isFile()) return { error: "it is not a file" };
+      if (info.size > maxBytes) {
+        return {
+          error: `it is ${formatBytes(info.size)}, over the ${formatBytes(maxBytes)} per-image limit`,
+        };
+      }
+      return { bytes: await readFile(resolved), path: resolved };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+}
+
+export interface PrepareMentionsOptions {
+  /** Decides whether a mention names a real workspace file. */
+  readonly exists: (relativePath: string) => boolean | Promise<boolean>;
+  /**
+   * Reads image mentions into attachments. Absent means "this turn cannot
+   * carry images" — a delegated backend, say — and every image mention stays
+   * an ordinary path in the `[mentioned files: …]` line, exactly as before.
+   */
+  readonly readImage?: MentionImageReader;
+  /** Defaults to {@link MAX_MENTION_IMAGES}. */
+  readonly maxImages?: number;
+}
+
+export interface PreparedMentions {
+  /** The message as it should be sent: the text, plus its annotation lines. */
+  readonly instruction: string;
+  /** Images to attach to this turn, in mention order. */
+  readonly images: readonly AgentImageAttachment[];
+  /**
+   * Every resolved mention whose extension names an image, attached or not.
+   * The caller uses it to say something when images cannot be attached at all.
+   */
+  readonly imageMentions: readonly string[];
+  /** One printable note per image that did not make it, in mention order. */
+  readonly notices: readonly string[];
+}
+
 /**
  * The send-time rewrite: the message keeps its `@` mentions verbatim and gains
- * one trailing line naming the files they resolved to.
+ * the annotation lines its mentions earned.
  *
- * Naming rather than inlining is the whole point. The agent already has
- * `read_file`, so a list tells it *which* files matter and lets it decide what
- * to read; pasting contents in would spend the context window on bytes the
- * agent may not need and freeze them at the moment the message was sent.
+ * Text mentions are *named*, never inlined (see the module comment). Image
+ * mentions are read and attached, and are named on their own
+ * `[attached images: …]` line rather than the `[mentioned files: …]` one —
+ * telling the agent to go `read_file` a PNG it can already see would only earn
+ * a screenful of binary.
+ *
+ * Nothing here fails a turn. An image that is too big, unreadable, or past the
+ * per-turn count comes back as a note *and* as an ordinary path mention, so the
+ * worst case is exactly the behavior kapel had before images were attachable
+ * at all.
+ */
+export async function prepareMentions(
+  text: string,
+  options: PrepareMentionsOptions,
+): Promise<PreparedMentions> {
+  const resolved = await resolveMentions(text, options.exists);
+  const maxImages = options.maxImages ?? MAX_MENTION_IMAGES;
+  const readImage = options.readImage;
+
+  const listed: string[] = [];
+  const imageMentions: string[] = [];
+  const attachedNames: string[] = [];
+  const images: AgentImageAttachment[] = [];
+  const notices: string[] = [];
+
+  const skip = (relativePath: string, reason?: string): void => {
+    if (reason !== undefined) {
+      notices.push(`note: @${relativePath} was not attached — ${reason}.`);
+    }
+    listed.push(relativePath);
+  };
+
+  for (const relativePath of resolved) {
+    // The extension decides whether a mention is *treated* as an image; the
+    // magic bytes, once read, decide what it is actually declared as.
+    const extensionType = mediaTypeFromExtension(relativePath);
+    if (extensionType === undefined) {
+      listed.push(relativePath);
+      continue;
+    }
+    imageMentions.push(relativePath);
+
+    if (readImage === undefined) {
+      listed.push(relativePath);
+      continue;
+    }
+    if (images.length >= maxImages) {
+      skip(
+        relativePath,
+        `at most ${maxImages} image${maxImages === 1 ? "" : "s"} can ride with one message`,
+      );
+      continue;
+    }
+
+    const read = await readImage(relativePath);
+    if ("error" in read) {
+      skip(relativePath, read.error);
+      continue;
+    }
+    images.push({
+      // A `.png` that is really a JPEG is declared as what it is; a format the
+      // sniffer's small table does not cover falls back to the extension that
+      // got it this far.
+      mediaType: sniffImageMediaType(read.bytes) ?? extensionType,
+      base64: Buffer.from(read.bytes).toString("base64"),
+      path: read.path,
+    });
+    attachedNames.push(relativePath);
+  }
+
+  const blocks: string[] = [];
+  if (listed.length > 0) blocks.push(mentionAnnotation(listed));
+  if (attachedNames.length > 0) blocks.push(imageAnnotation(attachedNames));
+
+  return {
+    instruction: blocks.length === 0 ? text : `${text}\n\n${blocks.join("\n")}`,
+    images,
+    imageMentions,
+    notices,
+  };
+}
+
+/**
+ * {@link prepareMentions} with nothing attachable: the message plus its
+ * `[mentioned files: …]` line, which is all a caller with no way to carry
+ * image bytes can use.
  */
 export async function annotateMentions(
   text: string,
   exists: (relativePath: string) => boolean | Promise<boolean>,
 ): Promise<string> {
-  const paths = await resolveMentions(text, exists);
-  if (paths.length === 0) return text;
-  return `${text}\n\n${mentionAnnotation(paths)}`;
+  return (await prepareMentions(text, { exists })).instruction;
 }

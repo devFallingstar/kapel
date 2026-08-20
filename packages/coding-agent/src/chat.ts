@@ -1,4 +1,5 @@
 import type { ModelMessage } from "@agent/ai";
+import type { AgentImageAttachment } from "@agent/core";
 import {
   AgentLoopEngine,
   type AgentLoopOptions,
@@ -19,6 +20,11 @@ function copyMessage(message: ModelMessage): ModelMessage {
     ...(message.toolCalls === undefined
       ? {}
       : { toolCalls: message.toolCalls.map((call) => ({ ...call })) }),
+    // Copied for the same reason as the tool calls; the base64 payloads are
+    // strings, so this only duplicates references.
+    ...(message.images === undefined
+      ? {}
+      : { images: message.images.map((image) => ({ ...image })) }),
   };
 }
 
@@ -70,11 +76,20 @@ export class AgentChatSession {
    * user can follow up; any tool call the loop abandoned mid-batch is answered
    * with an error result first, keeping the history replayable.
    *
+   * `images` attaches vision content to *this* user turn, already validated and
+   * read by the caller (`AgentImageAttachment` is `ImagePart` plus the source
+   * path, so it rides straight onto the wire message — see
+   * `AgentLoopEngine.seed`). They stay in the retained history like any other
+   * part of the turn: the loop replays the whole conversation on every
+   * iteration, so an image the user attached three turns ago is still there
+   * when the model needs to look at it again.
+   *
    * @throws if another send on this session is still in flight.
    */
   async send(
     instruction: string,
     context: AgentLoopRunContext,
+    images?: readonly AgentImageAttachment[],
   ): Promise<ChatTurnResult> {
     if (this.#sending) {
       throw new Error(
@@ -83,11 +98,20 @@ export class AgentChatSession {
     }
     this.#sending = true;
 
+    const attached = images ?? [];
+    const withImages = attached.length === 0 ? {} : { images: attached };
+
     try {
       if (this.#messages.length === 0) {
-        this.#messages.push(...this.#engine.seed({ instruction }));
+        this.#messages.push(
+          ...this.#engine.seed({ instruction, ...withImages }),
+        );
       } else {
-        this.#messages.push({ role: "user", content: instruction });
+        this.#messages.push({
+          role: "user",
+          content: instruction,
+          ...withImages,
+        });
       }
 
       this.#turn += 1;

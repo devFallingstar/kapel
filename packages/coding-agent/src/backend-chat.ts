@@ -36,7 +36,18 @@ export interface BackendChatEntry {
   readonly at: number;
 }
 
-/** What a delegating CLI backend must provide to serve a chat turn. */
+/**
+ * What a delegating CLI backend must provide to serve a chat turn.
+ *
+ * Text only, deliberately: there is no `images` here, so a REPL turn that
+ * attached one (`@shot.png` — see the CLI's `prepareMentions`) sends the path
+ * and says so rather than the bytes. Claude Code's `-p` accepts no image
+ * attachment at all (`ClaudeCodeBackend` refuses them outright), and while
+ * Codex's `-i <path>` does, wiring it would mean carrying attachments through
+ * this request, {@link backendTurnRunner} and {@link DelegatingBackendLike} for
+ * one of the two backends. Left undone on purpose; the CLI's notice is the
+ * honest interim.
+ */
 export interface BackendTurnRequest {
   readonly instruction: string;
   /**

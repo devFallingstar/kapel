@@ -13,6 +13,7 @@ import type {
 } from "@agent/ai";
 import { UNATTRIBUTED } from "@agent/ai";
 import type { ChatTurnResult } from "@agent/coding-agent";
+import type { AgentImageAttachment } from "@agent/core";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -45,9 +46,10 @@ import {
   usageDeltaLine,
   usageTotalsLine,
 } from "../src/interactive.js";
-import type { FileLister } from "../src/mention.js";
+import type { FileLister, MentionImageReader } from "../src/mention.js";
 import { TextRenderer } from "../src/render.js";
 import type { ResolvedModel } from "../src/run.js";
+import { runSessionsListCommand } from "../src/sessions.js";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -84,6 +86,8 @@ function provider(id: string): ModelProvider {
  */
 class FakeSession implements InteractiveSession {
   readonly sends: { instruction: string; runId: string }[] = [];
+  /** What each send was handed to attach, in send order. */
+  readonly attachments: (readonly AgentImageAttachment[])[] = [];
   readonly compactCalls: { runId: string }[] = [];
   readonly #messages: ModelMessage[] = [];
   status: ChatTurnResult["status"] = "success";
@@ -103,8 +107,10 @@ class FakeSession implements InteractiveSession {
   async send(
     instruction: string,
     context: { runId: string },
+    images?: readonly AgentImageAttachment[],
   ): Promise<ChatTurnResult> {
     this.sends.push({ instruction, runId: context.runId });
+    this.attachments.push(images ?? []);
     this.onSend?.();
     if (this.#messages.length === 0) {
       this.#messages.push({ role: "system", content: "system prompt" });
@@ -399,6 +405,94 @@ describe("interactive controller — @ mentions", () => {
     expect(h.session().sends[0]?.instruction).toBe(
       "read @src/a.ts and @src/missing.ts\n\n[mentioned files: src/a.ts]",
     );
+  });
+});
+
+// --- @ mentions that are images ---------------------------------------------
+
+describe("interactive controller — image mentions", () => {
+  const PNG = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from("pixels", "utf8"),
+  ]);
+  const fileExists = (relativePath: string): boolean =>
+    ["shot.png", "notes.md", "huge.png"].includes(relativePath);
+  const readImage: MentionImageReader = async (relativePath) =>
+    relativePath === "huge.png"
+      ? { error: "it is 9.0 MiB, over the 5.0 MiB per-image limit" }
+      : { bytes: PNG, path: `/repo/${relativePath}` };
+
+  it("attaches an image mention to the turn and names it in the message", async () => {
+    const h = await harness({ fileExists, readImage });
+    const result = await h.controller.handleLine(
+      "what is wrong with @shot.png?",
+    );
+
+    expect(h.session().attachments[0]).toEqual([
+      {
+        mediaType: "image/png",
+        base64: PNG.toString("base64"),
+        path: "/repo/shot.png",
+      },
+    ]);
+    expect(h.session().sends[0]?.instruction).toBe(
+      "what is wrong with @shot.png?\n\n[attached images: shot.png]",
+    );
+    // Nothing to report: the only line is the usage delta.
+    expect(result.output).toEqual(["tokens +0 in, +0 out"]);
+  });
+
+  it("says why an image did not make it, and sends the turn anyway", async () => {
+    const h = await harness({ fileExists, readImage });
+    const result = await h.controller.handleLine("look at @huge.png");
+
+    expect(result.output[0]).toBe(
+      "note: @huge.png was not attached — it is 9.0 MiB, over the 5.0 MiB per-image limit.",
+    );
+    expect(h.session().attachments[0]).toEqual([]);
+    expect(h.session().sends[0]?.instruction).toBe(
+      "look at @huge.png\n\n[mentioned files: huge.png]",
+    );
+  });
+
+  it("leaves non-image mentions on the paths line", async () => {
+    const h = await harness({ fileExists, readImage });
+    await h.controller.handleLine("compare @notes.md with @shot.png");
+
+    expect(h.session().sends[0]?.instruction).toBe(
+      "compare @notes.md with @shot.png\n\n" +
+        "[mentioned files: notes.md]\n[attached images: shot.png]",
+    );
+  });
+
+  it("says images are unsupported on a delegated backend and sends the path", async () => {
+    const h = await harness({ backend: "codex", fileExists, readImage });
+    const result = await h.controller.handleLine("look at @shot.png");
+
+    expect(result.output[0]).toBe(
+      "images are not supported on the codex backend yet — sent as file paths.",
+    );
+    expect(h.session().attachments[0]).toEqual([]);
+    expect(h.session().sends[0]?.instruction).toBe(
+      "look at @shot.png\n\n[mentioned files: shot.png]",
+    );
+  });
+
+  it("reads a real workspace image when no reader is injected", async () => {
+    const workspacePath = path.join(tempDir, "image-workspace");
+    await mkdir(workspacePath, { recursive: true });
+    await writeFile(path.join(workspacePath, "shot.png"), PNG);
+
+    const h = await harness({ workspacePath });
+    await h.controller.handleLine("look at @shot.png");
+
+    expect(h.session().attachments[0]).toEqual([
+      {
+        mediaType: "image/png",
+        base64: PNG.toString("base64"),
+        path: path.join(workspacePath, "shot.png"),
+      },
+    ]);
   });
 });
 
@@ -827,6 +921,94 @@ describe("interactive controller — slash commands", () => {
     expect((await h.controller.handleLine("/resume-run 0f3c")).output).toEqual([
       "/resume-run is not available here.",
     ]);
+  });
+});
+
+// --- a slash-only session is still a session ---------------------------------
+
+describe("interactive controller — recording a slash-only session", () => {
+  it("/orchestrate records the session, titled after the objective", async () => {
+    const h = await harness({ orchestrate: async () => 0 });
+    await h.controller.handleLine("/orchestrate add a health endpoint");
+
+    const records = await h.store.listChatSessions(h.workspacePath);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.id).toBe(h.controller.sessionId());
+    expect(records[0]?.title).toBe("add a health endpoint");
+    expect(records[0]?.messageCount).toBe(0);
+    expect(h.controller.title()).toBe("add a health endpoint");
+  });
+
+  it("/resume-run records the session too", async () => {
+    const h = await harness({ resumeRun: async () => 0 });
+    await h.controller.handleLine("/resume-run 0f3c9a2b");
+
+    const records = await h.store.listChatSessions(h.workspacePath);
+    expect(records.map((record) => record.title)).toEqual([
+      "/resume-run 0f3c9a2b",
+    ]);
+  });
+
+  it("keeps the transcript's own title once a message is sent", async () => {
+    const h = await harness({ orchestrate: async () => 0 });
+    await h.controller.handleLine("hello there");
+    await h.controller.handleLine("/orchestrate add a health endpoint");
+
+    const records = await h.store.listChatSessions(h.workspacePath);
+    expect(records.map((record) => record.title)).toEqual(["hello there"]);
+    // The row created by the message keeps taking the transcript.
+    const loaded = await h.store.loadChatSession(h.controller.sessionId());
+    expect(loaded?.messages).toHaveLength(3);
+  });
+
+  it("records nothing for a command that did not run", async () => {
+    const h = await harness({ orchestrate: async () => 0 });
+    // No objective: the command prints its usage and does nothing.
+    await h.controller.handleLine("/orchestrate");
+    // Commands that record nothing anywhere leave no session behind either.
+    await h.controller.handleLine("/help");
+    await h.controller.handleLine("/usage");
+    await h.controller.handleLine("/sessions");
+
+    expect(await h.store.listChatSessions(h.workspacePath)).toEqual([]);
+  });
+
+  it("records nothing under --no-save", async () => {
+    const h = await harness({ store: undefined, orchestrate: async () => 0 });
+    expect(
+      (await h.controller.handleLine("/orchestrate add a route")).output,
+    ).toEqual([]);
+
+    const probe = newStore("probe.db");
+    expect(await probe.listChatSessions()).toEqual([]);
+  });
+
+  it("makes `kapel sessions` agree with `kapel runs` after a slash-only session", async () => {
+    // The real layout: the database `kapel sessions` reads lives under the
+    // workspace's own `.agent/`, and both halves of it — runs and chats —
+    // are written by the same REPL.
+    const workspacePath = path.join(tempDir, "slash-only");
+    await mkdir(path.join(workspacePath, ".agent"), { recursive: true });
+    const store = new SqliteSessionStore({
+      path: defaultSessionDbPath(path.join(workspacePath, ".agent")),
+    });
+    openStores.push(store);
+
+    const h = await harness({
+      workspacePath,
+      store,
+      orchestrate: async () => 0,
+    });
+    await h.controller.handleLine("/orchestrate add a health endpoint");
+
+    const lines: string[] = [];
+    const code = await runSessionsListCommand(
+      { cwd: workspacePath, json: false },
+      { output: { log: (line) => lines.push(line), error: () => undefined } },
+    );
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("add a health endpoint");
+    expect(lines.join("\n")).not.toContain("No chat sessions recorded yet");
   });
 });
 

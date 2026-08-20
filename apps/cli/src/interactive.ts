@@ -19,7 +19,7 @@ import {
   PermissionEngine,
   SessionAllowlist,
 } from "@agent/coding-agent";
-import type { AgentDefinition } from "@agent/core";
+import type { AgentDefinition, AgentImageAttachment } from "@agent/core";
 import type {
   ChatSessionRecord,
   ChatSessionTranscript,
@@ -68,13 +68,14 @@ import {
   type InputManager,
 } from "./input.js";
 import { composeSystemPrompt, loadInstructions } from "./instructions.js";
-import type { FileLister } from "./mention.js";
+import type { FileLister, MentionImageReader } from "./mention.js";
 import {
-  annotateMentions,
   completeMention,
   createFileLister,
   mentionTokenAt,
+  prepareMentions,
   workspaceFileExists,
+  workspaceImageReader,
 } from "./mention.js";
 import type { OrchestrateCommandOptions } from "./orchestrate.js";
 import { DEFAULT_ISOLATION, runOrchestrate } from "./orchestrate.js";
@@ -128,6 +129,7 @@ export interface InteractiveSession {
   send(
     instruction: string,
     context: AgentLoopRunContext,
+    images?: readonly AgentImageAttachment[],
   ): Promise<ChatTurnResult>;
   messages(): readonly ModelMessage[];
   /**
@@ -164,9 +166,16 @@ export interface ChatTurnLike {
  * written once and works for both.
  */
 export interface ChatLike {
+  /**
+   * Runs one turn. `images` is what an `@shot.png` mention resolved to (see
+   * {@link prepareMentions}); an implementation that cannot carry image bytes
+   * — every delegated backend today — simply ignores the argument, and the
+   * controller has already told the user so before calling.
+   */
   send(
     instruction: string,
     context: AgentLoopRunContext,
+    images?: readonly AgentImageAttachment[],
   ): Promise<ChatTurnLike>;
   toModelMessages(): readonly ModelMessage[];
   /** A delegating backend's own session id, when it is holding the thread. */
@@ -188,7 +197,8 @@ export type InteractiveSessionLike = InteractiveSession | ChatLike;
 export function toChatLike(session: InteractiveSessionLike): ChatLike {
   if ("toModelMessages" in session) return session;
   return {
-    send: (instruction, context) => session.send(instruction, context),
+    send: (instruction, context, images) =>
+      session.send(instruction, context, images),
     toModelMessages: () => session.messages(),
     ...(session.compactNow === undefined
       ? {}
@@ -556,6 +566,12 @@ export interface InteractiveControllerDeps {
    * {@link workspacePath}; tests override it to keep the decision in memory.
    */
   readonly fileExists?: (relativePath: string) => boolean | Promise<boolean>;
+  /**
+   * Reads an `@shot.png` mention into an attachment. Defaults to a
+   * containment-checked, size-capped read under {@link workspacePath}; tests
+   * override it to keep the bytes in memory.
+   */
+  readonly readImage?: MentionImageReader;
   readonly newId?: () => string;
   readonly now?: () => number;
   /**
@@ -897,16 +913,51 @@ export async function createInteractiveController(
   };
 
   /**
+   * Makes sure this conversation has a row in the store, creating it if not.
+   *
+   * Row creation is lazy on purpose — a `kapel` invocation someone opened and
+   * closed without doing anything should not leave an empty conversation
+   * behind in `/sessions` — so this is called from each of the three places
+   * that count as *doing* something: the first message (through
+   * {@link persist}), `/name`, and the slash commands that record a run
+   * (see {@link registerForRun}).
+   *
+   * `label` titles a session that has none yet, so a conversation that began
+   * with `/orchestrate …` reads as that objective in `kapel sessions` instead
+   * of as `(untitled)`.
+   *
+   * @returns whether there is now a row to write to.
+   */
+  const registerSession = async (label?: string): Promise<boolean> => {
+    if (persisted) return true;
+    const store = deps.store;
+    if (store === undefined) return false;
+    if (title === "" && label !== undefined) title = chatTitleFrom(label);
+    try {
+      await store.createChatSession({
+        id: sessionId,
+        workspacePath: deps.workspacePath,
+        title,
+        ...(sessionName === undefined ? {} : { name: sessionName }),
+        modelAlias,
+        createdAt: now(),
+      });
+      persisted = true;
+      titleDirty = false;
+      return true;
+    } catch (error) {
+      emit(`(not saved: ${errorText(error)})`);
+      return false;
+    }
+  };
+
+  /**
    * Writes the whole transcript back, keyed by position.
    *
    * The snapshot is written in full rather than incrementally because the
    * loop rewrites history as it goes (tool calls get sealed, results get
    * elided during compaction); `(sessionId, seq)` is the row's identity, so
    * re-saving overlapping messages updates them instead of duplicating them.
-   *
-   * The session row itself is created lazily, on the first message: a `kapel`
-   * invocation someone opened and closed without saying anything should not
-   * leave an empty conversation behind in `/sessions`.
    */
   const persist = async (): Promise<void> => {
     const store = deps.store;
@@ -915,18 +966,9 @@ export async function createInteractiveController(
     // Nothing was said: there is no conversation to create a row for, and an
     // already-stored one has nothing new to write.
     if (snapshot.length === 0) return;
+    if (!(await registerSession())) return;
     try {
-      if (!persisted) {
-        await store.createChatSession({
-          id: sessionId,
-          workspacePath: deps.workspacePath,
-          title,
-          modelAlias,
-          createdAt: now(),
-        });
-        persisted = true;
-        titleDirty = false;
-      } else if (titleDirty) {
+      if (titleDirty) {
         await store.setChatSessionTitle(sessionId, title);
         titleDirty = false;
       }
@@ -958,6 +1000,18 @@ export async function createInteractiveController(
     deps.fileExists ??
     ((relativePath: string) =>
       workspaceFileExists(deps.workspacePath, relativePath));
+  const readImage = deps.readImage ?? workspaceImageReader(deps.workspacePath);
+
+  /**
+   * Whether *this* turn can carry image bytes.
+   *
+   * Only the native path can: it sends provider messages, and `@agent/ai`'s
+   * providers already serialize `ModelMessage.images` into vision content
+   * blocks. A delegated turn is a CLI invocation whose chat request has no
+   * attachment channel at all (see `BackendTurnRequest`). Read per turn rather
+   * than once, because `/config` can switch backends mid-conversation.
+   */
+  const canAttachImages = (): boolean => backend === "native";
 
   const handleMessage = async (
     text: string,
@@ -976,20 +1030,37 @@ export async function createInteractiveController(
       titleDirty = true;
     }
 
-    // `@path` mentions stay verbatim in the message and gain one trailing
-    // line naming the files they resolved to (see `annotateMentions`). The
-    // title and the checkpoint label above deliberately come from the text as
-    // typed — the annotation is for the agent, not for the history.
-    const instruction = await annotateMentions(text, fileExists);
+    // `@path` mentions stay verbatim in the message and gain a trailing line
+    // naming what they resolved to; an `@shot.png` also rides along as real
+    // image content (see `prepareMentions`). The title and the checkpoint
+    // label above deliberately come from the text as typed — the annotation is
+    // for the agent, not for the history.
+    const attachable = canAttachImages();
+    const prepared = await prepareMentions(text, {
+      exists: fileExists,
+      ...(attachable ? { readImage } : {}),
+    });
+    // An image that could not be attached is a note, never a failed turn: the
+    // message still goes, with that mention as an ordinary path.
+    for (const notice of prepared.notices) emit(notice);
+    if (!attachable && prepared.imageMentions.length > 0) {
+      emit(
+        `images are not supported on the ${backend} backend yet — sent as file paths.`,
+      );
+    }
 
     const before = deps.usage.totals();
     let result: ChatTurnLike | undefined;
     try {
-      result = await chat.send(instruction, {
-        runId: sessionId,
-        workspacePath: deps.workspacePath,
-        ...(signal === undefined ? {} : { signal }),
-      });
+      result = await chat.send(
+        prepared.instruction,
+        {
+          runId: sessionId,
+          workspacePath: deps.workspacePath,
+          ...(signal === undefined ? {} : { signal }),
+        },
+        prepared.images,
+      );
     } catch (error) {
       emit(`error: ${errorText(error)}`);
     }
@@ -1168,28 +1239,18 @@ export async function createInteractiveController(
       );
       return drain();
     }
-    try {
-      if (!persisted) {
-        // Mirrors `persist()`'s lazy row creation, but on purpose skips its
-        // "nothing was said yet" guard: naming *is* the thing the user asked
-        // to happen, unlike the title, which only exists as a side effect of
-        // a message being sent.
-        await deps.store.createChatSession({
-          id: sessionId,
-          workspacePath: deps.workspacePath,
-          title,
-          name: sessionName,
-          modelAlias,
-          createdAt: now(),
-        });
-        persisted = true;
-        titleDirty = false;
-      } else {
+    if (!persisted) {
+      // Creates the row right here, skipping `persist()`'s "nothing was said
+      // yet" guard: naming *is* the thing the user asked to happen, unlike the
+      // title, which only exists as a side effect of a message being sent.
+      if (!(await registerSession())) return drain();
+    } else {
+      try {
         await deps.store.renameChatSession(sessionId, sessionName);
+      } catch (error) {
+        emit(`(not saved: ${errorText(error)})`);
+        return drain();
       }
-    } catch (error) {
-      emit(`(not saved: ${errorText(error)})`);
-      return drain();
     }
     emit(`named "${sessionName}"`);
     return drain("renamed");
@@ -1404,6 +1465,25 @@ export async function createInteractiveController(
   const replOutput: OrchestrationOutput = { log: emit, error: emit };
 
   /**
+   * Records this conversation before a slash command that will record a *run*.
+   *
+   * `/orchestrate` and `/resume-run` write to the run half of the very same
+   * `sessions.db` the chat half lives in, so a REPL that only ever ran those
+   * used to leave `kapel runs` listing work and `kapel sessions` insisting
+   * nothing had been recorded here — two commands over one database
+   * disagreeing, which reads as data loss. Registering the session first makes
+   * them agree: the run is listed, and so is the conversation it was started
+   * from — titled after what it was asked to do, so the listing says something.
+   *
+   * Only these two commands do it. `/help`, `/usage`, `/sessions` and the rest
+   * record nothing anywhere, so a row for them would be the opposite mistake —
+   * `kapel sessions` full of empty conversations nobody had.
+   */
+  const registerForRun = async (label: string): Promise<void> => {
+    await registerSession(label);
+  };
+
+  /**
    * `/plan <objective>` — the plan `/orchestrate` would execute, printed and
    * then thrown away. Always with the routing rationale, which used to be a
    * flag of its own: at a prompt the table and the reason behind it are one
@@ -1459,6 +1539,7 @@ export async function createInteractiveController(
       emit("usage: /resume-run <runId>  — see /runs");
       return drain();
     }
+    await registerForRun(`/resume-run ${runId}`);
     try {
       await deps.resumeRun(runId, replOutput);
     } catch (error) {
@@ -1478,6 +1559,7 @@ export async function createInteractiveController(
       emit('usage: /orchestrate "<objective>"');
       return drain();
     }
+    await registerForRun(objective);
     try {
       const code = await deps.orchestrate(objective);
       if (code !== 0) emit(`orchestrate exited ${code}`);
