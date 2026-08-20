@@ -2165,9 +2165,14 @@ var BackendChatSession = class _BackendChatSession {
    * runner throws, so the conversation still reads as a conversation. An
    * assistant entry is only recorded when the backend actually produced text.
    *
+   * `imagePaths` attaches images to *this* turn by naming them (see
+   * {@link BackendTurnRequest}). They are deliberately not recorded in the
+   * transcript: the instruction already names them on its `[attached images: …]`
+   * line, which is what a later stateless turn needs to see.
+   *
    * @throws if another send on this session is still in flight.
    */
-  async send(instruction, context) {
+  async send(instruction, context, imagePaths) {
     if (this.#sending) {
       throw new Error("BackendChatSession.send: a send is already in flight; turns must be serialized.");
     }
@@ -2187,7 +2192,7 @@ var BackendChatSession = class _BackendChatSession {
         turn,
         backend: "delegated"
       });
-      const result = await this.#runTurn(instruction, prior, signal, taskId);
+      const result = await this.#runTurn(instruction, prior, signal, taskId, imagePaths ?? []);
       await this.#emit(taskId, "chat.turn.completed", {
         turn,
         status: result.status
@@ -2215,13 +2220,13 @@ var BackendChatSession = class _BackendChatSession {
       content: entry.content
     }));
   }
-  async #runTurn(instruction, prior, signal, taskId) {
+  async #runTurn(instruction, prior, signal, taskId, imagePaths) {
     if (signal?.aborted === true) {
       return { status: "failed", summary: CANCELLED_SUMMARY };
     }
     let outcome;
     try {
-      outcome = await this.#options.runner(this.#request(instruction, prior, signal, taskId));
+      outcome = await this.#options.runner(this.#request(instruction, prior, signal, taskId, imagePaths));
     } catch (error) {
       return {
         status: "failed",
@@ -2257,13 +2262,14 @@ var BackendChatSession = class _BackendChatSession {
    * either the backend has the history (session id, empty transcript) or we do
    * (no session id, the last N entries).
    */
-  #request(instruction, prior, signal, taskId) {
+  #request(instruction, prior, signal, taskId, imagePaths) {
     const continuing = this.#options.supportsContinuation === true && this.#sessionRef !== void 0;
     const limit = this.#options.transcriptTurns ?? DEFAULT_TRANSCRIPT_TURNS;
     const transcript = continuing ? [] : limit <= 0 ? [] : prior.slice(Math.max(0, prior.length - limit));
     return {
       instruction,
       transcript,
+      ...imagePaths.length === 0 ? {} : { imagePaths },
       ...continuing && this.#sessionRef !== void 0 ? { sessionRef: this.#sessionRef } : {},
       context: {
         runId: this.#options.runId,
@@ -2310,9 +2316,11 @@ function backendTurnRunner(backend, options) {
   const withTranscript = options?.promptWithTranscript ?? true;
   return async (request) => {
     const context = withTranscript && request.transcript.length > 0 ? [renderTranscript(request.transcript)] : [];
+    const imagePaths = request.imagePaths ?? [];
     const result = await backend.run({
       instruction: request.instruction,
-      ...context.length === 0 ? {} : { context }
+      ...context.length === 0 ? {} : { context },
+      ...imagePaths.length === 0 ? {} : { imagePaths }
     }, {
       runId: request.context.runId,
       workspacePath: request.context.workspacePath,
@@ -2409,18 +2417,28 @@ function firstString(...values) {
 function toCount(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
+function imagePathsSection(paths) {
+  const lines = paths.map((imagePath) => `- ${imagePath}`).join("\n");
+  return `<attached-images>
+The user attached ${paths.length === 1 ? "an image file" : "image files"} to this message. Open and view ${paths.length === 1 ? "it" : "each of them"} with your Read tool before answering:
+${lines}
+</attached-images>`;
+}
 function buildPrompt(input) {
   const context = input.context ?? [];
-  if (context.length === 0)
-    return input.instruction;
-  const blocks = context.map((entry, index2) => `<context index="${index2 + 1}">
+  const imagePaths = input.imagePaths ?? [];
+  const parts = [input.instruction];
+  if (context.length > 0) {
+    const blocks = context.map((entry, index2) => `<context index="${index2 + 1}">
 ${entry}
 </context>`);
-  return `${input.instruction}
-
-<additional-context>
+    parts.push(`<additional-context>
 ${blocks.join("\n")}
-</additional-context>`;
+</additional-context>`);
+  }
+  if (imagePaths.length > 0)
+    parts.push(imagePathsSection(imagePaths));
+  return parts.join("\n\n");
 }
 function tail(text2, limit) {
   const trimmed = text2.trim();
@@ -2541,7 +2559,7 @@ var ClaudeCodeBackend = class {
       return finish(settle("failed", "Claude Code run cancelled before it started.", null));
     }
     if ((input.images?.length ?? 0) > 0) {
-      return finish(settle("failed", "Claude Code's headless -p mode has no documented flag for attaching images, so kapel cannot send them through this backend. Use `--backend codex` or the native backend to attach images.", null));
+      return finish(settle("failed", "Claude Code's headless -p mode has no documented flag for attaching image bytes, so kapel cannot send them inline through this backend. Attach the images by path instead (kapel's `@shot.png` mention does), or use `--backend codex` or the native backend.", null));
     }
     const candidates = executableCandidates(binary);
     let spawnOutcome = await this.#spawnClaude(candidates[0] ?? binary, args, context.workspacePath, signal, timeoutSignal, state, emit2);
@@ -3108,8 +3126,12 @@ var CodexBackend = class {
     if (model !== void 0)
       args.push("-m", model);
     const images = input.images ?? [];
-    for (const image of images)
-      args.push("-i", image.path);
+    const imagePaths = /* @__PURE__ */ new Set([
+      ...images.map((image) => image.path),
+      ...input.imagePaths ?? []
+    ]);
+    for (const imagePath of imagePaths)
+      args.push("-i", imagePath);
     const extra = this.#options.extraArgs;
     if (extra !== void 0)
       args.push(...extra);
@@ -3738,7 +3760,10 @@ var AgentLoop = class {
 function copyMessage(message) {
   return {
     ...message,
-    ...message.toolCalls === void 0 ? {} : { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+    ...message.toolCalls === void 0 ? {} : { toolCalls: message.toolCalls.map((call) => ({ ...call })) },
+    // Copied for the same reason as the tool calls; the base64 payloads are
+    // strings, so this only duplicates references.
+    ...message.images === void 0 ? {} : { images: message.images.map((image) => ({ ...image })) }
   };
 }
 var AgentChatSession = class _AgentChatSession {
@@ -3770,18 +3795,32 @@ var AgentChatSession = class _AgentChatSession {
    * user can follow up; any tool call the loop abandoned mid-batch is answered
    * with an error result first, keeping the history replayable.
    *
+   * `images` attaches vision content to *this* user turn, already validated and
+   * read by the caller (`AgentImageAttachment` is `ImagePart` plus the source
+   * path, so it rides straight onto the wire message — see
+   * `AgentLoopEngine.seed`). They stay in the retained history like any other
+   * part of the turn: the loop replays the whole conversation on every
+   * iteration, so an image the user attached three turns ago is still there
+   * when the model needs to look at it again.
+   *
    * @throws if another send on this session is still in flight.
    */
-  async send(instruction, context) {
+  async send(instruction, context, images) {
     if (this.#sending) {
       throw new Error("AgentChatSession.send: a send is already in flight; turns must be serialized.");
     }
     this.#sending = true;
+    const attached = images ?? [];
+    const withImages = attached.length === 0 ? {} : { images: attached };
     try {
       if (this.#messages.length === 0) {
-        this.#messages.push(...this.#engine.seed({ instruction }));
+        this.#messages.push(...this.#engine.seed({ instruction, ...withImages }));
       } else {
-        this.#messages.push({ role: "user", content: instruction });
+        this.#messages.push({
+          role: "user",
+          content: instruction,
+          ...withImages
+        });
       }
       this.#turn += 1;
       const turn = this.#turn;
@@ -3997,6 +4036,14 @@ function recordDelegatedUsage(sink, result) {
   if (sink === void 0 || result.usage === void 0)
     return;
   sink.recorder.record(sink.model, result.usage, sink.tags);
+}
+function recordDelegatedWorkerUsage(sink, attempt, usage) {
+  if (sink === void 0 || usage === void 0)
+    return;
+  sink.recorder.record(sink.modelFor(attempt.model), usage, {
+    agent: attempt.agent,
+    taskId: attempt.taskId
+  });
 }
 var defaultBackendFactory = (spec) => spec.backend === "codex" ? new CodexBackend(spec.options) : new ClaudeCodeBackend(spec.options);
 async function runDelegatedPrompt(options, prompt, signal) {
@@ -4324,8 +4371,8 @@ ${formatIssues3(lastIssues)}`}`,
 };
 
 // packages/coding-agent/dist/project/index.js
-import { readFile as readFile3, stat } from "node:fs/promises";
-import { join as join3 } from "node:path";
+import { readFile as readFile4, stat } from "node:fs/promises";
+import { join as join4 } from "node:path";
 
 // packages/coding-agent/dist/project/agents.js
 import { readdir, readFile } from "node:fs/promises";
@@ -4548,9 +4595,72 @@ async function loadProjectConfig(agentDir) {
   };
 }
 
+// packages/coding-agent/dist/project/handoff.js
+import { readFile as readFile3 } from "node:fs/promises";
+import { join as join3 } from "node:path";
+var HANDOFF_FILE_NAME = "handoff.md";
+var HANDOFF_SECTION_NAMES = ["common", "worker", "reviewer"];
+var KNOWN_SECTIONS = new Set(HANDOFF_SECTION_NAMES);
+function headingTitle(line) {
+  return /^##[ \t]+(\S.*?)[ \t]*$/.exec(line)?.[1];
+}
+function knownSection(title) {
+  const name = title.trim().toLowerCase();
+  return KNOWN_SECTIONS.has(name) ? name : void 0;
+}
+function parseHandoffMarkdown(sourcePath, raw) {
+  const bodies = /* @__PURE__ */ new Map();
+  const warnings = [];
+  let current;
+  for (const line of raw.replace(/\r\n/g, "\n").split("\n")) {
+    const title = headingTitle(line);
+    if (title === void 0) {
+      if (current !== void 0)
+        bodies.get(current)?.push(line);
+      continue;
+    }
+    const name = knownSection(title);
+    if (name === void 0) {
+      if (current === void 0) {
+        warnings.push(`${sourcePath}: ignoring unknown section "## ${title}" (expected one of ${HANDOFF_SECTION_NAMES.join(", ")})`);
+      } else {
+        bodies.get(current)?.push(line);
+      }
+      continue;
+    }
+    if (bodies.has(name)) {
+      warnings.push(`${sourcePath}: ignoring a repeated "## ${name}" section \u2014 the first one wins`);
+      current = void 0;
+      continue;
+    }
+    bodies.set(name, []);
+    current = name;
+  }
+  const section2 = (name) => bodies.get(name)?.join("\n").trim();
+  return {
+    sourcePath,
+    common: section2("common"),
+    worker: section2("worker"),
+    reviewer: section2("reviewer"),
+    warnings
+  };
+}
+async function loadProjectHandoff(agentDir) {
+  const filePath = join3(agentDir, HANDOFF_FILE_NAME);
+  let raw;
+  try {
+    raw = await readFile3(filePath, "utf8");
+  } catch (err) {
+    if (isNotFound(err))
+      return void 0;
+    throw err;
+  }
+  return parseHandoffMarkdown(filePath, raw);
+}
+
 // packages/coding-agent/dist/project/index.js
 async function findAgentDir(workspaceRoot) {
-  const dir = join3(workspaceRoot, ".agent");
+  const dir = join4(workspaceRoot, ".agent");
   try {
     const info = await stat(dir);
     return info.isDirectory() ? dir : void 0;
@@ -4562,7 +4672,7 @@ async function findAgentDir(workspaceRoot) {
 }
 async function readOrchestrationMarkdown(agentDir) {
   try {
-    return await readFile3(join3(agentDir, "orchestration.md"), "utf8");
+    return await readFile4(join4(agentDir, "orchestration.md"), "utf8");
   } catch (err) {
     if (isNotFound(err))
       return void 0;
@@ -4574,12 +4684,14 @@ var AgentProjectImpl = class {
   config;
   agents;
   orchestrationMarkdown;
+  handoff;
   #byName;
-  constructor(root, config, agents, orchestrationMarkdown) {
+  constructor(root, config, agents, orchestrationMarkdown, handoff) {
     this.root = root;
     this.config = config;
     this.agents = agents;
     this.orchestrationMarkdown = orchestrationMarkdown;
+    this.handoff = handoff;
     this.#byName = new Map(agents.map((agent) => [agent.name, agent]));
   }
   knownAgentNames() {
@@ -4596,6 +4708,7 @@ async function loadAgentProject(workspaceRoot) {
   const config = await loadProjectConfig(agentDir);
   const { agents, problems: agentProblems } = await loadProjectAgents(agentDir);
   const orchestrationMarkdown = await readOrchestrationMarkdown(agentDir);
+  const handoff = await loadProjectHandoff(agentDir);
   const problems = [...agentProblems];
   const agentNames = new Set(agents.map((agent) => agent.name));
   const hasModels = Object.keys(config.models).length > 0;
@@ -4614,7 +4727,7 @@ async function loadAgentProject(workspaceRoot) {
   if (problems.length > 0) {
     throw new ProjectConfigError(agentDir, problems);
   }
-  return new AgentProjectImpl(agentDir, config, agents, orchestrationMarkdown);
+  return new AgentProjectImpl(agentDir, config, agents, orchestrationMarkdown, handoff);
 }
 
 // packages/coding-agent/dist/tools/bash.js
@@ -4726,7 +4839,7 @@ var BashTool = class {
 };
 
 // packages/coding-agent/dist/tools/edit-file.js
-import { readFile as readFile4, writeFile } from "node:fs/promises";
+import { readFile as readFile5, writeFile } from "node:fs/promises";
 import { z as z11 } from "zod";
 
 // packages/coding-agent/dist/tools/paths.js
@@ -4777,7 +4890,7 @@ var EditFileTool = class {
     checkAbort(context.signal);
     let raw;
     try {
-      raw = await readFile4(target, "utf8");
+      raw = await readFile5(target, "utf8");
     } catch (err) {
       throw new Error(`failed to read file "${input.path}": ${err.message}`);
     }
@@ -4857,7 +4970,7 @@ var GitDiffTool = class {
 
 // packages/coding-agent/dist/tools/glob.js
 import { readdir as readdir2 } from "node:fs/promises";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 import { z as z13 } from "zod";
 
 // packages/coding-agent/dist/tools/glob-pattern.js
@@ -4940,7 +5053,7 @@ async function walk(dir, signal, out) {
   for (const entry of entries) {
     if (SKIPPED_DIR_NAMES.has(entry.name))
       continue;
-    const full = join4(dir, entry.name);
+    const full = join5(dir, entry.name);
     if (entry.isDirectory()) {
       await walk(full, signal, out);
     } else if (entry.isFile()) {
@@ -4988,14 +5101,14 @@ var GlobTool = class {
       matches2 = await globViaManualWalk(input.pattern, absoluteCwd, context.signal);
     }
     const truncated = matches2.length >= MAX_MATCHES;
-    const relativeToWorkspace = matches2.map((m) => toWorkspaceRelative(context.workspacePath, join4(absoluteCwd, m))).sort();
+    const relativeToWorkspace = matches2.map((m) => toWorkspaceRelative(context.workspacePath, join5(absoluteCwd, m))).sort();
     return { matches: relativeToWorkspace, truncated };
   }
 };
 
 // packages/coding-agent/dist/tools/grep.js
-import { readdir as readdir3, readFile as readFile5, stat as stat2 } from "node:fs/promises";
-import { basename as basename2, join as join5 } from "node:path";
+import { readdir as readdir3, readFile as readFile6, stat as stat2 } from "node:fs/promises";
+import { basename as basename2, join as join6 } from "node:path";
 import { z as z14 } from "zod";
 var DEFAULT_MAX_MATCHES = 200;
 var MAX_LINE_CHARS = 500;
@@ -5052,7 +5165,7 @@ var GrepTool = class {
       }
       let buf;
       try {
-        buf = await readFile5(absoluteFile);
+        buf = await readFile6(absoluteFile);
       } catch {
         return;
       }
@@ -5094,7 +5207,7 @@ var GrepTool = class {
         checkAbort(context.signal);
         if (SKIPPED_DIR_NAMES2.has(entry.name))
           continue;
-        const full = join5(dir, entry.name);
+        const full = join6(dir, entry.name);
         if (entry.isDirectory()) {
           await walk2(full);
         } else if (entry.isFile()) {
@@ -5113,7 +5226,7 @@ var GrepTool = class {
 };
 
 // packages/coding-agent/dist/tools/read-file.js
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 import { z as z15 } from "zod";
 var MAX_CONTENT_CHARS = 2e5;
 var InputSchema6 = z15.object({
@@ -5138,7 +5251,7 @@ var ReadFileTool = class {
     checkAbort(context.signal);
     let raw;
     try {
-      raw = await readFile6(target, "utf8");
+      raw = await readFile7(target, "utf8");
     } catch (err) {
       throw new Error(`failed to read file "${input.path}": ${err.message}`);
     }
@@ -5604,52 +5717,52 @@ function dependencySection(results) {
   }
   return lines;
 }
-var REVIEW_PREAMBLE = [
-  "",
-  "## Review task \u2014 a verdict is required",
-  "",
+var REVIEW_HEADING = "## Review task \u2014 a verdict is required";
+var DEFAULT_REVIEWER_GUIDANCE = [
   "You are reviewing work that other tasks produced, not writing code yourself.",
   "Inspect the results of the tasks you depend on and the files they changed:",
   "read those files, and use a diff against the base to see exactly what moved."
+].join("\n");
+var JSON_REPLY_VERDICT_CONTRACT = [
+  "Do not edit, create or delete any file: this task decides, it does not fix.",
+  "",
+  "There is no verdict tool here \u2014 you are answering through a CLI, so the",
+  "verdict IS your reply. Your final message MUST contain exactly one JSON",
+  "object, in this shape, with nothing after it:",
+  "",
+  "{",
+  '  "approved": false,',
+  '  "summary": "One short paragraph explaining the decision.",',
+  '  "issues": [',
+  '    { "severity": "blocking", "description": "What is wrong, specific enough to act on." }',
+  "  ]",
+  "}",
+  "",
+  "  - `approved` is true only when the change is acceptable as it stands;",
+  "  - `approved` is false whenever you found anything that must be fixed first;",
+  '  - `severity` is either "blocking" (must not ship as-is) or "advisory";',
+  "  - `issues` may be `[]`, but list every problem you found, blocking ones first.",
+  "",
+  "A blocking issue means the verdict is not approved. A reply this object",
+  "cannot be read out of fails this task \u2014 an undecided review does not pass."
 ];
-function reviewSection(contract) {
-  if (contract === "json-reply") {
-    return [
-      ...REVIEW_PREAMBLE,
-      "Do not edit, create or delete any file: this task decides, it does not fix.",
-      "",
-      "There is no verdict tool here \u2014 you are answering through a CLI, so the",
-      "verdict IS your reply. Your final message MUST contain exactly one JSON",
-      "object, in this shape, with nothing after it:",
-      "",
-      "{",
-      '  "approved": false,',
-      '  "summary": "One short paragraph explaining the decision.",',
-      '  "issues": [',
-      '    { "severity": "blocking", "description": "What is wrong, specific enough to act on." }',
-      "  ]",
-      "}",
-      "",
-      "  - `approved` is true only when the change is acceptable as it stands;",
-      "  - `approved` is false whenever you found anything that must be fixed first;",
-      '  - `severity` is either "blocking" (must not ship as-is) or "advisory";',
-      "  - `issues` may be `[]`, but list every problem you found, blocking ones first.",
-      "",
-      "A blocking issue means the verdict is not approved. A reply this object",
-      "cannot be read out of fails this task \u2014 an undecided review does not pass."
-    ];
-  }
-  return [
-    ...REVIEW_PREAMBLE,
-    "",
-    `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
-    "  - `approved: true` only when the change is acceptable as it stands;",
-    "  - `approved: false` whenever you found anything that must be fixed first;",
-    "  - list every problem in `issues`, marking each `blocking` or `advisory`.",
-    "",
-    "A blocking issue means the verdict is not approved. Finishing without calling",
-    `\`${REVIEW_VERDICT_TOOL_NAME}\` fails this task \u2014 an undecided review does not pass.`
-  ];
+var TOOL_VERDICT_CONTRACT = [
+  "",
+  `You MUST call the \`${REVIEW_VERDICT_TOOL_NAME}\` tool exactly once before you finish:`,
+  "  - `approved: true` only when the change is acceptable as it stands;",
+  "  - `approved: false` whenever you found anything that must be fixed first;",
+  "  - list every problem in `issues`, marking each `blocking` or `advisory`.",
+  "",
+  "A blocking issue means the verdict is not approved. Finishing without calling",
+  `\`${REVIEW_VERDICT_TOOL_NAME}\` fails this task \u2014 an undecided review does not pass.`
+];
+function reviewSection(contract, guidance) {
+  const lines = ["", REVIEW_HEADING, ""];
+  if (guidance !== "")
+    lines.push(...guidance.split("\n"));
+  const verdict = contract === "json-reply" ? JSON_REPLY_VERDICT_CONTRACT : TOOL_VERDICT_CONTRACT;
+  lines.push(...guidance === "" && verdict[0] === "" ? verdict.slice(1) : verdict);
+  return lines;
 }
 function buildTaskBriefing(task, agent, context, options) {
   const lines = [
@@ -5671,13 +5784,16 @@ function buildTaskBriefing(task, agent, context, options) {
   if (task.dependencies.length > 0) {
     lines.push(`Depends on completed tasks: ${task.dependencies.join(", ")}`);
   }
-  lines.push("", "Work directly in the current workspace. Return a short summary of what you changed.");
+  const workerGuidance = (options?.handoff?.worker ?? DEFAULT_WORKER_GUIDANCE).trim();
+  if (workerGuidance !== "")
+    lines.push("", ...workerGuidance.split("\n"));
   const dependencyResults = context?.dependencyResults ?? [];
   if (dependencyResults.length > 0) {
     lines.push(...dependencySection(dependencyResults));
   }
   if (task.type === "review") {
-    lines.push(...reviewSection(options?.reviewContract ?? "tool"));
+    const reviewerGuidance = (options?.handoff?.reviewer ?? DEFAULT_REVIEWER_GUIDANCE).trim();
+    lines.push(...reviewSection(options?.reviewContract ?? "tool", reviewerGuidance));
   }
   return lines.join("\n");
 }
@@ -5692,11 +5808,18 @@ var WORKER_SYSTEM_POSTAMBLE = [
   "constraint to work around, not something to retry. Finish by replying with a",
   "short prose summary of what you changed."
 ].join("\n");
-function buildWorkerSystemPrompt(systemPrompt) {
+var DEFAULT_WORKER_GUIDANCE = [
+  "Work directly in the current workspace. Return a short summary of what you changed.",
+  "If this project configures validators (.agent/config.yaml's `validation:` block), they run against your change after you finish \u2014 you are not expected to run checks yourself."
+].join("\n");
+function buildWorkerSystemPrompt(systemPrompt, handoff) {
   const base = systemPrompt.trim();
-  return base === "" ? WORKER_SYSTEM_POSTAMBLE : `${base}
+  const common = (handoff?.common ?? WORKER_SYSTEM_POSTAMBLE).trim();
+  if (common === "")
+    return base;
+  return base === "" ? common : `${base}
 
-${WORKER_SYSTEM_POSTAMBLE}`;
+${common}`;
 }
 
 // packages/coding-agent/dist/workers/normalize.js
@@ -5868,7 +5991,7 @@ var AgentLoopWorkerExecutor = class {
       name: projectAgent.name,
       role: projectAgent.role,
       model: resolved.model,
-      systemPrompt: buildWorkerSystemPrompt(projectAgent.systemPrompt),
+      systemPrompt: buildWorkerSystemPrompt(projectAgent.systemPrompt, this.#options.handoff),
       tools: tools.map((tool) => tool.name),
       permissions
     };
@@ -5888,7 +6011,11 @@ var AgentLoopWorkerExecutor = class {
     });
     let run;
     try {
-      run = await loop.run({ instruction: buildTaskBriefing(task.spec, agent, context) }, {
+      run = await loop.run({
+        instruction: buildTaskBriefing(task.spec, agent, context, {
+          handoff: this.#options.handoff
+        })
+      }, {
         runId,
         taskId,
         workspacePath,
@@ -6053,10 +6180,12 @@ var ClaudeCodeWorkerExecutor = class {
       ...this.#options.taskTimeoutMs === void 0 ? {} : { timeoutMs: this.#options.taskTimeoutMs }
     });
     let run;
+    let reportedUsage;
     try {
-      run = await backend.run({
+      const backendResult = await backend.run({
         instruction: buildTaskBriefing(task.spec, agent, context, {
-          reviewContract: "json-reply"
+          reviewContract: "json-reply",
+          handoff: this.#options.handoff
         })
       }, {
         runId,
@@ -6064,12 +6193,15 @@ var ClaudeCodeWorkerExecutor = class {
         workspacePath,
         ...signal === void 0 ? {} : { signal }
       });
+      run = backendResult;
+      reportedUsage = backendResult.usage;
     } catch (error) {
       run = {
         status: "failed",
         summary: `Claude Code backend crashed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
+    recordDelegatedWorkerUsage(this.#options.usage, { agent, taskId, model }, reportedUsage);
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
     const result = normalizeTaskResult({ taskId, loop: run, inspection });
     if (task.spec.type !== "review")
@@ -6108,10 +6240,12 @@ var CodexWorkerExecutor = class {
       ...this.#options.taskTimeoutMs === void 0 ? {} : { timeoutMs: this.#options.taskTimeoutMs }
     });
     let run;
+    let reportedUsage;
     try {
-      run = await backend.run({
+      const backendResult = await backend.run({
         instruction: buildTaskBriefing(task.spec, agent, context, {
-          reviewContract: "json-reply"
+          reviewContract: "json-reply",
+          handoff: this.#options.handoff
         })
       }, {
         runId,
@@ -6119,12 +6253,15 @@ var CodexWorkerExecutor = class {
         workspacePath,
         ...signal === void 0 ? {} : { signal }
       });
+      run = backendResult;
+      reportedUsage = backendResult.usage;
     } catch (error) {
       run = {
         status: "failed",
         summary: `Codex backend crashed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
+    recordDelegatedWorkerUsage(this.#options.usage, { agent, taskId, model }, reportedUsage);
     const inspection = await inspectWorkspaceChanges(workspacePath, signal);
     const result = normalizeTaskResult({ taskId, loop: run, inspection });
     if (task.spec.type !== "review")
@@ -6155,7 +6292,7 @@ import { promisify as promisify4 } from "node:util";
 
 // packages/workspace/dist/worktrees.js
 import { mkdir as mkdir2, rm, rmdir } from "node:fs/promises";
-import { dirname as dirname2, isAbsolute as isAbsolute3, join as join6, relative as relative3, resolve as resolve3, sep as sep3 } from "node:path";
+import { dirname as dirname2, isAbsolute as isAbsolute3, join as join7, relative as relative3, resolve as resolve3, sep as sep3 } from "node:path";
 
 // packages/workspace/dist/git.js
 import { execFile as execFile6 } from "node:child_process";
@@ -6280,8 +6417,12 @@ function isUnder(parent, child) {
 // packages/workspace/dist/worktrees.js
 var WORKTREE_BRANCH_PREFIX = "agent-task";
 var AGENT_STATE_DIR = ".agent";
-var DEFAULT_WORKTREES_DIR = join6(AGENT_STATE_DIR, "worktrees");
+var DEFAULT_WORKTREES_DIR = join7(AGENT_STATE_DIR, "worktrees");
 var MAX_DIFF_CHARS2 = 4e5;
+var WORKTREE_ADD_MAX_ATTEMPTS = 3;
+function isWorktreeAddRace(stderr) {
+  return /fatal:/.test(stderr) && /\.git[/\\]worktrees[/\\]/.test(stderr) && /\b(commondir|gitdir)\b/.test(stderr);
+}
 var COMMIT_IDENTITY = {
   GIT_AUTHOR_NAME: "AGENT",
   GIT_AUTHOR_EMAIL: "agent@localhost",
@@ -6298,27 +6439,65 @@ var TaskWorktreeManager = class {
   #integrateQueue = Promise.resolve();
   constructor(options) {
     this.repoRoot = resolve3(options.repoRoot);
-    this.worktreesDir = options.worktreesDir === void 0 ? join6(this.repoRoot, DEFAULT_WORKTREES_DIR) : resolve3(options.worktreesDir);
+    this.worktreesDir = options.worktreesDir === void 0 ? join7(this.repoRoot, DEFAULT_WORKTREES_DIR) : resolve3(options.worktreesDir);
   }
   /**
    * Creates an isolated checkout of the current repository HEAD on a fresh
    * `agent-task/<runId>/<taskId>` branch. Leftovers from a previous attempt
    * (stale directory and/or branch) are removed first so retries start clean.
+   *
+   * Multiple tasks may call this concurrently for the same manager/repo (see
+   * the class doc); `#addWorktree` absorbs the one git-level race that
+   * genuinely follows from that.
    */
   async create(runId, taskId, signal) {
     const safeRunId = sanitizeWorktreeSegment(runId, "runId");
     const safeTaskId = sanitizeWorktreeSegment(taskId, "taskId");
     const branch = `${WORKTREE_BRANCH_PREFIX}/${safeRunId}/${safeTaskId}`;
-    const path15 = join6(this.worktreesDir, safeRunId, safeTaskId);
+    const path15 = join7(this.worktreesDir, safeRunId, safeTaskId);
     const baseCommit = await this.#requireRepoHead(signal);
     await this.#removeLeftovers(path15, branch, signal);
     await mkdir2(dirname2(path15), { recursive: true });
-    await runGit2(["worktree", "add", path15, "-b", branch, baseCommit], {
-      cwd: this.repoRoot,
-      operation: "create",
-      signal
-    });
+    await this.#addWorktree(path15, branch, baseCommit, signal);
     return { path: path15, branch, baseCommit, runId: safeRunId, taskId: safeTaskId };
+  }
+  /**
+   * Runs `git worktree add`, retrying past {@link isWorktreeAddRace} up to
+   * {@link WORKTREE_ADD_MAX_ATTEMPTS} times. Any other failure — including a
+   * race-shaped one on the final attempt — surfaces immediately as a
+   * {@link WorktreeError}, exactly as a single `runGit` call would have.
+   */
+  async #addWorktree(path15, branch, baseCommit, signal) {
+    for (let attempt = 1; attempt <= WORKTREE_ADD_MAX_ATTEMPTS; attempt++) {
+      const result = await tryGit(["worktree", "add", path15, "-b", branch, baseCommit], { cwd: this.repoRoot, operation: "create", signal });
+      if (result.exitCode === 0) {
+        return;
+      }
+      const isLastAttempt = attempt === WORKTREE_ADD_MAX_ATTEMPTS;
+      if (isLastAttempt || !isWorktreeAddRace(result.stderr)) {
+        throw new WorktreeError({
+          operation: "create",
+          message: `git worktree add ${path15} -b ${branch} ${baseCommit} failed with exit code ${result.exitCode}`,
+          stderr: result.stderr.trim() || void 0
+        });
+      }
+      await tryGit(["worktree", "remove", "--force", path15], {
+        cwd: this.repoRoot,
+        operation: "create.retry-cleanup-worktree",
+        signal
+      });
+      await rm(path15, { recursive: true, force: true });
+      await tryGit(["worktree", "prune"], {
+        cwd: this.repoRoot,
+        operation: "create.retry-prune",
+        signal
+      });
+      await tryGit(["branch", "-D", branch], {
+        cwd: this.repoRoot,
+        operation: "create.retry-cleanup-branch",
+        signal
+      });
+    }
   }
   /**
    * Stages everything in the worktree and commits it with an inline agent
@@ -6409,7 +6588,7 @@ var TaskWorktreeManager = class {
         merged: false,
         conflictFiles: [],
         reason: "dirty-base",
-        detail: `base working tree has uncommitted changes: ${dirty.slice(0, 10).join(", ")}`
+        detail: `base working tree has uncommitted changes: ${dirty.slice(0, 10).join(", ")}; commit or stash them, or add generated files to .gitignore`
       };
     }
     const merge = await tryGit([
@@ -6488,7 +6667,7 @@ var TaskWorktreeManager = class {
    */
   static async recover(repoRoot, opts) {
     const cwd = resolve3(repoRoot);
-    const worktreesDir = opts?.worktreesDir === void 0 ? join6(cwd, DEFAULT_WORKTREES_DIR) : resolve3(opts.worktreesDir);
+    const worktreesDir = opts?.worktreesDir === void 0 ? join7(cwd, DEFAULT_WORKTREES_DIR) : resolve3(opts.worktreesDir);
     const realWorktreesDir = await realPathOrSelf(worktreesDir);
     const realRepoRoot = await realPathOrSelf(cwd);
     await runGit2(["worktree", "prune"], { cwd, operation: "recover.prune" });
@@ -6919,7 +7098,7 @@ async function delegatedBackendError(backend) {
 }
 
 // apps/cli/dist/config.js
-import { chmod, mkdir as mkdir3, readFile as readFile7, writeFile as writeFile3 } from "node:fs/promises";
+import { chmod, mkdir as mkdir3, readFile as readFile8, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -6973,6 +7152,48 @@ function defaultModelCatalog() {
       capabilities: FULL_CAPABILITIES
     }
   };
+}
+
+// packages/ai/dist/image.js
+function matchesMagic(bytes, offset, magic) {
+  if (bytes.length < offset + magic.length)
+    return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (bytes[offset + i] !== magic[i])
+      return false;
+  }
+  return true;
+}
+var PNG_MAGIC = [137, 80, 78, 71, 13, 10, 26, 10];
+var JPEG_MAGIC = [255, 216, 255];
+var GIF87_MAGIC = [71, 73, 70, 56, 55, 97];
+var GIF89_MAGIC = [71, 73, 70, 56, 57, 97];
+var RIFF_MAGIC = [82, 73, 70, 70];
+var WEBP_MAGIC = [87, 69, 66, 80];
+function sniffImageMediaType(bytes) {
+  if (matchesMagic(bytes, 0, PNG_MAGIC))
+    return "image/png";
+  if (matchesMagic(bytes, 0, JPEG_MAGIC))
+    return "image/jpeg";
+  if (matchesMagic(bytes, 0, GIF87_MAGIC) || matchesMagic(bytes, 0, GIF89_MAGIC)) {
+    return "image/gif";
+  }
+  if (matchesMagic(bytes, 0, RIFF_MAGIC) && matchesMagic(bytes, 8, WEBP_MAGIC)) {
+    return "image/webp";
+  }
+  return void 0;
+}
+var EXTENSION_MEDIA_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+};
+function mediaTypeFromExtension(filePath) {
+  const match = /\.[^./\\]+$/.exec(filePath);
+  const ext = match?.[0]?.toLowerCase();
+  return ext === void 0 ? void 0 : EXTENSION_MEDIA_TYPES[ext];
 }
 
 // packages/ai/dist/sse.js
@@ -7911,7 +8132,7 @@ function parseConfig(raw) {
 async function loadKapelConfig(env) {
   let text2;
   try {
-    text2 = await readFile7(kapelConfigPath(env), "utf8");
+    text2 = await readFile8(kapelConfigPath(env), "utf8");
   } catch {
     return void 0;
   }
@@ -8660,7 +8881,7 @@ async function runConfigCommand(options, deps) {
 }
 
 // apps/cli/dist/env.js
-import { readFile as readFile8 } from "node:fs/promises";
+import { readFile as readFile9 } from "node:fs/promises";
 import path2 from "node:path";
 var LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
 function unquote(raw) {
@@ -8700,7 +8921,7 @@ async function loadDotEnvFile(workspaceRoot, target = process.env) {
   const filePath = path2.join(workspaceRoot, ".env");
   let content;
   try {
-    content = await readFile8(filePath, "utf8");
+    content = await readFile9(filePath, "utf8");
   } catch {
     return;
   }
@@ -8708,7 +8929,7 @@ async function loadDotEnvFile(workspaceRoot, target = process.env) {
 }
 
 // apps/cli/dist/plan.js
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
 import path3 from "node:path";
 
 // apps/cli/dist/project-models.js
@@ -8826,7 +9047,7 @@ function errorMessage8(error) {
 }
 async function readOptionalFile(filePath) {
   try {
-    return await readFile9(filePath, "utf8");
+    return await readFile10(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -9285,12 +9506,12 @@ CREATE INDEX IF NOT EXISTS chat_messages_session_id_idx
 var eventRowid = sql`rowid`;
 
 // packages/session/dist/sqlite.js
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 import Database from "better-sqlite3";
 import { and, asc, desc, eq, sql as sql2 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 function defaultSessionDbPath(agentDir) {
-  return join7(agentDir, "sessions.db");
+  return join8(agentDir, "sessions.db");
 }
 var CHAT_TITLE_MAX = 60;
 function chatTitleFrom(instruction) {
@@ -10040,7 +10261,7 @@ async function runExplainCommand(taskId, options, deps = {}) {
 }
 
 // apps/cli/dist/init.js
-import { cp, readFile as readFile10, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+import { cp, readFile as readFile11, rm as rm2, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
 import path5 from "node:path";
 import { fileURLToPath } from "node:url";
 var TEMPLATE_RELATIVE = ["templates", "default", ".agent"];
@@ -10091,6 +10312,59 @@ function seedModelsInto(templateYaml, config) {
     ...lines.slice(end)
   ].join("\n");
 }
+var VALIDATOR_SCRIPT_NAMES = ["typecheck", "test", "lint"];
+async function detectValidatorCommands(cwd) {
+  let raw;
+  try {
+    raw = await readFile11(path5.join(cwd, "package.json"), "utf8");
+  } catch {
+    return [];
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const scripts = typeof parsed === "object" && parsed !== null && "scripts" in parsed && typeof parsed.scripts === "object" && parsed.scripts !== null ? parsed.scripts ?? {} : {};
+  const detected = [];
+  for (const name of VALIDATOR_SCRIPT_NAMES) {
+    const command = scripts[name];
+    if (typeof command !== "string" || command.trim() === "")
+      continue;
+    detected.push({
+      name,
+      command: name === "test" ? "npm test" : `npm run ${name}`
+    });
+  }
+  return detected;
+}
+var VALIDATION_UNCOMMENT_MARKER = "# Uncomment and adapt to this repository's actual commands.";
+function renderValidationBlock(validators) {
+  const lines = ["validation:"];
+  for (const validator of validators) {
+    lines.push(`  - name: ${validator.name}`, `    command: ${validator.command}`);
+  }
+  return lines;
+}
+function seedValidatorsInto(templateYaml, validators) {
+  if (validators.length === 0)
+    return templateYaml;
+  const lines = templateYaml.split("\n");
+  const start = lines.findIndex((line) => line.trim() === VALIDATION_UNCOMMENT_MARKER);
+  if (start === -1)
+    return templateYaml;
+  let end = start;
+  while (end < lines.length && (lines[end] ?? "").trimStart().startsWith("#")) {
+    end += 1;
+  }
+  return [
+    ...lines.slice(0, start),
+    "",
+    ...renderValidationBlock(validators),
+    ...lines.slice(end)
+  ].join("\n");
+}
 var GITIGNORE_ENTRIES = [
   ".agent/sessions.db*",
   ".agent/worktrees/"
@@ -10100,7 +10374,7 @@ async function ensureGitignoreEntries(cwd) {
   const gitignorePath = path5.join(cwd, ".gitignore");
   let existing = "";
   try {
-    existing = await readFile10(gitignorePath, "utf8");
+    existing = await readFile11(gitignorePath, "utf8");
   } catch {
   }
   const present2 = new Set(existing.split("\n").map((line) => line.trim()));
@@ -10160,14 +10434,24 @@ async function runInit(options) {
   console.log(`Created ${target}`);
   console.log(`  (from ${templateDir})`);
   const config = options.config;
-  if (config !== void 0) {
+  try {
     const configPath = path5.join(target, "config.yaml");
-    try {
-      const template = await readFile10(configPath, "utf8");
-      await writeFile4(configPath, seedModelsInto(template, config), "utf8");
+    let seeded = await readFile11(configPath, "utf8");
+    let changed = false;
+    if (config !== void 0) {
+      seeded = seedModelsInto(seeded, config);
+      changed = true;
       console.log("  (models seeded from your kapel configuration)");
-    } catch {
     }
+    const validators = await detectValidatorCommands(options.cwd);
+    if (validators.length > 0) {
+      seeded = seedValidatorsInto(seeded, validators);
+      changed = true;
+      console.log(`  (validation enabled from package.json: ${validators.map((validator) => validator.name).join(", ")})`);
+    }
+    if (changed)
+      await writeFile4(configPath, seeded, "utf8");
+  } catch {
   }
   try {
     const added = await ensureGitignoreEntries(options.cwd);
@@ -10479,7 +10763,7 @@ function createCheckpointStore(options) {
 }
 
 // apps/cli/dist/commands.js
-import { readdir as readdir4, readFile as readFile11 } from "node:fs/promises";
+import { readdir as readdir4, readFile as readFile12 } from "node:fs/promises";
 import path7 from "node:path";
 import { parse as parseYaml3 } from "yaml";
 var CUSTOM_COMMAND_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -10565,7 +10849,7 @@ async function loadCustomCommands(workspacePath, builtinNames) {
     const filePath = path7.join(commandsDir, fileName);
     let raw;
     try {
-      raw = await readFile11(filePath, "utf8");
+      raw = await readFile12(filePath, "utf8");
     } catch (error) {
       warnings.push(`skipping ${displayPath}: ${errorMessage9(error)}`);
       continue;
@@ -10649,7 +10933,7 @@ function createDelegatedChatSession(options) {
 }
 
 // apps/cli/dist/history.js
-import { mkdir as mkdir5, readFile as readFile12, writeFile as writeFile5 } from "node:fs/promises";
+import { mkdir as mkdir5, readFile as readFile13, writeFile as writeFile5 } from "node:fs/promises";
 import path8 from "node:path";
 var HISTORY_LIMIT = 1e3;
 var TRIM_THRESHOLD = HISTORY_LIMIT * 2;
@@ -10659,7 +10943,7 @@ function historyFilePath(env) {
 async function loadHistory(env) {
   let raw;
   try {
-    raw = await readFile12(historyFilePath(env), "utf8");
+    raw = await readFile13(historyFilePath(env), "utf8");
   } catch {
     return [];
   }
@@ -10681,7 +10965,7 @@ function createHistoryAppender(env) {
   }
   async function currentLineCount() {
     try {
-      const raw = await readFile12(filePath, "utf8");
+      const raw = await readFile13(filePath, "utf8");
       return raw.split("\n").filter((line) => line.trim() !== "").length;
     } catch {
       return 0;
@@ -10702,7 +10986,7 @@ function createHistoryAppender(env) {
   async function trim() {
     let raw;
     try {
-      raw = await readFile12(filePath, "utf8");
+      raw = await readFile13(filePath, "utf8");
     } catch {
       return;
     }
@@ -10998,7 +11282,7 @@ ${instructions.text}`;
 
 // apps/cli/dist/mention.js
 import { execFile as execFile9 } from "node:child_process";
-import { readdir as readdir5, stat as stat6 } from "node:fs/promises";
+import { readdir as readdir5, readFile as readFile14, stat as stat6 } from "node:fs/promises";
 import path10 from "node:path";
 import { promisify as promisify6 } from "node:util";
 var execFileAsync6 = promisify6(execFile9);
@@ -11213,13 +11497,118 @@ async function resolveMentions(text2, exists) {
 function mentionAnnotation(paths) {
   return `[mentioned files: ${paths.join(", ")}]`;
 }
-async function annotateMentions(text2, exists) {
-  const paths = await resolveMentions(text2, exists);
-  if (paths.length === 0)
-    return text2;
-  return `${text2}
+function imageAnnotation(paths) {
+  return `[attached images: ${paths.join(", ")}]`;
+}
+var MAX_MENTION_IMAGES = 4;
+var MAX_MENTION_IMAGE_BYTES = 5 * 1024 * 1024;
+function formatBytes(count) {
+  if (count < 1024 * 1024)
+    return `${(count / 1024).toFixed(1)} KiB`;
+  return `${(count / (1024 * 1024)).toFixed(1)} MiB`;
+}
+async function resolveWorkspaceImage(root, relativePath, maxBytes) {
+  const resolved = path10.resolve(root, relativePath);
+  if (resolved !== root && !resolved.startsWith(root + path10.sep)) {
+    return { error: "it is outside this workspace" };
+  }
+  try {
+    const info = await stat6(resolved);
+    if (!info.isFile())
+      return { error: "it is not a file" };
+    if (info.size > maxBytes) {
+      return {
+        error: `it is ${formatBytes(info.size)}, over the ${formatBytes(maxBytes)} per-image limit`
+      };
+    }
+    return { path: resolved };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+function workspaceImageReader(workspacePath, maxBytes = MAX_MENTION_IMAGE_BYTES) {
+  const root = path10.resolve(workspacePath);
+  return async (relativePath) => {
+    const resolved = await resolveWorkspaceImage(root, relativePath, maxBytes);
+    if ("error" in resolved)
+      return resolved;
+    try {
+      return { bytes: await readFile14(resolved.path), path: resolved.path };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  };
+}
+function workspaceImagePathReader(workspacePath, maxBytes = MAX_MENTION_IMAGE_BYTES) {
+  const root = path10.resolve(workspacePath);
+  return async (relativePath) => await resolveWorkspaceImage(root, relativePath, maxBytes);
+}
+async function prepareMentions(text2, options) {
+  const resolved = await resolveMentions(text2, options.exists);
+  const maxImages = options.maxImages ?? MAX_MENTION_IMAGES;
+  const readImage = options.readImage;
+  const listed = [];
+  const imageMentions = [];
+  const attachedNames = [];
+  const images = [];
+  const imagePaths = [];
+  const notices = [];
+  const skip = (relativePath, reason) => {
+    if (reason !== void 0) {
+      notices.push(`note: @${relativePath} was not attached \u2014 ${reason}.`);
+    }
+    listed.push(relativePath);
+  };
+  for (const relativePath of resolved) {
+    const extensionType = mediaTypeFromExtension(relativePath);
+    if (extensionType === void 0) {
+      listed.push(relativePath);
+      continue;
+    }
+    imageMentions.push(relativePath);
+    if (readImage === void 0) {
+      listed.push(relativePath);
+      continue;
+    }
+    if (attachedNames.length >= maxImages) {
+      skip(relativePath, `at most ${maxImages} image${maxImages === 1 ? "" : "s"} can ride with one message`);
+      continue;
+    }
+    const read = await readImage(relativePath);
+    if ("error" in read) {
+      skip(relativePath, read.error);
+      continue;
+    }
+    const bytes = read.bytes;
+    if (bytes !== void 0) {
+      images.push({
+        // A `.png` that is really a JPEG is declared as what it is; a format
+        // the sniffer's small table does not cover falls back to the extension
+        // that got it this far.
+        mediaType: sniffImageMediaType(bytes) ?? extensionType,
+        base64: Buffer.from(bytes).toString("base64"),
+        path: read.path
+      });
+    }
+    imagePaths.push(read.path);
+    attachedNames.push(relativePath);
+  }
+  const blocks = [];
+  if (listed.length > 0)
+    blocks.push(mentionAnnotation(listed));
+  if (attachedNames.length > 0)
+    blocks.push(imageAnnotation(attachedNames));
+  return {
+    instruction: blocks.length === 0 ? text2 : `${text2}
 
-${mentionAnnotation(paths)}`;
+${blocks.join("\n")}`,
+    images,
+    imagePaths,
+    imageMentions,
+    notices
+  };
 }
 
 // apps/cli/dist/orchestrate.js
@@ -12205,8 +12594,15 @@ async function worktreeIsolationError(workspacePath) {
     return `--isolation worktree needs ${workspacePath} to be a git repository with at least one commit, and \`git rev-parse HEAD\` failed there. Commit something first, or re-run with --isolation none.`;
   }
 }
+function delegatedWorkerUsageSink(backend, usage) {
+  return {
+    recorder: usage,
+    modelFor: (model) => delegatedModelIdentity(backend, model)
+  };
+}
 async function workspaceExecutorFactory(args) {
   const { runId, events: events2, taskTimeoutMs } = args;
+  const handoff = args.project.handoff;
   if (args.backend === "claude-code") {
     const availability = await ClaudeCodeBackend.checkAvailability();
     if (!availability.installed) {
@@ -12217,12 +12613,15 @@ async function workspaceExecutorFactory(args) {
     }
     const resolveAgentModel = createDelegatedModelResolver(args.project);
     const resolveAgentTools = createDelegatedToolsResolver(args.project);
+    const usage = delegatedWorkerUsageSink("claude-code", args.usage);
     return (workspacePath) => new ClaudeCodeWorkerExecutor({
       workspacePath,
       runId,
       events: events2,
       resolveAgentModel,
       resolveAgentTools,
+      usage,
+      handoff,
       ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
     });
   }
@@ -12235,11 +12634,14 @@ async function workspaceExecutorFactory(args) {
       throw new Error(codexLoginGuidance(availability));
     }
     const resolveAgentModel = createDelegatedModelResolver(args.project);
+    const usage = delegatedWorkerUsageSink("codex", args.usage);
     return (workspacePath) => new CodexWorkerExecutor({
       workspacePath,
       runId,
       events: events2,
       resolveAgentModel,
+      usage,
+      handoff,
       ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs }
     });
   }
@@ -12251,6 +12653,7 @@ async function workspaceExecutorFactory(args) {
     runId,
     events: events2,
     usage: args.usage,
+    handoff,
     ...taskTimeoutMs === void 0 ? {} : { taskTimeoutMs },
     ...args.maxIterations === void 0 ? {} : { maxIterations: args.maxIterations }
   });
@@ -12431,6 +12834,9 @@ async function executePreparedPlan(request, deps = {}) {
     await recordRunStatus(store, runId, "failed");
     return 1;
   };
+  for (const warning of request.project.handoff?.warnings ?? []) {
+    output.error(`Note: ${warning}`);
+  }
   let executor;
   try {
     executor = await (deps.executorFactory ?? defaultExecutorFactory)({
@@ -12610,12 +13016,12 @@ async function loadRepoPermissionRules(workspacePath) {
 }
 
 // apps/cli/dist/resume-cmd.js
-import { readFile as readFile13 } from "node:fs/promises";
+import { readFile as readFile15 } from "node:fs/promises";
 import path11 from "node:path";
 var LOCK_FILE_NAME2 = "orchestration.lock.json";
 async function readOptionalFile2(filePath) {
   try {
-    return await readFile13(filePath, "utf8");
+    return await readFile15(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -12818,7 +13224,7 @@ async function runRunsCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.8.2";
+var CLI_VERSION = "0.9.0";
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
 function shortId2(id) {
@@ -12828,7 +13234,7 @@ function toChatLike(session) {
   if ("toModelMessages" in session)
     return session;
   return {
-    send: (instruction, context) => session.send(instruction, context),
+    send: (instruction, context, images) => session.send(instruction, context, images),
     toModelMessages: () => session.messages(),
     ...session.compactNow === void 0 ? {} : {
       compactNow: (context) => (
@@ -13122,6 +13528,31 @@ async function createInteractiveController(deps) {
     lines.length = 0;
     return effect === void 0 ? { output } : { output, effect };
   };
+  const registerSession = async (label) => {
+    if (persisted)
+      return true;
+    const store = deps.store;
+    if (store === void 0)
+      return false;
+    if (title === "" && label !== void 0)
+      title = chatTitleFrom(label);
+    try {
+      await store.createChatSession({
+        id: sessionId,
+        workspacePath: deps.workspacePath,
+        title,
+        ...sessionName === void 0 ? {} : { name: sessionName },
+        modelAlias,
+        createdAt: now()
+      });
+      persisted = true;
+      titleDirty = false;
+      return true;
+    } catch (error) {
+      emit2(`(not saved: ${errorText2(error)})`);
+      return false;
+    }
+  };
   const persist = async () => {
     const store = deps.store;
     if (store === void 0)
@@ -13129,18 +13560,10 @@ async function createInteractiveController(deps) {
     const snapshot = chat.toModelMessages();
     if (snapshot.length === 0)
       return;
+    if (!await registerSession())
+      return;
     try {
-      if (!persisted) {
-        await store.createChatSession({
-          id: sessionId,
-          workspacePath: deps.workspacePath,
-          title,
-          modelAlias,
-          createdAt: now()
-        });
-        persisted = true;
-        titleDirty = false;
-      } else if (titleDirty) {
+      if (titleDirty) {
         await store.setChatSessionTitle(sessionId, title);
         titleDirty = false;
       }
@@ -13154,6 +13577,9 @@ async function createInteractiveController(deps) {
     await build(chat.toModelMessages(), sessionRef);
   };
   const fileExists = deps.fileExists ?? ((relativePath) => workspaceFileExists(deps.workspacePath, relativePath));
+  const readImage = deps.readImage ?? workspaceImageReader(deps.workspacePath);
+  const readImagePath = deps.readImagePath ?? workspaceImagePathReader(deps.workspacePath);
+  const imageReaderForTurn = () => backend === "native" ? readImage : readImagePath;
   const handleMessage = async (text2, signal) => {
     const checkpointWarning = await deps.checkpoints?.capture(text2);
     if (checkpointWarning !== void 0)
@@ -13162,15 +13588,20 @@ async function createInteractiveController(deps) {
       title = chatTitleFrom(text2);
       titleDirty = true;
     }
-    const instruction = await annotateMentions(text2, fileExists);
+    const prepared = await prepareMentions(text2, {
+      exists: fileExists,
+      readImage: imageReaderForTurn()
+    });
+    for (const notice of prepared.notices)
+      emit2(notice);
     const before = deps.usage.totals();
     let result;
     try {
-      result = await chat.send(instruction, {
+      result = await chat.send(prepared.instruction, {
         runId: sessionId,
         workspacePath: deps.workspacePath,
         ...signal === void 0 ? {} : { signal }
-      });
+      }, prepared.images, prepared.imagePaths);
     } catch (error) {
       emit2(`error: ${errorText2(error)}`);
     }
@@ -13296,24 +13727,16 @@ async function createInteractiveController(deps) {
       emit2(`named "${sessionName}" for this run (not persisted \u2014 sessions are not being recorded, --no-save).`);
       return drain();
     }
-    try {
-      if (!persisted) {
-        await deps.store.createChatSession({
-          id: sessionId,
-          workspacePath: deps.workspacePath,
-          title,
-          name: sessionName,
-          modelAlias,
-          createdAt: now()
-        });
-        persisted = true;
-        titleDirty = false;
-      } else {
+    if (!persisted) {
+      if (!await registerSession())
+        return drain();
+    } else {
+      try {
         await deps.store.renameChatSession(sessionId, sessionName);
+      } catch (error) {
+        emit2(`(not saved: ${errorText2(error)})`);
+        return drain();
       }
-    } catch (error) {
-      emit2(`(not saved: ${errorText2(error)})`);
-      return drain();
     }
     emit2(`named "${sessionName}"`);
     return drain("renamed");
@@ -13439,6 +13862,9 @@ async function createInteractiveController(deps) {
     return drain();
   };
   const replOutput = { log: emit2, error: emit2 };
+  const registerForRun = async (label) => {
+    await registerSession(label);
+  };
   const slashPlan = async (objective) => {
     if (deps.plan === void 0) {
       emit2("/plan is not available here.");
@@ -13476,6 +13902,7 @@ async function createInteractiveController(deps) {
       emit2("usage: /resume-run <runId>  \u2014 see /runs");
       return drain();
     }
+    await registerForRun(`/resume-run ${runId}`);
     try {
       await deps.resumeRun(runId, replOutput);
     } catch (error) {
@@ -13492,6 +13919,7 @@ async function createInteractiveController(deps) {
       emit2('usage: /orchestrate "<objective>"');
       return drain();
     }
+    await registerForRun(objective);
     try {
       const code = await deps.orchestrate(objective);
       if (code !== 0)
@@ -13784,10 +14212,13 @@ async function runInteractive(options) {
         ...options.timeoutSeconds === void 0 ? {} : { timeoutMs: options.timeoutSeconds * 1e3 }
       });
       return {
-        send: async (instruction, context) => {
+        // `images` (bytes) is ignored here on purpose: a delegated turn
+        // attaches by path, and the controller only ever fills in one of the
+        // two for a given backend.
+        send: async (instruction, context, _images, imagePaths) => {
           const result = await chat.send(instruction, {
             ...context.signal === void 0 ? {} : { signal: context.signal }
-          });
+          }, imagePaths);
           delegatedUsageFor(target).add(result);
           return result;
         },
@@ -13985,7 +14416,7 @@ function resumeOptionsFor(options, backend) {
 }
 
 // apps/cli/dist/policy.js
-import { readFile as readFile14, writeFile as writeFile6 } from "node:fs/promises";
+import { readFile as readFile16, writeFile as writeFile6 } from "node:fs/promises";
 import path13 from "node:path";
 var consoleOutput2 = {
   log: (line) => console.log(line),
@@ -13999,7 +14430,7 @@ function jsonLine3(output, value) {
 }
 async function readOptionalFile3(filePath) {
   try {
-    return await readFile14(filePath, "utf8");
+    return await readFile16(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -14015,6 +14446,21 @@ function printLocatedList(output, label, located) {
 }
 function jsonLocations(messages, markdown) {
   return locateIssues(messages, markdown).map((issue) => issue.location ?? null);
+}
+function orchestratorTargetWarnings(policy, project) {
+  const isOrchestratorRole = (name) => project.agent(name)?.role === "orchestrator";
+  const warnings = [];
+  for (const rule of policy.routing) {
+    if (isOrchestratorRole(rule.agent)) {
+      warnings.push(`warning: routing rule ${rule.id} targets "${rule.agent}", an orchestrator-role agent \u2014 under codex/claude-code backends it runs without tool scoping`);
+    }
+  }
+  for (const rule of policy.escalation) {
+    if (isOrchestratorRole(rule.toAgent)) {
+      warnings.push(`warning: escalation rule ${rule.id} targets "${rule.toAgent}", an orchestrator-role agent \u2014 under codex/claude-code backends it runs without tool scoping`);
+    }
+  }
+  return warnings;
 }
 async function loadProjectForPolicy(workspacePath, output, json) {
   let project;
@@ -14157,7 +14603,8 @@ async function runPolicyCompile(options, deps = {}) {
   await writeFile6(lockPath, serialized, "utf8");
   const warnings = [
     ...result.warnings,
-    ...validationWarnings.map((issue) => issue.message)
+    ...validationWarnings.map((issue) => issue.message),
+    ...orchestratorTargetWarnings(result.policy, project)
   ];
   const ambiguities = result.ambiguities;
   if (options.json) {
@@ -14353,6 +14800,10 @@ async function runPolicyDiff(options, deps = {}) {
     throw error;
   }
   const diff = diffPolicies(existingLock.policy, result.policy);
+  const warnings = [
+    ...result.warnings,
+    ...orchestratorTargetWarnings(result.policy, project)
+  ];
   if (options.json) {
     jsonLine3(output, {
       ok: true,
@@ -14361,7 +14812,7 @@ async function runPolicyDiff(options, deps = {}) {
       routing: diff.routing,
       review: diff.review,
       escalation: diff.escalation,
-      warnings: result.warnings,
+      warnings,
       ambiguities: result.ambiguities
     });
     return 0;
@@ -14373,7 +14824,7 @@ async function runPolicyDiff(options, deps = {}) {
       output.log(line);
   }
   output.log(policyUsageLine(usage.totals(), delegatedTo));
-  printLocatedList(output, "Warnings", locateIssues(result.warnings, markdown));
+  printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(result.ambiguities, markdown));
   output.log("");
   output.log("Run `kapel policy compile` to update the lock.");
