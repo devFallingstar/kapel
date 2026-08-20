@@ -6,10 +6,10 @@ The strongest model plans and delegates work; cheaper or specialized workers exe
 
 ## Quickstart
 
-Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the packed tarball in this repo (identical on Windows cmd, macOS, and Linux — no build step):
+Like other terminal coding agents, `kapel` runs inside the repository you want it to work on. Install it globally from the npm registry (identical on Windows cmd, macOS, and Linux — no build step):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.8.2.tgz
+npm install -g @devfallingstar/kapel
 
 cd /path/to/your/repo
 kapel                                 # first run asks which backend and models to use
@@ -28,9 +28,10 @@ answers in
 redirected or `--no-setup` runs skip it and fall back to environment variables
 and defaults, so nothing in CI ever blocks on a prompt.
 
-Once published to the npm registry this becomes simply `npm install -g @devfallingstar/kapel`.
-If the tarball URL is unreachable from your network, the equivalent two-step
-form is `git clone
+If the npm registry is unreachable from your network, the same package ships
+as a committed tarball in this repo: `npm install -g
+https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.8.2.tgz`,
+or the two-step form `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
 ./kapel-src/release/devfallingstar-kapel-0.8.2.tgz`.
 
@@ -155,7 +156,12 @@ kapel chat --no-save            # …or don't record this one at all
 
 `kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`) work the same either way.
 
-Images cannot be attached to a turn yet. `@` mentions name a file for the agent to read; there is no path from the prompt to an image attachment, and the `-i/--image` flag that used to exist only ever worked for a one-shot run.
+Images attach through `@` mentions: `@screenshot.png` in a message sends the
+image itself alongside your text — up to 4 images of 5 MiB each per turn
+(png/jpg/jpeg/gif/webp). Anything over a limit, or unreadable, is reported in
+the REPL and sent as a path instead, and the turn always goes. Native backend
+only for now: under `--backend codex`/`claude-code` the REPL says so in one
+line and sends the path.
 
 ### Commands on the shell
 

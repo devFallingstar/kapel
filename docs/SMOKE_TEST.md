@@ -315,19 +315,23 @@ kapel
 (`$KAPEL_CONFIG_DIR` 우선, 머신/사용자 전역 규칙)도 같은 방식으로 합쳐지며,
 존재하는 파일만 배너에 나열됩니다 — 아무 파일도 없으면 그 줄 자체가 생략됩니다.
 
-## 2.6. 이미지 첨부 — 현재 미지원
+## 2.6. 이미지 첨부 — `@` 멘션
 
-이미지 첨부는 단발 실행의 `-i/--image` 플래그로만 가능했고, 그 플래그는
-제거되었습니다. REPL의 `@` 멘션은 에이전트가 `read_file`로 직접 읽도록 파일
-**경로**를 알려 줄 뿐이라 이미지 첨부 경로가 아닙니다.
+이미지는 REPL의 `@` 멘션으로 첨부합니다. 메시지에 `@screenshot.png`처럼
+이미지 파일(png/jpg/jpeg/gif/webp)을 멘션하면 경로가 아니라 **이미지 자체**가
+그 턴에 실려 전송됩니다. 한 턴에 최대 4장, 장당 5 MiB.
 
-```bash
-kapel -i ./screenshot.png    # error: unknown option '-i'
+```text
+kapel> @screenshot.png 이 화면에서 뭐가 잘못됐어?
 ```
 
-**기대 동작**: 위 한 줄과 종료 코드 1. 프로바이더 계층(`@agent/ai`)의 비전
-입력 지원 자체는 그대로 남아 있으므로, 프롬프트에서 이미지를 붙이는 기능이
-생기면 그 위에 얹으면 됩니다.
+**기대 동작**: 프롬프트에 `[attached images: screenshot.png]`가 표시되고
+모델이 이미지 내용을 근거로 답합니다. 한도 초과·읽기 실패 시에는
+`note: @huge.png was not attached — …` 안내 후 경로 멘션으로 강등되어 턴은
+그대로 전송됩니다. 네이티브 백엔드 전용: `--backend codex`/`claude-code`에서는
+한 줄 안내(`images are not supported on the codex backend yet — sent as file
+paths.`)와 함께 경로만 전달됩니다. 원샷 플래그는 여전히 없습니다
+(`kapel -i x.png` → `error: unknown option '-i'`, 종료 코드 1).
 
 ## 2.7. 시나리오 A-3 — 커스텀 슬래시 명령 (P1-4)
 

@@ -1,84 +1,51 @@
 # Future work
 
-Known gaps and follow-ups as of v0.8.2, collected from the v0.8.0 field test,
-the v0.8.1 regression pass, and decisions deliberately deferred during the
-REPL-first conversion. Ordered by expected user impact, not effort.
+Known gaps as of the post-v0.8.2 future-work batch. Everything the original
+v0.8.2 list contained has shipped except the items below; the shipped set is
+recorded at the bottom so the history stays legible.
 
-## High impact
+## Remaining
 
-### 1. Image attachments in the REPL
-Removing the one-shot `-i/--image` flag removed image input entirely: `@`
-mentions pass file *paths* into the prompt, never bytes, and neither the
-native chat session nor the delegated ones accept attachments on a turn.
-The provider layer (`@agent/ai`) still supports vision content, so the
-missing piece is prompt-side: a way to attach an image to a REPL turn
-(e.g. `@photo.png` detecting an image extension and inlining it, subject
-to the old size/count limits). Documented as unsupported in README and
-`docs/SMOKE_TEST.md` §2.6 until then.
+### 1. Image attachments on delegated backends
+`@` mentions attach real image bytes on the native backend. The delegated
+chat contract (`BackendTurnRequest` → `backendTurnRunner`) has no attachment
+channel: Claude Code's `-p` refuses image input outright, and while the
+Codex CLI's `-i <path>` could carry one, wiring it means extending the turn
+contract for one of two backends. The seam is documented on
+`BackendTurnRequest` in `packages/coding-agent/src/backend-chat.ts`; until
+then the REPL says so in one line and sends the path.
 
-### 2. Worker token usage attribution on delegated backends
-The usage ledger records planner and policy-compile spend for delegated
-runs (per attempt, pass-through of what the CLI reported), but **worker**
-usage never reaches it: `CodexRunResult`/`ClaudeCodeRunResult` carry token
-counts that the worker executors drop. The end-of-run rollup then shows
-`0 tasks · … · n/a` next to a completed run, which reads as a bug. Wire
-worker-reported usage into the per-task ledger the same way
-`recordDelegatedUsage` does for planning, tagged by agent and task.
+### 2. Codex parity limits
+Codex owns its sandbox, so per-agent `tools:` scoping is ignored and project
+validators are skipped under `--backend codex` (both documented). Revisit
+when the Codex CLI grows the hooks; until then the asymmetry with
+claude-code (which scopes tools and runs validators) stays loudly
+documented.
 
-### 3. Claude Code workers cannot run checks
-Worker subprocesses run with `permissionMode: "acceptEdits"`, which
-auto-approves edits but not Bash. The template agent prompts say "run
-relevant checks", so workers report they could not verify their change.
-Options: expose a per-run or per-agent permission mode, promote the
-project's `validation:` block (currently commented out in the template)
-to an enabled-by-default example, or grant Bash for the project's own
-check commands only. Until then validators are the honest gate.
+## Shipped since the original list (post-v0.8.2 batch)
 
-## Medium impact
-
-### 4. Orchestrator-tier agents as escalation targets
-The default ladder now stops at `senior` (v0.8.2), but a *custom* policy
-may still name `lead` (role: orchestrator) as an escalation or routing
-target. Under a delegated backend `lead`'s `tools:` (`task.*`, `plan.*`,
-…) map to no Claude Code tool, so it runs with the CLI's unscoped default
-toolset and can stall on an approval prompt, ending the task `partial`.
-Either give orchestrator-role agents a real worker-facing tool mapping
-when they are dispatched as workers, or reject/warn at policy-compile
-time when a delegated run routes work to an orchestrator-role agent.
-
-### 5. Codex parity limits
-Codex owns its sandbox, so per-agent `tools:` scoping is ignored and
-project validators are skipped under `--backend codex` (both documented).
-Revisit when the Codex CLI grows the hooks; until then the asymmetry with
-claude-code (which does scope tools and run validators) should stay
-loudly documented.
-
-### 6. Session listing vs. run listing
-A REPL session that only ever ran slash commands (`/orchestrate`, …) is
-not persisted until the first chat message, so `kapel sessions` says
-"No chat sessions recorded yet" while `kapel runs` shows the run. Nothing
-is lost, but the two commands disagree in a way that reads as data loss.
-Persist the session at the first slash command, or say so in the output.
-
-## Low impact / hygiene
-
-### 7. Dirty-base guidance for user files
-The not-merged event now names the offending paths, and kapel's own
-`.agent/` state is exempt. Remaining nicety: when the dirty path is a
-real user file, suggest the fix (commit/stash) in the message.
-
-### 8. Flaky tests
-Two pre-existing flakes observed during regression runs, each passing in
-isolation: `apps/cli/test/history.test.ts` (timing assertion) and
-`packages/workspace/test/worktrees.test.ts` (concurrent git-worktree
-race). Deflake or mark retryable.
-
-### 9. Tooling deprecations
-`biome.json` still uses the deprecated `recommended` field (`biome
-migrate` pending). `/compact` remains native-only by design; the
-delegating CLIs manage their own context.
-
-### 10. Registry publishing
-The README's install path is the committed tarball; `npm publish` of
-`@devfallingstar/kapel` (with `prepublishOnly` already wired) would
-replace it with a normal `npm install -g @devfallingstar/kapel`.
+- **Image attachments in the REPL** — `@` mentions of image files attach the
+  bytes (4 per turn, 5 MiB each), with graceful degradation to path mentions.
+- **Worker token usage attribution on delegated backends** — CLI-reported
+  worker usage lands in the ledger per task/agent; the rollup no longer shows
+  `0 tasks` next to a completed delegated run.
+- **Validators as the check gate** — `kapel init` detects the repo's
+  typecheck/test/lint scripts and seeds an enabled `validation:` block; the
+  worker prompts and briefing now say validators verify the change.
+- **Compile-time warning for orchestrator-role targets** — a routing or
+  escalation rule targeting an orchestrator-role agent warns at
+  `policy compile`/`diff`.
+- **Session listing** — sessions appear in `kapel sessions` from the first
+  `/orchestrate` or `/resume-run`, titled from the objective.
+- **Dirty-base guidance** — the not-merged detail names the paths and the
+  remedy (commit/stash, or gitignore generated files).
+- **Deflaking** — the history test now waits for the settled post-trim state;
+  a real concurrent `git worktree add` race in `create()` is retried on its
+  known-transient signature only.
+- **Tooling** — biome.json migrated to `preset: "recommended"` (not the
+  ruleset-disabling `"none"` that `biome migrate` emitted).
+- **Registry publishing** — already live: `.github/workflows/release.yml`
+  publishes `@devfallingstar/kapel` with provenance on every release push
+  (trigger: `.release` changes on main, `v*` tags, or manual dispatch),
+  using the repo's `NPM_TOKEN` secret. README now leads with the registry
+  install.
