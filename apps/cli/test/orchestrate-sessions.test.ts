@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OrchestrateCommandOptions } from "../src/orchestrate.js";
 import { outcomeLine, runOrchestrate } from "../src/orchestrate.js";
 import { TextRenderer } from "../src/render.js";
-import { sessionDbPathFor } from "../src/sessions.js";
+import { recordRunUsage, sessionDbPathFor } from "../src/sessions.js";
 import {
   CapturingStream,
   capture,
@@ -160,6 +160,72 @@ describe("kapel orchestrate — session persistence", () => {
     } finally {
       store.close();
     }
+  });
+
+  it("lands in the dashboard's activity windows, tasks and all", async () => {
+    const { output } = capture();
+
+    await runOrchestrate("add a health endpoint", options(workspace), {
+      output,
+      renderer: new TextRenderer(new CapturingStream().asStream()),
+      plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+      executorFactory: () => new ScriptedExecutor(new Set(["T02"])),
+    });
+
+    const store = openStore();
+    try {
+      const activity = await store.activity();
+      expect(activity.today.runs).toBe(1);
+      expect(activity.today.tasksCompleted).toBe(1);
+      expect(activity.today.tasksFailed).toBe(1);
+      // Same run, counted once in each window.
+      expect(activity.week.runs).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("files a run's spend against the backend that spent it", async () => {
+    const store = openStore();
+    try {
+      await recordRunUsage(
+        store,
+        "run-x",
+        { usage: { inputTokens: 400, outputTokens: 90 }, costUsd: 0 },
+        "codex",
+      );
+      const totals = await store.activityTotals({ since: 0 });
+      expect(totals.inputTokens).toBe(400);
+      expect(totals.outputTokens).toBe(90);
+      // A delegated backend bills a subscription: no price is claimed.
+      expect(totals.costUsd).toBeUndefined();
+      expect(await store.usageByBackend({ since: 0 })).toEqual([
+        { backend: "codex", inputTokens: 400, outputTokens: 90 },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("swallows a store that refuses the receipt", async () => {
+    const store = openStore();
+    store.close();
+    // A closed store throws on write; a completed run must not fail because
+    // its receipt could not be filed.
+    await expect(
+      recordRunUsage(
+        store,
+        "run-x",
+        { usage: { inputTokens: 1, outputTokens: 1 }, costUsd: 0 },
+        "native",
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      recordRunUsage(undefined, "run-x", {
+        usage: { inputTokens: 1, outputTokens: 1 },
+        costUsd: 0,
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("--no-save leaves no database behind", async () => {

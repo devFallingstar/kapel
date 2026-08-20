@@ -26,6 +26,7 @@ import type {
 } from "../src/interactive.js";
 import {
   approvalsLine,
+  bannerHints,
   bannerModel,
   createInteractiveController,
   sumTotals,
@@ -539,6 +540,18 @@ describe("delegated helpers", () => {
     expect(bannerModel("codex", "default")).toBe("codex · default");
     expect(approvalsLine("codex")).toContain("Codex CLI");
     expect(approvalsLine("claude-code")).toContain("Claude Code CLI");
+  });
+
+  it("shares its tail with the dashboard opening, approvals line included", () => {
+    // Both openings print `bannerHints`, so the plain banner and the boxed
+    // dashboard can never disagree about who enforces approvals.
+    expect(bannerHints("native").join("\n")).not.toContain("approvals");
+    expect(bannerHints("codex")[0]).toBe(approvalsLine("codex"));
+    for (const backend of ["native", "codex"] as const) {
+      expect(bannerHints(backend)).toContain(
+        "type /help for commands, /exit to quit",
+      );
+    }
   });
 
   it("keeps a delegated transcript in the shape the store persists", () => {

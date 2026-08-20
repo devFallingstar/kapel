@@ -45,6 +45,7 @@ import {
   slashCompleter,
   usageDeltaLine,
   usageTotalsLine,
+  withDeadline,
 } from "../src/interactive.js";
 import type { FileLister, MentionImageReader } from "../src/mention.js";
 import type { ProjectSetupState, SetupOutput } from "../src/onboard.js";
@@ -957,6 +958,141 @@ describe("interactive controller — slash commands", () => {
 });
 
 // --- /login -------------------------------------------------------------
+
+describe("withDeadline", () => {
+  it("resolves with the value when it arrives in time", async () => {
+    await expect(
+      withDeadline(Promise.resolve("fast"), 50, "late"),
+    ).resolves.toBe("fast");
+  });
+
+  it("resolves with the fallback when it does not", async () => {
+    const slow = new Promise<string>((resolve) => {
+      const timer = setTimeout(() => resolve("slow"), 500);
+      timer.unref?.();
+    });
+    await expect(withDeadline(slow, 5, "late")).resolves.toBe("late");
+  });
+
+  it("treats a rejection as the fallback rather than a failure", async () => {
+    await expect(
+      withDeadline(Promise.reject(new Error("nope")), 50, "late"),
+    ).resolves.toBe("late");
+  });
+});
+
+describe("interactive controller — /stats", () => {
+  it("says so when nothing is wired, like /config with no configure", async () => {
+    const h = await harness();
+    expect((await h.controller.handleLine("/stats")).output).toEqual([
+      "/stats is not available here.",
+    ]);
+  });
+
+  it("prints whatever the dashboard renders", async () => {
+    const h = await harness({
+      dashboard: async () => ["╭──╮", "│  │", "╰──╯"],
+    });
+    expect((await h.controller.handleLine("/stats")).output).toEqual([
+      "╭──╮",
+      "│  │",
+      "╰──╯",
+    ]);
+  });
+
+  it("re-renders on every call rather than replaying the first one", async () => {
+    let calls = 0;
+    const h = await harness({
+      dashboard: async () => {
+        calls += 1;
+        return [`render ${calls}`];
+      },
+    });
+    expect((await h.controller.handleLine("/stats")).output).toEqual([
+      "render 1",
+    ]);
+    expect((await h.controller.handleLine("/stats")).output).toEqual([
+      "render 2",
+    ]);
+  });
+
+  it("tells the dashboard which session, backend and model are current", async () => {
+    const seen: unknown[] = [];
+    const h = await harness({
+      dashboard: async (context) => {
+        seen.push(context);
+        return [];
+      },
+    });
+    await h.controller.handleLine("/stats");
+    expect(seen).toEqual([
+      {
+        sessionId: h.controller.sessionId(),
+        backend: "native",
+        modelAlias: "claude-sonnet-5",
+      },
+    ]);
+
+    await h.controller.handleLine("/model gpt-mini");
+    await h.controller.handleLine("/stats");
+    expect(seen[1]).toMatchObject({ modelAlias: "gpt-mini" });
+  });
+
+  it("is offered by /help and by tab completion", async () => {
+    const h = await harness();
+    const help = (await h.controller.handleLine("/help")).output.join("\n");
+    expect(help).toContain("/stats");
+    expect(slashCompleter("/sta")[0]).toEqual(["/stats"]);
+  });
+});
+
+describe("interactive controller — recorded usage", () => {
+  it("files each turn's spend, as a delta, against the session", async () => {
+    const h = await harness();
+    const spend = (input: number, output: number, cost: number): void => {
+      h.usage.inputTokens += input;
+      h.usage.outputTokens += output;
+      h.usage.costUsd += cost;
+    };
+
+    h.session().onSend = () => spend(100, 20, 0.5);
+    await h.controller.handleLine("first");
+    h.session().onSend = () => spend(80, 5, 0.4);
+    await h.controller.handleLine("second");
+
+    const totals = await h.store.activityTotals({ since: 0 });
+    // The rows are per-turn deltas, so they sum back to the running total.
+    expect(totals.inputTokens).toBe(180);
+    expect(totals.outputTokens).toBe(25);
+    expect(totals.costUsd).toBeCloseTo(0.9, 10);
+
+    const byBackend = await h.store.usageByBackend({ since: 0 });
+    expect(byBackend).toEqual([
+      {
+        backend: "native",
+        inputTokens: 180,
+        outputTokens: 25,
+        costUsd: 0.9,
+      },
+    ]);
+  });
+
+  it("records nothing for a turn that spent nothing", async () => {
+    const h = await harness();
+    await h.controller.handleLine("hello");
+    expect((await h.store.activityTotals({ since: 0 })).inputTokens).toBe(0);
+    expect(await h.store.usageByBackend({ since: 0 })).toEqual([]);
+  });
+
+  it("still answers the turn when there is no store to record into", async () => {
+    const h = await harness({ store: undefined });
+    h.session().onSend = () => {
+      h.usage.inputTokens += 10;
+    };
+    const result = await h.controller.handleLine("hello");
+    expect(result.output.at(-1)).toContain("tokens +10 in");
+  });
+});
 
 describe("interactive controller — /login", () => {
   it("says so when nothing is wired, like /config with no configure", async () => {
@@ -2008,6 +2144,7 @@ describe("slashCompleter", () => {
       "/config",
       "/login",
       "/usage",
+      "/stats",
       "/compact",
       "/undo",
       "/plan",

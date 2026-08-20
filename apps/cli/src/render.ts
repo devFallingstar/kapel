@@ -242,7 +242,16 @@ function firstLine(text: unknown): string {
   return line === undefined ? "(no summary)" : truncate(line, 120);
 }
 
-function ansi(code: string, text: string, enabled: boolean): string {
+/**
+ * Wraps `text` in an SGR escape when `enabled`, and returns it untouched when
+ * not — the one place this file (and the dashboard, which imports it) decides
+ * whether a stream gets control characters at all.
+ *
+ * Exported so `dashboard.ts` styles its box with the same machinery the
+ * transcript is styled with, rather than growing a second, subtly different
+ * idea of what "dim" means.
+ */
+export function ansi(code: string, text: string, enabled: boolean): string {
   return enabled ? `[${code}m${text}[0m` : text;
 }
 

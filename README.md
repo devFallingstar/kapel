@@ -68,8 +68,22 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-kapel v0.9.0  claude-sonnet-5  session 0f3c9a2b
-/path/to/your/repo
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ kapel v0.9.0                                                                                     │
+├─────────────────────────────────────────────────┬────────────────────────────────────────────────┤
+│ setup                                           │ activity                                       │
+│ workspace    /path/to/your/repo                 │ today    1 run · 1 chat                        │
+│ session      0f3c9a2b                           │          2 tasks ok · 1 failed                 │
+│ chat         claude-code · opus                 │          412.0k in · 38.0k out                 │
+│ backends     ✓ claude-code  ! codex  ✗ native   │ 7 days   2 runs · 9 chats                      │
+│                                                 │          2.3M in · 258.0k out  ~$4.21          │
+│ orchestrator claude-code:opus                   │                                                │
+│ complex      claude-code:sonnet                 │ usage (kapel-tracked, 7 days)                  │
+│ middle       codex:gpt-5.1-codex *              │ claude-code  412.0k in · 38.0k out             │
+│ low          native:claude-haiku-5              │ codex        1.9M in · 220.0k out              │
+│                                                 │ native       0 in · 0 out                      │
+│ * from .agent/config.local.json                 │                                                │
+╰─────────────────────────────────────────────────┴────────────────────────────────────────────────╯
 type /help for commands, /exit to quit
 \ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files
 
@@ -91,6 +105,14 @@ kapel> now add a `sub` function next to it, with a test
 …
 kapel> /exit
 ```
+
+**The dashboard.** The opening panel is the answer to "what am I about to spend, and what have I already spent". Its left half is setup: which conversation this is, what it runs on, which backends are logged in (`✓`), installed but logged out (`!`), not installed (`✗`) or still being probed (`…`), and the model each of the four orchestration roles would use, marked `*` where this checkout's `.agent/config.local.json` overrode the machine's answer. Its right half is work done, read out of `.agent/sessions.db`: orchestration runs and chat sessions started, tasks that succeeded and failed, and tokens spent — today, and over the last seven calendar days. A fresh workspace reads `no runs yet` rather than a row of zeroes, and `kapel chat --no-save` says `not recorded` rather than claiming you did nothing.
+
+The panel is redrawn on demand by **`/stats`**, with everything re-read and every backend re-probed — which is also how a `…` cell from startup gets filled in: the login probe spawns each CLI twice, so startup gives it one second and then draws what it has rather than making you wait.
+
+The last block is the honest part. Neither `claude` nor `codex` reports remaining subscription allowance anywhere a program can read it — `claude auth status --json` answers `loggedIn`/`authMethod`/`apiProvider` and nothing about quota, and `codex login status` answers with one line of text; both CLIs show their limits only inside their own interactive session. So kapel does not guess at a percentage or a reset time. What it shows instead is what it watched each backend spend through kapel itself, labelled `usage (kapel-tracked, 7 days)` so it is never mistaken for a quota. Those numbers come from a `usage_events` table written at the end of every chat turn and every orchestration run, so they survive the process that produced them.
+
+The dashboard is a terminal's opening only: piping or redirecting `kapel` keeps the plain three-line banner, with no box drawing and no control characters. (`/stats` typed into a piped session still draws the box — you asked for it.)
 
 Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". The question is what will happen, not a truncated blob of JSON: `bash` shows the command it will run, `edit_file` a `-`/`+` diff of the replacement, `write_file` the head of the new file. Answers are `y` (allow this once), `n`/Enter/Ctrl-C (deny), or `a` — allow it and stop asking for the rest of the session: for `bash` that remembers the *command prefix* (answering `a` to `npm test --run foo` stops asking for `npm test …`, while `npm publish` still asks; a command with a shell operator such as `&&` or `|` is never remembered), and for every other tool it remembers the tool name. Nothing is written to disk — a new `kapel` starts asking again — and an explicit deny rule is never overridden by it. (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
 
@@ -127,7 +149,8 @@ Commands available at the prompt:
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
 | `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
 | `/login` | check every configured backend's login status, and help fix whichever isn't logged in |
-| `/usage` | tokens and cost so far |
+| `/usage` | tokens and cost so far, in this process |
+| `/stats` | redraw the startup dashboard with fresh numbers and re-probed logins |
 | `/compact` | compact the conversation history now (native backend only) |
 | `/undo` | put the files back the way they were before the last prompt |
 | `/plan "<objective>"` | plan an objective into a task graph and show it, with the routing rationale — nothing is executed; see [Orchestrate](#orchestrate) |
@@ -587,6 +610,8 @@ kapel explain T03 --run 0f3c…  # …in a specific run (default: the most recen
 - **`/runs`** and **`kapel runs`** list id, status, start time, task counts and objective for the last `--limit` runs (default 20). `--json` (shell only) emits the same as an array. A workspace with no database yet just says so.
 - **`kapel explain <taskId>`** reads one task's history back: the agent it ended on and how many attempts it took, the routing decision re-derived by running the router over the run's own policy snapshot (naming the rule that matched, or the `suggestedAgent`/orchestrator fallback when none did), and a chronological digest of the decisions made about it — held behind a conflicting task, started, escalated, low confidence, failed validators, merged or conflicted worktree, completed, cancelled. `--json` gives `{task, agent, attempts, events, route}`.
 - **`/resume-run <runId>`** rebuilds the run's task graph, marks everything that already succeeded as done, and re-executes the rest into the *same* run — events keep accruing and the final status is updated in place. It runs under the **policy snapshot recorded with the run**, not the current lock: the remaining tasks were planned and routed under the original constraints, and swapping the rules half way through would produce a run that never existed under any one policy. If the project's lock has moved on since, it says so and carries on; to plan under the new policy, start a fresh `/orchestrate`. Isolation, validators and the backend are whatever `/orchestrate` itself would use.
+
+Token usage lives there too, in a `usage_events` table: one append-only row per chat turn and per finished orchestration run, holding what was spent, by which backend, when. It is what makes the REPL's dashboard and `/stats` able to answer "how much today" after the process that spent it is gone — `/usage` only ever knows about the turns of the process it is running in. Rows are never written for a turn the backend reported nothing for, and a row carries a price only when something actually priced it, so a subscription-billed backend shows tokens with no dollar figure rather than `$0.00`.
 
 Conversations live in the same database, in their own tables — `/sessions` and `kapel chat --continue` read those, `/runs` reads the orchestration runs above. See [The REPL](#the-repl). Outside the REPL, `kapel sessions` lists them the same way `kapel runs` lists orchestration runs, and `kapel sessions fork <id|name> [--name <name>]` copies one — its title, model and whole transcript so far — into a brand new session that then evolves independently of the one it was forked from:
 

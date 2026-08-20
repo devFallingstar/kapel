@@ -35,7 +35,7 @@ kapel은 **REPL 전용**입니다 — 에이전트 작업은 전부 `kapel`이 �
 
 기여자용(소스 개발): 클론에서 `npm install && npm run build` 후
 `node apps/cli/dist/index.js ...` 또는 `npm install -g .` 사용.
-빠른 자체 점검: `npm test` → 1033개 테스트가 통과해야 합니다.
+빠른 자체 점검: `npm test` → 2069개 테스트가 통과해야 합니다.
 
 ### Windows 참고
 
@@ -231,8 +231,46 @@ ok — run `kapel init` and `kapel policy compile` on the shell when you want it
 그대로 찍힙니다. 어느 쪽이든 실패해도 REPL은 멈추지 않고 대화로 이어집니다.
 파이프·리다이렉트 입력이나 `--no-setup`에서는 이 질문이 아예 뜨지 않습니다.
 
-배너(`kapel v0.9.0  claude-sonnet-5  session 0f3c9a2b`)와 `kapel>` 프롬프트가
-뜨면 대화로 버그 수정을 지시합니다. 이 프롬프트는 입력 편집기입니다:
+터미널에서 실행하면 배너 대신 **대시보드 패널**이 먼저 뜹니다. 왼쪽은 설정
+(작업 디렉터리, 세션 id, 이 대화가 쓰는 백엔드·모델, 설정된 백엔드별 로그인
+상태, 네 개 역할의 `role  backend:model`), 오른쪽은 이 워크스페이스의 작업량
+(`.agent/sessions.db`에서 읽은 오늘/최근 7일의 실행·대화 수, 성공/실패 태스크,
+토큰 합계)입니다:
+
+```text
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ kapel v0.9.0                                                                 │
+├───────────────────────────────────────┬──────────────────────────────────────┤
+│ setup                                 │ activity                             │
+│ workspace    /tmp/agent-fixture       │ today    no runs yet                 │
+│ session      0f3c9a2b                 │ 7 days   no runs yet                 │
+│ chat         claude-sonnet-5          │                                      │
+│ backends     ✓ claude-code            │ usage (kapel-tracked, 7 days)        │
+│                                       │ claude-code  0 in · 0 out            │
+│ orchestrator claude-code:opus         │                                      │
+│ …                                     │                                      │
+╰───────────────────────────────────────┴──────────────────────────────────────╯
+type /help for commands, /exit to quit
+```
+
+**확인할 것**:
+
+- 새 저장소이므로 활동 칸은 `no runs yet`이어야 합니다(0이 늘어선 줄이 아니라).
+- 로그인 확인은 CLI를 두 번 띄우므로 1초 예산을 넘기면 해당 칸이 `…`로 그려집니다.
+  잠시 뒤 `/stats`를 치면 다시 확인해 `✓`/`!`/`✗`로 채워집니다.
+- `.agent/config.local.json`으로 덮어쓴 역할에는 `*`가 붙고, 상자 아래에
+  `* from .agent/config.local.json` 한 줄이 나옵니다.
+- 구독 잔량은 표시하지 않습니다. `claude`도 `codex`도 남은 사용량을 프로그램이
+  읽을 수 있는 형태로 내주지 않기 때문에, 대신 kapel이 직접 기록한 사용량을
+  `usage (kapel-tracked, 7 days)`라고 못 박아 보여줍니다.
+- 폭이 80칸보다 좁으면 두 칸이 위아래로 쌓인 한 칸 상자로 바뀝니다. 터미널을
+  좁혀 놓고 다시 `/stats`를 쳐서 확인해 보세요.
+- **파이프·리다이렉트로 실행하면 대시보드는 뜨지 않습니다** — 예전 그대로의
+  평문 배너(`kapel v0.9.0  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
+  문자는 하나도 섞이지 않습니다. 확인:
+  `printf '/exit\n' | kapel chat --no-save | cat -A` 에 `^[` 가 없어야 합니다.
+
+`kapel>` 프롬프트가 뜨면 대화로 버그 수정을 지시합니다. 이 프롬프트는 입력 편집기입니다:
 줄 끝에 `\`를 붙이면(또는 여러 줄을 한 번에 붙여넣으면) 계속 입력할 수 있고
 빈 줄로 끝냅니다; ↑/↓로 이전 입력을 다시 불러올 수 있고 이는 `~/.kapel/history`에
 세션을 넘어 저장됩니다; Tab은 커서 아래 있는 것을 완성합니다 — `/` 명령 이름,
@@ -277,7 +315,8 @@ kapel> calc.test.js가 실패하는 원인을 찾아서 고쳐줘. node calc.tes
 
 ```text
 kapel> sub 함수도 추가하고 테스트도 같이 만들어줘
-kapel> /usage        # 누적 토큰·비용
+kapel> /usage        # 이 프로세스의 누적 토큰·비용
+kapel> /stats        # 대시보드 다시 그리기 — 이제 today 칸이 "1 chat"과 실제 토큰으로 채워집니다
 kapel> /compact      # 지금 바로 컨텍스트 압축 ("compacted: elided … / nothing to compact.")
 kapel> /sessions     # 이 디렉터리의 대화 목록 (id, 마지막 갱신, 메시지 수, 제목)
 kapel> /undo         # 직전 프롬프트 이전 상태로 작업 트리 복구

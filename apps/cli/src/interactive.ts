@@ -26,6 +26,7 @@ import type {
   ForkChatSessionOptions,
   ListChatSessionsOptions,
   NewChatSession,
+  NewUsageEvent,
   PersistedChatMessage,
 } from "@agent/session";
 import {
@@ -33,6 +34,8 @@ import {
   defaultSessionDbPath,
   resolveChatSessionReference,
   SqliteSessionStore,
+  startOfWindow,
+  WEEK_DAYS,
 } from "@agent/session";
 import type { BackendName, EnvLike } from "./backend.js";
 import {
@@ -61,6 +64,17 @@ import {
   ttyWizardPrompt,
 } from "./config-runtime.js";
 import { runConfigWizard } from "./config-wizard.js";
+import type {
+  BackendState,
+  DashboardBackend,
+  DashboardModel,
+} from "./dashboard.js";
+import {
+  backendStateFrom,
+  dashboardRoles,
+  quotaBlockFrom,
+  renderDashboard,
+} from "./dashboard.js";
 import {
   createDelegatedChatSession,
   DelegatedUsage,
@@ -118,6 +132,14 @@ import { isoTime } from "./sessions.js";
  * here so both spellings of it come from one place.
  */
 export const CLI_VERSION = "0.9.0";
+
+/**
+ * How long the startup dashboard waits for the backend login probes before
+ * drawing what it has. Each probe spawns an external CLI twice; a REPL that
+ * takes a visible pause to open is a worse trade than a `…` in one cell,
+ * which `/stats` fills in.
+ */
+const STARTUP_PROBE_BUDGET_MS = 1000;
 
 /** How many characters of a session id identify it in listings and the banner. */
 const SHORT_ID = 8;
@@ -272,6 +294,15 @@ export interface ChatStore {
   loadChatSession(
     sessionId: string,
   ): Promise<ChatSessionTranscript | undefined>;
+  /**
+   * Files what one turn spent — see `SqliteSessionStore.recordUsage`.
+   *
+   * Optional because it is the one method here that is not load-bearing for
+   * the conversation itself: a store that cannot record usage still records
+   * the transcript, and the dashboard simply has less to report. In-process
+   * `/usage` never reads it; it exists so the numbers survive the process.
+   */
+  recordUsage?(entry: NewUsageEvent): Promise<void>;
 }
 
 // --- Dispatch results -------------------------------------------------------
@@ -510,6 +541,13 @@ export function usageDeltaLine(
 
 // --- The controller ---------------------------------------------------------
 
+/** What the dashboard has to be told about the conversation drawing it. */
+export interface DashboardContext {
+  readonly sessionId: string;
+  readonly backend: BackendName;
+  readonly modelAlias: string;
+}
+
 export interface InteractiveControllerDeps {
   readonly workspacePath: string;
   /** Absent under `--no-save`: nothing is recorded and resume is unavailable. */
@@ -616,6 +654,20 @@ export interface InteractiveControllerDeps {
       readonly detail?: string;
     }>;
   };
+  /**
+   * Backs `/stats` (and, at startup, the banner the shell prints): renders
+   * the dashboard for the conversation as it stands right now.
+   *
+   * A function rather than pre-rendered lines because `/stats` promises
+   * *fresh* numbers — it re-probes logins and re-reads the session database,
+   * and the conversation may have changed backend, model or session since
+   * startup, which is why the current three are passed in. Absent means there
+   * is nothing to draw and `/stats` says so, the same shape of absence as
+   * {@link configure}.
+   */
+  readonly dashboard?: (
+    context: DashboardContext,
+  ) => Promise<readonly string[]>;
   /**
    * Working-tree checkpoints for `/undo`. Absent means the feature is off and
    * `/undo` says so — which is what a caller with no filesystem to snapshot
@@ -748,6 +800,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   { name: "usage", usage: "/usage", help: "tokens and cost so far" },
   {
+    name: "stats",
+    usage: "/stats",
+    help: "redraw the startup dashboard with fresh numbers",
+  },
+  {
     name: "compact",
     usage: "/compact",
     help: "compact the conversation history now",
@@ -874,6 +931,22 @@ export function bannerModel(backend: BackendName, modelAlias: string): string {
 export function approvalsLine(backend: BackendName): string {
   const cli = backend === "codex" ? "Codex" : "Claude Code";
   return `approvals are enforced by the ${cli} CLI — kapel does not prompt here`;
+}
+
+/**
+ * The banner's tail: who enforces approvals, and how to drive the prompt.
+ *
+ * Shared by both openings — the plain banner below and the dashboard the
+ * shell draws on a terminal — so the two can never drift into telling the
+ * user different things about the same REPL.
+ */
+export function bannerHints(backend: BackendName): readonly string[] {
+  return [
+    ...(isDelegatedBackend(backend) ? [approvalsLine(backend)] : []),
+    "type /help for commands, /exit to quit",
+    "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files",
+    "",
+  ];
 }
 
 /**
@@ -1091,6 +1164,40 @@ export async function createInteractiveController(
   const imageReaderForTurn = (): MentionImageReader =>
     backend === "native" ? readImage : readImagePath;
 
+  /**
+   * Files this turn's spend in the session database, as the difference
+   * between the cumulative totals before and after it.
+   *
+   * A difference rather than the running total, because the store's rows are
+   * append-only facts about moments: summing them back up has to give the
+   * conversation's total, which it only does if each row holds one turn.
+   * Best-effort — a store that refuses the write costs the dashboard a turn,
+   * never the user their answer.
+   */
+  const recordTurnUsage = async (
+    before: UsageTotals,
+    after: UsageTotals,
+  ): Promise<void> => {
+    const record = deps.store?.recordUsage;
+    if (record === undefined || deps.store === undefined) return;
+    const inputTokens = after.usage.inputTokens - before.usage.inputTokens;
+    const outputTokens = after.usage.outputTokens - before.usage.outputTokens;
+    const costUsd = after.costUsd - before.costUsd;
+    try {
+      await record.call(deps.store, {
+        kind: "chat",
+        sourceId: sessionId,
+        backend,
+        model: modelAlias,
+        inputTokens: Math.max(0, inputTokens),
+        outputTokens: Math.max(0, outputTokens),
+        ...(costUsd > 0 ? { costUsd } : {}),
+      });
+    } catch {
+      // best-effort: the conversation is the product, its receipt is not.
+    }
+  };
+
   const handleMessage = async (
     text: string,
     signal?: AbortSignal,
@@ -1144,7 +1251,9 @@ export async function createInteractiveController(
     if (result !== undefined && result.status !== "success") {
       emit(`(${result.status}) ${result.summary}`);
     }
-    emit(usageDeltaLine(before, deps.usage.totals()));
+    const after = deps.usage.totals();
+    await recordTurnUsage(before, after);
+    emit(usageDeltaLine(before, after));
     return drain();
   };
 
@@ -1561,6 +1670,30 @@ export async function createInteractiveController(
   };
 
   /**
+   * `/stats` — the startup dashboard again, with the numbers taken now.
+   *
+   * Everything it shows can have moved since the banner was printed: turns
+   * have been spent, runs have finished, `/config` or `/model` may have
+   * changed which backend this conversation talks to, and a backend that was
+   * still being probed at startup (its cell drawn as `…`) has had time to
+   * answer. So this re-renders rather than replaying — see `deps.dashboard`.
+   */
+  const slashStats = async (): Promise<DispatchResult> => {
+    if (deps.dashboard === undefined) {
+      emit("/stats is not available here.");
+      return drain();
+    }
+    for (const line of await deps.dashboard({
+      sessionId,
+      backend,
+      modelAlias,
+    })) {
+      emit(line);
+    }
+    return drain();
+  };
+
+  /**
    * `/compact` — force an immediate compaction pass over this conversation's
    * history, regardless of the auto-compaction threshold.
    *
@@ -1833,6 +1966,8 @@ export async function createInteractiveController(
           emit(`  ${line}`);
         }
         return drain();
+      case "stats":
+        return await slashStats();
       case "compact":
         return await slashCompact();
       case "undo":
@@ -1874,10 +2009,7 @@ export async function createInteractiveController(
     banner: (cwd: string) => [
       `kapel v${CLI_VERSION}  ${bannerModel(backend, modelAlias)}  session ${shortId(sessionId)}`,
       cwd,
-      ...(isDelegatedBackend(backend) ? [approvalsLine(backend)] : []),
-      "type /help for commands, /exit to quit",
-      "\\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files",
-      "",
+      ...bannerHints(backend),
     ],
     handleLine: async (line, signal) => {
       const trimmed = line.trim();
@@ -2020,6 +2152,47 @@ function pipedLineSource(): LineSource {
     },
     close: () => rl.close(),
   };
+}
+
+/**
+ * Resolves with `promise`'s value, or with `fallback` once `ms` have passed.
+ *
+ * The loser is abandoned rather than cancelled — there is nothing to cancel
+ * in a subprocess probe already in flight — and the timer is unref'd, so a
+ * slow probe can never be the reason the process refuses to exit.
+ */
+export function withDeadline<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(fallback);
+    }, ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
+/** Reads a value from a store that may not be there, or may refuse. */
+async function bestEffortValue<T>(
+  read: () => Promise<T> | undefined,
+): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch {
+    return undefined;
+  }
 }
 
 function dim(text: string, color: boolean): string {
@@ -2427,6 +2600,98 @@ export async function runInteractive(
     const loginBackends: readonly KapelBackend[] =
       effectiveConfig?.backends ?? [DEFAULT_BACKEND];
 
+    /**
+     * The backends the dashboard shows a login glyph for: every one the
+     * effective config allows, plus the one this conversation actually runs
+     * on if that is not among them.
+     *
+     * The two can differ — an unconfigured machine falls back to `native` for
+     * `loginBackends` while `detectBackendSetting` auto-detects an installed
+     * CLI for the chat — and a dashboard whose `chat` row named a backend its
+     * `backends` row said nothing about would be reporting on two different
+     * REPLs.
+     */
+    const dashboardBackends: readonly KapelBackend[] = loginBackends.includes(
+      backend,
+    )
+      ? loginBackends
+      : [backend, ...loginBackends];
+
+    /**
+     * Probes every configured backend's login state for the dashboard.
+     *
+     * Each probe spawns the CLI twice (`--version`, then `login status`), so
+     * on startup it is given a budget: whatever has not answered by then is
+     * drawn as `…` and the REPL opens on time. `/stats` passes no budget —
+     * by then the user has asked for the answer and can wait for it.
+     */
+    const probeBackends = async (
+      budgetMs?: number,
+    ): Promise<readonly DashboardBackend[]> =>
+      await Promise.all(
+        dashboardBackends.map(async (name): Promise<DashboardBackend> => {
+          const pending = checkBackendAvailability(name, process.env)
+            .then((result) => ({ name, state: backendStateFrom(result) }))
+            // A probe that throws is unknown, not failed: the CLI may be
+            // fine and the spawn may not be.
+            .catch(() => ({ name, state: "pending" as BackendState }));
+          return budgetMs === undefined
+            ? await pending
+            : await withDeadline(pending, budgetMs, {
+                name,
+                state: "pending",
+              });
+        }),
+      );
+
+    /**
+     * Gathers and renders the dashboard — the shell's opening on a terminal,
+     * and `/stats` on demand.
+     *
+     * Everything it reads is local: the merged configuration, one subprocess
+     * probe per backend, and two aggregate queries against the session
+     * database. Nothing here goes to the network, and a store that fails to
+     * answer costs the activity column, not the dashboard.
+     */
+    const buildDashboard = async (
+      context: DashboardContext,
+      budgetMs?: number,
+    ): Promise<readonly string[]> => {
+      const activity = await bestEffortValue(() => store?.activity());
+      const usage =
+        store === undefined
+          ? []
+          : ((await bestEffortValue(() =>
+              store.usageByBackend({ since: startOfWindow(Date.now()) }),
+            )) ?? []);
+      // No store means no numbers to put in it — an empty block would say
+      // "this backend spent nothing", which is not what `--no-save` means.
+      const quota =
+        store === undefined
+          ? undefined
+          : quotaBlockFrom([...dashboardBackends], usage, WEEK_DAYS);
+      const dashboardModel: DashboardModel = {
+        version: CLI_VERSION,
+        workspacePath,
+        sessionId: shortId(context.sessionId),
+        chat: bannerModel(context.backend, context.modelAlias),
+        backends: await probeBackends(budgetMs),
+        roles: dashboardRoles(
+          effectiveConfig?.models,
+          options.projectConfig?.models,
+        ),
+        projectOverride: options.projectConfig !== undefined,
+        ...(activity === undefined ? {} : { activity }),
+        ...(quota === undefined ? {} : { quota }),
+      };
+      return renderDashboard(dashboardModel, {
+        color: process.stdout.isTTY === true,
+        ...(process.stdout.columns === undefined
+          ? {}
+          : { columns: process.stdout.columns }),
+      });
+    };
+
     const controller = await createInteractiveController({
       workspacePath,
       ...(store === undefined ? {} : { store }),
@@ -2443,6 +2708,8 @@ export async function runInteractive(
       ...(startup.provider === undefined ? {} : { provider: startup.provider }),
       start: started.start,
       usage,
+      // `/stats`, with no probe budget: an explicit request may wait.
+      dashboard: (context) => buildDashboard(context),
       // One store for the whole REPL: the checkpoints outlive `/new`,
       // `/resume` and `/model`, because the working tree does too.
       checkpoints: createCheckpointStore({ workspacePath }),
@@ -2527,7 +2794,26 @@ export async function runInteractive(
     });
 
     const color = process.stdout.isTTY === true;
-    for (const line of controller.banner(workspacePath)) console.log(line);
+    // The dashboard is a terminal's opening; a pipe or a redirect keeps the
+    // plain banner, so `kapel chat < script.txt` still produces a transcript
+    // with no box drawing and no escape sequences anywhere in it.
+    if (color) {
+      for (const line of await buildDashboard(
+        {
+          sessionId: controller.sessionId(),
+          backend: controller.backend(),
+          modelAlias: controller.modelAlias(),
+        },
+        STARTUP_PROBE_BUDGET_MS,
+      )) {
+        console.log(line);
+      }
+      for (const line of bannerHints(controller.backend())) {
+        console.log(dim(line, color));
+      }
+    } else {
+      for (const line of controller.banner(workspacePath)) console.log(line);
+    }
     const instructionsLine = instructionsBannerLine(instructions.sources);
     if (instructionsLine !== undefined)
       console.log(dim(instructionsLine, color));

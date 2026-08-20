@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import type { UsageTotals } from "@agent/ai";
 import type { RuntimeTask } from "@agent/coding-agent";
 import { findAgentDir, MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
@@ -162,6 +163,41 @@ export async function recordRunStatus(
 ): Promise<void> {
   if (store === undefined) return;
   await bestEffort(() => store.setRunStatus(runId, status));
+}
+
+/**
+ * Records what a finished run spent, so `/stats` and the startup dashboard
+ * can still answer "how much did I use today" after this process is gone.
+ *
+ * One row per run rather than one per model: the per-model breakdown is
+ * already in the run summary the user just watched print, and the dashboard
+ * asks a coarser question. Best-effort like every other write here — a run
+ * that completed must not fail because its receipt could not be filed.
+ *
+ * `costUsd` is passed through only when something was actually priced: a
+ * delegated backend bills a subscription, and a stored `0` would later read
+ * as "this run was free" rather than "nobody priced it".
+ */
+export async function recordRunUsage(
+  store: SqliteSessionStore | undefined,
+  runId: string,
+  totals: UsageTotals,
+  backend?: string,
+): Promise<void> {
+  if (store === undefined) return;
+  await bestEffort(() =>
+    store.recordUsage({
+      kind: "run",
+      sourceId: runId,
+      inputTokens: totals.usage.inputTokens,
+      outputTokens: totals.usage.outputTokens,
+      ...(totals.usage.cachedInputTokens === undefined
+        ? {}
+        : { cachedInputTokens: totals.usage.cachedInputTokens }),
+      ...(totals.costUsd > 0 ? { costUsd: totals.costUsd } : {}),
+      ...(backend === undefined ? {} : { backend }),
+    }),
+  );
 }
 
 /** Best-effort `close`, for the `finally` blocks that own a store's lifetime. */

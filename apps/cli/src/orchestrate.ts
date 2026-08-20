@@ -71,6 +71,7 @@ import {
   fanOutSink,
   openRunStore,
   recordRunStatus,
+  recordRunUsage,
   runStatusFor,
   storeSink,
 } from "./sessions.js";
@@ -869,6 +870,9 @@ export async function executePreparedPlan(
     runId,
     runStatusFor(tasks, controller.signal.aborted),
   );
+  // Filed here rather than in the summary renderer: a cancelled or failed run
+  // spent its tokens too, and the dashboard's "today" has to include them.
+  await recordRunUsage(store, runId, usage.totals(), options.backend);
   // The dashboard comes down before the summary is printed: the table below is
   // what survives in the scrollback, so it must not land inside a live frame.
   await closeTui(tui, outcomeLine(tasks));

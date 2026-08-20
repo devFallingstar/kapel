@@ -3,6 +3,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
 } from "drizzle-orm/sqlite-core";
@@ -135,6 +136,54 @@ export const chatMessages = sqliteTable(
   ],
 );
 
+/** Where a usage sample came from: one chat turn, or one orchestration run. */
+export type UsageEventKind = "chat" | "run";
+
+const USAGE_EVENT_KINDS = [
+  "chat",
+  "run",
+] as const satisfies readonly UsageEventKind[];
+
+/**
+ * Token usage as it happened, one row per turn or per run.
+ *
+ * This is the only durable record of what kapel spent: `UsageTracker` lives
+ * for the length of a process, and neither `task_results` nor the event
+ * stream carries token counts (`TaskResult` has no usage field). Without this
+ * table "how much did I use today" is unanswerable the moment the REPL exits,
+ * which is exactly the question the startup dashboard asks.
+ *
+ * Rows are append-only and never updated: a turn's usage is a fact about a
+ * moment, so a re-saved snapshot must not overwrite it the way
+ * `chat_messages` rows are overwritten by `seq`.
+ *
+ * `cost_usd` is nullable rather than `0` because a delegated backend bills a
+ * subscription, not tokens — a zero there would read as "this was free"
+ * rather than "nobody priced it", the same distinction `formatCostUsd` draws
+ * between `$0.00` and `n/a`.
+ */
+export const usageEvents = sqliteTable(
+  "usage_events",
+  {
+    id: text("id").primaryKey(),
+    timestamp: integer("timestamp").notNull(),
+    kind: text("kind", { enum: USAGE_EVENT_KINDS }).notNull(),
+    /** The chat session id or run id this usage is attributed to. */
+    sourceId: text("source_id").notNull(),
+    /** `native`, `codex`, `claude-code` — whoever spent it, when known. */
+    backend: text("backend"),
+    model: text("model"),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    cachedInputTokens: integer("cached_input_tokens"),
+    costUsd: real("cost_usd"),
+  },
+  (table) => [
+    index("usage_events_timestamp_idx").on(table.timestamp),
+    index("usage_events_source_id_idx").on(table.sourceId),
+  ],
+);
+
 /**
  * Idempotent DDL for the whole store. Applied on every open instead of
  * shipping migration files: the schema is append-only and small enough that
@@ -201,6 +250,23 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session_id_idx
   ON chat_messages (session_id);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  timestamp INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  backend TEXT,
+  model TEXT,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cached_input_tokens INTEGER,
+  cost_usd REAL
+);
+CREATE INDEX IF NOT EXISTS usage_events_timestamp_idx
+  ON usage_events (timestamp);
+CREATE INDEX IF NOT EXISTS usage_events_source_id_idx
+  ON usage_events (source_id);
 `;
 
 /** Insertion order within one timestamp, used to keep `listEvents` stable. */

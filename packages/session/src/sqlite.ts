@@ -7,8 +7,15 @@ import type { ExecutionPlan, TaskResult } from "@agent/orchestration";
 import type { OrchestrationPolicy } from "@agent/policy";
 import type { AgentEvent } from "@agent/protocol";
 import Database from "better-sqlite3";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type {
+  ActivityTotals,
+  ActivityWindow,
+  ActivityWindows,
+  BackendUsageTotals,
+} from "./activity.js";
+import { startOfDay, startOfWindow, UNKNOWN_BACKEND } from "./activity.js";
 import type { RunRecord, SessionStore } from "./index.js";
 import {
   BOOTSTRAP_DDL,
@@ -20,9 +27,11 @@ import {
   runs,
   type TaskResultStatus,
   taskResults,
+  type UsageEventKind,
+  usageEvents,
 } from "./schema.js";
 
-export type { RunStatus, TaskResultStatus } from "./schema.js";
+export type { RunStatus, TaskResultStatus, UsageEventKind } from "./schema.js";
 
 /** Conventional location of the session database inside an agent home dir. */
 export function defaultSessionDbPath(agentDir: string): string {
@@ -127,6 +136,28 @@ export interface ListChatSessionsOptions {
 export interface ForkChatSessionOptions {
   /** Label for the new session. Omit to leave it unnamed. */
   readonly name?: string;
+}
+
+/**
+ * One usage sample on its way into the store: what was spent, by whom, when.
+ *
+ * `id` and `timestamp` default to a fresh UUID and `Date.now()` — callers
+ * recording a turn they just finished have nothing better to say, and tests
+ * that need a fixed instant pass one.
+ */
+export interface NewUsageEvent {
+  readonly id?: string;
+  readonly timestamp?: number;
+  readonly kind: UsageEventKind;
+  /** The chat session id or run id this usage belongs to. */
+  readonly sourceId: string;
+  readonly backend?: string;
+  readonly model?: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens?: number;
+  /** Omitted when the backend bills a subscription rather than tokens. */
+  readonly costUsd?: number;
 }
 
 /** A chat session read back whole: its metadata and its ordered transcript. */
@@ -745,6 +776,166 @@ export class SqliteSessionStore implements SessionStore {
     });
 
     return newId;
+  }
+
+  // --- Usage and activity -------------------------------------------------
+
+  /**
+   * Appends one usage sample. A sample with no tokens and no price is
+   * dropped rather than stored: a turn the backend reported nothing for is
+   * an absence of information, and a row of zeroes would turn it into a
+   * claim that the turn was free.
+   *
+   * Append-only — re-recording is not idempotent by `sourceId`, because a
+   * chat session spends tokens once per turn and each of those turns is its
+   * own fact. Callers that can retry pass their own `id`.
+   */
+  async recordUsage(entry: NewUsageEvent): Promise<void> {
+    const priced = entry.costUsd !== undefined && entry.costUsd > 0;
+    if (entry.inputTokens === 0 && entry.outputTokens === 0 && !priced) return;
+    this.#db
+      .insert(usageEvents)
+      .values({
+        id: entry.id ?? crypto.randomUUID(),
+        timestamp: entry.timestamp ?? Date.now(),
+        kind: entry.kind,
+        sourceId: entry.sourceId,
+        backend: entry.backend ?? null,
+        model: entry.model ?? null,
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        cachedInputTokens: entry.cachedInputTokens ?? null,
+        costUsd: entry.costUsd ?? null,
+      })
+      .onConflictDoNothing()
+      .run();
+  }
+
+  /**
+   * Everything the dashboard counts for one half-open `[since, until)`
+   * window, in four small aggregate queries.
+   *
+   * Each count reads the timestamp that means "this happened": runs and chat
+   * sessions by when they *started*, tasks by when their result last moved
+   * (a task that finished today belongs to today even if its run started
+   * last week), usage by when it was spent.
+   */
+  async activityTotals(window: ActivityWindow): Promise<ActivityTotals> {
+    const within = (column: Parameters<typeof gte>[0]) =>
+      window.until === undefined
+        ? gte(column, window.since)
+        : and(gte(column, window.since), lt(column, window.until));
+
+    const runCount = this.#db
+      .select({ n: sql<number>`count(*)` })
+      .from(runs)
+      .where(within(runs.createdAt))
+      .get();
+
+    const chatCount = this.#db
+      .select({ n: sql<number>`count(*)` })
+      .from(chatSessions)
+      .where(within(chatSessions.createdAt))
+      .get();
+
+    const taskRows = this.#db
+      .select({ status: taskResults.status, n: sql<number>`count(*)` })
+      .from(taskResults)
+      .where(within(taskResults.updatedAt))
+      .groupBy(taskResults.status)
+      .all();
+    const byStatus = new Map(
+      taskRows.map((row) => [row.status, Number(row.n)]),
+    );
+
+    const usage = this.#db
+      .select({
+        input: sql<number | null>`sum(${usageEvents.inputTokens})`,
+        output: sql<number | null>`sum(${usageEvents.outputTokens})`,
+        cost: sql<number | null>`sum(${usageEvents.costUsd})`,
+      })
+      .from(usageEvents)
+      .where(within(usageEvents.timestamp))
+      .get();
+
+    const cost = usage?.cost ?? null;
+    return {
+      runs: Number(runCount?.n ?? 0),
+      chatSessions: Number(chatCount?.n ?? 0),
+      tasksCompleted: byStatus.get("success") ?? 0,
+      tasksFailed: byStatus.get("failed") ?? 0,
+      inputTokens: Number(usage?.input ?? 0),
+      outputTokens: Number(usage?.output ?? 0),
+      ...(cost === null ? {} : { costUsd: Number(cost) }),
+    };
+  }
+
+  /**
+   * The two windows the dashboard shows: today, and the last seven calendar
+   * days including today. Both start at *local* midnight — see
+   * `startOfWindow` for why that is calendar arithmetic and not subtraction.
+   */
+  async activity(
+    options: { readonly now?: number } = {},
+  ): Promise<ActivityWindows> {
+    const now = options.now ?? Date.now();
+    const todaySince = startOfDay(now);
+    const weekSince = startOfWindow(now);
+    return {
+      today: await this.activityTotals({ since: todaySince }),
+      week: await this.activityTotals({ since: weekSince }),
+      todaySince,
+      weekSince,
+    };
+  }
+
+  /**
+   * The same usage numbers split by which backend spent them, biggest first.
+   *
+   * This is what stands in for a subscription quota: neither the Claude Code
+   * nor the Codex CLI exposes remaining allowance outside its own interactive
+   * session, so the honest thing to show beside a backend's name is what
+   * kapel itself watched it spend. Rows that never named a backend are
+   * bucketed under {@link UNKNOWN_BACKEND} rather than dropped.
+   */
+  async usageByBackend(
+    window: ActivityWindow,
+  ): Promise<readonly BackendUsageTotals[]> {
+    const predicate =
+      window.until === undefined
+        ? gte(usageEvents.timestamp, window.since)
+        : and(
+            gte(usageEvents.timestamp, window.since),
+            lt(usageEvents.timestamp, window.until),
+          );
+
+    const rows = this.#db
+      .select({
+        backend: usageEvents.backend,
+        input: sql<number | null>`sum(${usageEvents.inputTokens})`,
+        output: sql<number | null>`sum(${usageEvents.outputTokens})`,
+        cost: sql<number | null>`sum(${usageEvents.costUsd})`,
+      })
+      .from(usageEvents)
+      .where(predicate)
+      .groupBy(usageEvents.backend)
+      .all();
+
+    return rows
+      .map((row) => {
+        const cost = row.cost ?? null;
+        return {
+          backend: row.backend ?? UNKNOWN_BACKEND,
+          inputTokens: Number(row.input ?? 0),
+          outputTokens: Number(row.output ?? 0),
+          ...(cost === null ? {} : { costUsd: Number(cost) }),
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens) ||
+          a.backend.localeCompare(b.backend),
+      );
   }
 
   close(): void {

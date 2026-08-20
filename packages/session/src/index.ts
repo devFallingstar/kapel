@@ -15,6 +15,18 @@ export interface SessionStore {
 }
 
 export {
+  type ActivityTotals,
+  type ActivityWindow,
+  type ActivityWindows,
+  type BackendUsageTotals,
+  EMPTY_ACTIVITY,
+  isIdleActivity,
+  startOfDay,
+  startOfWindow,
+  UNKNOWN_BACKEND,
+  WEEK_DAYS,
+} from "./activity.js";
+export {
   type ChatSessionMatch,
   type ChatSessionResolution,
   type ChatSessionResolutionError,
@@ -30,6 +42,8 @@ export {
   runs,
   type TaskResultStatus,
   taskResults,
+  type UsageEventKind,
+  usageEvents,
 } from "./schema.js";
 export {
   type ChatSessionRecord,
@@ -40,6 +54,7 @@ export {
   type ListChatSessionsOptions,
   type ListRunsOptions,
   type NewChatSession,
+  type NewUsageEvent,
   type PersistedChatMessage,
   type PersistedRun,
   type PersistedRunSummary,
