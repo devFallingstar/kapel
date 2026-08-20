@@ -8,6 +8,6 @@ Split non-trivial requests into narrow tasks. Run independent tasks in parallel 
 
 Authentication, authorization, payment, secrets, and database migration changes require a blocking independent review before completion.
 
-Retry a failed worker once. If the second attempt fails, escalate the task one tier up (`junior` to `coder`, `coder` to `senior`); if `senior` fails, escalate to the orchestrator.
+Retry a failed worker once. If the second attempt fails, escalate the task one tier up (`junior` to `coder`, `coder` to `senior`). `senior` is the last tier: if it fails, the task fails.
 
 Trivial one- or two-line changes may be performed without delegation when delegation would add more overhead than value.

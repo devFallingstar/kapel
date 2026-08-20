@@ -417,7 +417,7 @@ During a run, task lifecycle lines are interleaved with the workers' own output:
 ▶ T02 → coder (attempt 1)
 ✔ T02 — Added the /healthz route.
 ⇡ T02 merged → 4b1c9de0
-↑ T03 rerouted coder → lead
+↑ T03 rerouted coder → senior
 ⊘ T04 (dependency-failed)
 ```
 
