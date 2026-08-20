@@ -157,7 +157,8 @@ stderr로 뜨고 그 백엔드로 REPL이 열립니다. Claude Code가 없으면
 감지는 프로세스당 한 번만 수행되고, 안내 줄도 한 번만 나옵니다.
 
 마법사가 끝나면(그리고 그 다음부터는 곧바로), `.agent/`가 없는 저장소에서
-REPL을 열 때 **자동 프로젝트 준비** 질문이 한 번 더 이어집니다 — 2장 참고.
+REPL을 열 때 **자동 프로젝트 준비**가 곧바로 이어집니다(묻지 않습니다) —
+2장 참고.
 
 설정을 마친 뒤 `kapel init`을 실행하면 `.agent/config.yaml`의 `models:`가
 실효 설정에서 채워집니다(`lead`/`reviewer` ← 오케스트레이터 모델,
@@ -207,29 +208,28 @@ console.log("PASS");
 EOF
 git add -A && git commit -qm init
 
-kapel                     # REPL 진입 — 모든 에이전트 작업이 여기서 일어납니다
+kapel --no-setup          # REPL 진입 — 4장에서 손으로 준비해 볼 것이므로 자동 준비는 꺼 둡니다
 ```
 
-`.agent/`가 없는 새 저장소이므로, 배너가 뜨기 전에 **자동 프로젝트 준비**를
-한 번 물어봅니다:
+`kapel`은 이제 프로젝트를 준비할지 **묻지 않습니다** — `.agent/`가 없는 새
+저장소면 배너가 뜨기 전에 다음 한 줄을 찍고 `kapel init`과
+`kapel policy compile`을 곧바로 그 자리에서 실행합니다(모델 호출 1회), 두
+명령이 셸에서 출력하는 것과 같은 요약(경고 포함)이 REPL에 그대로 찍힙니다:
 
 ```text
-This project isn't set up for kapel yet. Set it up now? (creates .agent/ with
-default agents and compiles the orchestration policy — one model call)
+setting this project up for kapel — creating .agent/ and compiling the
+orchestration policy (one model call)…
 ```
 
-**여기서는 `No`를 고르세요** — 시나리오 C(4장)에서 `kapel init`과
-`kapel policy compile`을 손으로 실행해 보기 위해서입니다. `No`면 다음 한 줄만
-출력되고 대화는 그대로 진행됩니다(일반 대화에는 `.agent/`가 필요 없습니다):
+실패해도 REPL은 멈추지 않고 대화로 이어지며, 같은 세션에서는(`/plan`이나
+`/orchestrate`를 쳐도) 다시 시도하지 않습니다. 파이프·리다이렉트 입력이나
+`--no-setup`에서는 이 준비가 아예 실행되지 않습니다.
 
-```text
-ok — run `kapel init` and `kapel policy compile` on the shell when you want it, or /plan and /orchestrate will offer again.
-```
-
-`Yes`를 고르면 `kapel init`과 `kapel policy compile`이 그 자리에서 실행되고
-(모델 호출 1회), 두 명령이 셸에서 출력하는 것과 같은 요약(경고 포함)이 REPL에
-그대로 찍힙니다. 어느 쪽이든 실패해도 REPL은 멈추지 않고 대화로 이어집니다.
-파이프·리다이렉트 입력이나 `--no-setup`에서는 이 질문이 아예 뜨지 않습니다.
+**이 시나리오에서는 위 명령대로 `--no-setup`을 붙여 실행하세요** — 시나리오
+C(4장)에서 `kapel init`과 `kapel policy compile`을 손으로 실행해 볼
+것이므로, 자동 준비가 먼저 끝내 버리면 안 됩니다. `--no-setup`을 쓰면
+`.agent/`도, 안내 줄도 생기지 않고 대화가 바로 시작됩니다(일반 대화에는
+`.agent/`가 필요 없습니다).
 
 터미널에서 실행하면 배너 대신 **대시보드 패널**이 먼저 뜹니다. 왼쪽은 설정
 (작업 디렉터리, 세션 id, 이 대화가 쓰는 백엔드·모델, 설정된 백엔드별 로그인
@@ -564,10 +564,10 @@ cd /tmp/agent-fixture
 kapel init                      # .agent/ 템플릿 복사
 ```
 
-(2장의 자동 준비 질문에 `Yes`로 답했다면 `.agent/`와 lock이 이미 있습니다 —
-`kapel init`은 `already exists`를 출력하며 종료 코드 1이니 이 단계를 건너뛰거나
-`kapel init --force`로 다시 만드세요. 아래 `kapel policy compile`은 그대로
-실행해도 됩니다.)
+(2장에서 `--no-setup` 없이 `kapel`을 먼저 열어 자동 준비가 이미 끝났다면
+`.agent/`와 lock이 있습니다 — `kapel init`은 `already exists`를 출력하며
+종료 코드 1이니 이 단계를 건너뛰거나 `kapel init --force`로 다시 만드세요.
+아래 `kapel policy compile`은 그대로 실행해도 됩니다.)
 
 `.agent/config.yaml`의 `models:`를 보유한 자격증명에 맞게 수정하세요(전역 설정이
 있으면 시나리오 A-0대로 이미 채워져 있습니다). Anthropic만 있다면 `reviewer`를
@@ -620,14 +620,16 @@ kapel> /orchestrate calc.js에 곱셈/나눗셈 함수를 추가하고 각각 �
 커밋들. 정책 lock이 없거나 오래되었으면 그 사실을 알리고 대화는 그대로
 유지됩니다(REPL이 끊기지 않습니다).
 
-**준비되지 않은 프로젝트에서의 `/plan`·`/orchestrate`**: `.agent/`나 lock이
-아직 없으면(2장에서 `No`를 골랐거나 비대화형으로 시작한 세션) 곧바로 에러를
-내는 대신 2장과 같은 준비 질문을 세션당 한 번 더 띄웁니다. 확인해 보려면
-`.agent/`가 없는 빈 디렉터리에서 `kapel`을 열고 시작 질문에 `No`를 고른 뒤
-`/plan 아무거나`를 입력하세요 — 질문이 한 번 뜨고, 거절하면 예전 그대로
-`No .agent directory found — run \`kapel init\` first`가 출력됩니다. 같은
-세션에서 `/plan`을 다시 실행하면 더는 묻지 않고 에러만 나옵니다(거절은 그
-세션 동안만 기억되며, `kapel`을 다시 띄우면 또 물어봅니다).
+**준비되지 않은 프로젝트에서의 `/plan`·`/orchestrate`**: 대화형 세션은 2장
+처럼 열릴 때 자동으로 준비를 마치므로, 이 상태를 보려면 `--no-setup`으로
+시작했거나(2장 참고) 비대화형으로 시작한 세션이어야 합니다. 그런 세션은
+`.agent/`나 lock이 없어도 자동 준비를 시도하지 않고 곧바로 에러를 냅니다.
+확인해 보려면 `.agent/`가 없는 빈 디렉터리에서 `kapel --no-setup`을 연 뒤
+`/plan 아무거나`를 입력하세요 — 아무 안내 줄도 없이 예전 그대로
+`No .agent directory found — run \`kapel init\` first`가 출력됩니다.
+(대화형 세션에서 자동 준비 자체가 실패했을 때는 — 예를 들어 모델
+자격증명이 없을 때 — 실패를 알리는 한 줄이 뜨고, 같은 세션의 다음
+`/plan`·`/orchestrate`에서는 다시 시도하지 않고 에러만 납니다.)
 
 격리(worktree), 검증기, 백엔드는 이제 플래그가 아니라 설정에서 결정됩니다 —
 `--worker-mode`/`--isolation`/`--tui`/`--dry-run`/`--no-validate`는 제거되었고,

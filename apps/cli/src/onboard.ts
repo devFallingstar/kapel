@@ -10,14 +10,13 @@ import path from "node:path";
  * policy compile` turns `.agent/orchestration.md` into the lockfile the
  * scheduler enforces. Both are still commands — a CI job or a scripted setup
  * wants them spelled out — but nobody should have to *know* them to use
- * kapel, so the REPL offers to run them the first time it opens in a project
- * that has neither.
+ * kapel, so the REPL just runs them itself the first time it opens in a
+ * project that has neither: one announcing line, then the work.
  *
- * Nothing here runs without being asked first: compiling costs a model call
- * and init writes files into someone's repository. And nothing here is ever
- * offered where there is nobody to answer — a piped `kapel < script.txt` gets
- * no `confirm` and therefore no offer, the same way `/login` never spawns a
- * login nobody asked for.
+ * Nothing here runs where there is nobody to see it happen: a piped `kapel <
+ * script.txt` gets no announcing line and nothing is run, the same way
+ * `/login` never spawns a login nobody asked for. `--no-setup` is the other
+ * way to say the same thing on a real terminal.
  */
 
 /** How much of the setup a workspace is still missing. */
@@ -29,18 +28,11 @@ export type ProjectSetupState =
   /** A project, but its policy has never been compiled: just the compile. */
   | "needs-policy";
 
-/** Where the offer (and whatever it runs) writes its lines. */
+/** Where the setup (and whatever it runs) writes its lines. */
 export interface SetupOutput {
   readonly log: (line: string) => void;
   readonly error: (line: string) => void;
 }
-
-/** Which moment is asking — it decides what a declined offer promises next. */
-export type SetupContext =
-  /** The REPL opening in this directory, before the first prompt. */
-  | "startup"
-  /** `/plan` or `/orchestrate`, re-offering what startup didn't get to do. */
-  | "command";
 
 const ORCHESTRATION_FILE = "orchestration.md";
 const LOCK_FILE = "orchestration.lock.json";
@@ -60,9 +52,9 @@ async function pathExists(candidate: string): Promise<boolean> {
  * Keyed on `.agent/orchestration.md` rather than on `.agent/` itself, because
  * the directory alone proves nothing: the REPL creates one in any directory
  * it opens, just to hold `sessions.db` (see `openChatStore`), and a directory
- * containing only kapel's own state is not a project — offering to compile a
- * policy that isn't there would only produce the error this whole feature
- * exists to remove.
+ * containing only kapel's own state is not a project — running a compile
+ * against a policy that isn't there would only produce the error this whole
+ * feature exists to remove.
  *
  * Only a *missing* lock counts as `needs-policy`. A lock that has gone stale
  * against an edited `orchestration.md` is a different situation with a
@@ -84,47 +76,31 @@ export async function detectProjectSetup(
 }
 
 /**
- * The one question each state asks. Both name the cost up front — files
- * written, a model call spent — because that is the whole reason this is a
- * question and not something kapel just does.
+ * The one line each state announces before it runs. Both name the cost up
+ * front — files written, a model call spent — because that is what makes
+ * kapel just doing this on its own a reasonable thing to do rather than a
+ * surprise.
  */
-export function setupQuestion(
+export function setupAnnounceLine(
   state: Exclude<ProjectSetupState, "ready">,
 ): string {
   return state === "needs-init"
-    ? "This project isn't set up for kapel yet. Set it up now? " +
-        "(creates .agent/ with default agents and compiles the orchestration " +
-        "policy — one model call)"
-    : "This project's orchestration policy isn't compiled yet. Compile it " +
-        "now? (one model call)";
-}
-
-/**
- * The single line a declined offer leaves behind: the commands that do the
- * same thing on the shell, and — at startup, where `/plan` and `/orchestrate`
- * will ask once more — the fact that saying no now costs nothing later.
- */
-export function setupDeclinedLine(
-  state: Exclude<ProjectSetupState, "ready">,
-  context: SetupContext,
-): string {
-  const commands =
-    state === "needs-init"
-      ? "`kapel init` and `kapel policy compile`"
-      : "`kapel policy compile`";
-  return context === "startup"
-    ? `ok — run ${commands} on the shell when you want it, or /plan and /orchestrate will offer again.`
-    : `ok — run ${commands} on the shell when you want it.`;
+    ? "setting this project up for kapel — creating .agent/ and compiling " +
+        "the orchestration policy (one model call)…"
+    : "compiling this project's orchestration policy for kapel (one model " +
+        "call)…";
 }
 
 export interface ProjectSetupDeps {
   readonly workspacePath: string;
   /**
-   * Asks the yes/no question, defaulting to yes. Absent means there is nobody
-   * at a terminal to ask — a piped or redirected REPL — and nothing is ever
-   * offered or run.
+   * Whether this is a run kapel may set the project up on its own for —
+   * effectively "is there a real terminal watching, and has it not said
+   * `--no-setup`". `false` (the default) means there is nobody to show the
+   * announcing line to, so nothing is ever run: a piped or redirected REPL,
+   * or one that opted out.
    */
-  readonly confirm?: (question: string) => Promise<boolean>;
+  readonly interactive?: boolean;
   /** Runs `kapel init` in this workspace, reporting through `output`. */
   readonly init: (output: SetupOutput) => Promise<number>;
   /** Runs `kapel policy compile` in this workspace, reporting through `output`. */
@@ -135,13 +111,13 @@ export interface ProjectSetupDeps {
 
 export interface ProjectSetup {
   /**
-   * Makes sure this workspace is set up, asking first.
+   * Makes sure this workspace is set up, doing it itself if it is not.
    *
    * @returns whether the project is ready now. `false` is never fatal: the
    * caller carries on — plain chat needs no `.agent/` at all, and `/plan`
    * falls through to the error it has always printed.
    */
-  ensure(output: SetupOutput, context: SetupContext): Promise<boolean>;
+  ensure(output: SetupOutput): Promise<boolean>;
 }
 
 function errorText(error: unknown): string {
@@ -149,18 +125,13 @@ function errorText(error: unknown): string {
 }
 
 /**
- * The onboarding offer, with one session's worth of memory.
+ * Automatic project setup, with one session's worth of memory.
  *
- * Once an offer has been declined — or accepted and then failed — this stops
- * offering for the life of the process, so a REPL where someone said no does
- * not ask again on every `/plan`. Nothing is written down: a fresh `kapel`
- * asks again, which is the right default for a decision whose answer is
- * usually "not right now" rather than "never".
- *
- * A failure counts as settled for the same reason: an init that cannot find
- * its template, or a compile with no usable credential, will fail again the
- * next time too, and repeating it once per command would bury the error that
- * explains it.
+ * Once a setup has failed, this stops trying again for the life of the
+ * process, so a REPL whose init or compile just failed does not retry it on
+ * every `/plan`. Nothing is written down: a fresh `kapel` tries again, which
+ * is right for a failure that might have been a transient credential or
+ * network problem rather than something permanently wrong with the project.
  */
 export function createProjectSetup(deps: ProjectSetupDeps): ProjectSetup {
   const detect = deps.detect ?? detectProjectSetup;
@@ -186,18 +157,14 @@ export function createProjectSetup(deps: ProjectSetupDeps): ProjectSetup {
   };
 
   return {
-    ensure: async (output, context) => {
+    ensure: async (output) => {
       if (settled) return false;
 
       const state = await detect(deps.workspacePath);
       if (state === "ready") return true;
-      if (deps.confirm === undefined) return false;
+      if (deps.interactive !== true) return false;
 
-      if (!(await deps.confirm(setupQuestion(state)))) {
-        settled = true;
-        output.log(setupDeclinedLine(state, context));
-        return false;
-      }
+      output.log(setupAnnounceLine(state));
 
       if (state === "needs-init") {
         if (!(await step("`kapel init`", deps.init, output))) {

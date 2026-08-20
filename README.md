@@ -21,25 +21,25 @@ REPL** — talking, planning, orchestrating, resuming. The commands on the shell
 up and inspect what it did; none of them do the work themselves.
 
 **A new project sets itself up.** The first time you open `kapel` in a
-repository that has no `.agent/`, it asks once:
+repository that has no `.agent/`, it just does it — one line, then the work:
 
 ```text
-This project isn't set up for kapel yet. Set it up now? (creates .agent/ with
-default agents and compiles the orchestration policy — one model call)
+setting this project up for kapel — creating .agent/ and compiling the
+orchestration policy (one model call)…
 ```
 
-Yes runs exactly what `kapel init` and `kapel policy compile` do — the
+That's exactly what `kapel init` and `kapel policy compile` do — the
 `.agent/` template (agents, `config.yaml` seeded from your configuration and
 this repo's `package.json` check scripts, `handoff.md`, the `.gitignore`
 entries) and one model call turning `.agent/orchestration.md` into the policy
-lock — and prints the same summary those commands print. No leaves it alone
-(plain chat needs none of it) and `/plan` or `/orchestrate` offers once more
-if you go looking for them; a later `kapel` asks again. A project that only
-lacks the compiled lock is offered just the compile, and one that has both is
-never asked. Nothing is offered where nobody can answer — piped and redirected
-runs are never auto-onboarded, and `--no-setup` skips this question exactly as
-it skips the first-run wizard — so `kapel init` and `kapel policy compile`
-remain the way to do it by hand, or in CI.
+lock — printed with the same summary those commands print. A project that
+only lacks the compiled lock gets just the compile, and one that has both is
+left alone (plain chat needs none of it). If setup fails partway, kapel says
+so in one line and does not retry it on every `/plan` or `/orchestrate` — fix
+the problem and run the command by hand. Nothing runs where nobody would see
+it: piped and redirected runs are never auto-set-up, and `--no-setup` turns
+this off exactly as it turns off the first-run wizard — so `kapel init` and
+`kapel policy compile` remain the way to do it by hand, or in CI.
 
 The first time you run `kapel` on a terminal it asks five questions — which
 coding backends you have (Claude Code, Codex, a plain API key: tick as many as
@@ -234,7 +234,7 @@ Global flags, on every command:
 - `-m, --model <alias>` — override the planner/orchestrator model (default: `AGENT_MODEL`, then your stored config, then `claude-sonnet-5`)
 - `--backend <native|codex|claude-code>` — override the execution backend; see [First-run setup](#first-run-setup) for what happens when nothing overrides it
 - `--timeout <seconds>` — model call timeout
-- `--no-setup` — never ask a setup question: no first-run wizard, and no automatic project onboarding either; use environment variables and defaults instead
+- `--no-setup` — never set anything up automatically: no first-run wizard, and no automatic project setup either; use environment variables and defaults instead
 
 `--json` is not global. It lives on the commands that actually emit machine-readable output — `runs`, `sessions`, `sessions fork`, `explain`, and each `policy` subcommand — and nowhere else.
 
@@ -533,7 +533,7 @@ kapel> /runs                                ← what has been run here
 kapel> /resume-run 0f3c9a2b                 ← finish a run that stopped part-way
 ```
 
-Both `/plan` and `/orchestrate` require a fresh `.agent/orchestration.lock.json` and refuse to guess. In a project that has never been set up — or never compiled — they offer to do it once, right there at the prompt (the same offer startup makes, for a session that declined it or started non-interactively); decline, and a missing or stale lock is the error it has always been, telling you to run `kapel policy compile`. Either way it is reported in the REPL and the conversation carries on. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, kapel falls back to the normal default model and says so).
+Both `/plan` and `/orchestrate` require a fresh `.agent/orchestration.lock.json` and refuse to guess. In a project that has never been set up — or never compiled — they just do it, right there at the prompt (the same automatic setup startup runs, for a session that started non-interactively or hasn't reached that point yet); where nothing can run — `--no-setup`, a piped session, or a setup that already failed this session — a missing or stale lock is the error it has always been, telling you to run `kapel policy compile`. Either way it is reported in the REPL and the conversation carries on. The planner itself runs on the model your policy's orchestrator agent is configured with (`-m/--model` overrides it; if that agent or its credential is unavailable, kapel falls back to the normal default model and says so).
 
 Under `--backend codex` or `--backend claude-code` the planning conversation is delegated to that CLI too, so **planning needs no API key either** — it runs as one read-only `codex exec --sandbox read-only` / `claude -p --permission-mode plan` call in your workspace, on the orchestrator agent's configured model (or whatever `-m/--model` names, verbatim), and the plan it replies with is validated against the same schema and the same rules as on the native path.
 

@@ -49,7 +49,7 @@ import {
 } from "../src/interactive.js";
 import type { FileLister, MentionImageReader } from "../src/mention.js";
 import type { ProjectSetupState, SetupOutput } from "../src/onboard.js";
-import { createProjectSetup } from "../src/onboard.js";
+import { createProjectSetup, setupAnnounceLine } from "../src/onboard.js";
 import { TextRenderer } from "../src/render.js";
 import type { ResolvedModel } from "../src/run.js";
 import { runSessionsListCommand } from "../src/sessions.js";
@@ -1298,38 +1298,30 @@ describe("interactive controller — /login", () => {
   });
 });
 
-// --- automatic project onboarding, re-offered by /plan and /orchestrate -----
+// --- automatic project setup, re-run by /plan and /orchestrate -------------
 
-describe("interactive controller — project setup offer", () => {
+describe("interactive controller — automatic project setup", () => {
   /**
-   * The real offer (session memory and all), with its filesystem probe and
+   * The real setup (session memory and all), with its filesystem probe and
    * its two commands faked — the same wiring `runInteractive` builds, minus
    * the terminal and the model call.
    */
   function offer(
-    answers: readonly boolean[],
     state: ProjectSetupState = "needs-init",
+    options: { interactive?: boolean; initOk?: boolean } = {},
   ): {
     ensureProjectSetup: (output: SetupOutput) => Promise<boolean>;
-    questions: string[];
     ran: string[];
   } {
-    const questions: string[] = [];
     const ran: string[] = [];
-    let asked = 0;
     const setup = createProjectSetup({
       workspacePath: "/nowhere",
       detect: async () => state,
-      confirm: async (question) => {
-        questions.push(question);
-        const answer = answers[asked] ?? false;
-        asked += 1;
-        return answer;
-      },
+      interactive: options.interactive ?? true,
       init: async (output) => {
         ran.push("init");
         output.log("Created /nowhere/.agent");
-        return 0;
+        return options.initOk === false ? 1 : 0;
       },
       compile: async (output) => {
         ran.push("compile");
@@ -1338,14 +1330,13 @@ describe("interactive controller — project setup offer", () => {
       },
     });
     return {
-      ensureProjectSetup: (output) => setup.ensure(output, "command"),
-      questions,
+      ensureProjectSetup: (output) => setup.ensure(output),
       ran,
     };
   }
 
-  it("offers before /plan, and the accepted setup's output lands in the REPL", async () => {
-    const { ensureProjectSetup, questions, ran } = offer([true]);
+  it("sets up automatically before /plan, and its output lands in the REPL", async () => {
+    const { ensureProjectSetup, ran } = offer();
     const h = await harness({
       ensureProjectSetup,
       plan: async (_objective, output) => {
@@ -1355,41 +1346,38 @@ describe("interactive controller — project setup offer", () => {
     });
 
     const result = await h.controller.handleLine("/plan add a route");
-    expect(questions).toHaveLength(1);
-    expect(questions[0]).toContain("isn't set up for kapel yet");
     expect(ran).toEqual(["init", "compile"]);
     expect(result.output).toEqual([
+      setupAnnounceLine("needs-init"),
       "Created /nowhere/.agent",
       "Lock written to /nowhere/.agent/orchestration.lock.json",
       "T01  implementation  medium  coder  -  Add the route",
     ]);
   });
 
-  it("offers only the compile when just the lock is missing", async () => {
-    const { ensureProjectSetup, questions, ran } = offer(
-      [true],
-      "needs-policy",
-    );
+  it("runs only the compile when just the lock is missing", async () => {
+    const { ensureProjectSetup, ran } = offer("needs-policy");
     const h = await harness({ ensureProjectSetup, plan: async () => 0 });
 
-    await h.controller.handleLine("/plan add a route");
-    expect(questions[0]).toContain("isn't compiled yet");
+    const result = await h.controller.handleLine("/plan add a route");
+    expect(result.output[0]).toBe(setupAnnounceLine("needs-policy"));
     expect(ran).toEqual(["compile"]);
   });
 
   it("says nothing when the project is already set up", async () => {
-    const { ensureProjectSetup, questions, ran } = offer([true], "ready");
+    const { ensureProjectSetup, ran } = offer("ready");
     const h = await harness({ ensureProjectSetup, plan: async () => 0 });
 
     expect((await h.controller.handleLine("/plan add a route")).output).toEqual(
       [],
     );
-    expect(questions).toEqual([]);
     expect(ran).toEqual([]);
   });
 
-  it("re-offers once after a decline, then leaves /plan to its own error", async () => {
-    const { ensureProjectSetup, questions, ran } = offer([false]);
+  it("does not retry a setup that just failed, and /plan falls to its own error", async () => {
+    const { ensureProjectSetup, ran } = offer("needs-init", {
+      initOk: false,
+    });
     const h = await harness({
       ensureProjectSetup,
       plan: async (_objective, output) => {
@@ -1399,17 +1387,18 @@ describe("interactive controller — project setup offer", () => {
     });
 
     const first = await h.controller.handleLine("/plan add a route");
-    expect(questions).toHaveLength(1);
-    expect(ran).toEqual([]);
+    expect(ran).toEqual(["init"]);
     expect(first.output).toEqual([
-      "ok — run `kapel init` and `kapel policy compile` on the shell when you want it.",
+      setupAnnounceLine("needs-init"),
+      "Created /nowhere/.agent",
+      "`kapel init` did not finish — kapel keeps working without it.",
       "No .agent directory found — run `kapel init` first",
     ]);
 
-    // Declined once is declined for the session: the second command asks
-    // nothing and prints only the error it always printed.
+    // Failed once is settled for the session: the second command does not
+    // retry, and prints only the error it always printed.
     const second = await h.controller.handleLine("/plan add a route");
-    expect(questions).toHaveLength(1);
+    expect(ran).toEqual(["init"]);
     expect(second.output).toEqual([
       "No .agent directory found — run `kapel init` first",
     ]);
@@ -1420,17 +1409,16 @@ describe("interactive controller — project setup offer", () => {
     expect(chat.effect).toBeUndefined();
   });
 
-  it("/orchestrate makes the same offer", async () => {
-    const { ensureProjectSetup, questions, ran } = offer([true]);
+  it("/orchestrate sets up automatically the same way", async () => {
+    const { ensureProjectSetup, ran } = offer();
     const h = await harness({ ensureProjectSetup, orchestrate: async () => 0 });
 
     await h.controller.handleLine("/orchestrate add a route");
-    expect(questions).toHaveLength(1);
     expect(ran).toEqual(["init", "compile"]);
   });
 
-  it("never offers on a line that was not going to run anything", async () => {
-    const { ensureProjectSetup, questions } = offer([true]);
+  it("never runs on a line that was not going to run anything", async () => {
+    const { ensureProjectSetup, ran } = offer();
     const h = await harness({
       ensureProjectSetup,
       plan: async () => 0,
@@ -1440,10 +1428,10 @@ describe("interactive controller — project setup offer", () => {
     await h.controller.handleLine("/plan");
     await h.controller.handleLine("/orchestrate");
     await h.controller.handleLine("just talking");
-    expect(questions).toEqual([]);
+    expect(ran).toEqual([]);
   });
 
-  it("runs /plan unchanged when no offer is wired at all", async () => {
+  it("runs /plan unchanged when no auto-setup is wired at all", async () => {
     const h = await harness({
       plan: async (_objective, output) => {
         output.error("No policy lock found. Run `kapel policy compile`.");

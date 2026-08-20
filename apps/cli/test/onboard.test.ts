@@ -15,16 +15,11 @@ import type {
 } from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInit } from "../src/init.js";
-import type {
-  ProjectSetupState,
-  SetupContext,
-  SetupOutput,
-} from "../src/onboard.js";
+import type { ProjectSetupState, SetupOutput } from "../src/onboard.js";
 import {
   createProjectSetup,
   detectProjectSetup,
-  setupDeclinedLine,
-  setupQuestion,
+  setupAnnounceLine,
 } from "../src/onboard.js";
 import { runPolicyCompile } from "../src/policy.js";
 
@@ -72,20 +67,19 @@ function capture(): {
 function fakeSetup(
   state: ProjectSetupState,
   options: {
-    confirm?: (question: string) => Promise<boolean>;
+    interactive?: boolean;
     init?: () => Promise<number>;
     compile?: () => Promise<number>;
   } = {},
 ): {
   setup: ReturnType<typeof createProjectSetup>;
-  questions: string[];
   ran: string[];
 } {
-  const questions: string[] = [];
   const ran: string[] = [];
   const setup = createProjectSetup({
     workspacePath: "/nowhere",
     detect: async () => state,
+    interactive: options.interactive ?? true,
     init: async () => {
       ran.push("init");
       return (await options.init?.()) ?? 0;
@@ -94,21 +88,9 @@ function fakeSetup(
       ran.push("compile");
       return (await options.compile?.()) ?? 0;
     },
-    ...(options.confirm === undefined
-      ? {}
-      : {
-          confirm: async (question: string) => {
-            questions.push(question);
-            // biome-ignore lint/style/noNonNullAssertion: narrowed above.
-            return await options.confirm!(question);
-          },
-        }),
   });
-  return { setup, questions, ran };
+  return { setup, ran };
 }
-
-const yes = async (): Promise<boolean> => true;
-const no = async (): Promise<boolean> => false;
 
 // --- what a workspace still needs -------------------------------------------
 
@@ -151,131 +133,93 @@ describe("detectProjectSetup", () => {
   });
 });
 
-// --- the offer --------------------------------------------------------------
+// --- automatic setup ---------------------------------------------------------
 
 describe("createProjectSetup", () => {
-  it("asks once and runs init then the compile when accepted", async () => {
-    const { setup, questions, ran } = fakeSetup("needs-init", { confirm: yes });
+  it("runs init then the compile immediately when the project is fresh", async () => {
+    const { setup, ran } = fakeSetup("needs-init");
     const { output, lines, errLines } = capture();
 
-    expect(await setup.ensure(output, "startup")).toBe(true);
-    expect(questions).toEqual([setupQuestion("needs-init")]);
+    expect(await setup.ensure(output)).toBe(true);
     expect(ran).toEqual(["init", "compile"]);
-    expect(lines).toEqual([]);
+    expect(lines).toEqual([setupAnnounceLine("needs-init")]);
     expect(errLines).toEqual([]);
   });
 
-  it("offers only the compile when the project exists but has no lock", async () => {
-    const { setup, questions, ran } = fakeSetup("needs-policy", {
-      confirm: yes,
-    });
-    const { output } = capture();
+  it("runs only the compile when the project exists but has no lock", async () => {
+    const { setup, ran } = fakeSetup("needs-policy");
+    const { output, lines } = capture();
 
-    expect(await setup.ensure(output, "startup")).toBe(true);
-    expect(questions).toEqual([setupQuestion("needs-policy")]);
-    expect(questions[0]).toContain("one model call");
+    expect(await setup.ensure(output)).toBe(true);
+    expect(lines).toEqual([setupAnnounceLine("needs-policy")]);
+    expect(lines[0]).toContain("one model call");
     expect(ran).toEqual(["compile"]);
   });
 
-  it("says nothing at all, and asks nothing, when the project is ready", async () => {
-    const { setup, questions, ran } = fakeSetup("ready", { confirm: yes });
+  it("says nothing at all, and runs nothing, when the project is ready", async () => {
+    const { setup, ran } = fakeSetup("ready");
     const { output, lines, errLines } = capture();
 
-    expect(await setup.ensure(output, "startup")).toBe(true);
-    expect(questions).toEqual([]);
+    expect(await setup.ensure(output)).toBe(true);
     expect(ran).toEqual([]);
     expect(lines).toEqual([]);
     expect(errLines).toEqual([]);
   });
 
-  it("never offers without someone to ask (piped, non-interactive stdin)", async () => {
-    const { setup, questions, ran } = fakeSetup("needs-init");
+  it("never runs without someone to see it happen (piped, non-interactive stdin)", async () => {
+    const { setup, ran } = fakeSetup("needs-init", { interactive: false });
     const { output, lines, errLines } = capture();
 
-    expect(await setup.ensure(output, "startup")).toBe(false);
-    expect(questions).toEqual([]);
+    expect(await setup.ensure(output)).toBe(false);
     expect(ran).toEqual([]);
     expect(lines).toEqual([]);
     expect(errLines).toEqual([]);
   });
 
-  it("remembers a decline for the session: one line, then never asked again", async () => {
-    const { setup, questions, ran } = fakeSetup("needs-init", { confirm: no });
-    const first = capture();
-
-    expect(await setup.ensure(first.output, "startup")).toBe(false);
-    expect(first.lines).toEqual([setupDeclinedLine("needs-init", "startup")]);
-    expect(first.lines[0]).toContain("`kapel init`");
-    expect(first.lines[0]).toContain("`kapel policy compile`");
-    expect(first.lines[0]).toContain("/plan and /orchestrate will offer again");
-
-    const second = capture();
-    expect(await setup.ensure(second.output, "command")).toBe(false);
-    expect(questions).toHaveLength(1);
-    expect(ran).toEqual([]);
-    expect(second.lines).toEqual([]);
-  });
-
-  it("does not promise another offer when the offer already came from a command", async () => {
-    const { setup } = fakeSetup("needs-policy", { confirm: no });
-    const { output, lines } = capture();
-
-    await setup.ensure(output, "command");
-    expect(lines).toEqual([setupDeclinedLine("needs-policy", "command")]);
-    expect(lines[0]).not.toContain("offer again");
-    expect(lines[0]).toContain("`kapel policy compile`");
-  });
-
-  it("reports a failed init, skips the compile, and stops offering", async () => {
-    const { setup, questions, ran } = fakeSetup("needs-init", {
-      confirm: yes,
+  it("reports a failed init, skips the compile, and stops trying again", async () => {
+    const { setup, ran } = fakeSetup("needs-init", {
       init: async () => 1,
     });
     const { output, errLines } = capture();
 
-    expect(await setup.ensure(output, "startup")).toBe(false);
+    expect(await setup.ensure(output)).toBe(false);
     expect(ran).toEqual(["init"]);
     expect(errLines).toEqual([
       "`kapel init` did not finish — kapel keeps working without it.",
     ]);
 
-    // Settled: a second command does not re-run a step that just failed.
-    expect(await setup.ensure(output, "command")).toBe(false);
-    expect(questions).toHaveLength(1);
+    // Settled: a second call does not re-run a step that just failed.
+    expect(await setup.ensure(output)).toBe(false);
     expect(ran).toEqual(["init"]);
   });
 
   it("turns a thrown compile into one line instead of a crash", async () => {
     const { setup } = fakeSetup("needs-policy", {
-      confirm: yes,
       compile: async () => {
         throw new Error("no provider credential is set in this shell");
       },
     });
     const { output, errLines } = capture();
 
-    expect(await setup.ensure(output, "startup")).toBe(false);
+    expect(await setup.ensure(output)).toBe(false);
     expect(errLines).toEqual([
       "`kapel policy compile` failed: no provider credential is set in this shell",
     ]);
   });
 
-  it("names both costs in the question it asks about a fresh project", () => {
-    const question = setupQuestion("needs-init");
-    expect(question).toContain(".agent/");
-    expect(question).toContain("one model call");
+  it("names both costs in the line it announces about a fresh project", () => {
+    const line = setupAnnounceLine("needs-init");
+    expect(line).toContain(".agent/");
+    expect(line).toContain("one model call");
   });
 
-  it("keeps every declined-offer line to a single line", () => {
+  it("keeps every announce line to a single line", () => {
     const states: readonly Exclude<ProjectSetupState, "ready">[] = [
       "needs-init",
       "needs-policy",
     ];
-    const contexts: readonly SetupContext[] = ["startup", "command"];
     for (const state of states) {
-      for (const context of contexts) {
-        expect(setupDeclinedLine(state, context)).not.toContain("\n");
-      }
+      expect(setupAnnounceLine(state)).not.toContain("\n");
     }
   });
 });
@@ -328,11 +272,11 @@ describe("createProjectSetup — over the real init and compile", () => {
   });
 
   function realSetup(
-    confirm: (question: string) => Promise<boolean>,
+    interactive = true,
   ): ReturnType<typeof createProjectSetup> {
     return createProjectSetup({
       workspacePath: workspace,
-      confirm,
+      interactive,
       init: (output) => runInit({ cwd: workspace, fill: true, output }),
       compile: (output) =>
         runPolicyCompile(
@@ -345,8 +289,9 @@ describe("createProjectSetup — over the real init and compile", () => {
   it("takes a fresh directory all the way to a compiled policy", async () => {
     const { output, lines, errLines } = capture();
 
-    expect(await realSetup(yes).ensure(output, "startup")).toBe(true);
+    expect(await realSetup().ensure(output)).toBe(true);
     expect(errLines).toEqual([]);
+    expect(lines[0]).toBe(setupAnnounceLine("needs-init"));
 
     const agentDir = path.join(workspace, ".agent");
     expect(await exists(path.join(agentDir, "orchestration.md"))).toBe(true);
@@ -379,7 +324,7 @@ describe("createProjectSetup — over the real init and compile", () => {
     await writeFile(path.join(agentDir, "sessions.db"), "not-a-real-db");
 
     const { output, errLines } = capture();
-    expect(await realSetup(yes).ensure(output, "command")).toBe(true);
+    expect(await realSetup().ensure(output)).toBe(true);
     expect(errLines).toEqual([]);
 
     // The template landed, and the conversation history was not deleted to
@@ -392,11 +337,11 @@ describe("createProjectSetup — over the real init and compile", () => {
     );
   });
 
-  it("writes nothing when the offer is declined", async () => {
+  it("writes nothing when there is no terminal to show it to", async () => {
     const { output, lines } = capture();
 
-    expect(await realSetup(no).ensure(output, "startup")).toBe(false);
+    expect(await realSetup(false).ensure(output)).toBe(false);
     expect(await exists(path.join(workspace, ".agent"))).toBe(false);
-    expect(lines).toEqual([setupDeclinedLine("needs-init", "startup")]);
+    expect(lines).toEqual([]);
   });
 });
