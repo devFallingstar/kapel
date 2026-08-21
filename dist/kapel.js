@@ -3347,6 +3347,17 @@ function elisionMarker(originalLength) {
   return `${ELISION_PREFIX}${originalLength} chars]`;
 }
 var CANCELLED_TOOL_RESULT = "[cancelled before execution]";
+function deniedToolContent(tool, verdict) {
+  const reason = verdict.reason ?? "denied by policy";
+  const denial = `Tool "${tool}" was not permitted: ${reason}`;
+  if (verdict.feedback === void 0)
+    return denial;
+  return [
+    `${denial}, who said: ${verdict.feedback}`,
+    "",
+    "Those are the user's own words, not a tool failure. Answer them and adjust your plan accordingly; do not repeat this call unless the user asks you to."
+  ].join("\n");
+}
 function sealUnansweredToolCalls(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -3678,7 +3689,6 @@ var AgentLoopEngine = class {
       agent: this.#options.agent.name
     });
     if (!verdict.allowed) {
-      const reason = verdict.reason ?? "denied by policy";
       await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false,
@@ -3688,7 +3698,7 @@ var AgentLoopEngine = class {
         role: "tool",
         toolCallId: call.id,
         isError: true,
-        content: `Tool "${call.name}" was not permitted: ${reason}`
+        content: deniedToolContent(call.name, verdict)
       };
     }
     try {
@@ -3859,9 +3869,15 @@ var AgentChatSession = class _AgentChatSession {
 };
 
 // packages/coding-agent/dist/permissions.js
+function askOutcomeOf(answer) {
+  if (typeof answer !== "boolean")
+    return answer;
+  return answer ? { allowed: true } : { allowed: false };
+}
 var DENIED_BY_POLICY = "denied by policy";
 var NO_PROMPTER_AVAILABLE = "no prompter available in non-interactive mode";
 var DENIED_BY_PROMPTER = "denied by prompter";
+var DECLINED_WITH_FEEDBACK = "declined by the user";
 var ALLOWED_FOR_SESSION = "allowed for this session";
 var BASH_TOOL = "bash";
 var SUBCOMMAND = /^[A-Za-z][A-Za-z0-9_:-]*$/;
@@ -4029,8 +4045,19 @@ var PermissionEngine = class {
     if (prompter === void 0) {
       return { allowed: false, decision, reason: NO_PROMPTER_AVAILABLE };
     }
-    const approved = await prompter.ask(request);
-    return approved ? { allowed: true, decision } : { allowed: false, decision, reason: DENIED_BY_PROMPTER };
+    const outcome = askOutcomeOf(await prompter.ask(request));
+    if (outcome.allowed)
+      return { allowed: true, decision };
+    const feedback = outcome.feedback?.trim();
+    if (feedback === void 0 || feedback === "") {
+      return { allowed: false, decision, reason: DENIED_BY_PROMPTER };
+    }
+    return {
+      allowed: false,
+      decision,
+      reason: DECLINED_WITH_FEEDBACK,
+      feedback
+    };
   }
 };
 
@@ -9035,32 +9062,57 @@ async function listModels(env, opts) {
 import * as readline from "node:readline";
 
 // apps/cli/dist/styles.js
-var ROLE_SGR = {
-  user: "1;36",
+var ACCENT_TRUECOLOR = "38;2;126;182;217";
+var ACCENT_256 = "38;5;110";
+var ACCENT_BASIC = "36";
+function accentSgr(env = process.env) {
+  const colorterm = (env.COLORTERM ?? "").toLowerCase();
+  if (colorterm === "truecolor" || colorterm === "24bit") {
+    return ACCENT_TRUECOLOR;
+  }
+  return (env.TERM ?? "").includes("256color") ? ACCENT_256 : ACCENT_BASIC;
+}
+var NOTICE_GUTTER = "\u258C ";
+var FIXED_SGR = {
   // The content, not the frame: no escape at all.
   agent: "",
   tool: "2",
-  notice: "2;35",
+  notice: "2",
   heading: "1",
+  menu: "2",
   ok: "32",
   warn: "33",
   error: "31"
 };
+function roleSgr(env = process.env) {
+  const accent = accentSgr(env);
+  return { ...FIXED_SGR, accent, user: `1;${accent}` };
+}
+var ROLE_SGR = roleSgr();
 function ansi(code, text2, enabled) {
   if (!enabled || code === "" || text2 === "")
     return text2;
   return `\x1B[${code}m${text2}\x1B[0m`;
 }
-function createStyles(enabled) {
-  const at = (role, text2) => ansi(ROLE_SGR[role], text2, enabled);
+function createStyles(enabled, env = process.env) {
+  const sgr = roleSgr(env);
+  const at = (role, text2) => ansi(sgr[role], text2, enabled);
+  const notice = (text2) => enabled && text2 !== "" ? `${at("accent", NOTICE_GUTTER)}${at("notice", text2)}` : at("notice", text2);
   return {
     enabled,
-    role: at,
+    sgr,
+    // `notice` is the one role whose rendering is more than its escape, so
+    // `role()` routes through it rather than re-deciding: the two can never
+    // disagree about what a notice looks like.
+    role: (role, text2) => role === "notice" ? notice(text2) : at(role, text2),
+    accent: (text2) => at("accent", text2),
+    rule: (columns) => enabled ? at("accent", "\u2500".repeat(Math.max(0, columns - 1))) : "",
     user: (text2) => at("user", text2),
     agent: (text2) => at("agent", text2),
     tool: (text2) => at("tool", text2),
-    notice: (text2) => at("notice", text2),
+    notice,
     heading: (text2) => at("heading", text2),
+    menu: (text2) => at("menu", text2),
     ok: (text2) => at("ok", text2),
     warn: (text2) => at("warn", text2),
     error: (text2) => at("error", text2)
@@ -9074,7 +9126,7 @@ function colorEnabled(stream, env = process.env) {
   return noColor === void 0 || noColor === "";
 }
 function stylesFor(stream, env = process.env) {
-  return createStyles(colorEnabled(stream, env));
+  return createStyles(colorEnabled(stream, env), env);
 }
 
 // apps/cli/dist/select-prompt.js
@@ -9186,7 +9238,7 @@ function renderSelect(state, options) {
   const color = options.color;
   const lines = [ansi(ROLE_SGR.heading, options.title, color)];
   state.choices.forEach((choice, index2) => {
-    const marker = index2 === state.cursor ? "\u276F " : "  ";
+    const marker = index2 === state.cursor ? `${ansi(ROLE_SGR.accent, "\u276F", color)} ` : "  ";
     const box = glyph(state, state.selected.includes(choice.value));
     const label = index2 === state.cursor ? ansi(ROLE_SGR.heading, choice.label, color) : choice.label;
     const hint = choice.hint === void 0 ? "" : ` ${ansi(ROLE_SGR.tool, `(${choice.hint})`, color)}`;
@@ -11726,13 +11778,16 @@ var NARROW_COLUMNS = 80;
 var MIN_COLUMNS = 28;
 var MAX_COLUMNS = 110;
 var LEFT_SHARE = 0.5;
-var SGR = {
-  dim: ROLE_SGR.tool,
-  bold: ROLE_SGR.heading,
-  ok: ROLE_SGR.ok,
-  warn: ROLE_SGR.warn
-};
-function renderLine(line, cells, color) {
+function segmentSgr(styles) {
+  return {
+    dim: styles.sgr.tool,
+    bold: styles.sgr.heading,
+    ok: styles.sgr.ok,
+    warn: styles.sgr.warn,
+    accent: styles.sgr.accent
+  };
+}
+function renderLine(line, cells, color, sgr) {
   let remaining = cells;
   let out = "";
   for (const segment of line) {
@@ -11740,7 +11795,7 @@ function renderLine(line, cells, color) {
       break;
     const text2 = segment.text.length <= remaining ? segment.text : segment.text.slice(0, remaining);
     remaining -= text2.length;
-    out += segment.style === void 0 ? text2 : ansi(SGR[segment.style], text2, color);
+    out += segment.style === void 0 ? text2 : ansi(sgr[segment.style], text2, color);
   }
   return out + " ".repeat(Math.max(0, remaining));
 }
@@ -11885,13 +11940,24 @@ function activityLines(model, cells) {
   }
   return lines;
 }
-function pad(line, cells, color) {
-  return renderLine(line ?? [], cells, color);
+function pad(line, cells, color, sgr) {
+  return renderLine(line ?? [], cells, color, sgr);
+}
+var TITLE_FRAME_CELLS = 5;
+var MIN_TITLE_FILL = 1;
+function titledTop(title, width, color, sgr) {
+  const room = Math.max(0, width - TITLE_FRAME_CELLS - MIN_TITLE_FILL);
+  const name = title.length <= room ? title : `${title.slice(0, Math.max(0, room - 1))}\u2026`;
+  const fill = Math.max(MIN_TITLE_FILL, width - TITLE_FRAME_CELLS - name.length);
+  return ansi(sgr.accent, "\u256D\u2500 ", color) + ansi(sgr.bold, name, color) + ansi(sgr.accent, ` ${"\u2500".repeat(fill)}\u256E`, color);
 }
 function renderDashboard(model, options = {}) {
-  const color = options.color ?? false;
+  const styles = options.styles ?? PLAIN_STYLES;
+  const color = options.color ?? styles.enabled;
+  const sgr = segmentSgr(styles);
   const terminal = Math.max(MIN_COLUMNS, Math.min(options.columns ?? DEFAULT_COLUMNS, MAX_COLUMNS));
-  const title = [{ text: `kapel v${model.version}`, style: "bold" }];
+  const bar = (text2) => ansi(sgr.accent, text2, color);
+  const top = titledTop(`kapel v${model.version}`, terminal, color, sgr);
   if (terminal < NARROW_COLUMNS) {
     const inner2 = terminal - 4;
     const body2 = [
@@ -11900,11 +11966,10 @@ function renderDashboard(model, options = {}) {
       ...activityLines(model, inner2)
     ];
     return [
-      `\u256D${"\u2500".repeat(terminal - 2)}\u256E`,
-      `\u2502 ${pad(title, inner2, color)} \u2502`,
-      `\u251C${"\u2500".repeat(terminal - 2)}\u2524`,
-      ...body2.map((line) => `\u2502 ${pad(line, inner2, color)} \u2502`),
-      `\u2570${"\u2500".repeat(terminal - 2)}\u256F`
+      top,
+      bar(`\u251C${"\u2500".repeat(terminal - 2)}\u2524`),
+      ...body2.map((line) => `${bar("\u2502")} ${pad(line, inner2, color, sgr)} ${bar("\u2502")}`),
+      bar(`\u2570${"\u2500".repeat(terminal - 2)}\u256F`)
     ];
   }
   const inner = terminal - 7;
@@ -11915,14 +11980,13 @@ function renderDashboard(model, options = {}) {
   const rows = Math.max(leftLines.length, rightLines.length);
   const body = [];
   for (let i = 0; i < rows; i += 1) {
-    body.push(`\u2502 ${pad(leftLines[i], left, color)} \u2502 ${pad(rightLines[i], right, color)} \u2502`);
+    body.push(`${bar("\u2502")} ${pad(leftLines[i], left, color, sgr)} ${bar("\u2502")} ${pad(rightLines[i], right, color, sgr)} ${bar("\u2502")}`);
   }
   return [
-    `\u256D${"\u2500".repeat(terminal - 2)}\u256E`,
-    `\u2502 ${pad(title, terminal - 4, color)} \u2502`,
-    `\u251C${"\u2500".repeat(left + 2)}\u252C${"\u2500".repeat(right + 2)}\u2524`,
+    top,
+    bar(`\u251C${"\u2500".repeat(left + 2)}\u252C${"\u2500".repeat(right + 2)}\u2524`),
     ...body,
-    `\u2570${"\u2500".repeat(left + 2)}\u2534${"\u2500".repeat(right + 2)}\u256F`
+    bar(`\u2570${"\u2500".repeat(left + 2)}\u2534${"\u2500".repeat(right + 2)}\u256F`)
   ];
 }
 
@@ -12085,6 +12149,55 @@ function reduceAssemblyLine(state, line) {
 function historyEntryFor(message) {
   return message.replace(/\n/g, " ").trim();
 }
+var COMMAND_MENU_MAX_ROWS = 8;
+function commandMenuToken(line, cursor) {
+  if (!line.startsWith("/"))
+    return void 0;
+  const space = line.search(/\s/);
+  const end = space === -1 ? line.length : space;
+  return cursor > end ? void 0 : line.slice(0, end);
+}
+function filterCommandMenu(entries, token) {
+  const prefix = token.toLowerCase();
+  return entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix));
+}
+var MENU_INDENT = "  ";
+var MENU_GAP = "  ";
+function truncateTo(text2, max) {
+  const chars = [...text2];
+  if (chars.length <= max)
+    return text2;
+  if (max <= 0)
+    return "";
+  if (max === 1)
+    return "\u2026";
+  return `${chars.slice(0, max - 1).join("")}\u2026`;
+}
+function renderCommandMenu(matches2, token, options) {
+  if (matches2.length === 0)
+    return [];
+  const maxRows = Math.max(1, options.maxRows ?? COMMAND_MENU_MAX_ROWS);
+  const visible = matches2.slice(0, maxRows);
+  const hidden = matches2.length - visible.length;
+  const limit = Math.max(1, options.columns - 1);
+  const width = Math.max(...visible.map((entry) => entry.name.length));
+  const styles = options.styles;
+  const typed = [...token].length;
+  const rows = visible.map((entry) => {
+    const plain = `${MENU_INDENT}${entry.name.padEnd(width)}${MENU_GAP}${entry.description}`;
+    const chars = [...truncateTo(plain, limit)];
+    const start = Math.min(MENU_INDENT.length, chars.length);
+    const end = Math.min(start + typed, chars.length);
+    const indent = chars.slice(0, start).join("");
+    const prefix = chars.slice(start, end).join("");
+    const rest = chars.slice(end).join("");
+    return `${indent}${styles.user(prefix)}${styles.menu(rest)}`;
+  });
+  if (hidden > 0) {
+    rows.push(styles.menu(truncateTo(`${MENU_INDENT}\u2026 and ${hidden} more`, limit)));
+  }
+  return rows;
+}
 var INPUT_SIGINT = /* @__PURE__ */ Symbol("input-sigint");
 function isPromise(value) {
   return typeof value?.then === "function";
@@ -12123,6 +12236,103 @@ function createInputManager(options) {
   let closed = false;
   let readPending;
   let questionPending;
+  const CSI = "\x1B[";
+  const menuEntries = options.commandMenu;
+  const menuStyles = options.styles ?? PLAIN_STYLES;
+  const menuMaxRows = options.commandMenuRows ?? COMMAND_MENU_MAX_ROWS;
+  const menuEnabled = menuEntries !== void 0 && options.input.isTTY === true && options.output.isTTY === true;
+  let menuRows = 0;
+  let menuSuspended = false;
+  const write = (text2) => {
+    options.output.write(text2);
+  };
+  const columns = () => {
+    const value = options.output.columns;
+    return typeof value === "number" && value > 0 ? value : 80;
+  };
+  const cursorPos = () => {
+    const get = rl.getCursorPos;
+    if (typeof get !== "function")
+      return { rows: 0, cols: 0 };
+    try {
+      return get.call(rl);
+    } catch {
+      return { rows: 0, cols: 0 };
+    }
+  };
+  const rowsBelowCursor = (cols) => {
+    const tail3 = [...rl.line.slice(rl.cursor)].length;
+    return Math.floor((cols + tail3) / columns());
+  };
+  const backToCursor = (down, cols) => `${down > 0 ? `${CSI}${down}A` : ""}\r${cols > 0 ? `${CSI}${cols}C` : ""}`;
+  const hideMenu = () => {
+    if (menuRows === 0)
+      return;
+    menuRows = 0;
+    const { cols } = cursorPos();
+    const down = rowsBelowCursor(cols) + 1;
+    write(`${CSI}${down}B\r${CSI}0J${backToCursor(down, cols)}`);
+  };
+  const dropMenu = () => {
+    if (menuRows === 0)
+      return;
+    menuRows = 0;
+    write(`\r${CSI}0J`);
+  };
+  const drawMenu = (lines) => {
+    const { cols } = cursorPos();
+    const below = rowsBelowCursor(cols);
+    const down = below + lines.length;
+    write(`${below > 0 ? `${CSI}${below}B` : ""}\r
+${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`);
+    menuRows = lines.length;
+  };
+  const renderMenu = () => {
+    if (!menuEnabled || menuSuspended)
+      return;
+    if (readPending === void 0) {
+      hideMenu();
+      return;
+    }
+    const token = commandMenuToken(rl.line, rl.cursor);
+    if (token === void 0) {
+      hideMenu();
+      return;
+    }
+    const matches2 = filterCommandMenu(menuEntries?.() ?? [], token);
+    const lines = renderCommandMenu(matches2, token, {
+      columns: columns(),
+      styles: menuStyles,
+      maxRows: menuMaxRows
+    });
+    if (lines.length === 0) {
+      hideMenu();
+      return;
+    }
+    drawMenu(lines);
+  };
+  const abandonLine = () => {
+    const clear = rl.clearLine;
+    if (typeof clear === "function") {
+      clear.call(rl);
+      return;
+    }
+    const state = rl;
+    if (typeof state.line !== "string")
+      return;
+    state.line = "";
+    state.cursor = 0;
+  };
+  const onKeypress = () => {
+    renderMenu();
+  };
+  const onResize = () => {
+    renderMenu();
+  };
+  if (menuEnabled) {
+    options.input.on("keypress", onKeypress);
+    options.output.on("resize", onResize);
+  }
   function clearCoalesceTimer() {
     if (readPending?.coalesceTimer !== void 0) {
       clearTimeout(readPending.coalesceTimer);
@@ -12165,6 +12375,7 @@ function createInputManager(options) {
     }, pasteWindowMs);
   }
   rl.on("line", (line) => {
+    dropMenu();
     if (questionPending !== void 0) {
       return;
     }
@@ -12183,13 +12394,16 @@ ${action.text}`;
     scheduleCoalesceFlush();
   });
   rl.on("SIGINT", () => {
+    hideMenu();
     if (questionPending !== void 0) {
-      const { resolve: resolve5 } = questionPending;
+      const { resolve: resolve5, cancel } = questionPending;
       questionPending = void 0;
+      cancel();
       resolve5(INPUT_SIGINT);
       return;
     }
     if (readPending !== void 0) {
+      abandonLine();
       readPending.assembly = initialAssembly();
       resolveRead(INPUT_SIGINT);
       return;
@@ -12198,6 +12412,11 @@ ${action.text}`;
   });
   rl.on("close", () => {
     closed = true;
+    hideMenu();
+    if (menuEnabled) {
+      options.input.removeListener("keypress", onKeypress);
+      options.output.removeListener("resize", onResize);
+    }
     if (questionPending !== void 0) {
       const { resolve: resolve5 } = questionPending;
       questionPending = void 0;
@@ -12222,6 +12441,7 @@ ${action.text}`;
         };
         rl.setPrompt(promptText);
         rl.prompt();
+        renderMenu();
       });
     },
     question(query) {
@@ -12231,8 +12451,9 @@ ${action.text}`;
         throw new Error("InputManager.question: a read is already in progress");
       }
       return new Promise((resolve5) => {
-        questionPending = { resolve: resolve5 };
-        rl.question(query, (answer) => {
+        const aborter = new AbortController();
+        questionPending = { resolve: resolve5, cancel: () => aborter.abort() };
+        rl.question(query, { signal: aborter.signal }, (answer) => {
           if (questionPending === void 0)
             return;
           questionPending = void 0;
@@ -12247,6 +12468,8 @@ ${action.text}`;
     async withSuspended(fn) {
       const input = options.input;
       const wasRaw = input.isRaw === true;
+      hideMenu();
+      menuSuspended = true;
       rl.pause();
       input.setRawMode?.(false);
       try {
@@ -12255,9 +12478,11 @@ ${action.text}`;
         const isTty = options.input.isTTY;
         input.setRawMode?.(wasRaw || isTty === true);
         rl.resume();
+        menuSuspended = false;
         if (readPending !== void 0) {
           rl.setPrompt(readPending.promptText);
           rl.prompt();
+          renderMenu();
         }
       }
     },
@@ -12930,7 +13155,15 @@ function parsePermissionAnswer(answer) {
     return "once";
   if (normalized === "a" || normalized === "always")
     return "always";
-  return "deny";
+  if (normalized === "" || normalized === "n" || normalized === "no") {
+    return "deny";
+  }
+  return "feedback";
+}
+function permissionFeedback(answer) {
+  if (parsePermissionAnswer(answer) !== "feedback")
+    return void 0;
+  return typeof answer === "string" ? answer.trim() : void 0;
 }
 function createPrompter(options) {
   if (options.yes) {
@@ -12962,6 +13195,10 @@ function createPrompter(options) {
         const query = createStyles(color).heading(prompt.query);
         const raw = ask2 === void 0 ? await askOnce(query, input, output) : await ask2(query);
         const answer = parsePermissionAnswer(raw);
+        if (answer === "feedback") {
+          const feedback = permissionFeedback(raw);
+          return feedback === void 0 ? false : { allowed: false, feedback };
+        }
         if (answer === "deny")
           return false;
         if (answer === "always" && allowlist !== void 0) {
@@ -12991,11 +13228,12 @@ function previewBlockLines(request, prompt, options) {
     dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
   ];
 }
+var PERMISSION_ANSWER_HINT = "[y/n/a, or say what to do instead]";
 function formatPermissionPrompt(request, options = {}) {
   const block = formatToolPreview(request.tool, request.input, {
     ...options.color === void 0 ? {} : { color: options.color }
   });
-  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] ` : `allow ${request.tool}? [y/n/a] `;
+  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} ${PERMISSION_ANSWER_HINT} ` : `allow ${request.tool}? ${PERMISSION_ANSWER_HINT} `;
   return { block, query };
 }
 function askOnce(query, input, output) {
@@ -15038,7 +15276,7 @@ function enterAltScreen(options = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.11.0";
+var CLI_VERSION = "0.12.0";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -15251,6 +15489,19 @@ var SLASH_COMMANDS = [
     help: "re-execute the unfinished tasks of a recorded run (see /runs)"
   }
 ];
+var NO_DESCRIPTION = "(no description)";
+function replCommandMenuEntries(custom = []) {
+  return [
+    ...SLASH_COMMANDS.map((command) => ({
+      name: `/${command.name}`,
+      description: command.help
+    })),
+    ...custom.map((command) => ({
+      name: `/${command.name}`,
+      description: command.description ?? NO_DESCRIPTION
+    }))
+  ];
+}
 function slashCompleter(line, customNames = []) {
   if (!line.startsWith("/"))
     return [[], line];
@@ -15349,7 +15600,7 @@ async function createInteractiveController(deps) {
     const result = await loadCommands();
     customCommands = result.commands;
     customCommandWarnings = result.warnings;
-    deps.onCustomCommandsChanged?.(customCommands.map((command) => command.name));
+    deps.onCustomCommandsChanged?.(customCommands);
   };
   const styles = deps.styles ?? PLAIN_STYLES;
   const lines = [];
@@ -15509,7 +15760,7 @@ async function createInteractiveController(deps) {
       const customWidth = Math.max(...customCommands.map((command) => command.name.length + 1));
       for (const command of customCommands) {
         const usage = `/${command.name}`.padEnd(customWidth);
-        emit2(`  ${usage}  ${command.description ?? "(no description)"}`);
+        emit2(`  ${usage}  ${command.description ?? NO_DESCRIPTION}`);
       }
     }
     for (const warning of customCommandWarnings) {
@@ -16064,6 +16315,7 @@ async function bestEffortValue(read) {
     return void 0;
   }
 }
+var DEFAULT_RULE_COLUMNS = 80;
 function promptMarker(styles) {
   return `${styles.user("kapel>")} `;
 }
@@ -16098,7 +16350,15 @@ async function runInteractive(options) {
   const instructions = loadInstructions(workspacePath, process.env);
   const repoPermission = await loadRepoPermissionRules(workspacePath);
   const permissionRules = resolvePermissionRules(DEFAULT_PERMISSIONS, options.config?.permission, repoPermission);
-  const backend = (await detectBackendSetting(options.backend, process.env, options.config, options.projectConfig)).value;
+  const backend = (await detectBackendSetting(options.backend, process.env, options.config, options.projectConfig, {
+    // "backend: claude-code (auto-detected …)" is kapel remarking on the
+    // session, so it wears the notice bar like every other such remark —
+    // on stderr, where this announcement has always gone, and in that
+    // stream's own palette.
+    announce: (line) => {
+      console.error(errorStyles.notice(line));
+    }
+  })).value;
   const modelSetting = resolveOrchestratorModel(options.model, process.env, options.config, options.projectConfig);
   const alias = modelSetting.value.model;
   const delegatedModel = delegatedModelOverride(modelSetting);
@@ -16215,6 +16475,9 @@ async function runInteractive(options) {
     };
     const mentionFiles = createFileLister({ workspacePath });
     const customCommandNames = { current: [] };
+    const commandMenu = {
+      current: replCommandMenuEntries()
+    };
     const manager = interactiveTty ? createInputManager({
       input: process.stdin,
       output: process.stdout,
@@ -16224,7 +16487,12 @@ async function runInteractive(options) {
       onIdleSigint: () => activeTurn.current?.abort(),
       // A continued line is still the user typing, so its marker wears
       // the same colour the prompt's does.
-      continuationPrompt: `${styles.user(CONTINUATION_PROMPT.trimEnd())} `
+      continuationPrompt: `${styles.user(CONTINUATION_PROMPT.trimEnd())} `,
+      // The live `/` menu: same registry `/help` prints, read per
+      // keystroke so a command file added mid-session shows up as soon as
+      // the next `/help` has seen it.
+      commandMenu: () => commandMenu.current,
+      styles
     }) : void 0;
     inputManager = manager;
     const prompter = createPrompter({
@@ -16318,7 +16586,10 @@ async function runInteractive(options) {
         ...quota === void 0 ? {} : { quota }
       };
       return renderDashboard(dashboardModel, {
-        color: colorEnabled(process.stdout, process.env),
+        // The shell's own palette, so the box is drawn in the same accent the
+        // prompt's rule and the notice bars below it wear — and switched off
+        // by the same `NO_COLOR`.
+        styles,
         ...process.stdout.columns === void 0 ? {} : { columns: process.stdout.columns }
       });
     };
@@ -16343,8 +16614,9 @@ async function runInteractive(options) {
       // One store for the whole REPL: the checkpoints outlive `/new`,
       // `/resume` and `/model`, because the working tree does too.
       checkpoints: createCheckpointStore({ workspacePath }),
-      onCustomCommandsChanged: (names) => {
-        customCommandNames.current = names;
+      onCustomCommandsChanged: (commands) => {
+        customCommandNames.current = commands.map((command) => command.name);
+        commandMenu.current = replCommandMenuEntries(commands);
       },
       // The one layer that knows stdout is a terminal is the one that decides
       // the controller may write escapes; see `InteractiveControllerDeps.styles`.
@@ -16436,6 +16708,12 @@ async function runInteractive(options) {
     if ("note" in started && started.note !== void 0) {
       console.log(styles.warn(started.note));
     }
+    const printInputRule = () => {
+      const rule = styles.rule(process.stdout.columns ?? DEFAULT_RULE_COLUMNS);
+      if (rule === "")
+        return;
+      console.log(rule);
+    };
     const lineSource = manager === void 0 ? pipedLineSource() : inputManagerLineSource(manager);
     try {
       return await replLoop({
@@ -16444,7 +16722,8 @@ async function runInteractive(options) {
         promptState,
         promptText: promptMarker(styles),
         styles,
-        activeTurn
+        activeTurn,
+        openBand: printInputRule
       });
     } finally {
       lineSource.close();
@@ -16460,9 +16739,10 @@ async function runInteractive(options) {
   }
 }
 async function replLoop(args) {
-  const { controller, lines, promptState, promptText, styles, activeTurn } = args;
+  const { controller, lines, promptState, promptText, styles, activeTurn, openBand } = args;
   let armed = false;
   for (; ; ) {
+    openBand?.();
     const line = await lines.next(promptText);
     if (line === void 0) {
       console.log("");
