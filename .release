@@ -1,1 +1,1 @@
-v0.10.1 release — fresh projects set themselves up without asking: opening the REPL in a repo with no .agent/ runs init and the policy compile immediately with a one-line announcement; --no-setup and piped runs still opt out
+v0.11.0 release — alternate-screen sessions that hand the terminal back on every exit (--no-altscreen opts out), curated model pickers with pinned recommendations and an arrow-key selection fix, a per-agent summary table after every run, and role-based styling across the REPL with NO_COLOR support
