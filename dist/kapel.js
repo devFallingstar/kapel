@@ -13664,15 +13664,22 @@ async function pathExists2(candidate) {
     return false;
   }
 }
+async function readOptional(candidate) {
+  try {
+    return await readFile16(candidate, "utf8");
+  } catch {
+    return void 0;
+  }
+}
 async function detectProjectSetup(workspacePath) {
   const agentDir = path13.join(workspacePath, ".agent");
-  if (!await pathExists2(path13.join(agentDir, ORCHESTRATION_FILE))) {
+  const markdown = await readOptional(path13.join(agentDir, ORCHESTRATION_FILE));
+  if (markdown === void 0)
     return "needs-init";
-  }
-  if (!await pathExists2(path13.join(agentDir, LOCK_FILE))) {
+  const lockPath = path13.join(agentDir, LOCK_FILE);
+  if (!await pathExists2(lockPath))
     return "needs-policy";
-  }
-  return "ready";
+  return checkLock(markdown, await readOptional(lockPath)).fresh ? "ready" : "needs-refresh";
 }
 async function setupCallsModel(workspacePath, state) {
   if (state === "needs-init")
@@ -13684,12 +13691,19 @@ async function setupCallsModel(workspacePath, state) {
     return true;
   }
 }
-function setupDeferredLine() {
-  return "this project's orchestration policy has not been compiled \u2014 /plan or /orchestrate will compile it (one model call), or `/policy` rewrites it in the form that needs none.";
+function setupDeferredLine(state) {
+  const what = state === "needs-refresh" ? "has changed since it was compiled" : "has not been compiled";
+  return `this project's orchestration policy ${what} \u2014 /plan or /orchestrate will compile it (one model call), or \`/policy\` rewrites it in the form that needs none.`;
 }
 function setupAnnounceLine(state, callsModel) {
   const cost = callsModel ? " (one model call)" : "";
-  return state === "needs-init" ? `setting this project up for kapel \u2014 creating .agent/ and compiling the orchestration policy${cost}\u2026` : `compiling this project's orchestration policy for kapel${cost}\u2026`;
+  if (state === "needs-init") {
+    return `setting this project up for kapel \u2014 creating .agent/ and compiling the orchestration policy${cost}\u2026`;
+  }
+  if (state === "needs-refresh") {
+    return `re-reading this project's edited orchestration policy${cost}\u2026`;
+  }
+  return `compiling this project's orchestration policy for kapel${cost}\u2026`;
 }
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
@@ -13724,7 +13738,7 @@ function createProjectSetup(deps) {
       if (callsModel && options.allowModel !== true) {
         if (!announcedDeferral) {
           announcedDeferral = true;
-          output.log(setupDeferredLine());
+          output.log(setupDeferredLine(state));
         }
         return false;
       }
@@ -16662,7 +16676,7 @@ function enterAltScreen(options = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.14.1";
+var CLI_VERSION = "0.15.0";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;

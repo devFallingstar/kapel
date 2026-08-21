@@ -13,6 +13,7 @@ import type {
   PolicyCompileResult,
   PolicyCompiler,
 } from "@agent/coding-agent";
+import { createLockfile, serializeLockfile } from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInit } from "../src/init.js";
 import type { ProjectSetupState, SetupOutput } from "../src/onboard.js";
@@ -93,6 +94,28 @@ function fakeSetup(
   return { setup, ran };
 }
 
+/** Writes `.agent/orchestration.md`, optionally with a lock that matches it. */
+async function writePolicy(
+  markdown: string,
+  options: { locked?: boolean } = {},
+): Promise<void> {
+  const agentDir = path.join(workspace, ".agent");
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(agentDir, "orchestration.md"), markdown);
+  if (options.locked !== true) return;
+  await writeFile(
+    path.join(agentDir, "orchestration.lock.json"),
+    serializeLockfile(
+      createLockfile({
+        markdown,
+        result: { policy: VALID_POLICY, warnings: [], ambiguities: [] },
+        model: "canonical",
+        now: 0,
+      }),
+    ),
+  );
+}
+
 // --- what a workspace still needs -------------------------------------------
 
 describe("detectProjectSetup", () => {
@@ -119,18 +142,41 @@ describe("detectProjectSetup", () => {
     expect(await detectProjectSetup(workspace)).toBe("needs-policy");
   });
 
-  it("reports a project with a lock as ready", async () => {
-    await mkdir(path.join(workspace, ".agent"), { recursive: true });
+  it("reports a project whose lock still describes its policy as ready", async () => {
+    await writePolicy("# policy\n", { locked: true });
+    expect(await detectProjectSetup(workspace)).toBe("ready");
+  });
+
+  it("reports an edited policy as needing a refresh", async () => {
+    await writePolicy("# policy\n", { locked: true });
     await writeFile(
       path.join(workspace, ".agent", "orchestration.md"),
-      "# policy\n",
+      "# policy\n\nNever touch the database.\n",
     );
+
+    expect(await detectProjectSetup(workspace)).toBe("needs-refresh");
+  });
+
+  it("ignores a reformatting-only edit", async () => {
+    // `hashPolicySource` normalizes line endings and trailing whitespace, so
+    // running a formatter over the policy must not make anything stale.
+    await writePolicy("# policy\n", { locked: true });
+    await writeFile(
+      path.join(workspace, ".agent", "orchestration.md"),
+      "# policy   \r\n\n\n",
+    );
+
+    expect(await detectProjectSetup(workspace)).toBe("ready");
+  });
+
+  it("reports a lock it cannot read as needing a refresh", async () => {
+    await writePolicy("# policy\n", { locked: true });
     await writeFile(
       path.join(workspace, ".agent", "orchestration.lock.json"),
       "{}",
     );
 
-    expect(await detectProjectSetup(workspace)).toBe("ready");
+    expect(await detectProjectSetup(workspace)).toBe("needs-refresh");
   });
 });
 
@@ -216,7 +262,7 @@ describe("createProjectSetup", () => {
 
     expect(await setup.ensure(output, { allowModel: false })).toBe(false);
     expect(ran).toEqual([]);
-    expect(lines).toEqual([setupDeferredLine()]);
+    expect(lines).toEqual([setupDeferredLine("needs-policy")]);
     expect(errLines).toEqual([]);
   });
 
@@ -240,7 +286,7 @@ describe("createProjectSetup", () => {
     await setup.ensure(output, { allowModel: false });
     await setup.ensure(output, { allowModel: false });
 
-    expect(lines).toEqual([setupDeferredLine()]);
+    expect(lines).toEqual([setupDeferredLine("needs-policy")]);
   });
 
   it("defers nothing that costs nothing", async () => {
@@ -265,10 +311,12 @@ describe("createProjectSetup", () => {
     const states: readonly Exclude<ProjectSetupState, "ready">[] = [
       "needs-init",
       "needs-policy",
+      "needs-refresh",
     ];
     for (const state of states) {
       for (const callsModel of [true, false]) {
         expect(setupAnnounceLine(state, callsModel)).not.toContain("\n");
+        expect(setupDeferredLine(state)).not.toContain("\n");
       }
     }
   });
@@ -390,6 +438,85 @@ describe("createProjectSetup — over the real init and compile", () => {
     ).toBe(true);
     expect(errLines).toEqual([]);
     expect(lines.join("\n")).toContain("no model call");
+    expect(await detectProjectSetup(workspace)).toBe("ready");
+  });
+
+  it("re-reads an edited canonical policy at startup, for free", async () => {
+    const { output } = capture();
+    await realSetup().ensure(output, { allowModel: false });
+
+    const policyPath = path.join(workspace, ".agent", "orchestration.md");
+    const edited = (await readFile(policyPath, "utf8")).replace(
+      "- Run at most 4 agents at a time.",
+      "- Run at most 2 agents at a time.",
+    );
+    await writeFile(policyPath, edited, "utf8");
+    expect(await detectProjectSetup(workspace)).toBe("needs-refresh");
+
+    // A second session — the edit is picked up on the way in, with no model
+    // and no command for the user to remember.
+    const second = capture();
+    expect(
+      await createProjectSetup({
+        workspacePath: workspace,
+        interactive: true,
+        init: (out) => runInit({ cwd: workspace, fill: true, output: out }),
+        compile: (out) =>
+          runPolicyCompile(
+            { cwd: workspace, json: false, backend: "native" },
+            { output: out },
+          ),
+      }).ensure(second.output, { allowModel: false }),
+    ).toBe(true);
+
+    expect(second.errLines).toEqual([]);
+    expect(second.lines.join("\n")).toContain("no model call");
+    expect(await detectProjectSetup(workspace)).toBe("ready");
+
+    const lock = JSON.parse(
+      await readFile(
+        path.join(workspace, ".agent", "orchestration.lock.json"),
+        "utf8",
+      ),
+    );
+    expect(lock.policy.maxConcurrency).toBe(2);
+  });
+
+  it("defers an edited prose policy instead of paying for it at startup", async () => {
+    const { output } = capture();
+    await realSetup().ensure(output, { allowModel: false });
+
+    // Prose, and no longer what the lock describes: the refresh would cost a
+    // model call, so opening a REPL must not run it.
+    await writeFile(
+      path.join(workspace, ".agent", "orchestration.md"),
+      "Send everything to `coder`.\n",
+      "utf8",
+    );
+    expect(await detectProjectSetup(workspace)).toBe("needs-refresh");
+
+    const second = capture();
+    const setup = createProjectSetup({
+      workspacePath: workspace,
+      interactive: true,
+      init: (out) => runInit({ cwd: workspace, fill: true, output: out }),
+      compile: (out) =>
+        runPolicyCompile(
+          { cwd: workspace, json: false, backend: "native" },
+          { output: out, compilerFactory: fakeCompiler },
+        ),
+    });
+
+    expect(await setup.ensure(second.output, { allowModel: false })).toBe(
+      false,
+    );
+    expect(second.lines).toEqual([setupDeferredLine("needs-refresh")]);
+    expect(second.lines[0]).toContain("has changed since it was compiled");
+    expect(await detectProjectSetup(workspace)).toBe("needs-refresh");
+
+    // …and `/plan` still gets to run it.
+    const third = capture();
+    expect(await setup.ensure(third.output, { allowModel: true })).toBe(true);
     expect(await detectProjectSetup(workspace)).toBe("ready");
   });
 

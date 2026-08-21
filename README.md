@@ -62,6 +62,12 @@ So a session spent chatting, reading or editing files never spends a token on
 orchestration it never used. The first model call of a run is the one you
 asked for.
 
+**And nothing asks you to keep the lock in step.** Edit
+`.agent/orchestration.md` in your editor and the next `kapel` picks the change
+up on the way in — reading it, not compiling it, so there is nothing to spend
+and no command to remember. A policy you rewrote as prose is the exception,
+and takes the deferral above rather than your tokens.
+
 The first time you run `kapel` on a terminal it asks five questions — which
 coding backends you have (Claude Code, Codex, a plain API key: tick as many as
 apply) and which model, on which of them, to use for the orchestrator and for
@@ -73,10 +79,10 @@ and defaults, so nothing in CI ever blocks on a prompt.
 
 If the npm registry is unreachable from your network, the same package ships
 as a committed tarball in this repo: `npm install -g
-https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.14.1.tgz`,
+https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.15.0.tgz`,
 or the two-step form `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.14.1.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.15.0.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
@@ -89,7 +95,7 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-╭─ kapel v0.14.1 ──────────────────────────────────────────────────────────────────────────────────╮
+╭─ kapel v0.15.0 ──────────────────────────────────────────────────────────────────────────────────╮
 ├─────────────────────────────────────────────────┬────────────────────────────────────────────────┤
 │ setup                                           │ activity                                       │
 │ workspace    /path/to/your/repo                 │ today    1 run · 1 chat                        │
@@ -596,7 +602,7 @@ compiles the file with a model rather than quietly reading a policy that means
 less than it says.
 
 - `kapel policy edit` — the editor: pick a setting or a rule, change it, save. It rewrites `orchestration.md` in canonical form **and** the lock beside it, so nothing is left to compile — `/plan` works the moment you exit. No model is called and no credential is needed, so this works on a machine with no backend configured at all. Editing a policy that is currently prose starts from what it last compiled to and says, on the save line, that saving replaces the prose; a prose policy that has never been compiled (or whose lock has gone stale against it) is refused rather than half-read, with the one command to run first.
-- `kapel policy compile` — reads a canonical `orchestration.md` outright (no model, no credential), and otherwise uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile it into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map). Each warning/ambiguity that quotes a source phrase is annotated with the `orchestration.md:12` line (or `:12-13` when the phrase wraps lines) it was found at — best-effort: a phrase the compiler paraphrased instead of quoting carries no location, never a wrong one. `--json` adds parallel `warningLocations`/`ambiguityLocations` arrays (`null` where unresolved), and a `source` of `canonical` or `model` saying which path ran. The text output opens with the same fact and, on the model path only, prints what the compile spent; on a delegated backend that is whatever the CLI reported, and "none reported" when it reported nothing rather than a misleading `0`. A file that carries the marker but no longer parses is reported on stderr with its line number — it is about to cost a call it was written to avoid.
+- `kapel policy compile` — rarely needed by hand: a new project compiles itself, `policy edit` writes the lock as it saves, and an edited canonical policy is re-read at the next startup. What it does when you do run it: reads a canonical `orchestration.md` outright (no model, no credential), and otherwise uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile it into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map). Each warning/ambiguity that quotes a source phrase is annotated with the `orchestration.md:12` line (or `:12-13` when the phrase wraps lines) it was found at — best-effort: a phrase the compiler paraphrased instead of quoting carries no location, never a wrong one. `--json` adds parallel `warningLocations`/`ambiguityLocations` arrays (`null` where unresolved), and a `source` of `canonical` or `model` saying which path ran. The text output opens with the same fact and, on the model path only, prints what the compile spent; on a delegated backend that is whatever the CLI reported, and "none reported" when it reported nothing rather than a misleading `0`. A file that carries the marker but no longer parses is reported on stderr with its line number — it is about to cost a call it was written to avoid.
 - `kapel policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
 - `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM. Same line-annotated warnings/ambiguities as `compile`.
 - `kapel policy diff` — recompiles `orchestration.md` exactly the way `compile` does — free for a canonical policy, one LLM call for prose — and diffs the result against the current lock **without writing it**, so you can review a change before committing to it: routing/review/escalation rules added, removed, or changed field-by-field (matched by each rule's own `id`, not its position — reordering a policy's rules between compiles is not a change), plus any changed defaults (`orchestrator`, `maxConcurrency`, `parallelizeIndependentTasks`, `defaultMaxAttempts`). `--json` emits `{ok, unchanged, defaults, routing, review, escalation, warnings, ambiguities, source}`. "Same resolution as `compile`" includes the backend: under `--backend codex`/`--backend claude-code` the recompile is delegated to that CLI, so `diff` needs no API key either.

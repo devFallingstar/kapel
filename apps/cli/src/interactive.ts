@@ -142,7 +142,7 @@ import { PLAIN_STYLES, type Styles, stylesFor } from "./styles.js";
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
  * here so both spellings of it come from one place.
  */
-export const CLI_VERSION = "0.14.1";
+export const CLI_VERSION = "0.15.0";
 
 /**
  * How long the startup dashboard waits for the backend login probes before

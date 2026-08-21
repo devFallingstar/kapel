@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { isCanonicalPolicySource } from "@agent/coding-agent";
+import { checkLock, isCanonicalPolicySource } from "@agent/coding-agent";
 
 /**
  * Automatic project onboarding: the two commands a new repository used to
@@ -22,12 +22,17 @@ import { isCanonicalPolicySource } from "@agent/coding-agent";
 
 /** How much of the setup a workspace is still missing. */
 export type ProjectSetupState =
-  /** `.agent/` holds a project *and* a compiled policy lock: nothing to do. */
+  /** `.agent/` holds a project and a lock that still describes it: nothing to do. */
   | "ready"
   /** No project here yet: `kapel init`, then a policy compile. */
   | "needs-init"
   /** A project, but its policy has never been compiled: just the compile. */
-  | "needs-policy";
+  | "needs-policy"
+  /**
+   * A project whose lock no longer describes its policy — the file was
+   * edited, or the lock is unreadable. Also just the compile.
+   */
+  | "needs-refresh";
 
 /** Where the setup (and whatever it runs) writes its lines. */
 export interface SetupOutput {
@@ -47,6 +52,14 @@ async function pathExists(candidate: string): Promise<boolean> {
   }
 }
 
+async function readOptional(candidate: string): Promise<string | undefined> {
+  try {
+    return await readFile(candidate, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * What this workspace still needs.
  *
@@ -57,23 +70,30 @@ async function pathExists(candidate: string): Promise<boolean> {
  * against a policy that isn't there would only produce the error this whole
  * feature exists to remove.
  *
- * Only a *missing* lock counts as `needs-policy`. A lock that has gone stale
- * against an edited `orchestration.md` is a different situation with a
- * different answer (`kapel policy compile` to refresh it, which `/plan`
- * already says), and silently recompiling someone's edited policy at startup
- * is not this feature's business.
+ * A lock that has gone stale against an edited policy is `needs-refresh`. It
+ * used to be `ready`, on the grounds that silently recompiling someone's edit
+ * would spend a model call they had not asked for — a good reason while every
+ * compile cost one. A canonical policy is now *read* rather than compiled, so
+ * the refresh is free, and the cost question is settled where it belongs:
+ * {@link setupCallsModel} prices the work and `allowModel` decides whether it
+ * runs now. Editing the policy and having the lock follow is what anyone
+ * would expect; making them run a command for it was never the point.
  */
 export async function detectProjectSetup(
   workspacePath: string,
 ): Promise<ProjectSetupState> {
   const agentDir = path.join(workspacePath, ".agent");
-  if (!(await pathExists(path.join(agentDir, ORCHESTRATION_FILE)))) {
-    return "needs-init";
-  }
-  if (!(await pathExists(path.join(agentDir, LOCK_FILE)))) {
-    return "needs-policy";
-  }
-  return "ready";
+  const markdown = await readOptional(path.join(agentDir, ORCHESTRATION_FILE));
+  if (markdown === undefined) return "needs-init";
+
+  const lockPath = path.join(agentDir, LOCK_FILE);
+  if (!(await pathExists(lockPath))) return "needs-policy";
+
+  // `stale-source` and `invalid` both mean the same thing here: whatever is
+  // in that file, it is not this policy, and compiling makes it so.
+  return checkLock(markdown, await readOptional(lockPath)).fresh
+    ? "ready"
+    : "needs-refresh";
 }
 
 /**
@@ -118,11 +138,17 @@ export async function setupCallsModel(
  * not ready and what will make it ready, but a REPL they opened to ask a
  * question must not spend their tokens on a policy they have not used.
  */
-export function setupDeferredLine(): string {
+export function setupDeferredLine(
+  state: Exclude<ProjectSetupState, "ready">,
+): string {
+  const what =
+    state === "needs-refresh"
+      ? "has changed since it was compiled"
+      : "has not been compiled";
   return (
-    "this project's orchestration policy has not been compiled — /plan or " +
-    "/orchestrate will compile it (one model call), or `/policy` rewrites " +
-    "it in the form that needs none."
+    `this project's orchestration policy ${what} — /plan or /orchestrate ` +
+    "will compile it (one model call), or `/policy` rewrites it in the form " +
+    "that needs none."
   );
 }
 
@@ -137,10 +163,16 @@ export function setupAnnounceLine(
   callsModel: boolean,
 ): string {
   const cost = callsModel ? " (one model call)" : "";
-  return state === "needs-init"
-    ? "setting this project up for kapel — creating .agent/ and compiling " +
-        `the orchestration policy${cost}…`
-    : `compiling this project's orchestration policy for kapel${cost}…`;
+  if (state === "needs-init") {
+    return (
+      "setting this project up for kapel — creating .agent/ and compiling " +
+      `the orchestration policy${cost}…`
+    );
+  }
+  if (state === "needs-refresh") {
+    return `re-reading this project's edited orchestration policy${cost}…`;
+  }
+  return `compiling this project's orchestration policy for kapel${cost}…`;
 }
 
 export interface ProjectSetupDeps {
@@ -249,7 +281,7 @@ export function createProjectSetup(deps: ProjectSetupDeps): ProjectSetup {
         // `/plan` that does ask still gets to run it.
         if (!announcedDeferral) {
           announcedDeferral = true;
-          output.log(setupDeferredLine());
+          output.log(setupDeferredLine(state));
         }
         return false;
       }
