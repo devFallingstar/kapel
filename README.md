@@ -114,6 +114,8 @@ The last block is the honest part. Neither `claude` nor `codex` reports remainin
 
 The dashboard is a terminal's opening only: piping or redirecting `kapel` keeps the plain three-line banner, with no box drawing and no control characters. (`/stats` typed into a piped session still draws the box — you asked for it.)
 
+**A clean screen, and your terminal back afterwards.** On a terminal, `kapel` opens on a screen of its own — it switches to the alternate screen buffer, the same one `vim` and `less` use, so the session starts blank instead of under whatever your shell had printed, and the dashboard above is the top of it. Leaving puts the terminal back exactly as it was, with your previous history intact: `/exit`, Ctrl-D, Ctrl-C twice, a crash, or a `kill` all restore it before anything else is printed. The honest caveat is the other half of that bargain — while the session is running, lines that scroll off the top are gone, because most terminals keep no scrollback for the alternate buffer — so `kapel --no-altscreen` (the flag works either side of `chat`) opts out and behaves exactly as v0.10.1 did, with the whole transcript left in your terminal's own scrollback. Piped and redirected runs never switch buffers at all, and neither does `TERM=dumb`.
+
 Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". The question is what will happen, not a truncated blob of JSON: `bash` shows the command it will run, `edit_file` a `-`/`+` diff of the replacement, `write_file` the head of the new file. Answers are `y` (allow this once), `n`/Enter/Ctrl-C (deny), or `a` — allow it and stop asking for the rest of the session: for `bash` that remembers the *command prefix* (answering `a` to `npm test --run foo` stops asking for `npm test …`, while `npm publish` still asks; a command with a shell operator such as `&&` or `|` is never remembered), and for every other tool it remembers the tool name. Nothing is written to disk — a new `kapel` starts asking again — and an explicit deny rule is never overridden by it. (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
 
 The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
@@ -200,7 +202,7 @@ kapel chat --session 0f3c9a2b   # a specific one (id, unique prefix, or /name)
 kapel chat --no-save            # …or don't record this one at all
 ```
 
-`kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`) work the same either way.
+`kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`, `--no-altscreen`) work the same either way.
 
 Images attach through `@` mentions on every backend: `@screenshot.png` in a
 message attaches the image to that turn — up to 4 images of 5 MiB each
@@ -235,6 +237,7 @@ Global flags, on every command:
 - `--backend <native|codex|claude-code>` — override the execution backend; see [First-run setup](#first-run-setup) for what happens when nothing overrides it
 - `--timeout <seconds>` — model call timeout
 - `--no-setup` — never set anything up automatically: no first-run wizard, and no automatic project setup either; use environment variables and defaults instead
+- `--no-altscreen` — keep the REPL on the terminal's normal screen instead of a clean one, so the transcript stays in your scrollback (see [The REPL](#the-repl))
 
 `--json` is not global. It lives on the commands that actually emit machine-readable output — `runs`, `sessions`, `sessions fork`, `explain`, and each `policy` subcommand — and nowhere else.
 
@@ -264,14 +267,14 @@ Which coding backends should kapel use? (space to toggle, enter to confirm)
 ```
 
 …followed by the orchestrator model and the three worker models — the complex
-tier (the hardest coding work), the everyday tier, and the small-task tier
-(single-function changes and exploration). With one backend ticked those four
-lists are that backend's models, exactly as before. With several, each list is
-the **union** of every ticked backend's models, each line naming who runs it,
-so a role can be put on any of them:
+tier (the hardest coding work), the routine, non-trivial tier, and the
+small-task tier (single-function changes and exploration). With one backend
+ticked those four lists are that backend's models, exactly as before. With
+several, each list is the **union** of every ticked backend's models, each
+line naming who runs it, so a role can be put on any of them:
 
 ```text
-Worker model — everyday tasks
+Worker model — routine, non-trivial tasks
     ◯ opus     (Claude Code · Claude Opus — highest capability)
 ❯ ◉ sonnet   (Claude Code · Claude Sonnet — balanced · suggested for this role)
     ◯ default  (Codex · let the Codex CLI choose)
@@ -307,7 +310,7 @@ should use instead. It is a partial — override the backend list, or one role,
 or everything — and the machine config fills every gap:
 
 ```jsonc
-// .agent/config.local.json — this repo runs its everyday tier on Codex
+// .agent/config.local.json — this repo runs its routine, non-trivial tier on Codex
 {
   "backends": ["claude-code", "codex"],
   "models": { "middle": { "backend": "codex", "model": "gpt-5.1" } }
@@ -555,7 +558,7 @@ During a run, task lifecycle lines are interleaved with the workers' own output:
 ⊘ T04 (dependency-failed)
 ```
 
-The run ends with a per-task status table and token/cost totals, and exits `0` only if every task completed.
+The run ends with a per-task status table, a **per-agent summary** — one row per participant that actually did something, orchestrator first, with its role, the backend/model it ran on, how many tasks it finished (or failed), a digest of what those were, and its tokens — and token/cost totals; it exits `0` only if every task completed. `--json` reports the same per-agent breakdown as an `agents` array on the `run.summary` line.
 
 How a run executes is decided by your configuration, not by flags:
 

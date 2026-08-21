@@ -82,14 +82,15 @@ Which coding backends should kapel use? (space to toggle, enter to confirm)
                                              ← ☑ Claude Code / ☑ Codex / ☐ API key
 Main orchestrator model                      ← 예: opus
 Worker model — most complex coding tasks     ← 예: opus
-Worker model — everyday tasks                ← 예: sonnet
+Worker model — routine, non-trivial tasks    ← 예: sonnet
 Worker model — small, single-function tasks  ← 예: haiku
 ```
 
 백엔드를 하나만 골랐다면 모델 목록 4개는 예전과 똑같이 그 백엔드의 목록입니다.
 둘 이상 골랐다면 각 목록이 **선택한 모든 백엔드의 합집합**이 되고, 각 줄의 힌트
 앞에 `Claude Code · ` / `Codex · `처럼 어느 백엔드인지가 붙습니다. 즉
-오케스트레이터는 Claude Code의 `opus`, everyday 워커는 Codex의 `gpt-5.1`처럼
+오케스트레이터는 Claude Code의 `opus`, 일반적이지만 단순하지 않은 작업을 하는
+워커는 Codex의 `gpt-5.1`처럼
 섞어서 고를 수 있습니다(기본 선택은 Claude Code를 골랐으면 그 티어 기본값,
 아니면 Codex, 그다음 API 키 목록 순).
 
@@ -269,6 +270,26 @@ type /help for commands, /exit to quit
   평문 배너(`kapel v0.10.1  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
   문자는 하나도 섞이지 않습니다. 확인:
   `printf '/exit\n' | kapel chat --no-save | cat -A` 에 `^[` 가 없어야 합니다.
+- **깨끗한 화면에서 시작합니다** — 터미널에서 실행하면 `vim`/`less`처럼 대체
+  화면 버퍼로 전환하므로 셸에 있던 이전 출력은 보이지 않고, 위 대시보드가 그
+  빈 화면의 맨 위가 됩니다. **끝내는 방법과 무관하게**(`/exit`, Ctrl-D,
+  Ctrl-C 두 번, 다른 터미널에서 `kill <pid>`) 원래 터미널이 이전 히스토리까지
+  그대로 돌아와야 합니다 — 대체 화면에 남은 채로 셸로 빠져나오면 버그입니다.
+  대신 세션 도중 위로 밀려 올라간 줄은 대부분의 터미널에서 스크롤백에 남지
+  않습니다. 전사 기록을 터미널 스크롤백에 남기고 싶으면 `--no-altscreen`으로
+  끄면 v0.10.1과 똑같이 동작합니다(`chat` 앞뒤 어디에 써도 됩니다). 확인:
+
+  ```bash
+  script -qec "kapel chat --no-save --no-setup" /tmp/kapel-tty.log   # 안에서 /exit
+  grep -c $'\033\[?1049h' /tmp/kapel-tty.log   # 1 — 들어갈 때
+  grep -c $'\033\[?1049l' /tmp/kapel-tty.log   # 1 — 나올 때 (순서대로 한 번씩)
+
+  script -qec "kapel chat --no-save --no-setup --no-altscreen" /tmp/kapel-plain.log
+  grep -c $'\033\[?1049' /tmp/kapel-plain.log  # 0 — 하나도 없어야 합니다
+  ```
+
+  파이프·리다이렉트 실행과 `TERM=dumb`에서는 어느 쪽이든 이 시퀀스가 전혀
+  나오지 않습니다(위 `cat -A` 확인과 같은 이유).
 
 `kapel>` 프롬프트가 뜨면 대화로 버그 수정을 지시합니다. 이 프롬프트는 입력 편집기입니다:
 줄 끝에 `\`를 붙이면(또는 여러 줄을 한 번에 붙여넣으면) 계속 입력할 수 있고
@@ -616,8 +637,16 @@ kapel> /orchestrate calc.js에 곱셈/나눗셈 함수를 추가하고 각각 �
 아무것도 실행되지 않습니다.
 
 **`/orchestrate` 기대 동작**: `▶ T01 → explorer` 같은 태스크 라이프사이클
-라인, worktree 생성(⎇)·병합(⇡) 라인, 태스크별 상태 테이블, `git log`에 merge
-커밋들. 정책 lock이 없거나 오래되었으면 그 사실을 알리고 대화는 그대로
+라인, worktree 생성(⎇)·병합(⇡) 라인, `git log`에 merge 커밋들. 실행이
+끝나면 태스크별 상태 테이블(STATUS/ID/AGENT/TRIES/MODEL/TOKENS/$/TITLE)에
+이어 **에이전트별 요약 테이블**이 출력됩니다 — 실제로 뭔가를 한 참가자마다
+한 행씩, 오케스트레이터가 첫 행입니다: AGENT/ROLE/BACKEND·MODEL/TASKS/DID/
+TOKENS 열로, 오케스트레이터 행은 `planned N tasks`(정책이 리뷰를 주입했으면
+`· M reviews injected`도)와 objective 요약을, 워커 행은 `2 ok · 1 failed`
+같은 태스크 집계와 완료한 태스크 제목들을 보여줍니다. 이스컬레이션된
+태스크는 최종적으로 완료(또는 끝까지 실패)시킨 에이전트 쪽으로 집계됩니다.
+`--json`에서는 같은 정보가 `run.summary` 줄의 `agents` 배열로 나옵니다.
+정책 lock이 없거나 오래되었으면 그 사실을 알리고 대화는 그대로
 유지됩니다(REPL이 끊기지 않습니다).
 
 **준비되지 않은 프로젝트에서의 `/plan`·`/orchestrate`**: 대화형 세션은 2장

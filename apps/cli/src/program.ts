@@ -53,6 +53,8 @@ interface GlobalOpts {
   readonly backend?: string;
   /** `--no-setup`: commander sets this false when the flag is passed. */
   readonly setup?: boolean;
+  /** `--no-altscreen`: likewise false when the flag is passed. */
+  readonly altscreen?: boolean;
 }
 
 /**
@@ -127,6 +129,8 @@ function toInteractiveOptions(
     // Carried through so the REPL's own setup question — the automatic
     // project onboarding offer — obeys the same flag the wizard does.
     ...(raw.setup === undefined ? {} : { setup: raw.setup }),
+    // `--no-altscreen`, spelled `altScreen` inside the REPL.
+    ...(raw.altscreen === undefined ? {} : { altScreen: raw.altscreen }),
     ...(config === undefined ? {} : { config }),
     ...(projectConfig === undefined ? {} : { projectConfig }),
   };
@@ -186,6 +190,10 @@ export function createProgram(): Command {
     .option(
       "--no-setup",
       "skip the first-run setup wizard and use environment variables and defaults",
+    )
+    .option(
+      "--no-altscreen",
+      "keep the REPL on the terminal's normal screen instead of a clean one, so the transcript stays in your scrollback",
     );
 
   program

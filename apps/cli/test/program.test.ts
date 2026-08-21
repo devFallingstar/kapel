@@ -80,7 +80,21 @@ describe("the command surface", () => {
       "--timeout",
       "--backend",
       "--no-setup",
+      "--no-altscreen",
     ]);
+  });
+
+  it("carries the clean-screen opt-out as a negatable global", () => {
+    // Global rather than local to `chat`: bare `kapel` opens the same REPL,
+    // and commander takes a global either side of a subcommand, so both
+    // `kapel --no-altscreen` and `kapel chat --no-altscreen` mean the same
+    // thing. Negatable, so the REPL sees `false` only when it was asked for
+    // and `undefined` never has to mean "off".
+    const option = createProgram().options.find(
+      (each) => each.long === "--no-altscreen",
+    );
+    expect(option?.attributeName()).toBe("altscreen");
+    expect(option?.negate).toBe(true);
   });
 
   it("has no global flags that only served a one-shot run", () => {
@@ -133,6 +147,7 @@ describe("the command surface", () => {
       "--backend",
       "--timeout",
       "--no-setup",
+      "--no-altscreen",
     ]) {
       expect(help).toContain(expected);
     }

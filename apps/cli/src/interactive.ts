@@ -124,6 +124,8 @@ import {
   resolveModelAndProvider,
 } from "./run.js";
 import { runRunsCommand } from "./runs-cmd.js";
+import type { AltScreen } from "./screen.js";
+import { enterAltScreen } from "./screen.js";
 import { runSelectPrompt } from "./select-prompt.js";
 import { isoTime } from "./sessions.js";
 
@@ -2051,6 +2053,15 @@ export interface InteractiveOptions {
    * those are requests, not something kapel decided on its own.
    */
   readonly setup?: boolean;
+  /**
+   * `--no-altscreen` (commander sets this `false` when the flag is passed):
+   * run the REPL on the terminal's normal screen, the way every version
+   * before this one did, instead of on the alternate buffer. The trade is the
+   * one documented in the README — a clean screen that leaves no trace, or a
+   * transcript your terminal's own scrollback keeps. Only ever consulted on a
+   * terminal: a piped or redirected run never switches buffers either way.
+   */
+  readonly altScreen?: boolean;
 }
 
 /**
@@ -2322,6 +2333,39 @@ export async function runInteractive(
   const withSuspended = <T>(fn: () => Promise<T>): Promise<T> =>
     inputManager === undefined ? fn() : inputManager.withSuspended(fn);
 
+  /**
+   * The clean screen this session runs on, once it has actually started (see
+   * below). Declared out here because the seams that hand the terminal to
+   * something else have to be able to take it back.
+   */
+  let altScreen: AltScreen | undefined;
+
+  /**
+   * Repaints whatever the screen is supposed to be showing. Replaced with the
+   * real thing once there is a controller to ask; until then there is nothing
+   * on screen worth putting back.
+   */
+  let repaintScreen: () => Promise<void> = async () => {};
+
+  /**
+   * {@link withSuspended}, for a child that is a full-screen program in its
+   * own right — `codex login`, `claude auth login`. Those drive the
+   * terminal's buffers themselves, and one that switches back on the way out
+   * would drop this session onto the shell's screen while it is still
+   * running. Re-assert ours, then put back what was on it.
+   */
+  const withSuspendedFullScreen = <T>(fn: () => Promise<T>): Promise<T> =>
+    withSuspended(async () => {
+      try {
+        return await fn();
+      } finally {
+        if (altScreen?.active === true) {
+          altScreen.reenter();
+          await repaintScreen();
+        }
+      }
+    });
+
   /** A yes/no question at the prompt — `/login`'s. */
   const confirmAtPrompt = async (
     question: string,
@@ -2390,6 +2434,26 @@ export async function runInteractive(
       console.error(started.error);
       return 1;
     }
+
+    // From here on the conversation owns the screen — a fresh one, the way
+    // opening any full-screen terminal program gives you one, and the shell's
+    // own scrollback comes back untouched when it ends (see `screen.ts`).
+    //
+    // Deliberately *here*, after the last thing that can fail with a message
+    // worth reading: the backend startup check, the automatic project setup
+    // and `resolveStartSession` all report onto the terminal the user keeps,
+    // instead of onto a screen that is about to be thrown away. The restore
+    // is the `finally` this `try` already has, plus the process-level
+    // handlers `enterAltScreen` registers for every way out that never
+    // reaches it.
+    altScreen = enterAltScreen({
+      stdout: process.stdout,
+      stdin: process.stdin,
+      env: process.env,
+      ...(options.altScreen === undefined
+        ? {}
+        : { enabled: options.altScreen }),
+    });
 
     const promptState = createPromptState();
     // Approvals answered with "a" are remembered for the life of this REPL,
@@ -2751,9 +2815,14 @@ export async function runInteractive(
           ? {}
           : {
               confirm: loginConfirm,
-              runCodexLogin: codexLoginRunner(withSuspended, process.env),
+              // The login CLIs are full-screen programs of their own, so they
+              // go through the seam that takes the screen back afterwards.
+              runCodexLogin: codexLoginRunner(
+                withSuspendedFullScreen,
+                process.env,
+              ),
               runClaudeCodeLogin: claudeCodeLoginRunner(
-                withSuspended,
+                withSuspendedFullScreen,
                 process.env,
               ),
             }),
@@ -2776,9 +2845,12 @@ export async function runInteractive(
                   console.log(line);
                 },
                 checkBackend: (target) => checkBackendAvailability(target),
-                runCodexLogin: codexLoginRunner(withSuspended, process.env),
+                runCodexLogin: codexLoginRunner(
+                  withSuspendedFullScreen,
+                  process.env,
+                ),
                 runClaudeCodeLogin: claudeCodeLoginRunner(
-                  withSuspended,
+                  withSuspendedFullScreen,
                   process.env,
                 ),
                 ...(options.config === undefined
@@ -2795,26 +2867,37 @@ export async function runInteractive(
     });
 
     const color = process.stdout.isTTY === true;
-    // The dashboard is a terminal's opening; a pipe or a redirect keeps the
-    // plain banner, so `kapel chat < script.txt` still produces a transcript
-    // with no box drawing and no escape sequences anywhere in it.
-    if (color) {
-      for (const line of await buildDashboard(
-        {
-          sessionId: controller.sessionId(),
-          backend: controller.backend(),
-          modelAlias: controller.modelAlias(),
-        },
-        STARTUP_PROBE_BUDGET_MS,
-      )) {
-        console.log(line);
+    /**
+     * The session's opening: the dashboard on a terminal, the plain banner
+     * off one — a pipe or a redirect keeps the latter, so
+     * `kapel chat < script.txt` still produces a transcript with no box
+     * drawing and no escape sequences anywhere in it.
+     *
+     * On the alternate screen this is also the top of the fresh screen, and
+     * what goes back on it after a full-screen child process has been there
+     * (see `withSuspendedFullScreen`).
+     */
+    const printOpening = async (): Promise<void> => {
+      if (color) {
+        for (const line of await buildDashboard(
+          {
+            sessionId: controller.sessionId(),
+            backend: controller.backend(),
+            modelAlias: controller.modelAlias(),
+          },
+          STARTUP_PROBE_BUDGET_MS,
+        )) {
+          console.log(line);
+        }
+        for (const line of bannerHints(controller.backend())) {
+          console.log(dim(line, color));
+        }
+      } else {
+        for (const line of controller.banner(workspacePath)) console.log(line);
       }
-      for (const line of bannerHints(controller.backend())) {
-        console.log(dim(line, color));
-      }
-    } else {
-      for (const line of controller.banner(workspacePath)) console.log(line);
-    }
+    };
+    repaintScreen = printOpening;
+    await printOpening();
     const instructionsLine = instructionsBannerLine(instructions.sources);
     if (instructionsLine !== undefined)
       console.log(dim(instructionsLine, color));
@@ -2855,6 +2938,12 @@ export async function runInteractive(
       lineSource.close();
     }
   } finally {
+    // The one teardown seam: every way out of the REPL body — `/exit`,
+    // Ctrl-D, a double Ctrl-C, a thrown error on its way to `chatAndExit` —
+    // passes through here, and the terminal goes back before anything else
+    // is printed onto it. The handlers inside `enterAltScreen` cover the ways
+    // out that never run a `finally` at all.
+    altScreen?.leave();
     if (store !== undefined) {
       try {
         store.close();
