@@ -23,7 +23,7 @@ import {
 import type { KapelModels, KapelRole } from "./config.js";
 import { KAPEL_ROLES } from "./config.js";
 import type { KapelProjectConfig } from "./config-project.js";
-import { ansi, ROLE_SGR } from "./styles.js";
+import { ansi, PLAIN_STYLES, type Styles } from "./styles.js";
 
 // --- The model --------------------------------------------------------------
 
@@ -169,8 +169,17 @@ export function quotaBlockFrom(
 export interface DashboardOptions {
   /** Terminal width. Defaults to {@link DEFAULT_COLUMNS}. */
   readonly columns?: number;
-  /** Whether to emit SGR escapes. Defaults to `false` — nothing sneaks in. */
+  /**
+   * Whether to emit SGR escapes. Defaults to whatever {@link styles} says, and
+   * to `false` when there are none — nothing sneaks in.
+   */
   readonly color?: boolean;
+  /**
+   * The palette to take codes from — in particular the accent the box is drawn
+   * in, which depends on what the terminal can show (see `accentSgr`). Plain
+   * by default, whose codes are still this process's own.
+   */
+  readonly styles?: Styles;
 }
 
 // --- Layout constants -------------------------------------------------------
@@ -191,19 +200,29 @@ const LEFT_SHARE = 0.5;
 
 // --- Segments ---------------------------------------------------------------
 
-type SegmentStyle = "dim" | "bold" | "ok" | "warn";
+type SegmentStyle = "dim" | "bold" | "ok" | "warn" | "accent";
+
+type SegmentSgr = Record<SegmentStyle, string>;
 
 /**
- * The box's four styles, spelled in the shell's own role vocabulary
+ * The box's five styles, spelled in the shell's own role vocabulary
  * (`styles.ts`) rather than in SGR codes of its own: a dashboard whose "dim"
  * drifted from the transcript's would be two programs on one screen.
+ *
+ * `accent` is the box itself — every rule, corner and column separator — so
+ * the panel reads as one drawn object rather than as text that happens to have
+ * lines around it, and so it matches the rule above the prompt further down
+ * the same screen.
  */
-const SGR: Record<SegmentStyle, string> = {
-  dim: ROLE_SGR.tool,
-  bold: ROLE_SGR.heading,
-  ok: ROLE_SGR.ok,
-  warn: ROLE_SGR.warn,
-};
+function segmentSgr(styles: Styles): SegmentSgr {
+  return {
+    dim: styles.sgr.tool,
+    bold: styles.sgr.heading,
+    ok: styles.sgr.ok,
+    warn: styles.sgr.warn,
+    accent: styles.sgr.accent,
+  };
+}
 
 /**
  * A run of text with one style. A line is a list of them, which is what lets
@@ -219,7 +238,12 @@ interface Segment {
 type Line = readonly Segment[];
 
 /** Styles, then pads (or truncates) a line to exactly `cells` characters. */
-function renderLine(line: Line, cells: number, color: boolean): string {
+function renderLine(
+  line: Line,
+  cells: number,
+  color: boolean,
+  sgr: SegmentSgr,
+): string {
   let remaining = cells;
   let out = "";
   for (const segment of line) {
@@ -232,7 +256,7 @@ function renderLine(line: Line, cells: number, color: boolean): string {
     out +=
       segment.style === undefined
         ? text
-        : ansi(SGR[segment.style], text, color);
+        : ansi(sgr[segment.style], text, color);
   }
   return out + " ".repeat(Math.max(0, remaining));
 }
@@ -506,8 +530,56 @@ function activityLines(model: DashboardModel, cells: number): readonly Line[] {
 
 // --- The box ----------------------------------------------------------------
 
-function pad(line: Line | undefined, cells: number, color: boolean): string {
-  return renderLine(line ?? [], cells, color);
+function pad(
+  line: Line | undefined,
+  cells: number,
+  color: boolean,
+  sgr: SegmentSgr,
+): string {
+  return renderLine(line ?? [], cells, color, sgr);
+}
+
+/** How many cells `╭─ `, the two spaces, and `╮` cost around a title. */
+const TITLE_FRAME_CELLS = 5;
+
+/**
+ * Rule left to the title's right, however long the title is. A border that
+ * ran out of border stops looking like one.
+ */
+const MIN_TITLE_FILL = 1;
+
+/**
+ * The top border, with the box's name set into it:
+ * `╭─ kapel v0.12.0 ───────╮`.
+ *
+ * A title inside the box needed a row of its own and a rule under it to stop
+ * being mistaken for the first field; a title *in* the border needs neither,
+ * and says the same thing in the place the eye already goes first. The border
+ * is drawn in the accent and the name in bold, so the name reads as the label
+ * of the frame rather than as a value inside it.
+ *
+ * A title with no room left for it is truncated, never allowed to push the
+ * corner off the end: at that width the box is barely a box, and a corner that
+ * has moved is a box that no longer closes.
+ */
+function titledTop(
+  title: string,
+  width: number,
+  color: boolean,
+  sgr: SegmentSgr,
+): string {
+  const room = Math.max(0, width - TITLE_FRAME_CELLS - MIN_TITLE_FILL);
+  const name =
+    title.length <= room ? title : `${title.slice(0, Math.max(0, room - 1))}…`;
+  const fill = Math.max(
+    MIN_TITLE_FILL,
+    width - TITLE_FRAME_CELLS - name.length,
+  );
+  return (
+    ansi(sgr.accent, "╭─ ", color) +
+    ansi(sgr.bold, name, color) +
+    ansi(sgr.accent, ` ${"─".repeat(fill)}╮`, color)
+  );
 }
 
 /**
@@ -522,12 +594,16 @@ export function renderDashboard(
   model: DashboardModel,
   options: DashboardOptions = {},
 ): readonly string[] {
-  const color = options.color ?? false;
+  const styles = options.styles ?? PLAIN_STYLES;
+  const color = options.color ?? styles.enabled;
+  const sgr = segmentSgr(styles);
   const terminal = Math.max(
     MIN_COLUMNS,
     Math.min(options.columns ?? DEFAULT_COLUMNS, MAX_COLUMNS),
   );
-  const title: Line = [{ text: `kapel v${model.version}`, style: "bold" }];
+  /** Every rule, corner and separator the box is made of. */
+  const bar = (text: string): string => ansi(sgr.accent, text, color);
+  const top = titledTop(`kapel v${model.version}`, terminal, color, sgr);
 
   if (terminal < NARROW_COLUMNS) {
     const inner = terminal - 4;
@@ -537,11 +613,12 @@ export function renderDashboard(
       ...activityLines(model, inner),
     ];
     return [
-      `╭${"─".repeat(terminal - 2)}╮`,
-      `│ ${pad(title, inner, color)} │`,
-      `├${"─".repeat(terminal - 2)}┤`,
-      ...body.map((line) => `│ ${pad(line, inner, color)} │`),
-      `╰${"─".repeat(terminal - 2)}╯`,
+      top,
+      bar(`├${"─".repeat(terminal - 2)}┤`),
+      ...body.map(
+        (line) => `${bar("│")} ${pad(line, inner, color, sgr)} ${bar("│")}`,
+      ),
+      bar(`╰${"─".repeat(terminal - 2)}╯`),
     ];
   }
 
@@ -557,15 +634,14 @@ export function renderDashboard(
   const body: string[] = [];
   for (let i = 0; i < rows; i += 1) {
     body.push(
-      `│ ${pad(leftLines[i], left, color)} │ ${pad(rightLines[i], right, color)} │`,
+      `${bar("│")} ${pad(leftLines[i], left, color, sgr)} ${bar("│")} ${pad(rightLines[i], right, color, sgr)} ${bar("│")}`,
     );
   }
 
   return [
-    `╭${"─".repeat(terminal - 2)}╮`,
-    `│ ${pad(title, terminal - 4, color)} │`,
-    `├${"─".repeat(left + 2)}┬${"─".repeat(right + 2)}┤`,
+    top,
+    bar(`├${"─".repeat(left + 2)}┬${"─".repeat(right + 2)}┤`),
     ...body,
-    `╰${"─".repeat(left + 2)}┴${"─".repeat(right + 2)}╯`,
+    bar(`╰${"─".repeat(left + 2)}┴${"─".repeat(right + 2)}╯`),
   ];
 }

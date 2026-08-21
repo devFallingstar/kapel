@@ -13,6 +13,7 @@ import {
   renderSelect,
   runSelectPrompt,
 } from "../src/select-prompt.js";
+import { ROLE_SGR } from "../src/styles.js";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -425,7 +426,11 @@ describe("renderSelect", () => {
 
     const colored = renderSelect(state(), { title: "Pick", color: true });
     expect(colored[0]).toBe("[1mPick[0m");
-    expect(colored[1]).toBe("❯ ◯ [1mAlpha[0m [2m(first)[0m");
+    // The caret is chrome, and wears the accent the rest of the shell's
+    // furniture does; the row's own text keeps its bold and its dim.
+    expect(colored[1]).toBe(
+      `[${ROLE_SGR.accent}m❯[0m ◯ [1mAlpha[0m [2m(first)[0m`,
+    );
     expect(colored[4]).toBe(`[2m${DEFAULT_SELECT_FOOTER}[0m`);
   });
 

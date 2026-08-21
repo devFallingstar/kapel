@@ -227,7 +227,11 @@ export function renderSelect(
   const lines: string[] = [ansi(ROLE_SGR.heading, options.title, color)];
 
   state.choices.forEach((choice, index) => {
-    const marker = index === state.cursor ? "❯ " : "  ";
+    // The caret wears the accent every other piece of chrome does — the box,
+    // the rule over the prompt, the bar beside a notice — so "where am I" is
+    // the same colour wherever the shell asks it.
+    const marker =
+      index === state.cursor ? `${ansi(ROLE_SGR.accent, "❯", color)} ` : "  ";
     const box = glyph(state, state.selected.includes(choice.value));
     const label =
       index === state.cursor

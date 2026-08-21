@@ -12,6 +12,7 @@ import {
   quotaBlockFrom,
   renderDashboard,
 } from "../src/dashboard.js";
+import { createStyles } from "../src/styles.js";
 
 const ZERO: ActivityTotals = {
   runs: 0,
@@ -151,6 +152,56 @@ describe("renderDashboard geometry", () => {
   it("stops widening past the maximum, so an ultrawide terminal gets a panel not a wall", () => {
     const wide = render({}, 400);
     expect(wide[0]?.length).toBe(110);
+  });
+});
+
+describe("renderDashboard title", () => {
+  it("sets the name into the top border rather than onto a row of its own", () => {
+    for (const columns of [60, 100]) {
+      const lines = render({}, columns);
+      expect(lines[0]?.startsWith("╭─ kapel v0.9.0 ─")).toBe(true);
+      expect(lines[0]?.endsWith("─╮")).toBe(true);
+      // The row the title used to occupy, and the rule that separated it from
+      // the fields below, are both gone: the border says it now.
+      expect(lines[1]?.startsWith("├")).toBe(true);
+      expect(
+        lines.filter((line) => line.includes("kapel v0.9.0")),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("truncates a title that would push the corner off the end", () => {
+    // 28 cells is the narrowest box there is; a long prerelease version has to
+    // give way before the box stops closing.
+    const lines = render({ version: "1.2.3-rc.4+2026.08.21.build" }, 10);
+    expect(lines[0]?.length).toBe(28);
+    expect(lines[0]?.endsWith("─╮")).toBe(true);
+    expect(lines[0]).toContain("…");
+  });
+
+  it("draws the border in the accent and the name in bold", () => {
+    const styles = createStyles(true, { COLORTERM: "truecolor" });
+    const top = renderDashboard(model(), { columns: 100, styles })[0] ?? "";
+    expect(top).toContain(`${CSI}${styles.sgr.accent}m╭─ `);
+    expect(top).toContain(`${CSI}${styles.sgr.heading}mkapel v0.9.0`);
+  });
+
+  it("draws every rule, corner and separator of the box in the accent", () => {
+    const styles = createStyles(true, { COLORTERM: "truecolor" });
+    const lines = renderDashboard(model(), { columns: 100, styles });
+    const accent = `${CSI}${styles.sgr.accent}m`;
+    // The divider, a body row's three verticals, and the bottom.
+    expect(lines[1]?.startsWith(`${accent}├`)).toBe(true);
+    expect(lines[2]?.startsWith(`${accent}│`)).toBe(true);
+    expect(lines.at(-1)?.startsWith(`${accent}╰`)).toBe(true);
+  });
+
+  it("takes its colour switch from the palette when none is given", () => {
+    const off = renderDashboard(model(), {
+      columns: 100,
+      styles: createStyles(false),
+    });
+    expect(off.join("\n").includes(CSI)).toBe(false);
   });
 });
 

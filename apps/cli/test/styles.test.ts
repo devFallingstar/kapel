@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { promptMarker } from "../src/interactive.js";
 import {
+  ACCENT_256,
+  ACCENT_BASIC,
+  ACCENT_TRUECOLOR,
+  accentSgr,
   ansi,
   colorEnabled,
   createStyles,
+  NOTICE_GUTTER,
   PLAIN_STYLES,
   ROLE_SGR,
+  roleSgr,
   type StyleRole,
   stylesFor,
 } from "../src/styles.js";
@@ -15,6 +21,7 @@ const RESET = `${ESC}[0m`;
 
 /** Every role a caller can name. */
 const ROLES: readonly StyleRole[] = [
+  "accent",
   "user",
   "agent",
   "tool",
@@ -25,6 +32,9 @@ const ROLES: readonly StyleRole[] = [
   "warn",
   "error",
 ];
+
+/** A terminal that can show the accent exactly. */
+const TRUECOLOR = { COLORTERM: "truecolor" };
 
 /** A stream that only has to answer "are you a terminal". */
 function stream(isTTY: boolean | undefined): { isTTY?: boolean } {
@@ -88,7 +98,9 @@ describe("createStyles", () => {
   it("wraps every other role in its own escape", () => {
     const styled = createStyles(true);
     for (const role of ROLES) {
-      if (role === "agent") continue;
+      // `agent` is the identity by design; `notice` is more than an escape —
+      // it carries the bar, and has its own tests below.
+      if (role === "agent" || role === "notice") continue;
       expect(styled.role(role, "x")).toBe(`${ESC}[${ROLE_SGR[role]}mx${RESET}`);
     }
   });
@@ -96,13 +108,16 @@ describe("createStyles", () => {
   it("keeps the classes a glance has to tell apart visually distinct", () => {
     // The four that share a screen row by row: what you said, what kapel
     // said about the session, what a tool did, and a heading over a table.
-    const codes = [
-      ROLE_SGR.user,
-      ROLE_SGR.notice,
-      ROLE_SGR.tool,
-      ROLE_SGR.heading,
+    // Compared as *rendered lines*, not as codes: a notice is told apart by
+    // the bar down its left, which no SGR parameter can express.
+    const styled = createStyles(true);
+    const rendered = [
+      styled.user("x"),
+      styled.notice("x"),
+      styled.tool("x"),
+      styled.heading("x"),
     ];
-    expect(new Set(codes).size).toBe(codes.length);
+    expect(new Set(rendered).size).toBe(rendered.length);
   });
 
   it("keeps a menu row quieter than the prefix highlighted inside it", () => {
@@ -120,9 +135,93 @@ describe("createStyles", () => {
     expect(styled.error("a")).toBe(styled.role("error", "a"));
   });
 
+  it("paints the prompt marker in the accent, in bold", () => {
+    // One hue for the whole shell: the marker you type at is the same colour
+    // as the box above it and the bar beside a notice, only heavier.
+    const sgr = roleSgr(TRUECOLOR);
+    expect(sgr.user).toBe(`1;${ACCENT_TRUECOLOR}`);
+    expect(sgr.accent).toBe(ACCENT_TRUECOLOR);
+  });
+
+  it("takes its codes from the terminal it was built for", () => {
+    expect(createStyles(true, TRUECOLOR).accent("x")).toBe(
+      `${ESC}[${ACCENT_TRUECOLOR}mx${RESET}`,
+    );
+    expect(createStyles(true, {}).accent("x")).toBe(
+      `${ESC}[${ACCENT_BASIC}mx${RESET}`,
+    );
+  });
+
   it("PLAIN_STYLES is the disabled palette", () => {
     expect(PLAIN_STYLES.enabled).toBe(false);
     expect(PLAIN_STYLES.error("boom")).toBe("boom");
+  });
+});
+
+describe("accentSgr", () => {
+  it("claims the exact colour only where the terminal says it can show one", () => {
+    expect(accentSgr({ COLORTERM: "truecolor" })).toBe(ACCENT_TRUECOLOR);
+    expect(accentSgr({ COLORTERM: "24bit" })).toBe(ACCENT_TRUECOLOR);
+    // The variable is set by terminals in whatever case they please.
+    expect(accentSgr({ COLORTERM: "TrueColor" })).toBe(ACCENT_TRUECOLOR);
+  });
+
+  it("approximates it on a 256-colour TERM", () => {
+    expect(accentSgr({ TERM: "xterm-256color" })).toBe(ACCENT_256);
+    expect(accentSgr({ TERM: "screen-256color" })).toBe(ACCENT_256);
+    // A truecolour terminal that also names a 256-colour TERM gets the exact
+    // colour: COLORTERM is the more specific claim.
+    expect(accentSgr({ COLORTERM: "truecolor", TERM: "xterm-256color" })).toBe(
+      ACCENT_TRUECOLOR,
+    );
+  });
+
+  it("falls back to plain cyan when nothing promises more", () => {
+    expect(accentSgr({})).toBe(ACCENT_BASIC);
+    expect(accentSgr({ TERM: "xterm" })).toBe(ACCENT_BASIC);
+    expect(accentSgr({ TERM: "dumb", COLORTERM: "" })).toBe(ACCENT_BASIC);
+  });
+});
+
+describe("Styles.rule", () => {
+  it("is one cell short of the width it is given, so it cannot wrap", () => {
+    const rule = createStyles(true, TRUECOLOR).rule(20);
+    expect(rule).toBe(`${ESC}[${ACCENT_TRUECOLOR}m${"─".repeat(19)}${RESET}`);
+  });
+
+  it("is nothing at all with colour off — a rule is chrome", () => {
+    expect(PLAIN_STYLES.rule(80)).toBe("");
+    expect(stylesFor(stream(true), { NO_COLOR: "1" }).rule(80)).toBe("");
+  });
+
+  it("never returns a negative-width run for an absurd terminal", () => {
+    expect(createStyles(true).rule(0)).toBe("");
+    expect(createStyles(true).rule(1)).toBe("");
+  });
+});
+
+describe("Styles.notice", () => {
+  it("puts an accent bar down the left of kapel's own remarks", () => {
+    const styled = createStyles(true, TRUECOLOR);
+    expect(styled.notice("resumed foo")).toBe(
+      `${ESC}[${ACCENT_TRUECOLOR}m${NOTICE_GUTTER}${RESET}${ESC}[${ROLE_SGR.notice}mresumed foo${RESET}`,
+    );
+  });
+
+  it("agrees with role('notice'), so the two can never drift", () => {
+    const styled = createStyles(true, TRUECOLOR);
+    expect(styled.role("notice", "x")).toBe(styled.notice("x"));
+  });
+
+  it("leaves a blank notice line blank — a bar holding up nothing", () => {
+    expect(createStyles(true).notice("")).toBe("");
+  });
+
+  it("is plain text off a terminal: no bar, no escape", () => {
+    expect(PLAIN_STYLES.notice("resumed foo")).toBe("resumed foo");
+    expect(
+      stylesFor(stream(true), { NO_COLOR: "1" }).notice("resumed foo"),
+    ).toBe("resumed foo");
   });
 });
 

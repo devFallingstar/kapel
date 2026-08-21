@@ -133,12 +133,7 @@ import type { AltScreen } from "./screen.js";
 import { enterAltScreen } from "./screen.js";
 import { runSelectPrompt } from "./select-prompt.js";
 import { isoTime } from "./sessions.js";
-import {
-  colorEnabled,
-  PLAIN_STYLES,
-  type Styles,
-  stylesFor,
-} from "./styles.js";
+import { PLAIN_STYLES, type Styles, stylesFor } from "./styles.js";
 
 /**
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
@@ -2315,6 +2310,9 @@ async function bestEffortValue<T>(
  * every character in it. So the gutter carries the role, and the message is
  * never re-printed, never duplicated.
  */
+/** Width the input rule falls back to on a terminal that reports none. */
+const DEFAULT_RULE_COLUMNS = 80;
+
 export function promptMarker(styles: Styles): string {
   return `${styles.user("kapel>")} `;
 }
@@ -2397,6 +2395,15 @@ export async function runInteractive(
       process.env,
       options.config,
       options.projectConfig,
+      {
+        // "backend: claude-code (auto-detected …)" is kapel remarking on the
+        // session, so it wears the notice bar like every other such remark —
+        // on stderr, where this announcement has always gone, and in that
+        // stream's own palette.
+        announce: (line) => {
+          console.error(errorStyles.notice(line));
+        },
+      },
     )
   ).value;
   const modelSetting = resolveOrchestratorModel(
@@ -2878,7 +2885,10 @@ export async function runInteractive(
         ...(quota === undefined ? {} : { quota }),
       };
       return renderDashboard(dashboardModel, {
-        color: colorEnabled(process.stdout, process.env),
+        // The shell's own palette, so the box is drawn in the same accent the
+        // prompt's rule and the notice bars below it wear — and switched off
+        // by the same `NO_COLOR`.
+        styles,
         ...(process.stdout.columns === undefined
           ? {}
           : { columns: process.stdout.columns }),
@@ -3051,6 +3061,30 @@ export async function runInteractive(
       console.log(styles.warn(started.note));
     }
 
+    /**
+     * The rule that opens the input band: one accent line, drawn immediately
+     * above each prompt, the way an input field's top edge sits above what you
+     * type in it. Printed, not painted — it is an ordinary line of output that
+     * the transcript keeps, so nothing has to track it, redraw it or take it
+     * back down.
+     *
+     * There is deliberately no matching rule *under* the prompt. The rows below
+     * the line being typed belong to the `InputManager`, and drawing there for
+     * every keystroke of every message runs into readline's disagreement with
+     * the terminal about where the caret is at an exact wrap boundary — see the
+     * comment above the menu block in `input.ts`. A band open at the bottom is
+     * a missing line; the alternative was a corrupted input area.
+     *
+     * Nothing at all off a terminal or under `NO_COLOR` — `styles.rule` is
+     * empty there, and a blank `console.log` would still be a blank line the
+     * transcript never used to have.
+     */
+    const printInputRule = (): void => {
+      const rule = styles.rule(process.stdout.columns ?? DEFAULT_RULE_COLUMNS);
+      if (rule === "") return;
+      console.log(rule);
+    };
+
     const lineSource =
       manager === undefined
         ? pipedLineSource()
@@ -3063,6 +3097,7 @@ export async function runInteractive(
         promptText: promptMarker(styles),
         styles,
         activeTurn,
+        openBand: printInputRule,
       });
     } finally {
       lineSource.close();
@@ -3098,6 +3133,15 @@ interface ReplLoopArgs {
    * which has no `InputManager` and relies on the real `SIGINT` below.
    */
   readonly activeTurn?: { current: AbortController | undefined };
+  /**
+   * Draws the rule that opens the input band, immediately above each prompt.
+   *
+   * Injected rather than computed here because the width it needs belongs to
+   * the shell's stdout, and because a piped REPL has no band at all — the
+   * shell hands in nothing, and this loop prints exactly the bytes it printed
+   * before the band existed.
+   */
+  readonly openBand?: () => void;
 }
 
 /**
@@ -3116,11 +3160,19 @@ interface ReplLoopArgs {
  * `onIdleSigint` reaches this same abort instead.
  */
 async function replLoop(args: ReplLoopArgs): Promise<number> {
-  const { controller, lines, promptState, promptText, styles, activeTurn } =
-    args;
+  const {
+    controller,
+    lines,
+    promptState,
+    promptText,
+    styles,
+    activeTurn,
+    openBand,
+  } = args;
   let armed = false;
 
   for (;;) {
+    openBand?.();
     const line = await lines.next(promptText);
 
     if (line === undefined) {

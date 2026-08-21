@@ -68,8 +68,7 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ kapel v0.11.0                                                                                    │
+╭─ kapel v0.11.0 ──────────────────────────────────────────────────────────────────────────────────╮
 ├─────────────────────────────────────────────────┬────────────────────────────────────────────────┤
 │ setup                                           │ activity                                       │
 │ workspace    /path/to/your/repo                 │ today    1 run · 1 chat                        │
@@ -84,9 +83,10 @@ $ kapel
 │                                                 │ native       0 in · 0 out                      │
 │ * from .agent/config.local.json                 │                                                │
 ╰─────────────────────────────────────────────────┴────────────────────────────────────────────────╯
-type /help for commands, /exit to quit
-\ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files
+▌ type /help for commands, /exit to quit
+▌ \ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files
 
+────────────────────────────────────────────────────────────────────────────────────────────────────
 kapel> calc.test.js is failing — find out why and fix it
 → read_file {"path":"calc.test.js"}
   ✓
@@ -101,8 +101,10 @@ allow edit_file? [y/n/a, or say what to do instead] y
 `add` subtracted instead of adding. Fixed and `node calc.test.js` now prints PASS.
 tokens +4210 in, +318 out  (~$0.0138)
 
+────────────────────────────────────────────────────────────────────────────────────────────────────
 kapel> now add a `sub` function next to it, with a test
 …
+────────────────────────────────────────────────────────────────────────────────────────────────────
 kapel> /exit
 ```
 
@@ -112,15 +114,19 @@ The panel is redrawn on demand by **`/stats`**, with everything re-read and ever
 
 The last block is the honest part. Neither `claude` nor `codex` reports remaining subscription allowance anywhere a program can read it — `claude auth status --json` answers `loggedIn`/`authMethod`/`apiProvider` and nothing about quota, and `codex login status` answers with one line of text; both CLIs show their limits only inside their own interactive session. So kapel does not guess at a percentage or a reset time. What it shows instead is what it watched each backend spend through kapel itself, labelled `usage (kapel-tracked, 7 days)` so it is never mistaken for a quota. Those numbers come from a `usage_events` table written at the end of every chat turn and every orchestration run, so they survive the process that produced them.
 
+**One colour, and where it is allowed to appear.** Everything above that is *furniture* — the panel's border and its title, the rule that opens the input band under it, the `kapel>` you type at, the bar down the left of kapel's own remarks, the `❯` in a picker — is drawn in a single muted sky blue (`#7EB6D9`), and nothing else in the shell is. The assistant's prose stays undecorated, tool traces stay dim, and green/yellow/red keep meaning done/careful/failed. The colour is claimed at full precision only where the terminal has said it can show one (`COLORTERM=truecolor` or `24bit`); on a `*-256color` `TERM` it falls back to xterm colour 110, and on anything else to plain cyan — a 24-bit escape sent to a terminal that cannot parse one puts its own digits on your screen. `NO_COLOR=1` and any non-terminal stream turn all of it off, chrome included: no rules, no bars, no escapes at all.
+
 The dashboard is a terminal's opening only: piping or redirecting `kapel` keeps the plain three-line banner, with no box drawing and no control characters. (`/stats` typed into a piped session still draws the box — you asked for it.)
 
 **A clean screen, and your terminal back afterwards.** On a terminal, `kapel` opens on a screen of its own — it switches to the alternate screen buffer, the same one `vim` and `less` use, so the session starts blank instead of under whatever your shell had printed, and the dashboard above is the top of it. Leaving puts the terminal back exactly as it was, with your previous history intact: `/exit`, Ctrl-D, Ctrl-C twice, a crash, or a `kill` all restore it before anything else is printed. The honest caveat is the other half of that bargain — while the session is running, lines that scroll off the top are gone, because most terminals keep no scrollback for the alternate buffer — so `kapel --no-altscreen` (the flag works either side of `chat`) opts out and behaves exactly as v0.10.1 did, with the whole transcript left in your terminal's own scrollback. Piped and redirected runs never switch buffers at all, and neither does `TERM=dumb`.
 
-Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". The question is what will happen, not a truncated blob of JSON: `bash` shows the command it will run, `edit_file` a `-`/`+` diff of the replacement, `write_file` the head of the new file. Answers are `y` (allow this once), `n`/Enter/Ctrl-C (deny), or `a` — allow it and stop asking for the rest of the session: for `bash` that remembers the *command prefix* (answering `a` to `npm test --run foo` stops asking for `npm test …`, while `npm publish` still asks; a command with a shell operator such as `&&` or `|` is never remembered), and for every other tool it remembers the tool name. Nothing is written to disk — a new `kapel` starts asking again — and an explicit deny rule is never overridden by it. (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt, twice in a row exits (so does `/exit` and Ctrl-D).
+Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". The question is what will happen, not a truncated blob of JSON: `bash` shows the command it will run, `edit_file` a `-`/`+` diff of the replacement, `write_file` the head of the new file. Answers are `y` (allow this once), `n`/Enter/Ctrl-C (deny), or `a` — allow it and stop asking for the rest of the session: for `bash` that remembers the *command prefix* (answering `a` to `npm test --run foo` stops asking for `npm test …`, while `npm publish` still asks; a command with a shell operator such as `&&` or `|` is never remembered), and for every other tool it remembers the tool name. Nothing is written to disk — a new `kapel` starts asking again — and an explicit deny rule is never overridden by it. (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt it abandons the line you were typing — the text stays on screen as a record, but it is gone from the buffer, so the next thing you type is the whole of the next message — and twice in a row exits (so does `/exit` and Ctrl-D).
 
 The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
 
 The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Tab completes what is under the cursor: a `/` command name, the argument of a command that has a fixed vocabulary (`/model ` offers the built-in aliases), or an `@` file mention.
+
+**A rule above the prompt.** Every prompt is opened by a thin accent rule across the terminal, so the message you are composing is visibly separate from the transcript scrolling above it. It is printed, not painted: an ordinary line of output the scrollback keeps, with nothing to redraw and nothing to take back down. There is deliberately *no* matching rule underneath. The rows below the line you are typing belong to the input editor (that is where the `/` menu goes), and Node's `readline` and the terminal disagree about which row the caret is on whenever the text you have typed ends exactly at the right-hand edge — a disagreement a short `/command` never reaches but an ordinary message crosses every terminal-width characters. Drawing there for every keystroke turned that into a wrapped line landing a row out of place, so the band is open at the bottom on purpose: a missing line is better than a corrupted input area. Like everything else here it is a terminal courtesy — a pipe, a redirect or a `NO_COLOR` terminal gets no rule at all.
 
 **`/` opens the command list.** Typing a slash as the first character of a message draws this session's commands under the input line — one per row, each with the same sentence `/help` prints beside it, built-ins first and then whatever `.agent/commands/` contributed. It narrows live as you keep typing: `/re` leaves `/resume` and `/resume-run`, and the part you have already typed stays lit in the prompt's own colour inside every candidate so you can see how much of each name you have pinned down. Eight rows at a time, with `… and N more` counting the rest. It closes itself the moment the name is finished (a space starts the arguments), the line stops beginning with a slash, or nothing matches at all. The list only ever *shows*: Tab still completes exactly as it did, and Enter sends precisely the characters in your buffer even when one command is all that is left on screen — a menu that quietly retyped your line for you would be a worse thing to have than no menu. Like the spinner, it is a terminal courtesy and nothing else: a piped or redirected `kapel` draws no menu and writes no escape for one.
 

@@ -638,6 +638,84 @@ describe("renderCommandMenu", () => {
   });
 });
 
+describe("InputManager Ctrl-C", () => {
+  it("throws the abandoned line away instead of carrying it into the next read", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    // Half a command, then a change of mind.
+    const abandoned = manager.readMessage("kapel> ");
+    input.write("/res");
+    await tick(10);
+    input.write(CTRL_C);
+    await expect(abandoned).resolves.toBe(INPUT_SIGINT);
+
+    // The next thing typed is the whole of the next message. Before the fix
+    // readline still held `/res`, and `prompt()` put the caret at 0 in front
+    // of it: this dispatched `/exit/res`.
+    const next = manager.readMessage("kapel> ");
+    input.write("/exit\n");
+    await expect(next).resolves.toBe("/exit");
+
+    manager.close();
+  });
+
+  it("clears the buffer behind a cancelled question too", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    const answer = manager.question("allow rm? [y/N] ");
+    input.write("ye");
+    await tick(10);
+    input.write(CTRL_C);
+    await expect(answer).resolves.toBe(INPUT_SIGINT);
+
+    const next = manager.readMessage("kapel> ");
+    input.write("hello\n");
+    await expect(next).resolves.toBe("hello");
+
+    manager.close();
+  });
+
+  it("ends the abandoned row, so what the REPL says next gets one of its own", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    const pending = manager.readMessage("kapel> ");
+    input.write("/res");
+    await tick(10);
+    output.chunks = [];
+    input.write(CTRL_C);
+    await pending;
+    expect(output.text.endsWith("\r\n")).toBe(true);
+
+    manager.close();
+  });
+
+  it("writes no newline for a Ctrl-C that reached an idle manager", async () => {
+    // Mid-turn: nothing was typed, nothing was echoed, and a blank line here
+    // would land in the middle of the assistant's output.
+    const { input, output } = makeTtyIo();
+    let idle = 0;
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      onIdleSigint: () => {
+        idle += 1;
+      },
+    });
+
+    output.chunks = [];
+    input.write(CTRL_C);
+    await tick(10);
+    expect(idle).toBe(1);
+    expect(output.text).toBe("");
+
+    manager.close();
+  });
+});
+
 describe("InputManager command menu", () => {
   it("opens on `/`, narrows as the name is typed, and erases on submit", async () => {
     const { input, output } = makeTtyIo();

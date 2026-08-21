@@ -376,6 +376,8 @@ export function createInputManager(options: InputManagerOptions): InputManager {
         readonly resolve: (
           value: string | typeof INPUT_SIGINT | undefined,
         ) => void;
+        /** Takes the question back off `readline` — see the SIGINT handler. */
+        readonly cancel: () => void;
       }
     | undefined;
 
@@ -395,6 +397,20 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   // The cursor always ends where it started: on the input line, in the column
   // readline believes it is in. readline's own bookkeeping is therefore never
   // touched, which is what keeps ↑-history, wrapping and Tab intact.
+  //
+  // Nothing else is ever drawn in this block, and the reason is worth writing
+  // down. The input band's *lower* rule would have to live exactly here — and
+  // a rule that is on screen for every keystroke of every message reaches a
+  // case the menu never does. `readline` and the terminal disagree about where
+  // the caret is whenever the text typed so far ends exactly on a row
+  // boundary: readline reports "row k, column 0" while the terminal is still
+  // on row k-1 holding a deferred wrap. Every move here is relative to the
+  // caret, so at that one column the whole block — and the line being typed
+  // with it — lands a row out. A `/command` is short and never reaches a
+  // boundary, so the menu never meets this; an ordinary message crosses one
+  // every terminal-width characters. The band therefore has a top rule (drawn
+  // by the REPL above the prompt, see `interactive.ts`) and no bottom one,
+  // which is a missing line rather than a corrupted input area.
 
   const CSI = "[";
   const menuEntries = options.commandMenu;
@@ -516,6 +532,39 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     drawMenu(lines);
   };
 
+  /**
+   * Throws away the line being typed, the way Ctrl-C is universally understood
+   * to, and ends the row it was on.
+   *
+   * `readline` does not do this for us. Its Ctrl-C branch emits `SIGINT` and
+   * returns without touching the buffer, on the theory that whoever listens
+   * for the signal will decide what happens to the line — so a REPL that
+   * catches `SIGINT` and simply prompts again gets the *old* buffer back, with
+   * the cursor reset to 0 by `prompt()`. Typing `/exit` after a Ctrl-C on
+   * `/res` then dispatched `/exit/res`, which is not a command anyone typed.
+   *
+   * `Interface.clearLine` is what readline itself uses to abandon a line (it
+   * is how a cancelled `question()` gets cleaned up), and it moves the caret
+   * past the end of a wrapped line, writes the `\r\n` that closes the row, and
+   * resets the three pieces of state a redraw would otherwise climb back
+   * through — buffer, cursor, and the row count `prevRows`. Doing any of that
+   * by hand and leaving the rest is how the *next* prompt ends up erasing the
+   * abandoned line the user is entitled to still see. It is private-but-stable
+   * in the same way `.history` above is; a runtime without it still gets the
+   * buffer cleared, which is the half that corrupts commands.
+   */
+  const abandonLine = (): void => {
+    const clear = (rl as unknown as { clearLine?: () => void }).clearLine;
+    if (typeof clear === "function") {
+      clear.call(rl);
+      return;
+    }
+    const state = rl as unknown as { line?: string; cursor?: number };
+    if (typeof state.line !== "string") return;
+    state.line = "";
+    state.cursor = 0;
+  };
+
   const onKeypress = (): void => {
     renderMenu();
   };
@@ -622,16 +671,26 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     // that one fires the read it would have rendered for is already resolved.
     hideMenu();
     if (questionPending !== undefined) {
-      const { resolve } = questionPending;
+      const { resolve, cancel } = questionPending;
       questionPending = undefined;
+      // Cancelling is what takes readline's question callback back *off* the
+      // interface — without it the callback outlives the question, and the
+      // next line the user types is swallowed by a handler nobody is waiting
+      // on. It clears the abandoned answer on its way out, which is the same
+      // thing `abandonLine` does for a message.
+      cancel();
       resolve(INPUT_SIGINT);
       return;
     }
     if (readPending !== undefined) {
+      abandonLine();
       readPending.assembly = initialAssembly();
       resolveRead(INPUT_SIGINT);
       return;
     }
+    // Nothing was being typed (a turn is running, and this Ctrl-C is meant for
+    // it): no buffer to throw away, and no row to end — a newline here would
+    // be a blank line in the middle of the assistant's output.
     options.onIdleSigint?.();
   });
 
@@ -682,8 +741,11 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       }
       return new Promise<string | typeof INPUT_SIGINT | undefined>(
         (resolve) => {
-          questionPending = { resolve };
-          rl.question(query, (answer) => {
+          // `readline` cancels a question through an `AbortSignal` and no
+          // other way: there is no "never mind" method to call.
+          const aborter = new AbortController();
+          questionPending = { resolve, cancel: () => aborter.abort() };
+          rl.question(query, { signal: aborter.signal }, (answer) => {
             if (questionPending === undefined) return;
             questionPending = undefined;
 
