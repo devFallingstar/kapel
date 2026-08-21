@@ -142,7 +142,7 @@ import { PLAIN_STYLES, type Styles, stylesFor } from "./styles.js";
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
  * here so both spellings of it come from one place.
  */
-export const CLI_VERSION = "0.14.0";
+export const CLI_VERSION = "0.14.1";
 
 /**
  * How long the startup dashboard waits for the backend login probes before
@@ -2574,14 +2574,21 @@ export async function runInteractive(
     // and nothing runs where `--no-setup` has already said not to.
     interactive: onboardingTty,
   });
-  await projectSetup.ensure({
-    log: (line) => {
-      console.log(styles.notice(line));
+  await projectSetup.ensure(
+    {
+      log: (line) => {
+        console.log(styles.notice(line));
+      },
+      error: (line) => {
+        console.error(errorStyles.error(line));
+      },
     },
-    error: (line) => {
-      console.error(errorStyles.error(line));
-    },
-  });
+    // Opening a REPL is not asking for work. Startup runs only the free part
+    // of setup — the files, and a canonical policy, which is every project
+    // kapel sets up itself — and defers anything that would call a model to
+    // the `/plan` or `/orchestrate` that actually wants it.
+    { allowModel: false },
+  );
 
   const store =
     options.save === false ? undefined : await openChatStore(workspacePath);
@@ -3004,7 +3011,10 @@ export async function runInteractive(
         runRunsCommand({ cwd: options.cwd, json: false }, { output }),
       // The same setup startup ran (or tried to), through the same object —
       // so a failure there is remembered here, and nothing runs twice.
-      ensureProjectSetup: (output) => projectSetup.ensure(output),
+      // Here a model call is in scope: the user has handed kapel an
+      // objective, and compiling the policy is part of carrying it out.
+      ensureProjectSetup: (output) =>
+        projectSetup.ensure(output, { allowModel: true }),
       // `/policy` runs while the REPL's own InputManager owns stdin, so its
       // pickers borrow the terminal the same way `/config`'s do. Only wired
       // on a real terminal — there is nothing to edit a policy with on a

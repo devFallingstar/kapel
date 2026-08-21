@@ -45,9 +45,22 @@ never auto-set-up, and `--no-setup` turns this off exactly as it turns off
 the first-run wizard — so `kapel init` and `kapel policy compile` remain the
 way to do it by hand, or in CI.
 
-The only time that announcement mentions a model call is when it will
-actually spend one — a policy you have rewritten as prose. Editing it through
-`/policy` never does.
+**Nothing kapel does on its own calls a model.** Opening the REPL is not
+asking for work, so startup runs only the free half of setup — the files, and
+a canonical policy, which is every project kapel sets up itself. A project
+whose policy has been rewritten as prose is the one thing that would need a
+model, and startup declines to spend it: it says so in one line and leaves it
+for the `/plan` or `/orchestrate` that actually wants a policy.
+
+```text
+this project's orchestration policy has not been compiled — /plan or
+/orchestrate will compile it (one model call), or `/policy` rewrites it in
+the form that needs none.
+```
+
+So a session spent chatting, reading or editing files never spends a token on
+orchestration it never used. The first model call of a run is the one you
+asked for.
 
 The first time you run `kapel` on a terminal it asks five questions — which
 coding backends you have (Claude Code, Codex, a plain API key: tick as many as
@@ -60,10 +73,10 @@ and defaults, so nothing in CI ever blocks on a prompt.
 
 If the npm registry is unreachable from your network, the same package ships
 as a committed tarball in this repo: `npm install -g
-https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.14.0.tgz`,
+https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.14.1.tgz`,
 or the two-step form `git clone
 https://github.com/devFallingstar/kapel.git kapel-src && npm install -g
-./kapel-src/release/devfallingstar-kapel-0.14.0.tgz`.
+./kapel-src/release/devfallingstar-kapel-0.14.1.tgz`.
 
 > Do not use `npm install -g github:...` — npm's git-dependency preparation
 > mishandles workspace monorepos and produces a broken install.
@@ -76,7 +89,7 @@ For development, clone and run `npm install && npm run build`, then use `node ap
 
 ```text
 $ kapel
-╭─ kapel v0.14.0 ──────────────────────────────────────────────────────────────────────────────────╮
+╭─ kapel v0.14.1 ──────────────────────────────────────────────────────────────────────────────────╮
 ├─────────────────────────────────────────────────┬────────────────────────────────────────────────┤
 │ setup                                           │ activity                                       │
 │ workspace    /path/to/your/repo                 │ today    1 run · 1 chat                        │

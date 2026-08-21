@@ -12,13 +12,13 @@
 빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.14.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.14.1.tgz
 kapel --version
 ```
 
 npm 레지스트리 배포 후에는 `npm install -g @devfallingstar/kapel` 로 대체됩니다.
 URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
-`npm install -g ./kapel/release/devfallingstar-kapel-0.14.0.tgz`. 제거는
+`npm install -g ./kapel/release/devfallingstar-kapel-0.14.1.tgz`. 제거는
 `npm uninstall -g @devfallingstar/kapel`.
 
 > `npm install -g github:...` 형태는 쓰지 마세요 — npm의 워크스페이스
@@ -228,6 +228,20 @@ model call.`이 있어야 합니다. 템플릿이 제공하는 정책은 kapel�
 형식(canonical form)이라 컴파일이 아니라 파싱으로 처리됩니다 —
 자격증명이 하나도 없는 머신에서도 이 준비는 끝까지 완주합니다.
 
+**산문 정책 레포에서는 시작 시 아예 실행하지 않습니다.** `.agent/`에
+`orchestration.md`(산문)만 있고 lock이 없는 레포에서 `kapel`을 열면,
+컴파일하지 않고 한 줄만 남깁니다:
+
+```text
+this project's orchestration policy has not been compiled — /plan or
+/orchestrate will compile it (one model call), or `/policy` rewrites it in
+the form that needs none.
+```
+
+`.agent/orchestration.lock.json`이 **생기지 않았는지** 확인하세요. REPL을
+열었다는 것만으로는 모델을 부르지 않습니다 — `/plan`이나 `/orchestrate`를
+칠 때 비로소 컴파일합니다. 그 줄은 세션당 한 번만 나옵니다.
+
 실패해도 REPL은 멈추지 않고 대화로 이어지며, 같은 세션에서는(`/plan`이나
 `/orchestrate`를 쳐도) 다시 시도하지 않습니다. 파이프·리다이렉트 입력이나
 `--no-setup`에서는 이 준비가 아예 실행되지 않습니다.
@@ -245,7 +259,7 @@ C(4장)에서 `kapel init`과 `kapel policy compile`을 손으로 실행해 볼
 토큰 합계)입니다:
 
 ```text
-╭─ kapel v0.14.0 ──────────────────────────────────────────────────────────────╮
+╭─ kapel v0.14.1 ──────────────────────────────────────────────────────────────╮
 ├───────────────────────────────────────┬──────────────────────────────────────┤
 │ setup                                 │ activity                             │
 │ workspace    /tmp/agent-fixture       │ today    no runs yet                 │
@@ -265,7 +279,7 @@ kapel>
 **확인할 것**:
 
 - 새 저장소이므로 활동 칸은 `no runs yet`이어야 합니다(0이 늘어선 줄이 아니라).
-- **제목은 상자 위 테두리 안에 박혀 있습니다** — `╭─ kapel v0.14.0 ───…─╮`.
+- **제목은 상자 위 테두리 안에 박혀 있습니다** — `╭─ kapel v0.14.1 ───…─╮`.
   제목만 굵게, 테두리·기둥·구분선은 모두 강조색(muted sky blue)으로 그려집니다.
   예전처럼 상자 **안에** 제목 줄이 따로 있으면 안 됩니다. `/stats`로 다시 그려도
   똑같이 나와야 합니다.
@@ -302,7 +316,7 @@ kapel>
 - 폭이 80칸보다 좁으면 두 칸이 위아래로 쌓인 한 칸 상자로 바뀝니다. 터미널을
   좁혀 놓고 다시 `/stats`를 쳐서 확인해 보세요.
 - **파이프·리다이렉트로 실행하면 대시보드는 뜨지 않습니다** — 예전 그대로의
-  평문 배너(`kapel v0.14.0  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
+  평문 배너(`kapel v0.14.1  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
   문자는 하나도 섞이지 않습니다. 확인:
   `printf '/exit\n' | kapel chat --no-save | cat -A` 에 `^[` 가 없어야 합니다.
 - **깨끗한 화면에서 시작합니다** — 터미널에서 실행하면 `vim`/`less`처럼 대체
@@ -637,7 +651,7 @@ kapel --backend claude-code     # REPL을 Claude Code 백엔드로 엶
 kapel --backend claude-code            # 목적 없이 실행 → 대화형
 ```
 
-배너가 `kapel v0.14.0  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
+배너가 `kapel v0.14.1  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
 아래에 `approvals are enforced by the Claude Code CLI — kapel does not prompt here`
 가 표시됩니다 — 이 경로에서는 kapel이 `allow …? [y/n/a, …]`를 묻지 않습니다(승인은
 Claude Code CLI가 자체 정책으로 처리).

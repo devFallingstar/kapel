@@ -20,6 +20,7 @@ import {
   createProjectSetup,
   detectProjectSetup,
   setupAnnounceLine,
+  setupDeferredLine,
 } from "../src/onboard.js";
 import { runPolicyCompile } from "../src/policy.js";
 
@@ -150,9 +151,9 @@ describe("createProjectSetup", () => {
     const { setup, ran } = fakeSetup("needs-policy");
     const { output, lines } = capture();
 
-    expect(await setup.ensure(output)).toBe(true);
-    // Nothing on disk here (the state is faked), so the announcement takes
-    // the cautious branch and names the model call it cannot rule out.
+    // `allowModel` because a faked workspace has no readable policy, so the
+    // cost check takes its cautious branch and calls this a model step.
+    expect(await setup.ensure(output, { allowModel: true })).toBe(true);
     expect(lines).toEqual([setupAnnounceLine("needs-policy", true)]);
     expect(lines[0]).toContain("one model call");
     expect(ran).toEqual(["compile"]);
@@ -203,10 +204,54 @@ describe("createProjectSetup", () => {
     });
     const { output, errLines } = capture();
 
-    expect(await setup.ensure(output)).toBe(false);
+    expect(await setup.ensure(output, { allowModel: true })).toBe(false);
     expect(errLines).toEqual([
       "`kapel policy compile` failed: no provider credential is set in this shell",
     ]);
+  });
+
+  it("spends no model call on a setup nobody has asked for work from", async () => {
+    const { setup, ran } = fakeSetup("needs-policy");
+    const { output, lines, errLines } = capture();
+
+    expect(await setup.ensure(output, { allowModel: false })).toBe(false);
+    expect(ran).toEqual([]);
+    expect(lines).toEqual([setupDeferredLine()]);
+    expect(errLines).toEqual([]);
+  });
+
+  it("still runs that compile once the user asks for work", async () => {
+    // The deferral must not settle the setup: startup declining to spend is
+    // not a failure, and the `/plan` that follows has to get its chance.
+    const { setup, ran } = fakeSetup("needs-policy");
+    const startup = capture();
+    await setup.ensure(startup.output, { allowModel: false });
+
+    const plan = capture();
+    expect(await setup.ensure(plan.output, { allowModel: true })).toBe(true);
+    expect(ran).toEqual(["compile"]);
+  });
+
+  it("says the deferral once per session, not on every command", async () => {
+    const { setup } = fakeSetup("needs-policy");
+    const { output, lines } = capture();
+
+    await setup.ensure(output, { allowModel: false });
+    await setup.ensure(output, { allowModel: false });
+    await setup.ensure(output, { allowModel: false });
+
+    expect(lines).toEqual([setupDeferredLine()]);
+  });
+
+  it("defers nothing that costs nothing", async () => {
+    // `needs-init` copies a canonical template, so every step is free — the
+    // common case must set itself up at startup exactly as before.
+    const { setup, ran } = fakeSetup("needs-init");
+    const { output, lines } = capture();
+
+    expect(await setup.ensure(output, { allowModel: false })).toBe(true);
+    expect(ran).toEqual(["init", "compile"]);
+    expect(lines).toEqual([setupAnnounceLine("needs-init", false)]);
   });
 
   it("names the files a fresh project costs, and no model call it will not spend", () => {

@@ -1331,7 +1331,11 @@ describe("interactive controller — automatic project setup", () => {
       },
     });
     return {
-      ensureProjectSetup: (output) => setup.ensure(output),
+      // Mirrors how `runInteractive` wires this: `/plan` and `/orchestrate`
+      // are the moment a model call becomes in scope, so they allow one.
+      // Startup is the other call site, and it does not.
+      ensureProjectSetup: (output) =>
+        setup.ensure(output, { allowModel: true }),
       ran,
     };
   }

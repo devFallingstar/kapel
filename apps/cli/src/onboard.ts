@@ -111,6 +111,22 @@ export async function setupCallsModel(
 }
 
 /**
+ * The line startup prints instead of compiling, when the compile would call a
+ * model and nobody has asked for any work yet.
+ *
+ * Said rather than done, and said once: the user needs to know the project is
+ * not ready and what will make it ready, but a REPL they opened to ask a
+ * question must not spend their tokens on a policy they have not used.
+ */
+export function setupDeferredLine(): string {
+  return (
+    "this project's orchestration policy has not been compiled — /plan or " +
+    "/orchestrate will compile it (one model call), or `/policy` rewrites " +
+    "it in the form that needs none."
+  );
+}
+
+/**
  * The one line each state announces before it runs. Every one of them names
  * the cost up front — files written, and a model call only when there will
  * actually be one — because that is what makes kapel just doing this on its
@@ -145,15 +161,36 @@ export interface ProjectSetupDeps {
   readonly detect?: (workspacePath: string) => Promise<ProjectSetupState>;
 }
 
+/** How much this call is allowed to spend. */
+export interface EnsureOptions {
+  /**
+   * Whether a step that calls a model may run now.
+   *
+   * The whole point of the split: **no model is called before the user asks
+   * for work.** Startup passes `false`, so opening a REPL — to chat, to read
+   * something, to do anything that is not orchestration — never spends a
+   * token on setup. `/plan` and `/orchestrate` pass `true`, because by then
+   * the user has handed kapel a job and compiling the policy is part of
+   * doing it.
+   *
+   * Nearly everything is free either way: `kapel init` copies files, and the
+   * policy it copies is canonical, so its compile is a parse. Only a project
+   * whose policy has been rewritten as prose has a step this can defer.
+   */
+  readonly allowModel?: boolean;
+}
+
 export interface ProjectSetup {
   /**
-   * Makes sure this workspace is set up, doing it itself if it is not.
+   * Makes sure this workspace is set up, doing it itself if it is not — and
+   * within {@link EnsureOptions.allowModel}, which decides whether a step
+   * that would call a model runs now or waits.
    *
    * @returns whether the project is ready now. `false` is never fatal: the
    * caller carries on — plain chat needs no `.agent/` at all, and `/plan`
    * falls through to the error it has always printed.
    */
-  ensure(output: SetupOutput): Promise<boolean>;
+  ensure(output: SetupOutput, options?: EnsureOptions): Promise<boolean>;
 }
 
 function errorText(error: unknown): string {
@@ -168,10 +205,15 @@ function errorText(error: unknown): string {
  * every `/plan`. Nothing is written down: a fresh `kapel` tries again, which
  * is right for a failure that might have been a transient credential or
  * network problem rather than something permanently wrong with the project.
+ *
+ * A *deferral* is not a failure and is not remembered that way: startup
+ * declining to spend a model call has to leave the next `/plan` free to spend
+ * one. Only the line it prints is remembered, so a session hears it once.
  */
 export function createProjectSetup(deps: ProjectSetupDeps): ProjectSetup {
   const detect = deps.detect ?? detectProjectSetup;
   let settled = false;
+  let announcedDeferral = false;
 
   /** Runs one step, turning any failure into a line and a `false`. */
   const step = async (
@@ -193,19 +235,26 @@ export function createProjectSetup(deps: ProjectSetupDeps): ProjectSetup {
   };
 
   return {
-    ensure: async (output) => {
+    ensure: async (output, options = {}) => {
       if (settled) return false;
 
       const state = await detect(deps.workspacePath);
       if (state === "ready") return true;
       if (deps.interactive !== true) return false;
 
-      output.log(
-        setupAnnounceLine(
-          state,
-          await setupCallsModel(deps.workspacePath, state),
-        ),
-      );
+      const callsModel = await setupCallsModel(deps.workspacePath, state);
+      if (callsModel && options.allowModel !== true) {
+        // Nothing has been asked of kapel yet, and this step costs tokens.
+        // Say so and stop — deliberately without setting `settled`, so the
+        // `/plan` that does ask still gets to run it.
+        if (!announcedDeferral) {
+          announcedDeferral = true;
+          output.log(setupDeferredLine());
+        }
+        return false;
+      }
+
+      output.log(setupAnnounceLine(state, callsModel));
 
       if (state === "needs-init") {
         if (!(await step("`kapel init`", deps.init, output))) {

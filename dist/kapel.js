@@ -13684,6 +13684,9 @@ async function setupCallsModel(workspacePath, state) {
     return true;
   }
 }
+function setupDeferredLine() {
+  return "this project's orchestration policy has not been compiled \u2014 /plan or /orchestrate will compile it (one model call), or `/policy` rewrites it in the form that needs none.";
+}
 function setupAnnounceLine(state, callsModel) {
   const cost = callsModel ? " (one model call)" : "";
   return state === "needs-init" ? `setting this project up for kapel \u2014 creating .agent/ and compiling the orchestration policy${cost}\u2026` : `compiling this project's orchestration policy for kapel${cost}\u2026`;
@@ -13694,6 +13697,7 @@ function errorText(error) {
 function createProjectSetup(deps) {
   const detect = deps.detect ?? detectProjectSetup;
   let settled = false;
+  let announcedDeferral = false;
   const step = async (label, run, output) => {
     let code;
     try {
@@ -13708,7 +13712,7 @@ function createProjectSetup(deps) {
     return false;
   };
   return {
-    ensure: async (output) => {
+    ensure: async (output, options = {}) => {
       if (settled)
         return false;
       const state = await detect(deps.workspacePath);
@@ -13716,7 +13720,15 @@ function createProjectSetup(deps) {
         return true;
       if (deps.interactive !== true)
         return false;
-      output.log(setupAnnounceLine(state, await setupCallsModel(deps.workspacePath, state)));
+      const callsModel = await setupCallsModel(deps.workspacePath, state);
+      if (callsModel && options.allowModel !== true) {
+        if (!announcedDeferral) {
+          announcedDeferral = true;
+          output.log(setupDeferredLine());
+        }
+        return false;
+      }
+      output.log(setupAnnounceLine(state, callsModel));
       if (state === "needs-init") {
         if (!await step("`kapel init`", deps.init, output)) {
           settled = true;
@@ -16650,7 +16662,7 @@ function enterAltScreen(options = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.14.0";
+var CLI_VERSION = "0.14.1";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -17811,14 +17823,21 @@ async function runInteractive(options) {
     // and nothing runs where `--no-setup` has already said not to.
     interactive: onboardingTty
   });
-  await projectSetup.ensure({
-    log: (line) => {
-      console.log(styles.notice(line));
+  await projectSetup.ensure(
+    {
+      log: (line) => {
+        console.log(styles.notice(line));
+      },
+      error: (line) => {
+        console.error(errorStyles.error(line));
+      }
     },
-    error: (line) => {
-      console.error(errorStyles.error(line));
-    }
-  });
+    // Opening a REPL is not asking for work. Startup runs only the free part
+    // of setup — the files, and a canonical policy, which is every project
+    // kapel sets up itself — and defers anything that would call a model to
+    // the `/plan` or `/orchestrate` that actually wants it.
+    { allowModel: false }
+  );
   const store = options.save === false ? void 0 : await openChatStore(workspacePath);
   try {
     const started = await resolveStartSession(store, workspacePath, {
@@ -18031,7 +18050,9 @@ async function runInteractive(options) {
       runs: (output) => runRunsCommand({ cwd: options.cwd, json: false }, { output }),
       // The same setup startup ran (or tried to), through the same object —
       // so a failure there is remembered here, and nothing runs twice.
-      ensureProjectSetup: (output) => projectSetup.ensure(output),
+      // Here a model call is in scope: the user has handed kapel an
+      // objective, and compiling the policy is part of carrying it out.
+      ensureProjectSetup: (output) => projectSetup.ensure(output, { allowModel: true }),
       // `/policy` runs while the REPL's own InputManager owns stdin, so its
       // pickers borrow the terminal the same way `/config`'s do. Only wired
       // on a real terminal — there is nothing to edit a policy with on a
