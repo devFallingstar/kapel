@@ -379,3 +379,69 @@ export function runSelectPrompt(
     draw();
   });
 }
+
+// --- Free-text answers ------------------------------------------------------
+
+export interface TextPromptOptions {
+  readonly title: string;
+  /** Pre-filled answer, shown after the prompt and returned when enter is hit. */
+  readonly initial?: string;
+  /** One line under the title. Defaults to naming the escape hatches. */
+  readonly footer?: string;
+}
+
+const DEFAULT_TEXT_FOOTER =
+  "enter confirm · clear the line to leave it unchanged";
+
+/**
+ * A one-line free-text question, for the answers a list cannot hold: a rule's
+ * id, a comma-separated list of task types, a number outside the offered few.
+ *
+ * `undefined` means cancelled — an empty answer, a `^C`, or a closed stream —
+ * which every caller here treats as "leave this field alone". A non-TTY input
+ * resolves with the initial value without reading a byte, for the same reason
+ * {@link runSelectPrompt} does: a piped `kapel` must never block on a
+ * question nobody can see.
+ */
+export function runTextPrompt(
+  io: SelectPromptIo,
+  options: TextPromptOptions,
+): Promise<string | undefined> {
+  const initial = options.initial ?? "";
+  if (io.input.isTTY !== true) {
+    return Promise.resolve(initial === "" ? undefined : initial);
+  }
+
+  const color = io.output.isTTY === true;
+
+  // `heading`, the same role the picker paints its own title in — the two
+  // questions sit in one flow and must not look like different programs.
+  io.output.write(`${ansi(ROLE_SGR.heading, options.title, color)}\n`);
+  io.output.write(
+    `${ansi(ROLE_SGR.tool, options.footer ?? DEFAULT_TEXT_FOOTER, color)}\n`,
+  );
+
+  const rl = readline.createInterface({
+    input: io.input,
+    output: io.output,
+    terminal: true,
+  });
+
+  return new Promise<string | undefined>((resolve) => {
+    let settled = false;
+    const finish = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      resolve(value === undefined || value.trim() === "" ? undefined : value);
+    };
+
+    rl.on("SIGINT", () => finish(undefined));
+    rl.question("> ", (answer) => finish(answer));
+    // Pre-filling rather than showing a placeholder: the answer being edited
+    // is almost always a small change to the one already there, and retyping
+    // a rule id to alter one word of it is the kind of friction that sends
+    // people back to the text editor this screen exists to replace.
+    if (initial !== "") rl.write(initial);
+  });
+}

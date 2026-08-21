@@ -117,7 +117,8 @@ import {
 import type { OrchestrationOutput, PlanCommandOptions } from "./plan.js";
 import { formatTable, runPlan } from "./plan.js";
 import type { PolicyCompileOptions } from "./policy.js";
-import { runPolicyCompile } from "./policy.js";
+import { runPolicyCompile, runPolicyEdit } from "./policy.js";
+import { ttyPolicyEditPrompt } from "./policy-edit.js";
 import type { PromptState } from "./prompter.js";
 import { createPrompter, createPromptState } from "./prompter.js";
 import { TextRenderer, usageRollupLines } from "./render.js";
@@ -607,6 +608,11 @@ export interface InteractiveControllerDeps {
   /** Runs `/runs` — the recorded orchestration runs of this workspace. */
   readonly runs?: (output: OrchestrationOutput) => Promise<number>;
   /**
+   * Runs `/policy` — the policy editor. Absent means there is no terminal to
+   * ask on, the same condition `/config` is gated behind.
+   */
+  readonly editPolicy?: (output: OrchestrationOutput) => Promise<number>;
+  /**
    * Finishes this project's setup, uninvited, before `/plan` or
    * `/orchestrate` runs — the same thing the REPL does at startup, run again
    * here for a session that never got the chance (it started
@@ -839,6 +845,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     name: "undo",
     usage: "/undo",
     help: "restore the files to before the last prompt",
+  },
+  {
+    name: "policy",
+    usage: "/policy",
+    help: "edit this project's orchestration policy — no model call",
   },
   {
     name: "plan",
@@ -1892,6 +1903,28 @@ export async function createInteractiveController(
   };
 
   /** `/runs` — the recorded runs, newest first, so `/resume-run` has an id to take. */
+  /**
+   * `/policy` — the orchestration policy, edited in place.
+   *
+   * Deliberately not behind `ensureProjectSetup` the way `/plan` is: this is
+   * the command that *makes* a policy editable, and running an automatic
+   * compile before it would spend the model call the editor exists to avoid.
+   * A project with no policy at all gets the editor's own error instead,
+   * which says what to run.
+   */
+  const slashPolicy = async (): Promise<DispatchResult> => {
+    if (deps.editPolicy === undefined) {
+      emitWarn("/policy needs a terminal to ask on.");
+      return drain();
+    }
+    try {
+      await deps.editPolicy(replOutput);
+    } catch (error) {
+      emitError(errorText(error));
+    }
+    return drain();
+  };
+
   const slashRuns = async (): Promise<DispatchResult> => {
     if (deps.runs === undefined) {
       emitWarn("/runs is not available here.");
@@ -2066,6 +2099,8 @@ export async function createInteractiveController(
         return await slashCompact();
       case "undo":
         return await slashUndo();
+      case "policy":
+        return await slashPolicy();
       case "plan":
         return await slashPlan(argument);
       case "orchestrate":
@@ -2970,6 +3005,22 @@ export async function runInteractive(
       // The same setup startup ran (or tried to), through the same object —
       // so a failure there is remembered here, and nothing runs twice.
       ensureProjectSetup: (output) => projectSetup.ensure(output),
+      // `/policy` runs while the REPL's own InputManager owns stdin, so its
+      // pickers borrow the terminal the same way `/config`'s do. Only wired
+      // on a real terminal — there is nothing to edit a policy with on a
+      // pipe, and the command says so rather than hanging.
+      ...(wizardTty
+        ? {
+            editPolicy: (output: OrchestrationOutput) =>
+              runPolicyEdit(
+                { cwd: options.cwd, json: false },
+                {
+                  output,
+                  prompt: ttyPolicyEditPrompt(undefined, withSuspended),
+                },
+              ),
+          }
+        : {}),
       resumeRun: (runId, output) =>
         runResume(runId, resumeOptionsFor(options, backend), { output }),
       login: {

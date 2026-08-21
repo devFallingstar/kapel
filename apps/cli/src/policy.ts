@@ -27,9 +27,11 @@ import {
   loadAgentProject,
   locateIssues,
   PolicyCompileError,
+  PolicyRenderError,
   ProjectConfigError,
   parseLockfile,
   parsePolicyMarkdown,
+  renderPolicyMarkdown,
   serializeLockfile,
   validatePolicy,
 } from "@agent/coding-agent";
@@ -46,6 +48,8 @@ import {
   resolveOrchestratorModel,
 } from "./config-runtime.js";
 import { loadDotEnvFile } from "./env.js";
+import type { PolicyEditPrompt } from "./policy-edit.js";
+import { runPolicyEditor } from "./policy-edit.js";
 import { resolveModelAndProvider } from "./run.js";
 
 /** Options shared by all `kapel policy <command>` subcommands — the global `--cwd`/`-m`/`--json` flags. */
@@ -852,5 +856,154 @@ export async function runPolicyDiff(
   );
   output.log("");
   output.log("Run `kapel policy compile` to update the lock.");
+  return 0;
+}
+
+// --- `kapel policy edit` ----------------------------------------------------
+
+const ORCHESTRATION_FILE_NAME = "orchestration.md";
+
+export interface RunPolicyEditDeps {
+  readonly output?: PolicyOutput;
+  /**
+   * The prompt the editor asks through. Absent means there is no terminal to
+   * ask on — a piped or redirected run — and the command says so rather than
+   * blocking on a question nobody can see.
+   */
+  readonly prompt?: PolicyEditPrompt;
+}
+
+/** The policy `kapel policy edit` opens on, and what saving will cost. */
+type EditStartingPoint =
+  | {
+      readonly policy: OrchestrationPolicy;
+      /** True when saving replaces prose with the canonical form. */
+      readonly converting: boolean;
+    }
+  | { readonly error: string };
+
+/**
+ * Where the editor starts from.
+ *
+ * A canonical source is read directly — the file *is* the policy. Prose is a
+ * harder question: the IR behind it only exists in the lock, so the editor
+ * can start there, but only when the lock still describes the prose that is
+ * on disk. A stale lock is refused rather than silently used, because saving
+ * from it would write a canonical file that quietly drops whatever the last
+ * edit to the prose said.
+ */
+function startingPoint(
+  markdown: string,
+  lockContent: string | undefined,
+): EditStartingPoint {
+  const canonical = parsePolicyMarkdown(markdown);
+  if ("policy" in canonical) {
+    return { policy: canonical.policy, converting: false };
+  }
+
+  const status = checkLock(markdown, lockContent);
+  if (status.fresh) return { policy: status.lock.policy, converting: true };
+  if (status.reason === "stale-source") {
+    return {
+      error:
+        "orchestration.md has changed since the policy lock was compiled, so " +
+        "there is no policy here that matches what the file says. Run " +
+        "`kapel policy compile` first, then edit.",
+    };
+  }
+  return {
+    error:
+      "This policy is prose and has never been compiled, so there is nothing " +
+      "to edit yet. Run `kapel policy compile` once (one model call) and " +
+      "`kapel policy edit` will work from the result — after which editing " +
+      "it costs nothing at all.",
+  };
+}
+
+/**
+ * Implements `kapel policy edit` (and `/policy`): edits the policy IR
+ * directly and writes both `.agent/orchestration.md` and its lock.
+ *
+ * No model is involved at any point, which is the whole reason this exists.
+ * The file it writes is canonical by construction, so the compile that any
+ * later `/plan` triggers does not call one either.
+ */
+export async function runPolicyEdit(
+  options: PolicyCommandOptions,
+  deps: RunPolicyEditDeps = {},
+): Promise<number> {
+  const output = deps.output ?? consoleOutput;
+  const workspacePath = path.resolve(options.cwd);
+
+  if (deps.prompt === undefined) {
+    output.error(
+      "`kapel policy edit` needs a terminal to ask on. Edit " +
+        ".agent/orchestration.md directly and run `kapel policy compile`.",
+    );
+    return 1;
+  }
+
+  const loaded = await loadProjectForPolicy(workspacePath, output, false);
+  if ("exitCode" in loaded) return loaded.exitCode;
+  const { project, markdown } = loaded;
+
+  const lockPath = path.join(project.root, LOCK_FILE_NAME);
+  const start = startingPoint(markdown, await readOptionalFile(lockPath));
+  if ("error" in start) {
+    output.error(start.error);
+    return 1;
+  }
+
+  const edited = await runPolicyEditor({
+    prompt: deps.prompt,
+    write: (line) => output.log(line),
+    policy: start.policy,
+    knownAgents: [...project.knownAgentNames()],
+    converting: start.converting,
+  });
+  if (edited === undefined) {
+    output.log("Nothing written — the policy is unchanged.");
+    return 0;
+  }
+
+  let rendered: string;
+  try {
+    rendered = renderPolicyMarkdown(edited);
+  } catch (error) {
+    if (error instanceof PolicyRenderError) {
+      output.error(error.message);
+      return 1;
+    }
+    throw error;
+  }
+
+  const policyPath = path.join(project.root, ORCHESTRATION_FILE_NAME);
+  await writeFile(policyPath, rendered, "utf8");
+  // Written from the rendered source rather than the one that was read, so
+  // the lock's `sourceHash` describes the file that is now on disk — the
+  // policy is fresh the moment the editor exits, with nothing left to compile.
+  await writeFile(
+    lockPath,
+    serializeLockfile(
+      createLockfile({
+        markdown: rendered,
+        result: { policy: edited, warnings: [], ambiguities: [] },
+        model: "canonical",
+      }),
+    ),
+    "utf8",
+  );
+
+  const diff = diffPolicies(start.policy, edited);
+  output.log(`Wrote ${policyPath}`);
+  output.log(`Lock written to ${lockPath}`);
+  if (diff.unchanged) {
+    output.log("The policy itself is unchanged.");
+  } else {
+    output.log("");
+    for (const line of formatPolicyDiff(diff)) output.log(line);
+  }
+  output.log("");
+  output.log("No model was called.");
   return 0;
 }

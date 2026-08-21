@@ -126,6 +126,13 @@ describe("the command surface", () => {
 
     const policy = program.commands.find((each) => each.name() === "policy");
     for (const sub of policy?.commands ?? []) {
+      // `policy edit` is an interactive editor, not a query: it has no
+      // machine-readable output to ask for, and a `--json` that only ever
+      // reported "this needs a terminal" would be worse than no flag.
+      if (sub.name() === "edit") {
+        expect(optionFlags(sub)).not.toContain("--json");
+        continue;
+      }
       expect(optionFlags(sub)).toContain("--json");
     }
   });

@@ -20,26 +20,34 @@ REPL** — talking, planning, orchestrating, resuming. The commands on the shell
 (`init`, `config`, `models`, `runs`, `sessions`, `explain`, `policy`) set kapel
 up and inspect what it did; none of them do the work themselves.
 
-**A new project sets itself up.** The first time you open `kapel` in a
-repository that has no `.agent/`, it just does it — one line, then the work:
+**A new project sets itself up, and calls nothing to do it.** The first time
+you open `kapel` in a repository that has no `.agent/`, it just does it — one
+line, then the work:
 
 ```text
 setting this project up for kapel — creating .agent/ and compiling the
-orchestration policy (one model call)…
+orchestration policy…
 ```
 
 That's exactly what `kapel init` and `kapel policy compile` do — the
 `.agent/` template (agents, `config.yaml` seeded from your configuration and
 this repo's `package.json` check scripts, `handoff.md`, the `.gitignore`
-entries) and one model call turning `.agent/orchestration.md` into the policy
-lock — printed with the same summary those commands print. A project that
-only lacks the compiled lock gets just the compile, and one that has both is
-left alone (plain chat needs none of it). If setup fails partway, kapel says
-so in one line and does not retry it on every `/plan` or `/orchestrate` — fix
-the problem and run the command by hand. Nothing runs where nobody would see
-it: piped and redirected runs are never auto-set-up, and `--no-setup` turns
-this off exactly as it turns off the first-run wizard — so `kapel init` and
-`kapel policy compile` remain the way to do it by hand, or in CI.
+entries) and turning `.agent/orchestration.md` into the policy lock — printed
+with the same summary those commands print. **No model is called**, and no
+provider credential is needed: the shipped policy is in kapel's canonical
+form, which the compile reads rather than compiles (see
+[Policy](#policy)). A project that only lacks the compiled lock gets just the
+compile, and one that has both is left alone (plain chat needs none of it).
+If setup fails partway, kapel says so in one line and does not retry it on
+every `/plan` or `/orchestrate` — fix the problem and run the command by
+hand. Nothing runs where nobody would see it: piped and redirected runs are
+never auto-set-up, and `--no-setup` turns this off exactly as it turns off
+the first-run wizard — so `kapel init` and `kapel policy compile` remain the
+way to do it by hand, or in CI.
+
+The only time that announcement mentions a model call is when it will
+actually spend one — a policy you have rewritten as prose. Editing it through
+`/policy` never does.
 
 The first time you run `kapel` on a terminal it asks five questions — which
 coding backends you have (Claude Code, Codex, a plain API key: tick as many as
@@ -166,6 +174,7 @@ Commands available at the prompt:
 | `/stats` | redraw the startup dashboard with fresh numbers and re-probed logins |
 | `/compact` | compact the conversation history now (native backend only) |
 | `/undo` | put the files back the way they were before the last prompt |
+| `/policy` | edit this project's orchestration policy — routing, review, escalation, concurrency — and write it back; no model is called; see [Policy](#policy) |
 | `/plan "<objective>"` | plan an objective into a task graph and show it, with the routing rationale — nothing is executed; see [Orchestrate](#orchestrate) |
 | `/orchestrate "<objective>"` | plan it *and* run it across routed workers; see [Orchestrate](#orchestrate) |
 | `/runs` | list this workspace's recorded orchestration runs, newest first |
@@ -237,7 +246,7 @@ kapel runs               # orchestration runs recorded here (--limit, --json)
 kapel sessions           # chat sessions recorded here (--limit, --json)
 kapel sessions fork <id|name> [--name <name>]
 kapel explain <taskId>   # how one task of a run was routed and what happened (--run, --json)
-kapel policy compile | check | explain | diff
+kapel policy edit | compile | check | explain | diff
 kapel help [command]     # same as --help
 ```
 
@@ -250,7 +259,7 @@ Global flags, on every command:
 - `--no-setup` — never set anything up automatically: no first-run wizard, and no automatic project setup either; use environment variables and defaults instead
 - `--no-altscreen` — keep the REPL on the terminal's normal screen instead of a clean one, so the transcript stays in your scrollback (see [The REPL](#the-repl))
 
-`--json` is not global. It lives on the commands that actually emit machine-readable output — `runs`, `sessions`, `sessions fork`, `explain`, and each `policy` subcommand — and nowhere else.
+`--json` is not global. It lives on the commands that actually emit machine-readable output — `runs`, `sessions`, `sessions fork`, `explain`, and each `policy` subcommand except `policy edit`, which is an interactive editor with nothing to serialize — and nowhere else.
 
 A command that no longer exists gets the same terse answer as a typo:
 
@@ -523,25 +532,75 @@ kapel --backend codex       # …and open the REPL on it
 
 ### Policy
 
-`.agent/orchestration.md` is your routing/concurrency/review/retry/escalation policy, written in plain English. The CLI compiles it to a typed, deterministic IR:
+`.agent/orchestration.md` is your routing/concurrency/review/retry/escalation policy. The CLI compiles it to a typed, deterministic IR that the scheduler enforces.
 
-- `kapel policy compile` — uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile `orchestration.md` into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map). Each warning/ambiguity that quotes a source phrase is annotated with the `orchestration.md:12` line (or `:12-13` when the phrase wraps lines) it was found at — best-effort: a phrase the compiler paraphrased instead of quoting carries no location, never a wrong one. `--json` adds parallel `warningLocations`/`ambiguityLocations` arrays (`null` where unresolved). The text output also prints what the compile spent; on a delegated backend that is whatever the CLI reported, and "none reported" when it reported nothing rather than a misleading `0`.
+**It is written in one of two forms, and only one of them costs a model call.**
+
+The IR is small and closed — four settings and three rule lists — so kapel can
+both write that file and read it back, with no model involved. A policy in
+that *canonical* form opens with a marker line:
+
+```markdown
+<!-- kapel:policy v1 -->
+
+## Orchestrator
+
+Use `lead` as the main orchestrator.
+
+## Execution
+
+- Run at most 4 agents at a time.
+- Independent tasks may run in parallel.
+- Give each task 2 attempts before giving up.
+
+## Routing
+
+- `architectural-work`: always route tasks of complex and architectural complexity to `senior`.
+- `exploration`: always route `exploration` tasks to `explorer`.
+
+## Review
+
+- `sensitive-change-review`: `reviewer` reviews tasks touching `auth`, `payments` and `migrations`; blocking, required.
+
+## Escalation
+
+- `junior-to-coder`: hand off from `junior` to `coder` after 2 failed attempts.
+```
+
+This is what `kapel init` ships, so a new project compiles for free. Editing it
+by hand is fine — it is a text file — but `kapel policy edit` (and `/policy` in
+the REPL) is the way that cannot slip out of the form.
+
+**Anything else is prose, and prose is what the model is for.** Delete the
+marker and write three paragraphs of English; kapel compiles them with an LLM,
+exactly as it always did. That is a choice you make by writing prose, not a
+tax on every project.
+
+Two rules keep the deterministic path trustworthy. Without the marker nothing
+is parsed, so hand-written English is never guessed at. And with it, **one**
+line that no longer fits fails the whole parse — kapel says which line, then
+compiles the file with a model rather than quietly reading a policy that means
+less than it says.
+
+- `kapel policy edit` — the editor: pick a setting or a rule, change it, save. It rewrites `orchestration.md` in canonical form **and** the lock beside it, so nothing is left to compile — `/plan` works the moment you exit. No model is called and no credential is needed, so this works on a machine with no backend configured at all. Editing a policy that is currently prose starts from what it last compiled to and says, on the save line, that saving replaces the prose; a prose policy that has never been compiled (or whose lock has gone stale against it) is refused rather than half-read, with the one command to run first.
+- `kapel policy compile` — reads a canonical `orchestration.md` outright (no model, no credential), and otherwise uses an LLM (same backend/model resolution as a run; `-m/--model` selects the model, `--backend` decides whether it goes through an API key or your Codex/Claude Code login) to compile it into `.agent/orchestration.lock.json`, reporting any warnings (judgement calls) or ambiguities (source phrases it couldn't map). Each warning/ambiguity that quotes a source phrase is annotated with the `orchestration.md:12` line (or `:12-13` when the phrase wraps lines) it was found at — best-effort: a phrase the compiler paraphrased instead of quoting carries no location, never a wrong one. `--json` adds parallel `warningLocations`/`ambiguityLocations` arrays (`null` where unresolved), and a `source` of `canonical` or `model` saying which path ran. The text output opens with the same fact and, on the model path only, prints what the compile spent; on a delegated backend that is whatever the CLI reported, and "none reported" when it reported nothing rather than a misleading `0`. A file that carries the marker but no longer parses is reported on stderr with its line number — it is about to cost a call it was written to avoid.
 - `kapel policy check` — a fast, offline gate: confirms the lock still matches `orchestration.md` and the current agents, without calling an LLM. Good for CI.
 - `kapel policy explain` — prints a human-readable summary of the locked policy from the lock file, also without calling an LLM. Same line-annotated warnings/ambiguities as `compile`.
-- `kapel policy diff` — recompiles `orchestration.md` (one LLM call, same resolution as `compile`) and diffs the result against the current lock **without writing it**, so you can review a change before committing to it: routing/review/escalation rules added, removed, or changed field-by-field (matched by each rule's own `id`, not its position — reordering a policy's rules between compiles is not a change), plus any changed defaults (`orchestrator`, `maxConcurrency`, `parallelizeIndependentTasks`, `defaultMaxAttempts`). `--json` emits `{ok, unchanged, defaults, routing, review, escalation, warnings, ambiguities}`. "Same resolution as `compile`" includes the backend: under `--backend codex`/`--backend claude-code` the recompile is delegated to that CLI, so `diff` needs no API key either.
+- `kapel policy diff` — recompiles `orchestration.md` exactly the way `compile` does — free for a canonical policy, one LLM call for prose — and diffs the result against the current lock **without writing it**, so you can review a change before committing to it: routing/review/escalation rules added, removed, or changed field-by-field (matched by each rule's own `id`, not its position — reordering a policy's rules between compiles is not a change), plus any changed defaults (`orchestrator`, `maxConcurrency`, `parallelizeIndependentTasks`, `defaultMaxAttempts`). `--json` emits `{ok, unchanged, defaults, routing, review, escalation, warnings, ambiguities, source}`. "Same resolution as `compile`" includes the backend: under `--backend codex`/`--backend claude-code` the recompile is delegated to that CLI, so `diff` needs no API key either.
 
-All four accept `--cwd`, and each takes its own `--json`.
+All five accept `--cwd`; each takes its own `--json` except `edit`, which has no machine-readable output to ask for.
 
 ### Orchestrate
 
 A message at the prompt runs one model in one loop. `/orchestrate` runs the full M3 pipeline instead: the objective is **planned** into a task DAG, the plan is **rewritten by your compiled policy** (unknown agents dropped, mandated reviews injected, unrunnable plans rejected), and the resulting tasks are **routed to different workers and executed in parallel** by the deterministic scheduler.
 
 The policy has to be compiled before either of them runs. On a new project
-kapel offers to do that for you (see [Quickstart](#quickstart)); by hand, or
-after every `orchestration.md` edit, it is one command:
+kapel does that for you, for free (see [Quickstart](#quickstart)); after an
+`orchestration.md` edit, it is one command:
 
 ```bash
-kapel policy compile     # on the shell, and after every orchestration.md edit
+kapel policy edit        # change it and relock it in one step — no model call
+kapel policy compile     # or, after editing orchestration.md in a text editor
 ```
 
 ```text

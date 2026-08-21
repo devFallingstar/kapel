@@ -25,8 +25,10 @@ import {
   runPolicyCheck,
   runPolicyCompile,
   runPolicyDiff,
+  runPolicyEdit,
   runPolicyExplain,
 } from "./policy.js";
+import { ttyPolicyEditPrompt } from "./policy-edit.js";
 import { DEFAULT_RUNS_LIMIT, runRunsCommand } from "./runs-cmd.js";
 import {
   DEFAULT_SESSIONS_LIST_LIMIT,
@@ -485,14 +487,30 @@ export function createProgram(): Command {
   const policyCommand = program
     .command("policy")
     .description(
-      "Manage orchestration policies (compile, check, explain, diff)",
+      "Manage orchestration policies (edit, compile, check, explain, diff)",
     )
-    .argument("[unknownCommand]", "compile | check | explain | diff");
+    .argument("[unknownCommand]", "edit | compile | check | explain | diff");
+
+  policyCommand
+    .command("edit")
+    .description(
+      "Edit the orchestration policy and rewrite it in canonical form (no LLM calls)",
+    )
+    .action(async (_opts: unknown, command: Command) => {
+      // No `runtimeConfig` here on purpose: the editor never resolves a model
+      // or a backend, so a machine with neither still edits its policy.
+      process.exitCode = await runPolicyEdit(
+        policyOptions(command, false, undefined),
+        process.stdin.isTTY === true && process.stdout.isTTY === true
+          ? { prompt: ttyPolicyEditPrompt() }
+          : {},
+      );
+    });
 
   policyCommand
     .command("compile")
     .description(
-      "Compile .agent/orchestration.md into a policy lock using an LLM",
+      "Compile .agent/orchestration.md into a policy lock, calling an LLM only for a policy written as prose",
     )
     .option("--json", "emit the compile result as JSON", false)
     .action(async (opts: { json: boolean }, command: Command) => {
