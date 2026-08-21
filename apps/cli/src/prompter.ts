@@ -1,5 +1,6 @@
 import * as readline from "node:readline";
 import {
+  type AskOutcome,
   describeSessionRule,
   type PermissionPrompter,
   type PermissionRequest,
@@ -24,15 +25,24 @@ export function createPromptState(): PromptState {
 }
 
 /** What one answer to a permission question means. */
-export type PermissionAnswer = "once" | "always" | "deny";
+export type PermissionAnswer = "once" | "always" | "deny" | "feedback";
 
 /**
- * Parses an answer to the `[y/n/a]` question.
+ * Parses an answer to the permission question.
  *
- * `y`/`yes` allow this call, `a`/`always` allow it and remember the rule for
- * the session, and *everything else* denies: `n`, a typo, an empty line, a
- * closed stream (`undefined`) and a SIGINT symbol all mean no. Case and
- * surrounding whitespace are ignored.
+ * Four answers, not three:
+ *
+ * - `y`/`yes` allow this call once;
+ * - `a`/`always` allow it and remember the rule for the session;
+ * - `n`/`no`, an empty line, a closed stream (`undefined`) and a SIGINT symbol
+ *   deny it, saying nothing;
+ * - **anything else** — a sentence, a question, an instruction — denies it
+ *   *and speaks*: the call does not run and the typed text goes to the model
+ *   as the user's own words (see {@link permissionFeedback}). This is the
+ *   whole point of being able to answer a prompt in prose: "왜 이 파일을
+ *   지우려는 거야?" is a better answer than `n`, and the agent can act on it.
+ *
+ * Case and surrounding whitespace are ignored for the four letters.
  */
 export function parsePermissionAnswer(
   answer: string | undefined | symbol,
@@ -41,7 +51,23 @@ export function parsePermissionAnswer(
   const normalized = answer.trim().toLowerCase();
   if (normalized === "y" || normalized === "yes") return "once";
   if (normalized === "a" || normalized === "always") return "always";
-  return "deny";
+  if (normalized === "" || normalized === "n" || normalized === "no") {
+    return "deny";
+  }
+  return "feedback";
+}
+
+/**
+ * The user's own words from an answer that was none of `y`, `n` or `a` —
+ * trimmed, and `undefined` for every answer that was one of them (or was no
+ * answer at all).
+ */
+export function permissionFeedback(
+  answer: string | undefined | symbol,
+): string | undefined {
+  if (parsePermissionAnswer(answer) !== "feedback") return undefined;
+  // Only a string can parse as "feedback"; the guard is for the type checker.
+  return typeof answer === "string" ? answer.trim() : undefined;
 }
 
 /** The part of a session allowlist the prompter needs: somewhere to write to. */
@@ -79,6 +105,11 @@ interface CreatePrompterOptions {
  *  - `--yes` always approves.
  *  - an interactive TTY asks via readline, answering "no" on Ctrl-C.
  *  - otherwise `undefined` — the permission engine denies asks itself.
+ *
+ * The interactive prompter answers with a bare `true`/`false` for `y`, `a`,
+ * `n` and every silent no (empty line, closed stream, Ctrl-C). It returns an
+ * `AskOutcome` only for the fourth answer — a refusal the user typed words
+ * into — so nothing downstream of `y/n/a` sees a shape it did not see before.
  */
 export function createPrompter(
   options: CreatePrompterOptions,
@@ -100,7 +131,7 @@ export function createPrompter(
   const color = options.color ?? (output as { isTTY?: boolean }).isTTY === true;
 
   return {
-    ask: async (request: PermissionRequest): Promise<boolean> => {
+    ask: async (request: PermissionRequest): Promise<boolean | AskOutcome> => {
       state.active = true;
       try {
         const prompt = formatPermissionPrompt(request, { color });
@@ -127,6 +158,16 @@ export function createPrompter(
             ? await askOnce(query, input, output)
             : await ask(query);
         const answer = parsePermissionAnswer(raw);
+        // A refusal in prose is still a refusal — nothing is remembered and
+        // nothing runs — but it carries the words back to the model, which is
+        // what lets the turn go on as a conversation. `y`/`n`/`a` keep
+        // answering with the bare boolean they always did.
+        if (answer === "feedback") {
+          const feedback = permissionFeedback(raw);
+          return feedback === undefined
+            ? false
+            : { allowed: false as const, feedback };
+        }
         if (answer === "deny") return false;
         if (answer === "always" && allowlist !== undefined) {
           const rule = allowlist.remember(request);
@@ -171,11 +212,21 @@ function previewBlockLines(
   ];
 }
 
+/**
+ * The answers the question advertises.
+ *
+ * The three letters come first because they are what a hurried human types;
+ * the clause after them is there because the fourth answer has no key to
+ * name — you just say the thing — and an option nobody is told about may as
+ * well not exist.
+ */
+export const PERMISSION_ANSWER_HINT = "[y/n/a, or say what to do instead]";
+
 /** The text of one permission prompt: an optional preview block, and the question. */
 export interface PermissionPromptText {
   /** Multi-line preview of what the tool will do, or `undefined` for none. */
   readonly block: string | undefined;
-  /** The one-line question, always ending in `[y/n/a] `. */
+  /** The one-line question, always ending in {@link PERMISSION_ANSWER_HINT}. */
   readonly query: string;
 }
 
@@ -195,8 +246,8 @@ export function formatPermissionPrompt(
   });
   const query =
     block === undefined
-      ? `allow ${request.tool}? ${previewInput(request.input)} [y/n/a] `
-      : `allow ${request.tool}? [y/n/a] `;
+      ? `allow ${request.tool}? ${previewInput(request.input)} ${PERMISSION_ANSWER_HINT} `
+      : `allow ${request.tool}? ${PERMISSION_ANSWER_HINT} `;
   return { block, query };
 }
 

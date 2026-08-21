@@ -445,6 +445,70 @@ describe("AgentLoop — tool execution", () => {
     );
   });
 
+  it("carries a refusal's words back to the model and keeps the turn going", async () => {
+    const remove = makeTool("bash", async () => "removed");
+    const provider = new ScriptedProvider([
+      toolTurn("call-1", "bash", { command: "rm -rf build" }),
+      text("빌드 산출물이라 지워도 된다고 봤는데, 확인 없이는 두겠습니다."),
+    ]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [remove],
+      permissions: new PermissionEngine(
+        { bash: "ask" },
+        {
+          prompter: {
+            ask: async () => ({
+              allowed: false,
+              feedback: "왜 이 파일을 지우려는 거야?",
+            }),
+          },
+        },
+      ),
+    });
+
+    const result = await loop.run({ instruction: "clean up" }, RUN_CONTEXT);
+
+    // The call did not run, and the same turn carried on to an answer.
+    expect(remove.calls).toHaveLength(0);
+    expect(result.status).toBe("success");
+    expect(result.iterations).toBe(2);
+
+    const message = provider.requests[1]?.messages[3];
+    expect(message?.role).toBe("tool");
+    expect(message?.toolCallId).toBe("call-1");
+    expect(message?.isError).toBe(true);
+    // Verbatim, multi-byte and all — these are the user's words, not a summary.
+    expect(message?.content).toContain("왜 이 파일을 지우려는 거야?");
+    expect(message?.content).toContain("declined by the user, who said:");
+    expect(message?.content).toContain("the user's own words");
+  });
+
+  it("answers a wordless refusal with the bare reason, as before", async () => {
+    const write = makeTool("write", async () => "written");
+    const provider = new ScriptedProvider([
+      toolTurn("call-1", "write", {}),
+      text("ok"),
+    ]);
+    const loop = new AgentLoop({
+      agent: AGENT,
+      provider,
+      tools: [write],
+      permissions: new PermissionEngine(
+        { write: "ask" },
+        { prompter: { ask: async () => false } },
+      ),
+    });
+
+    await loop.run({ instruction: "write" }, RUN_CONTEXT);
+
+    expect(write.calls).toHaveLength(0);
+    expect(provider.requests[1]?.messages[3]?.content).toBe(
+      'Tool "write" was not permitted: denied by prompter',
+    );
+  });
+
   it("turns a thrown tool error into an error result and keeps looping", async () => {
     const boom = makeTool("boom", async () => {
       throw new Error("disk on fire");

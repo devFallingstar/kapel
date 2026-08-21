@@ -1,8 +1,10 @@
+import type { AskOutcome } from "@agent/core";
 import { describe, expect, it } from "vitest";
 import {
   ALLOWED_FOR_SESSION,
   type BashPermissionRules,
   bashCommandPrefix,
+  DECLINED_WITH_FEEDBACK,
   DENIED_BY_POLICY,
   DENIED_BY_PROMPTER,
   describeSessionRule,
@@ -293,6 +295,90 @@ describe("SessionAllowlist", () => {
     list.remember(request("edit_file"));
     list.remember(bash("git log --oneline"));
     expect(list.entries()).toEqual(["edit_file", "bash git log \u2026"]);
+  });
+});
+
+// --- PermissionEngine + a prompter that answers with words --------------------
+
+/** A prompter that refuses and says something, the way a typed answer does. */
+class SpeakingPrompter implements PermissionPrompter {
+  readonly seen: PermissionRequest[] = [];
+
+  constructor(private readonly outcome: AskOutcome) {}
+
+  async ask(req: PermissionRequest): Promise<AskOutcome> {
+    this.seen.push(req);
+    return this.outcome;
+  }
+}
+
+describe("PermissionEngine with a prompter that answers in prose", () => {
+  it("denies the call and carries the user's words on the verdict", async () => {
+    const prompter = new SpeakingPrompter({
+      allowed: false,
+      feedback: "왜 이 파일을 지우려는 거야?",
+    });
+    const engine = new PermissionEngine({ bash: "ask" }, { prompter });
+
+    expect(await engine.authorize(bash("rm -rf build"))).toEqual({
+      allowed: false,
+      decision: "ask",
+      reason: DECLINED_WITH_FEEDBACK,
+      feedback: "왜 이 파일을 지우려는 거야?",
+    });
+  });
+
+  it("trims the feedback", async () => {
+    const prompter = new SpeakingPrompter({
+      allowed: false,
+      feedback: "  use the config file instead\n",
+    });
+    const engine = new PermissionEngine({ write: "ask" }, { prompter });
+
+    const verdict = await engine.authorize(request("write"));
+    expect(verdict.feedback).toBe("use the config file instead");
+  });
+
+  it("treats a blank or absent message as the plain refusal it is", async () => {
+    for (const feedback of [undefined, "", "   "]) {
+      const engine = new PermissionEngine(
+        { write: "ask" },
+        { prompter: new SpeakingPrompter({ allowed: false, feedback }) },
+      );
+      expect(await engine.authorize(request("write"))).toEqual({
+        allowed: false,
+        decision: "ask",
+        reason: DENIED_BY_PROMPTER,
+      });
+    }
+  });
+
+  it("accepts the outcome shape for an approval too", async () => {
+    const engine = new PermissionEngine(
+      { write: "ask" },
+      { prompter: new SpeakingPrompter({ allowed: true }) },
+    );
+    expect(await engine.authorize(request("write"))).toEqual({
+      allowed: true,
+      decision: "ask",
+    });
+  });
+
+  it("leaves the session overlay untouched — nothing is remembered", async () => {
+    const overlay = new SessionAllowlist();
+    const prompter = new SpeakingPrompter({
+      allowed: false,
+      feedback: "run the tests first",
+    });
+    const engine = new PermissionEngine({ bash: "ask" }, { prompter, overlay });
+
+    await engine.authorize(bash("npm publish"));
+    expect(overlay.entries()).toEqual([]);
+    expect(overlay.allows(bash("npm publish"))).toBe(false);
+
+    // And the next identical call is asked about all over again.
+    await engine.authorize(bash("npm publish"));
+    expect(prompter.seen).toHaveLength(2);
   });
 });
 

@@ -7,6 +7,25 @@ import type {
 export type AgentRole = "orchestrator" | "worker" | "reviewer";
 export type PermissionDecision = "allow" | "ask" | "deny";
 
+/**
+ * The answer to one live permission ask, as the prompter reports it back.
+ *
+ * Deliberately *not* a {@link PermissionDecision}: that union is the
+ * configured verdict for a tool, the thing an agent definition or a config
+ * file stores, and it stays a closed three-way vocabulary. This is one
+ * human's answer to one question, and unlike a stored rule it may carry
+ * words.
+ *
+ * `feedback` is what makes a refusal conversational: the user declined the
+ * action *and said why*, or said what to do instead ("use the config file
+ * instead"). The call is never executed either way — a denial with feedback
+ * is still a denial — but the loop hands those words back to the model, so
+ * the turn continues as a conversation rather than stopping at "no".
+ */
+export type AskOutcome =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly feedback?: string };
+
 export interface AgentDefinition {
   readonly name: string;
   readonly role: AgentRole;

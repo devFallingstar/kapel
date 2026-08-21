@@ -6,7 +6,9 @@ import {
   createPromptState,
   formatPermissionPrompt,
   formatPermissionQuery,
+  PERMISSION_ANSWER_HINT,
   parsePermissionAnswer,
+  permissionFeedback,
   previewInput,
 } from "../src/prompter.js";
 
@@ -23,19 +25,25 @@ function request(overrides: Partial<{ tool: string; input: unknown }> = {}) {
 describe("formatPermissionQuery", () => {
   it("keeps the question bare for a tool that has a real preview block", () => {
     const query = formatPermissionQuery(request());
-    expect(query).toBe("allow bash? [y/n/a] ");
+    expect(query).toBe("allow bash? [y/n/a, or say what to do instead] ");
   });
 
   it("keeps the compact JSON inline for a tool with no preview block", () => {
     const req = request({ tool: "grep", input: { pattern: "add" } });
     const query = formatPermissionQuery(req);
     expect(query).toBe(
-      `allow grep? ${previewInput({ pattern: "add" })} [y/n/a] `,
+      `allow grep? ${previewInput({ pattern: "add" })} ${PERMISSION_ANSWER_HINT} `,
     );
   });
 
-  it("offers all three answers", () => {
-    expect(formatPermissionQuery(request())).toContain("[y/n/a]");
+  it("offers all three letters", () => {
+    expect(formatPermissionQuery(request())).toContain("[y/n/a,");
+  });
+
+  it("advertises the fourth answer, which has no letter to type", () => {
+    expect(formatPermissionQuery(request())).toContain(
+      "or say what to do instead",
+    );
   });
 });
 
@@ -47,7 +55,7 @@ describe("formatPermissionPrompt", () => {
       request({ input: { command: "npm test" } }),
     );
     expect(prompt.block).toBe("  npm test");
-    expect(prompt.query).toBe("allow bash? [y/n/a] ");
+    expect(prompt.query).toBe(`allow bash? ${PERMISSION_ANSWER_HINT} `);
   });
 
   it("has no block for an unknown tool", () => {
@@ -72,10 +80,14 @@ describe("parsePermissionAnswer", () => {
     ["no", "deny"],
     ["", "deny"],
     ["   ", "deny"],
-    ["nope", "deny"],
-    ["ya", "deny"],
+    ["NO", "deny"],
     [undefined, "deny"],
     [Symbol("input-sigint"), "deny"],
+    // Anything that is not one of the four letters is the user talking.
+    ["nope", "feedback"],
+    ["ya", "feedback"],
+    ["use the config file instead", "feedback"],
+    ["왜 이 파일을 지우려는 거야?", "feedback"],
   ];
 
   for (const [answer, expected] of cases) {
@@ -83,6 +95,30 @@ describe("parsePermissionAnswer", () => {
       expect(parsePermissionAnswer(answer)).toBe(expected);
     });
   }
+});
+
+// --- permissionFeedback -------------------------------------------------------
+
+describe("permissionFeedback", () => {
+  it("returns the typed words, trimmed", () => {
+    expect(permissionFeedback("  use the config file instead  ")).toBe(
+      "use the config file instead",
+    );
+  });
+
+  it("keeps multi-byte text byte-for-byte", () => {
+    expect(permissionFeedback("왜 이 파일을 지우려는 거야?")).toBe(
+      "왜 이 파일을 지우려는 거야?",
+    );
+  });
+
+  it("has nothing to say for y, n, a or no answer at all", () => {
+    for (const answer of ["y", "yes", "n", "no", "a", "always", "", "   "]) {
+      expect(permissionFeedback(answer)).toBeUndefined();
+    }
+    expect(permissionFeedback(undefined)).toBeUndefined();
+    expect(permissionFeedback(Symbol("sigint"))).toBeUndefined();
+  });
 });
 
 // --- createPrompter: --yes and non-interactive --------------------------------
@@ -226,7 +262,7 @@ describe("createPrompter", () => {
     expect(chunks.join("")).toContain("allow bash?");
   });
 
-  it("askOnce path: resolves false on anything but y/yes", async () => {
+  it("askOnce path: resolves false on a bare 'n'", async () => {
     const input = new PassThrough() as PassThrough & { isTTY?: boolean };
     input.isTTY = true;
     const output = new Writable({
@@ -244,8 +280,33 @@ describe("createPrompter", () => {
     });
 
     const result = prompter?.ask(request());
-    input.write("nope\n");
+    input.write("n\n");
     await expect(result).resolves.toBe(false);
+  });
+
+  it("askOnce path: a typed sentence denies and carries the words", async () => {
+    const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+    input.isTTY = true;
+    const output = new Writable({
+      write(_chunk, _enc, cb) {
+        cb();
+      },
+    });
+
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state: createPromptState(),
+      input,
+      output,
+    });
+
+    const result = prompter?.ask(request());
+    input.write("왜 이 파일을 지우려는 거야?\n");
+    await expect(result).resolves.toEqual({
+      allowed: false,
+      feedback: "왜 이 파일을 지우려는 거야?",
+    });
   });
 
   it("askOnce path: resolves false on Ctrl-C (SIGINT)", async () => {
@@ -268,6 +329,92 @@ describe("createPrompter", () => {
     const result = prompter?.ask(request());
     input.write("\x03");
     await expect(result).resolves.toBe(false);
+  });
+});
+
+// --- the fourth answer: deny, with words --------------------------------------
+
+describe("createPrompter: answering in prose", () => {
+  it("denies and hands back what the user typed", async () => {
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state: createPromptState(),
+      ask: async () => "use the config file instead",
+    });
+
+    await expect(prompter?.ask(request())).resolves.toEqual({
+      allowed: false,
+      feedback: "use the config file instead",
+    });
+  });
+
+  it("carries a multi-byte answer through verbatim", async () => {
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state: createPromptState(),
+      ask: async () => "  왜 이 파일을 지우려는 거야?  ",
+    });
+
+    await expect(prompter?.ask(request())).resolves.toEqual({
+      allowed: false,
+      feedback: "왜 이 파일을 지우려는 거야?",
+    });
+  });
+
+  it("keeps y/n/a on the plain boolean they always answered with", async () => {
+    const answers: Record<string, boolean> = {
+      y: true,
+      a: true,
+      n: false,
+      "": false,
+      "   ": false,
+    };
+    for (const [raw, expected] of Object.entries(answers)) {
+      const prompter = createPrompter({
+        yes: false,
+        interactive: true,
+        state: createPromptState(),
+        output: collector().stream,
+        ask: async () => raw,
+      });
+      await expect(prompter?.ask(request())).resolves.toBe(expected);
+    }
+  });
+
+  it("remembers nothing: a spoken refusal never touches the allowlist", async () => {
+    const allowlist = new SessionAllowlist();
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state: createPromptState(),
+      output: collector().stream,
+      allowlist,
+      ask: async () => "always ask me first",
+    });
+
+    const req = request({ input: { command: "rm -rf build" } });
+    await expect(prompter?.ask(req)).resolves.toEqual({
+      allowed: false,
+      feedback: "always ask me first",
+    });
+    expect(allowlist.allows(req)).toBe(false);
+    expect(allowlist.entries()).toEqual([]);
+  });
+
+  it("still releases the status line after a spoken refusal", async () => {
+    const state = createPromptState();
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state,
+      output: collector().stream,
+      ask: async () => "why?",
+    });
+
+    await prompter?.ask(request());
+    expect(state.active).toBe(false);
   });
 });
 

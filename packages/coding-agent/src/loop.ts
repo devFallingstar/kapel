@@ -17,7 +17,7 @@ import type {
   ToolContext,
 } from "@agent/core";
 import type { AgentEvent, EventSink } from "@agent/protocol";
-import type { PermissionEngine } from "./permissions.js";
+import type { PermissionEngine, PermissionResult } from "./permissions.js";
 
 export const DEFAULT_MAX_ITERATIONS = 32;
 
@@ -149,6 +149,37 @@ function elisionMarker(originalLength: number): string {
 
 /** Content used for a tool result the loop never got to execute. */
 const CANCELLED_TOOL_RESULT = "[cancelled before execution]";
+
+/**
+ * The tool result a refused call is answered with.
+ *
+ * The plain form is unchanged: `Tool "x" was not permitted: <reason>`, which
+ * is all a policy denial or a headless run has to say.
+ *
+ * The interesting case is a denial the user attached words to (see
+ * `AskOutcome`): they were asked `[y/n/a]` and typed a question or an
+ * instruction instead. The call still did not run, so this is still an error
+ * result — but the model is told, in the same breath, that a *person* said
+ * something and what it was, verbatim. That is what turns "denied" into a
+ * conversation: the next iteration of the loop is the model answering the
+ * user and proposing something else, inside the same turn, instead of
+ * apologising to a machine error and giving up.
+ *
+ * A tool result rather than a separate user message on purpose: every
+ * provider the loop speaks to must answer each tool call with exactly one
+ * result, and a result is the one channel that is guaranteed to arrive
+ * attached to the call it is about.
+ */
+function deniedToolContent(tool: string, verdict: PermissionResult): string {
+  const reason = verdict.reason ?? "denied by policy";
+  const denial = `Tool "${tool}" was not permitted: ${reason}`;
+  if (verdict.feedback === undefined) return denial;
+  return [
+    `${denial}, who said: ${verdict.feedback}`,
+    "",
+    "Those are the user's own words, not a tool failure. Answer them and adjust your plan accordingly; do not repeat this call unless the user asks you to.",
+  ].join("\n");
+}
 
 /**
  * Appends synthetic error results for any tool call the loop abandoned.
@@ -592,7 +623,6 @@ export class AgentLoopEngine {
     });
 
     if (!verdict.allowed) {
-      const reason = verdict.reason ?? "denied by policy";
       await this.emit(context, "tool.execution.completed", {
         tool: call.name,
         ok: false,
@@ -602,7 +632,7 @@ export class AgentLoopEngine {
         role: "tool",
         toolCallId: call.id,
         isError: true,
-        content: `Tool "${call.name}" was not permitted: ${reason}`,
+        content: deniedToolContent(call.name, verdict),
       };
     }
 

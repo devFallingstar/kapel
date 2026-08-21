@@ -1,4 +1,6 @@
-import type { PermissionDecision } from "@agent/core";
+import type { AskOutcome, PermissionDecision } from "@agent/core";
+
+export type { AskOutcome };
 
 export interface PermissionRequest {
   readonly tool: string;
@@ -7,7 +9,22 @@ export interface PermissionRequest {
 }
 
 export interface PermissionPrompter {
-  ask(request: PermissionRequest): Promise<boolean>;
+  /**
+   * Answers one request.
+   *
+   * A bare `boolean` is the two-answer form — `true` allows this call, `false`
+   * denies it — and remains the whole contract for any prompter that only ever
+   * says yes or no (`--yes`, a test double). An {@link AskOutcome} says the
+   * same thing and may add the user's own words to a denial; see
+   * {@link AskOutcome} for why a refusal is allowed to talk back.
+   */
+  ask(request: PermissionRequest): Promise<boolean | AskOutcome>;
+}
+
+/** Normalises either answer shape a prompter may return into an {@link AskOutcome}. */
+function askOutcomeOf(answer: boolean | AskOutcome): AskOutcome {
+  if (typeof answer !== "boolean") return answer;
+  return answer ? { allowed: true } : { allowed: false };
 }
 
 /**
@@ -33,6 +50,12 @@ export interface PermissionResult {
   readonly allowed: boolean;
   readonly decision: PermissionDecision;
   readonly reason?: string;
+  /**
+   * What the user said instead of answering the prompt, present only on a
+   * denial that carried words (see {@link AskOutcome}). Trimmed, never empty:
+   * an answer of nothing but whitespace is an ordinary denial, not feedback.
+   */
+  readonly feedback?: string;
 }
 
 /** Reason returned when a rule explicitly denies the tool. */
@@ -42,6 +65,13 @@ export const NO_PROMPTER_AVAILABLE =
   "no prompter available in non-interactive mode";
 /** Reason returned when the prompter was asked and refused. */
 export const DENIED_BY_PROMPTER = "denied by prompter";
+/**
+ * Reason returned when the user refused *with words* — they typed a question
+ * or an instruction at the prompt instead of `y`/`n`/`a`. The call is denied
+ * exactly as `n` would have denied it; the difference is that
+ * {@link PermissionResult.feedback} comes with it.
+ */
+export const DECLINED_WITH_FEEDBACK = "declined by the user";
 /** Reason returned when the session overlay had already approved this shape. */
 export const ALLOWED_FOR_SESSION = "allowed for this session";
 
@@ -332,6 +362,11 @@ function ruleFor(
  * prompter. The overlay only ever gets a say on requests that were going to
  * be prompted anyway, which is what keeps an explicit `deny` — static or
  * pattern-matched — un-overridable by anything a session learned.
+ *
+ * A prompter may refuse *with words* (see {@link AskOutcome}). That is a
+ * refusal like any other — the call is not authorised and nothing is
+ * remembered — and the words ride back on {@link PermissionResult.feedback}
+ * for the caller to put in front of the model.
  */
 export class PermissionEngine {
   readonly #rules: Readonly<Record<string, ToolPermissionRule>>;
@@ -389,9 +424,20 @@ export class PermissionEngine {
       return { allowed: false, decision, reason: NO_PROMPTER_AVAILABLE };
     }
 
-    const approved = await prompter.ask(request);
-    return approved
-      ? { allowed: true, decision }
-      : { allowed: false, decision, reason: DENIED_BY_PROMPTER };
+    const outcome = askOutcomeOf(await prompter.ask(request));
+    if (outcome.allowed) return { allowed: true, decision };
+
+    // Whitespace is not an answer: a bare Enter (or a prompter that hands back
+    // an empty string) means "no", not "no, and here is what I want instead".
+    const feedback = outcome.feedback?.trim();
+    if (feedback === undefined || feedback === "") {
+      return { allowed: false, decision, reason: DENIED_BY_PROMPTER };
+    }
+    return {
+      allowed: false,
+      decision,
+      reason: DECLINED_WITH_FEEDBACK,
+      feedback,
+    };
   }
 }
