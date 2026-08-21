@@ -9072,7 +9072,24 @@ function accentSgr(env = process.env) {
   }
   return (env.TERM ?? "").includes("256color") ? ACCENT_256 : ACCENT_BASIC;
 }
+var CHROME_256 = "38;5;245";
+var CHROME_BASIC = "37";
+function chromeSgr(env = process.env) {
+  return has256Colors(env) ? CHROME_256 : CHROME_BASIC;
+}
+var ECHO_256 = "48;5;237";
+var ECHO_BASIC = "100";
+function echoSgr(env = process.env) {
+  return has256Colors(env) ? ECHO_256 : ECHO_BASIC;
+}
+function has256Colors(env) {
+  const colorterm = (env.COLORTERM ?? "").toLowerCase();
+  if (colorterm === "truecolor" || colorterm === "24bit")
+    return true;
+  return (env.TERM ?? "").includes("256color");
+}
 var NOTICE_GUTTER = "\u258C ";
+var RULE_CHAR = "\u2500";
 var FIXED_SGR = {
   // The content, not the frame: no escape at all.
   agent: "",
@@ -9086,7 +9103,13 @@ var FIXED_SGR = {
 };
 function roleSgr(env = process.env) {
   const accent = accentSgr(env);
-  return { ...FIXED_SGR, accent, user: `1;${accent}` };
+  return {
+    ...FIXED_SGR,
+    accent,
+    user: `1;${accent}`,
+    chrome: chromeSgr(env),
+    echo: echoSgr(env)
+  };
 }
 var ROLE_SGR = roleSgr();
 function ansi(code, text2, enabled) {
@@ -9106,7 +9129,8 @@ function createStyles(enabled, env = process.env) {
     // disagree about what a notice looks like.
     role: (role, text2) => role === "notice" ? notice(text2) : at(role, text2),
     accent: (text2) => at("accent", text2),
-    rule: (columns) => enabled ? at("accent", "\u2500".repeat(Math.max(0, columns - 1))) : "",
+    rule: (columns) => at("chrome", RULE_CHAR.repeat(Math.max(0, columns - 1))),
+    echo: (text2) => at("echo", text2),
     user: (text2) => at("user", text2),
     agent: (text2) => at("agent", text2),
     tool: (text2) => at("tool", text2),
@@ -11339,6 +11363,156 @@ import { mkdir as mkdir6 } from "node:fs/promises";
 import path16 from "node:path";
 import * as readline4 from "node:readline";
 
+// apps/cli/dist/band.js
+var DEFAULT_BAND_COLUMNS = 80;
+var ECHO_MARKER = "> ";
+var ECHO_CONTINUATION = "  ";
+var WIDE_RANGES = [
+  [4352, 4447],
+  // Hangul Jamo
+  [11904, 12350],
+  // CJK radicals, Kangxi, CJK symbols
+  [12353, 13311],
+  // Kana, Hangul Compatibility Jamo, CJK compatibility
+  [13312, 19903],
+  // CJK Extension A
+  [19968, 40959],
+  // CJK Unified Ideographs
+  [40960, 42191],
+  // Yi
+  [44032, 55203],
+  // Hangul syllables
+  [63744, 64255],
+  // CJK compatibility ideographs
+  [65040, 65049],
+  // Vertical forms
+  [65072, 65131],
+  // CJK compatibility forms
+  [65281, 65376],
+  // Fullwidth forms
+  [65504, 65510],
+  // Fullwidth signs
+  [127744, 128591],
+  // Emoji: symbols and pictographs, emoticons
+  [129280, 129535],
+  // Emoji: supplemental symbols
+  [131072, 262141]
+  // CJK Extension B and beyond
+];
+var ZERO_RANGES = [
+  [768, 879],
+  // Combining diacriticals
+  [6832, 6911],
+  [7616, 7679],
+  [8203, 8207],
+  // Zero-width space … RTL mark
+  [8400, 8432],
+  [65024, 65039],
+  // Variation selectors
+  [65056, 65071],
+  [65279, 65279]
+  // BOM
+];
+function inRanges(code, ranges) {
+  for (const [low, high] of ranges) {
+    if (code >= low && code <= high)
+      return true;
+  }
+  return false;
+}
+function charWidth(code) {
+  if (code < 32 || code >= 127 && code < 160)
+    return 0;
+  if (inRanges(code, ZERO_RANGES))
+    return 0;
+  return inRanges(code, WIDE_RANGES) ? 2 : 1;
+}
+function displayWidth(text2) {
+  let width = 0;
+  for (const char of stripEscapes(text2)) {
+    width += charWidth(char.codePointAt(0) ?? 0);
+  }
+  return width;
+}
+var ESC = "\x1B";
+var BEL = "\x07";
+var ESCAPE_PATTERNS = [
+  new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "g"),
+  new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, "g"),
+  new RegExp(`${ESC}[@-Z\\\\-_]`, "g")
+];
+function stripEscapes(text2) {
+  let out = text2;
+  for (const pattern of ESCAPE_PATTERNS)
+    out = out.replace(pattern, "");
+  return out;
+}
+function foldToWidth(text2, width) {
+  const limit = Math.max(1, width);
+  const chars = [...text2];
+  if (chars.length === 0)
+    return [""];
+  const rows = [];
+  let row = "";
+  let used = 0;
+  let lastSpace = -1;
+  const flush = (upTo) => {
+    if (upTo === void 0) {
+      rows.push(row);
+      row = "";
+      used = 0;
+      lastSpace = -1;
+      return;
+    }
+    const head = row.slice(0, upTo);
+    const tail3 = row.slice(upTo + 1);
+    rows.push(head);
+    row = tail3;
+    used = displayWidth(tail3);
+    lastSpace = -1;
+  };
+  for (const char of chars) {
+    const cells = charWidth(char.codePointAt(0) ?? 0);
+    if (used + cells > limit) {
+      if (lastSpace >= 0 && displayWidth(row.slice(0, lastSpace)) * 3 > limit * 2) {
+        flush(lastSpace);
+      } else {
+        flush();
+      }
+    }
+    if (char === " ")
+      lastSpace = row.length;
+    row += char;
+    used += cells;
+  }
+  rows.push(row);
+  return rows;
+}
+function echoRows(message, columns, styles) {
+  const lines = message.split("\n");
+  if (!styles.enabled) {
+    return lines.map((line, index2) => index2 === 0 ? `${ECHO_MARKER}${line}` : `${ECHO_CONTINUATION}${line}`);
+  }
+  const width = Math.max(1, columns - 1);
+  const inner = Math.max(1, width - ECHO_MARKER.length);
+  const rows = [];
+  for (const line of lines) {
+    for (const folded of foldToWidth(line, inner)) {
+      const marker = rows.length === 0 ? ECHO_MARKER : ECHO_CONTINUATION;
+      const text2 = `${marker}${folded}`;
+      const pad3 = Math.max(0, width - displayWidth(text2));
+      rows.push(styles.echo(text2 + " ".repeat(pad3)));
+    }
+  }
+  return rows;
+}
+function createBandDecor(styles) {
+  return {
+    rule: (columns) => styles.rule(columns),
+    echo: (message, columns) => echoRows(message, columns, styles)
+  };
+}
+
 // apps/cli/dist/checkpoint.js
 import { execFile as execFile8 } from "node:child_process";
 import { copyFile, mkdir as mkdir4, mkdtemp, rm as rm3, rmdir as rmdir2, stat as stat6, utimes } from "node:fs/promises";
@@ -12198,6 +12372,24 @@ function renderCommandMenu(matches2, token, options) {
   }
   return rows;
 }
+function localDisplayPos(text2, columns) {
+  const width = Math.max(1, columns);
+  let offset = 0;
+  let rows = 0;
+  for (const char of stripEscapes(text2)) {
+    if (char === "\n") {
+      rows += Math.ceil(offset / width) || 1;
+      offset = 0;
+      continue;
+    }
+    const cells = charWidth(char.codePointAt(0) ?? 0);
+    if (cells === 2 && (offset + 1) % width === 0)
+      offset += 1;
+    offset += cells;
+  }
+  const cols = offset % width;
+  return { cols, rows: rows + (offset - cols) / width };
+}
 var INPUT_SIGINT = /* @__PURE__ */ Symbol("input-sigint");
 function isPromise(value) {
   return typeof value?.then === "function";
@@ -12236,19 +12428,43 @@ function createInputManager(options) {
   let closed = false;
   let readPending;
   let questionPending;
-  const CSI = "\x1B[";
+  const CSI2 = "\x1B[";
   const menuEntries = options.commandMenu;
   const menuStyles = options.styles ?? PLAIN_STYLES;
   const menuMaxRows = options.commandMenuRows ?? COMMAND_MENU_MAX_ROWS;
-  const menuEnabled = menuEntries !== void 0 && options.input.isTTY === true && options.output.isTTY === true;
-  let menuRows = 0;
-  let menuSuspended = false;
+  const decor = options.band;
+  const onTerminal = options.input.isTTY === true && options.output.isTTY === true;
+  const menuEnabled = menuEntries !== void 0 && onTerminal;
+  const bandEnabled = decor !== void 0 && onTerminal;
+  let belowRows = 0;
+  let suspended = false;
+  let bandOpen = false;
+  let submitting = false;
+  let rowsAboveBlock = 0;
   const write = (text2) => {
     options.output.write(text2);
   };
   const columns = () => {
     const value = options.output.columns;
-    return typeof value === "number" && value > 0 ? value : 80;
+    return typeof value === "number" && value > 0 ? value : DEFAULT_BAND_COLUMNS;
+  };
+  const screenRows = () => {
+    const value = options.output.rows;
+    return typeof value === "number" && value > 0 ? value : void 0;
+  };
+  const displayPos = (text2) => {
+    const get = rl._getDisplayPos;
+    if (typeof get === "function") {
+      try {
+        return get.call(rl, text2);
+      } catch {
+      }
+    }
+    return localDisplayPos(text2, columns());
+  };
+  const promptText = () => {
+    const get = rl.getPrompt;
+    return typeof get === "function" ? get.call(rl) : "";
   };
   const cursorPos = () => {
     const get = rl.getCursorPos;
@@ -12260,56 +12476,102 @@ function createInputManager(options) {
       return { rows: 0, cols: 0 };
     }
   };
-  const rowsBelowCursor = (cols) => {
-    const tail3 = [...rl.line.slice(rl.cursor)].length;
-    return Math.floor((cols + tail3) / columns());
-  };
-  const backToCursor = (down, cols) => `${down > 0 ? `${CSI}${down}A` : ""}\r${cols > 0 ? `${CSI}${cols}C` : ""}`;
-  const hideMenu = () => {
-    if (menuRows === 0)
+  const blockRows = () => displayPos(promptText() + rl.line).rows + 1;
+  const rowsBelowCursor = () => Math.max(0, blockRows() - 1 - cursorPos().rows);
+  const resolveDeferredWrap = () => {
+    const end = displayPos(promptText() + rl.line);
+    if (end.cols !== 0 || end.rows === 0)
       return;
-    menuRows = 0;
+    if (rl.cursor !== rl.line.length)
+      return;
+    write(` \r${CSI2}0K`);
+  };
+  const backToCursor = (up, cols) => `${up > 0 ? `${CSI2}${up}A` : ""}\r${cols > 0 ? `${CSI2}${cols}C` : ""}`;
+  const moveUpToColumnZero = (up) => up > 0 ? `${CSI2}${up}A\r` : "\r";
+  const eraseBelow = () => {
+    if (belowRows === 0)
+      return;
+    belowRows = 0;
+    resolveDeferredWrap();
     const { cols } = cursorPos();
-    const down = rowsBelowCursor(cols) + 1;
-    write(`${CSI}${down}B\r${CSI}0J${backToCursor(down, cols)}`);
+    const down = rowsBelowCursor() + 1;
+    write(`${CSI2}${down}B\r${CSI2}0J${backToCursor(down, cols)}`);
   };
-  const dropMenu = () => {
-    if (menuRows === 0)
+  const dropBelow = () => {
+    if (belowRows === 0)
       return;
-    menuRows = 0;
-    write(`\r${CSI}0J`);
+    belowRows = 0;
+    write(`\r${CSI2}0J`);
   };
-  const drawMenu = (lines) => {
+  const drawBelow = (rows) => {
+    resolveDeferredWrap();
     const { cols } = cursorPos();
-    const below = rowsBelowCursor(cols);
-    const down = below + lines.length;
-    write(`${below > 0 ? `${CSI}${below}B` : ""}\r
-${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`);
-    menuRows = lines.length;
+    const below = rowsBelowCursor();
+    const down = below + rows.length;
+    write(`${below > 0 ? `${CSI2}${below}B` : ""}\r
+${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
+    belowRows = rows.length;
   };
-  const renderMenu = () => {
-    if (!menuEnabled || menuSuspended)
-      return;
-    if (readPending === void 0) {
-      hideMenu();
-      return;
-    }
+  const menuLines = () => {
+    if (!menuEnabled)
+      return [];
+    if (readPending === void 0)
+      return [];
     const token = commandMenuToken(rl.line, rl.cursor);
-    if (token === void 0) {
-      hideMenu();
-      return;
-    }
+    if (token === void 0)
+      return [];
     const matches2 = filterCommandMenu(menuEntries?.() ?? [], token);
-    const lines = renderCommandMenu(matches2, token, {
+    return renderCommandMenu(matches2, token, {
       columns: columns(),
       styles: menuStyles,
       maxRows: menuMaxRows
     });
-    if (lines.length === 0) {
-      hideMenu();
+  };
+  const renderBelow = () => {
+    if (suspended || submitting)
+      return;
+    const rows = [
+      ...bandOpen && decor !== void 0 ? [decor.rule(columns())] : [],
+      ...menuLines()
+    ];
+    if (rows.length === 0) {
+      eraseBelow();
       return;
     }
-    drawMenu(lines);
+    drawBelow(rows);
+  };
+  const openBand = () => {
+    if (!bandEnabled || decor === void 0 || suspended || bandOpen)
+      return;
+    write(`${decor.rule(columns())}\r
+`);
+    bandOpen = true;
+    submitting = false;
+    rowsAboveBlock = 1;
+  };
+  const closeBand = (fromBelowBlock, consumed = 0) => {
+    if (!bandOpen)
+      return false;
+    if (!fromBelowBlock)
+      resolveDeferredWrap();
+    const up = rowsAboveBlock + (fromBelowBlock ? consumed : cursorPos().rows);
+    bandOpen = false;
+    submitting = false;
+    belowRows = 0;
+    rowsAboveBlock = 0;
+    const height = screenRows();
+    if (height !== void 0 && up + 1 >= height)
+      return false;
+    write(`${moveUpToColumnZero(up)}${CSI2}0J`);
+    return true;
+  };
+  const echoSubmitted = (message) => {
+    if (decor === void 0)
+      return;
+    for (const row of decor.echo(message, columns())) {
+      write(`${row}\r
+`);
+    }
   };
   const abandonLine = () => {
     const clear = rl.clearLine;
@@ -12324,12 +12586,12 @@ ${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`);
     state.cursor = 0;
   };
   const onKeypress = () => {
-    renderMenu();
+    renderBelow();
   };
   const onResize = () => {
-    renderMenu();
+    renderBelow();
   };
-  if (menuEnabled) {
+  if (menuEnabled || bandEnabled) {
     options.input.on("keypress", onKeypress);
     options.output.on("resize", onResize);
   }
@@ -12361,6 +12623,13 @@ ${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`);
     readPending = void 0;
     resolve5(value);
   }
+  function closeBandFor(message, consumedRows) {
+    if (!bandOpen)
+      return;
+    const reclaimed = closeBand(true, consumedRows);
+    if (reclaimed && message !== void 0)
+      echoSubmitted(message);
+  }
   function scheduleCoalesceFlush() {
     if (readPending === void 0)
       return;
@@ -12371,11 +12640,13 @@ ${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`);
       const message = readPending.coalesced ?? "";
       readPending.assembly = initialAssembly();
       fixupHistoryFor(message);
+      closeBandFor(message, 0);
       resolveRead(message);
     }, pasteWindowMs);
   }
   rl.on("line", (line) => {
-    dropMenu();
+    const consumed = bandOpen ? displayPos(promptText() + line).rows + 1 : 0;
+    dropBelow();
     if (questionPending !== void 0) {
       return;
     }
@@ -12383,18 +12654,25 @@ ${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`);
       return;
     const action = reduceAssemblyLine(readPending.assembly, line);
     if (action.type === "continue") {
+      rowsAboveBlock += consumed;
       readPending.assembly = action.state;
       rl.setPrompt(continuationPrompt);
       rl.prompt();
+      renderBelow();
       return;
     }
+    rowsAboveBlock += consumed;
+    submitting = bandOpen;
+    if (bandOpen)
+      rl.setPrompt("");
     readPending.assembly = initialAssembly();
     readPending.coalesced = readPending.coalesced === void 0 ? action.text : `${readPending.coalesced}
 ${action.text}`;
     scheduleCoalesceFlush();
   });
   rl.on("SIGINT", () => {
-    hideMenu();
+    eraseBelow();
+    const consumed = bandOpen ? blockRows() : 0;
     if (questionPending !== void 0) {
       const { resolve: resolve5, cancel } = questionPending;
       questionPending = void 0;
@@ -12405,6 +12683,7 @@ ${action.text}`;
     if (readPending !== void 0) {
       abandonLine();
       readPending.assembly = initialAssembly();
+      closeBandFor(void 0, consumed);
       resolveRead(INPUT_SIGINT);
       return;
     }
@@ -12412,8 +12691,9 @@ ${action.text}`;
   });
   rl.on("close", () => {
     closed = true;
-    hideMenu();
-    if (menuEnabled) {
+    eraseBelow();
+    closeBand(false);
+    if (menuEnabled || bandEnabled) {
       options.input.removeListener("keypress", onKeypress);
       options.output.removeListener("resize", onResize);
     }
@@ -12425,7 +12705,7 @@ ${action.text}`;
     resolveRead(void 0);
   });
   return {
-    readMessage(promptText) {
+    readMessage(promptText2) {
       if (closed)
         return Promise.resolve(void 0);
       if (readPending !== void 0 || questionPending !== void 0) {
@@ -12435,13 +12715,14 @@ ${action.text}`;
         readPending = {
           resolve: resolve5,
           assembly: initialAssembly(),
-          promptText,
+          promptText: promptText2,
           coalesceTimer: void 0,
           coalesced: void 0
         };
-        rl.setPrompt(promptText);
+        openBand();
+        rl.setPrompt(promptText2);
         rl.prompt();
-        renderMenu();
+        renderBelow();
       });
     },
     question(query) {
@@ -12468,8 +12749,9 @@ ${action.text}`;
     async withSuspended(fn) {
       const input = options.input;
       const wasRaw = input.isRaw === true;
-      hideMenu();
-      menuSuspended = true;
+      eraseBelow();
+      closeBand(false);
+      suspended = true;
       rl.pause();
       input.setRawMode?.(false);
       try {
@@ -12478,11 +12760,12 @@ ${action.text}`;
         const isTty = options.input.isTTY;
         input.setRawMode?.(wasRaw || isTty === true);
         rl.resume();
-        menuSuspended = false;
+        suspended = false;
         if (readPending !== void 0) {
+          openBand();
           rl.setPrompt(readPending.promptText);
           rl.prompt();
-          renderMenu();
+          renderBelow();
         }
       }
     },
@@ -13256,6 +13539,8 @@ function askOnce(query, input, output) {
 var FRAMES = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
 var TICK_MS = 120;
 var ERASE = "\r\x1B[2K";
+var CSI = "\x1B[";
+var ERASE_BLOCK = `\r${CSI}0J`;
 var DEFAULT_COLUMNS2 = 80;
 function defaultTicker(tick) {
   const timer = setInterval(tick, TICK_MS);
@@ -13283,6 +13568,7 @@ var StatusLine = class {
   #suspended;
   #ticker;
   #styles;
+  #band;
   #cancel;
   #label = "";
   #startedAt = 0;
@@ -13296,6 +13582,7 @@ var StatusLine = class {
     this.#suspended = options.suspended ?? (() => false);
     this.#ticker = options.ticker ?? defaultTicker;
     this.#styles = options.styles ?? stylesFor(this.#output);
+    this.#band = options.frame;
   }
   /** Whether this line will ever paint anything — false off a TTY. */
   get enabled() {
@@ -13335,7 +13622,11 @@ var StatusLine = class {
     if (!this.#painted)
       return;
     this.#painted = false;
-    this.#output.write(ERASE);
+    if (this.#band === void 0) {
+      this.#output.write(ERASE);
+      return;
+    }
+    this.#output.write(ERASE_BLOCK);
   }
   /** Repaints immediately, if a status is running. */
   refresh() {
@@ -13359,7 +13650,17 @@ var StatusLine = class {
     const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
     const columns = this.#output.columns ?? DEFAULT_COLUMNS2;
     const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
-    this.#output.write(`${ERASE}${this.#styles.tool(text2)}`);
+    const line = this.#styles.tool(text2);
+    const band = this.#band;
+    if (band === void 0) {
+      this.#output.write(`${ERASE}${line}`);
+      this.#painted = true;
+      return;
+    }
+    const rule = band.rule(columns);
+    const rows = [rule, line, rule];
+    const below = rows.length - 1;
+    this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
     this.#painted = true;
   }
 };
@@ -13533,7 +13834,8 @@ var TextRenderer = class {
     this.#status = options.status ?? new StatusLine({
       output,
       ...options.tokens === void 0 ? {} : { tokens: options.tokens },
-      ...options.suspended === void 0 ? {} : { suspended: options.suspended }
+      ...options.suspended === void 0 ? {} : { suspended: options.suspended },
+      ...options.frame === void 0 ? {} : { frame: options.frame }
     });
   }
   /**
@@ -15276,7 +15578,7 @@ function enterAltScreen(options = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.12.0";
+var CLI_VERSION = "0.13.0";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -16315,10 +16617,10 @@ async function bestEffortValue(read) {
     return void 0;
   }
 }
-var DEFAULT_RULE_COLUMNS = 80;
 function promptMarker(styles) {
   return `${styles.user("kapel>")} `;
 }
+var BAND_PROMPT = "";
 async function startDelegatedOrNative(backend, alias) {
   if (backend === "claude-code") {
     const availability = await ClaudeCodeBackend.checkAvailability();
@@ -16461,8 +16763,10 @@ async function runInteractive(options) {
         totals: ledger.totals()
       })))
     };
+    const band = promptTty ? createBandDecor(styles) : void 0;
     const renderer = new TextRenderer(process.stdout, {
       styles,
+      ...band === void 0 ? {} : { frame: band },
       tokens: () => {
         const totals = usage.totals().usage;
         return totals.inputTokens + totals.outputTokens;
@@ -16485,14 +16789,17 @@ async function runInteractive(options) {
       onHistoryAppend: createHistoryAppender(),
       completer: createReplCompleter(mentionFiles, () => customCommandNames.current),
       onIdleSigint: () => activeTurn.current?.abort(),
-      // A continued line is still the user typing, so its marker wears
-      // the same colour the prompt's does.
-      continuationPrompt: `${styles.user(CONTINUATION_PROMPT.trimEnd())} `,
+      // A continued line still needs *something* in front of it, or the
+      // rows of a multiline block read as one paragraph the band happens
+      // to be wrapped around. One dim ellipsis, the quietest mark that
+      // still says "this line is a continuation of the one above".
+      continuationPrompt: band === void 0 ? `${styles.user(CONTINUATION_PROMPT.trimEnd())} ` : `${styles.tool("\u2026")} `,
       // The live `/` menu: same registry `/help` prints, read per
       // keystroke so a command file added mid-session shows up as soon as
       // the next `/help` has seen it.
       commandMenu: () => commandMenu.current,
-      styles
+      styles,
+      ...band === void 0 ? {} : { band }
     }) : void 0;
     inputManager = manager;
     const prompter = createPrompter({
@@ -16708,22 +17015,17 @@ async function runInteractive(options) {
     if ("note" in started && started.note !== void 0) {
       console.log(styles.warn(started.note));
     }
-    const printInputRule = () => {
-      const rule = styles.rule(process.stdout.columns ?? DEFAULT_RULE_COLUMNS);
-      if (rule === "")
-        return;
-      console.log(rule);
-    };
     const lineSource = manager === void 0 ? pipedLineSource() : inputManagerLineSource(manager);
     try {
       return await replLoop({
         controller,
         lines: lineSource,
         promptState,
-        promptText: promptMarker(styles),
+        // The band's own row carries no marker; the piped source still writes
+        // one, because its transcript is the only place a marker still helps.
+        promptText: band === void 0 ? promptMarker(styles) : BAND_PROMPT,
         styles,
-        activeTurn,
-        openBand: printInputRule
+        activeTurn
       });
     } finally {
       lineSource.close();
@@ -16739,10 +17041,9 @@ async function runInteractive(options) {
   }
 }
 async function replLoop(args) {
-  const { controller, lines, promptState, promptText, styles, activeTurn, openBand } = args;
+  const { controller, lines, promptState, promptText, styles, activeTurn } = args;
   let armed = false;
   for (; ; ) {
-    openBand?.();
     const line = await lines.next(promptText);
     if (line === void 0) {
       console.log("");
