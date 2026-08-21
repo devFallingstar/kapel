@@ -1,4 +1,10 @@
 import * as readline from "node:readline";
+import {
+  type BandDecor,
+  charWidth,
+  DEFAULT_BAND_COLUMNS,
+  stripEscapes,
+} from "./band.js";
 import { PLAIN_STYLES, type Styles } from "./styles.js";
 
 /**
@@ -218,6 +224,39 @@ export function renderCommandMenu(
   return rows;
 }
 
+/**
+ * Where `text` leaves the cursor on a terminal `columns` wide, by the same
+ * rules `readline` applies — the fallback for a runtime whose `Interface` no
+ * longer exposes `_getDisplayPos`.
+ *
+ * The two details worth copying exactly, because getting either wrong moves a
+ * row: cells are accumulated *without* wrapping and the row count falls out of
+ * one division at the end (so a string that exactly fills a row reports column
+ * 0 of the next one, which is where readline's own forced space puts the
+ * caret), and a double-width character that would straddle the edge is pushed
+ * whole onto the next row.
+ */
+export function localDisplayPos(
+  text: string,
+  columns: number,
+): { readonly rows: number; readonly cols: number } {
+  const width = Math.max(1, columns);
+  let offset = 0;
+  let rows = 0;
+  for (const char of stripEscapes(text)) {
+    if (char === "\n") {
+      rows += Math.ceil(offset / width) || 1;
+      offset = 0;
+      continue;
+    }
+    const cells = charWidth(char.codePointAt(0) ?? 0);
+    if (cells === 2 && (offset + 1) % width === 0) offset += 1;
+    offset += cells;
+  }
+  const cols = offset % width;
+  return { cols, rows: rows + (offset - cols) / width };
+}
+
 // --- InputManager -------------------------------------------------------------
 
 export const INPUT_SIGINT: unique symbol = Symbol("input-sigint");
@@ -317,6 +356,17 @@ export interface InputManagerOptions {
   readonly styles?: Styles;
   /** Menu rows before the `… and N more` tail. */
   readonly commandMenuRows?: number;
+  /**
+   * The input band: the two soft-white rules the line being typed sits
+   * between, and the gray bar a sent message becomes on its way into the
+   * transcript (see `band.ts`).
+   *
+   * Omitting it turns the band off entirely and leaves this manager writing
+   * exactly the bytes it wrote before the band existed — which is what every
+   * caller that is not the REPL on a terminal wants, and what the tests below
+   * a fake TTY assert.
+   */
+  readonly band?: BandDecor;
 }
 
 export interface InputManager {
@@ -381,54 +431,89 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       }
     | undefined;
 
-  // --- the live slash-command menu ------------------------------------------
+  // --- the input band, and the live slash-command menu ----------------------
   //
-  // Drawn *below* the input line, per keystroke, with the same relative-cursor
-  // moves the select prompt uses (`ESC[nA/B`, `ESC[0J`) — nothing here ever
-  // addresses an absolute screen position, so a scroll (or an alt-screen) can
-  // move the whole block without invalidating a single escape.
+  // Everything drawn around the line being typed is drawn here, in one place,
+  // by one function: the soft-white rule under the input, the `/` menu under
+  // that, and the erase that takes both back. The rule *above* the input is
+  // the odd one out — it is written once, when the band opens, and readline
+  // never touches the row above its own block, so it needs no repainting.
+  //
+  //     ────────────────────────────────   ← written once by `openBand`
+  //     tell me about render.ts▏           ← readline's, redrawn per keystroke
+  //     ────────────────────────────────   ← `drawBelow`, redrawn per keystroke
+  //       /resume   switch to a stored …   ← `drawBelow`, when a `/` is open
+  //
+  // Every escape below is *relative* — `ESC[nA/B`, `\r`, `ESC[0J` — so a
+  // scroll, a resize or an alternate screen can move the whole block without
+  // invalidating a single one of them. Nothing here ever addresses a row.
   //
   // One keystroke redraws like this: readline's own `_refreshLine` has already
   // run by the time our `keypress` listener is called (it was registered
-  // first), and it clears from the top of the input block downwards — so the
-  // previous menu is usually gone before we draw. `drawMenu` re-clears anyway,
-  // because the keys that move only the cursor never trigger that refresh.
+  // first), and it clears from the top of the input block downwards — so
+  // whatever we drew last is usually gone before we draw again. `drawBelow`
+  // re-clears anyway, in the same write, because the keys that only move the
+  // cursor never trigger that refresh.
   //
   // The cursor always ends where it started: on the input line, in the column
   // readline believes it is in. readline's own bookkeeping is therefore never
   // touched, which is what keeps ↑-history, wrapping and Tab intact.
   //
-  // Nothing else is ever drawn in this block, and the reason is worth writing
-  // down. The input band's *lower* rule would have to live exactly here — and
-  // a rule that is on screen for every keystroke of every message reaches a
-  // case the menu never does. `readline` and the terminal disagree about where
-  // the caret is whenever the text typed so far ends exactly on a row
-  // boundary: readline reports "row k, column 0" while the terminal is still
-  // on row k-1 holding a deferred wrap. Every move here is relative to the
-  // caret, so at that one column the whole block — and the line being typed
-  // with it — lands a row out. A `/command` is short and never reaches a
-  // boundary, so the menu never meets this; an ordinary message crosses one
-  // every terminal-width characters. The band therefore has a top rule (drawn
-  // by the REPL above the prompt, see `interactive.ts`) and no bottom one,
-  // which is a missing line rather than a corrupted input area.
+  // ## The wrap boundary, which is the whole reason this is hard
+  //
+  // A previous attempt at the lower rule was abandoned because `readline` and
+  // the terminal appear to disagree about where the caret is whenever the text
+  // typed so far ends exactly on a row boundary. They do not, in fact,
+  // disagree — `_refreshLine` writes a deliberate extra space at that one
+  // column ("force terminal to allocate a new line") precisely to resolve the
+  // deferred wrap — but the *arithmetic* around it was wrong: counting rows as
+  // `floor(cells / columns)` says there is one row below the caret when the
+  // caret is sitting at the start of the last row and there is none. Draw the
+  // menu one row too low and come back one row too high, and the line being
+  // typed is overwritten by its own scaffolding.
+  //
+  // So no row count here is estimated. {@link displayPos} asks readline itself
+  // where a string ends, using the very function `getCursorPos` is built on,
+  // and every move is the difference between two of its answers. That is what
+  // makes a rule under a wrapping line safe where a rule under a `/command` —
+  // which is short and never reaches a boundary — merely looked safe.
 
-  const CSI = "[";
+  const CSI = "\u001b[";
   const menuEntries = options.commandMenu;
   const menuStyles = options.styles ?? PLAIN_STYLES;
   const menuMaxRows = options.commandMenuRows ?? COMMAND_MENU_MAX_ROWS;
+  const decor = options.band;
   /**
    * Both ends must be a terminal: a piped stdin has no keystrokes to react to
    * and a redirected stdout must never receive a cursor escape. A run without
-   * a menu writes exactly the bytes it wrote before this existed.
+   * a band or a menu writes exactly the bytes it wrote before either existed.
    */
-  const menuEnabled =
-    menuEntries !== undefined &&
-    options.input.isTTY === true &&
-    options.output.isTTY === true;
-  /** Physical rows the menu currently occupies below the input block. */
-  let menuRows = 0;
+  const onTerminal =
+    options.input.isTTY === true && options.output.isTTY === true;
+  const menuEnabled = menuEntries !== undefined && onTerminal;
+  const bandEnabled = decor !== undefined && onTerminal;
+  /** Physical rows currently drawn below the input block. */
+  let belowRows = 0;
   /** True while another consumer owns the terminal (see `withSuspended`). */
-  let menuSuspended = false;
+  let suspended = false;
+  /** True between {@link openBand} and the erase that closes it. */
+  let bandOpen = false;
+  /**
+   * True from the moment a complete message lands until the paste window
+   * closes and the band comes down. Nothing is redrawn under the input in
+   * between: the keystroke that submitted has a `keypress` listener of its
+   * own still to run, and a rule painted by it would be a row of chrome
+   * written under a prompt that is already over — one that has to scroll a
+   * new row into being to do it.
+   */
+  let submitting = false;
+  /**
+   * Rows from the current readline block's first row up to the band's upper
+   * rule — 1 for an ordinary prompt, more once a multiline block has pushed
+   * lines above the one being typed. The single number every erase is
+   * measured from; see {@link closeBand}.
+   */
+  let rowsAboveBlock = 0;
 
   const write = (text: string): void => {
     options.output.write(text);
@@ -436,10 +521,50 @@ export function createInputManager(options: InputManagerOptions): InputManager {
 
   const columns = (): number => {
     const value = options.output.columns;
-    return typeof value === "number" && value > 0 ? value : 80;
+    return typeof value === "number" && value > 0
+      ? value
+      : DEFAULT_BAND_COLUMNS;
   };
 
-  /** Where readline believes the cursor is, relative to the prompt's start. */
+  /** The terminal's height, when it admits to one. */
+  const screenRows = (): number | undefined => {
+    const value = (options.output as { rows?: number }).rows;
+    return typeof value === "number" && value > 0 ? value : undefined;
+  };
+
+  /**
+   * Where `text` leaves the cursor, in readline's own model of the screen.
+   *
+   * Delegated to `readline`'s `_getDisplayPos` — private-but-stable in the
+   * same way `.history` and `.clearLine` are, and the function `getCursorPos`
+   * itself is one line of sugar over. Borrowing it rather than reimplementing
+   * it is what guarantees that the rows this band counts and the rows readline
+   * counts can never be two different numbers, which is the only way a block
+   * drawn around a live editor stays in one piece.
+   */
+  const displayPos = (text: string): { rows: number; cols: number } => {
+    const get = (
+      rl as unknown as {
+        _getDisplayPos?: (value: string) => { rows: number; cols: number };
+      }
+    )._getDisplayPos;
+    if (typeof get === "function") {
+      try {
+        return get.call(rl, text);
+      } catch {
+        // fall through to the local model
+      }
+    }
+    return localDisplayPos(text, columns());
+  };
+
+  /** What readline currently prefixes the line being edited with. */
+  const promptText = (): string => {
+    const get = (rl as unknown as { getPrompt?: () => string }).getPrompt;
+    return typeof get === "function" ? get.call(rl) : "";
+  };
+
+  /** Where readline believes the caret is, relative to the prompt's start. */
   const cursorPos = (): { readonly rows: number; readonly cols: number } => {
     const get = (
       rl as unknown as {
@@ -454,82 +579,203 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     }
   };
 
+  /** How many rows the whole input block occupies right now. */
+  const blockRows = (): number => displayPos(promptText() + rl.line).rows + 1;
+
   /**
-   * How many rows of the input block sit *below* the cursor's own row — the
-   * tail of a wrapped line the user has arrowed back into. The menu goes under
-   * the whole block, not under the caret.
+   * How many rows of the input block sit *below* the caret's own row — the
+   * tail of a wrapped line the user has arrowed back into. Whatever is drawn
+   * under the input goes under the whole block, not under the caret.
    */
-  const rowsBelowCursor = (cols: number): number => {
-    const tail = [...rl.line.slice(rl.cursor)].length;
-    return Math.floor((cols + tail) / columns());
+  const rowsBelowCursor = (): number =>
+    Math.max(0, blockRows() - 1 - cursorPos().rows);
+
+  /**
+   * Make the phantom row at an exact wrap boundary real, so the terminal and
+   * `readline` are standing on the same one before anything moves.
+   *
+   * This is the wrap-boundary bug, and it is worth stating precisely because
+   * it is subtler than "readline lies". When the text ends exactly at the
+   * right edge, the terminal does *not* move to the next row — it sets a
+   * deferred-wrap flag and stays put, so the caret is at (row R, last column)
+   * while readline's model says (row R+1, column 0). readline knows this and
+   * resolves it: `_refreshLine` writes one extra space at that column, which
+   * makes the terminal wrap for real, and its comment says as much — "force
+   * terminal to allocate a new line".
+   *
+   * The catch is that `_refreshLine` is not always what runs. Node's
+   * `kInsertString` has a second, faster branch taken while
+   * `isCompletionEnabled` is false — which is exactly what a *paste* does,
+   * and a paste is exactly when a long line crosses a boundary — and that
+   * branch echoes the character and nothing else. The space is never written,
+   * the wrap stays deferred, and every relative move afterwards is a row out.
+   * That is what killed the previous attempt at a rule under the input: it is
+   * unreproducible by typing and immediate on paste.
+   *
+   * So the band writes the space itself, on the same reasoning readline uses,
+   * and then clears the row it just landed on (the space has done its work by
+   * then; leaving it would mean the row under a wrapped line is never quite
+   * empty). Two guards make it safe. Only when the *whole block* ends on a
+   * boundary — a caret sitting on one mid-line means readline has already
+   * refreshed and resolved it. And only when the caret is at the end of the
+   * buffer, which is the only place an unresolved wrap can be, because every
+   * cursor movement away from it goes through a refresh.
+   */
+  const resolveDeferredWrap = (): void => {
+    const end = displayPos(promptText() + rl.line);
+    if (end.cols !== 0 || end.rows === 0) return;
+    if (rl.cursor !== rl.line.length) return;
+    write(` \r${CSI}0K`);
   };
 
-  /** Climb `down` rows back to the caret's column. */
-  const backToCursor = (down: number, cols: number): string =>
-    `${down > 0 ? `${CSI}${down}A` : ""}\r${cols > 0 ? `${CSI}${cols}C` : ""}`;
+  /** Climb `up` rows and return to the caret's column. */
+  const backToCursor = (up: number, cols: number): string =>
+    `${up > 0 ? `${CSI}${up}A` : ""}\r${cols > 0 ? `${CSI}${cols}C` : ""}`;
 
-  /** Erase the menu with the caret still sitting in the input line. */
-  const hideMenu = (): void => {
-    if (menuRows === 0) return;
-    menuRows = 0;
+  /** Move `up` rows and to column 0 — where an erase or a repaint starts. */
+  const moveUpToColumnZero = (up: number): string =>
+    up > 0 ? `${CSI}${up}A\r` : "\r";
+
+  /** Erase everything under the input block, caret left where it was. */
+  const eraseBelow = (): void => {
+    if (belowRows === 0) return;
+    belowRows = 0;
+    resolveDeferredWrap();
     const { cols } = cursorPos();
-    // `ESC[nB` rather than newlines: the rows are known to exist (a menu is on
-    // them), so moving down cannot scroll, and nothing below is ever created.
-    const down = rowsBelowCursor(cols) + 1;
+    // `ESC[nB` rather than newlines: the rows are known to exist (something is
+    // drawn on them), so moving down cannot scroll, and nothing below is ever
+    // created.
+    const down = rowsBelowCursor() + 1;
     write(`${CSI}${down}B\r${CSI}0J${backToCursor(down, cols)}`);
   };
 
   /**
-   * Erase it from where readline's own `\r\n` has already left the caret: the
-   * menu's first row. This is the Enter path — by the time the `line` event
-   * fires, the caret has left the input line, so {@link hideMenu}'s arithmetic
-   * no longer applies and a plain clear-to-end-of-screen is both correct and
-   * cheaper.
+   * Erase from where readline's own `\r\n` has already left the caret: the
+   * first row under the block. This is the Enter path — by the time the `line`
+   * event fires the caret has left the input line, so {@link eraseBelow}'s
+   * arithmetic no longer applies and a plain clear-to-end-of-screen is both
+   * correct and cheaper.
    */
-  const dropMenu = (): void => {
-    if (menuRows === 0) return;
-    menuRows = 0;
+  const dropBelow = (): void => {
+    if (belowRows === 0) return;
+    belowRows = 0;
     write(`\r${CSI}0J`);
   };
 
-  const drawMenu = (lines: readonly string[]): void => {
+  /** Draw `rows` under the input block, in one write, caret unmoved. */
+  const drawBelow = (rows: readonly string[]): void => {
+    resolveDeferredWrap();
     const { cols } = cursorPos();
-    const below = rowsBelowCursor(cols);
-    // `\r\n` (not `ESC[B`) for the step onto the first menu row: that row may
-    // not exist yet, and a newline is the one thing that makes the terminal
-    // scroll one into being.
-    const down = below + lines.length;
+    const below = rowsBelowCursor();
+    // `\r\n` (not `ESC[B`) for the step onto the first row under the block:
+    // that row may not exist yet, and a newline is the one thing that makes
+    // the terminal scroll one into being.
+    const down = below + rows.length;
     write(
-      `${below > 0 ? `${CSI}${below}B` : ""}\r\n${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`,
+      `${below > 0 ? `${CSI}${below}B` : ""}\r\n${CSI}0J${rows.join("\r\n")}${backToCursor(down, cols)}`,
     );
-    menuRows = lines.length;
+    belowRows = rows.length;
   };
 
-  /** Recompute the menu from the buffer and put the screen in that state. */
-  const renderMenu = (): void => {
-    if (!menuEnabled || menuSuspended) return;
+  /** The menu's rows for the buffer as it stands, or none at all. */
+  const menuLines = (): readonly string[] => {
+    if (!menuEnabled) return [];
     // Only ever under a message being composed: a `question()` answer and an
     // idle prompt-less terminal are not places to offer commands.
-    if (readPending === undefined) {
-      hideMenu();
-      return;
-    }
+    if (readPending === undefined) return [];
     const token = commandMenuToken(rl.line, rl.cursor);
-    if (token === undefined) {
-      hideMenu();
-      return;
-    }
+    if (token === undefined) return [];
     const matches = filterCommandMenu(menuEntries?.() ?? [], token);
-    const lines = renderCommandMenu(matches, token, {
+    return renderCommandMenu(matches, token, {
       columns: columns(),
       styles: menuStyles,
       maxRows: menuMaxRows,
     });
-    if (lines.length === 0) {
-      hideMenu();
+  };
+
+  /**
+   * Put the screen back in the state the buffer implies: the band's lower rule
+   * under the input, the `/` menu under that, and nothing under either.
+   *
+   * The menu sits *outside* the band rather than between the input and the
+   * rule, which is a choice about what the rules mean. They bound the thing
+   * you are typing into; a list of what you might be typing is a suggestion
+   * about it, and putting it inside the frame would make the frame grow and
+   * shrink under your hands for reasons that have nothing to do with your
+   * message.
+   */
+  const renderBelow = (): void => {
+    if (suspended || submitting) return;
+    const rows = [
+      ...(bandOpen && decor !== undefined ? [decor.rule(columns())] : []),
+      ...menuLines(),
+    ];
+    if (rows.length === 0) {
+      eraseBelow();
       return;
     }
-    drawMenu(lines);
+    drawBelow(rows);
+  };
+
+  /**
+   * Open the band: write its upper rule and leave the caret on the row under
+   * it, which is where readline is about to draw the prompt.
+   *
+   * Printed rather than painted, and printed *once*: the row above readline's
+   * own block is the one row readline never clears, so the rule stays put
+   * through every keystroke, every wrap and every `_refreshLine` without
+   * anyone redrawing it. It comes back off in {@link closeBand}, which is the
+   * only thing on screen that ever knew it was there.
+   */
+  const openBand = (): void => {
+    if (!bandEnabled || decor === undefined || suspended || bandOpen) return;
+    write(`${decor.rule(columns())}\r\n`);
+    bandOpen = true;
+    submitting = false;
+    rowsAboveBlock = 1;
+  };
+
+  /**
+   * Take the whole band off the screen, from its upper rule down.
+   *
+   * `fromBelowBlock` distinguishes the two moments this is called at. After a
+   * `line` event (and after `clearLine`'s `\r\n` on Ctrl-C) the caret is on
+   * the row *under* the input block, so the climb has to clear the block's own
+   * rows too — `consumed` is how many they were, measured before readline
+   * emptied the buffer. Otherwise the caret is still inside the block, and the
+   * climb is however far down it the caret had wandered.
+   *
+   * A band taller than the screen is left exactly where it is, and this
+   * answers `false` so the caller knows nothing was reclaimed: the climb would
+   * stop at the top row and the erase would take the transcript with it, and a
+   * band that is merely still on screen is a far better outcome than a
+   * transcript with a hole in it.
+   *
+   * @returns whether the band's rows were actually reclaimed.
+   */
+  const closeBand = (fromBelowBlock: boolean, consumed = 0): boolean => {
+    if (!bandOpen) return false;
+    // The caret is still inside the block on this path, so it may be the one
+    // holding a deferred wrap; on the other it has already been carried below
+    // the block by a `\r\n` that resolved it.
+    if (!fromBelowBlock) resolveDeferredWrap();
+    const up = rowsAboveBlock + (fromBelowBlock ? consumed : cursorPos().rows);
+    bandOpen = false;
+    submitting = false;
+    belowRows = 0;
+    rowsAboveBlock = 0;
+    const height = screenRows();
+    if (height !== undefined && up + 1 >= height) return false;
+    write(`${moveUpToColumnZero(up)}${CSI}0J`);
+    return true;
+  };
+
+  /** Print a sent message into the transcript as its gray bar. */
+  const echoSubmitted = (message: string): void => {
+    if (decor === undefined) return;
+    for (const row of decor.echo(message, columns())) {
+      write(`${row}\r\n`);
+    }
   };
 
   /**
@@ -566,19 +812,20 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   };
 
   const onKeypress = (): void => {
-    renderMenu();
+    renderBelow();
   };
   /**
    * A resize invalidates every row already on screen (the terminal reflows
    * them itself, by rules that differ between emulators). Re-rendering is the
-   * defensive move: `drawMenu` clears from the input line down before it
-   * writes, so whatever the reflow left behind goes with it.
+   * defensive move: `drawBelow` clears from the input line down before it
+   * writes, so whatever the reflow left behind goes with it — and the rules it
+   * writes are measured against the width the terminal has *now*.
    */
   const onResize = (): void => {
-    renderMenu();
+    renderBelow();
   };
 
-  if (menuEnabled) {
+  if (menuEnabled || bandEnabled) {
     // `readline` already turned this stream into a keypress emitter; our
     // listener is simply the second one, so it sees the buffer *after*
     // readline has applied the key.
@@ -620,6 +867,33 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     resolve(value);
   }
 
+  /**
+   * The end of one read on a terminal: the band comes off the screen, and a
+   * message that was actually sent is printed back into the transcript as its
+   * gray bar.
+   *
+   * Erasing and reprinting rather than leaving what the terminal echoed is the
+   * one place this manager rewrites the screen, and it is worth the trouble:
+   * the echoed text is the user's keystrokes, in whatever colours the terminal
+   * felt like, on rows the band happens to own. The bar is the same words, in
+   * the transcript, marked as theirs — and appended, never erased in place, so
+   * it survives every scroll afterwards.
+   *
+   * Nothing is reprinted for a Ctrl-C or an end-of-input: no message was sent,
+   * so the band simply closes over an empty row.
+   */
+  function closeBandFor(
+    message: string | undefined,
+    consumedRows: number,
+  ): void {
+    if (!bandOpen) return;
+    const reclaimed = closeBand(true, consumedRows);
+    // No bar when the band could not be taken down: the rows it is still
+    // sitting on are showing the message as the terminal echoed it, and
+    // printing it a second time underneath would read as two messages.
+    if (reclaimed && message !== undefined) echoSubmitted(message);
+  }
+
   function scheduleCoalesceFlush(): void {
     if (readPending === undefined) return;
     clearCoalesceTimer();
@@ -628,15 +902,23 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       const message = readPending.coalesced ?? "";
       readPending.assembly = initialAssembly();
       fixupHistoryFor(message);
+      // Before the promise resolves, so the bar is on screen above whatever
+      // the turn it starts prints next.
+      closeBandFor(message, 0);
       resolveRead(message);
     }, pasteWindowMs);
   }
 
   rl.on("line", (line: string) => {
+    // How tall the block readline has just finished echoing was. Measured
+    // *here*, from the text it echoed and the prompt it echoed in front of it,
+    // because `rl.line` is already empty by now and this is the last moment
+    // the number can be known. See `closeBand`.
+    const consumed = bandOpen ? displayPos(promptText() + line).rows + 1 : 0;
     // readline has already written the `\r\n` that ends the echoed line, so
-    // the caret is standing on the menu's first row: wipe it there, before
-    // anything the REPL prints next lands on top of a stale list.
-    dropMenu();
+    // the caret is standing on the band's lower rule: wipe it there, before
+    // anything the REPL prints next lands on top of stale chrome.
+    dropBelow();
     if (questionPending !== undefined) {
       // readline routes lines to the question callback while a question is
       // pending, not to this listener — nothing to do here in that case.
@@ -646,9 +928,14 @@ export function createInputManager(options: InputManagerOptions): InputManager {
 
     const action = reduceAssemblyLine(readPending.assembly, line);
     if (action.type === "continue") {
+      // The band grows rather than reopening: the lines already typed stay on
+      // screen under the upper rule, and the one being typed keeps the lower
+      // one under it. Only the offset the eventual erase climbs from moves.
+      rowsAboveBlock += consumed;
       readPending.assembly = action.state;
       rl.setPrompt(continuationPrompt);
       rl.prompt();
+      renderBelow();
       return;
     }
 
@@ -656,6 +943,12 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     // into whatever's already been coalesced this read and (re)start the
     // paste window: another `line` arriving before it fires means more of
     // the same pasted block, joined with "\n".
+    rowsAboveBlock += consumed;
+    submitting = bandOpen;
+    // Nothing follows this line's echo, so nothing should be measured against
+    // a prompt that will not be written in front of it: a pasted block's
+    // second and later lines are echoed bare.
+    if (bandOpen) rl.setPrompt("");
     readPending.assembly = initialAssembly();
     readPending.coalesced =
       readPending.coalesced === undefined
@@ -669,7 +962,10 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     // nor refreshes — so the ordinary erase applies, and it has to happen
     // here: this handler runs *before* the keypress listener, and by the time
     // that one fires the read it would have rendered for is already resolved.
-    hideMenu();
+    eraseBelow();
+    // How tall the block `abandonLine` is about to close is, measured while
+    // the buffer it is measured from still exists.
+    const consumed = bandOpen ? blockRows() : 0;
     if (questionPending !== undefined) {
       const { resolve, cancel } = questionPending;
       questionPending = undefined;
@@ -685,6 +981,9 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     if (readPending !== undefined) {
       abandonLine();
       readPending.assembly = initialAssembly();
+      // No gray bar: an abandoned line was never sent, and the band closes
+      // over it rather than leaving half a message above the transcript.
+      closeBandFor(undefined, consumed);
       resolveRead(INPUT_SIGINT);
       return;
     }
@@ -696,8 +995,12 @@ export function createInputManager(options: InputManagerOptions): InputManager {
 
   rl.on("close", () => {
     closed = true;
-    hideMenu();
-    if (menuEnabled) {
+    eraseBelow();
+    // Ctrl-D writes no newline, so the caret is still inside the block: this
+    // is the one close that climbs from where it stands rather than from the
+    // row under it.
+    closeBand(false);
+    if (menuEnabled || bandEnabled) {
       options.input.removeListener("keypress", onKeypress);
       options.output.removeListener("resize", onResize);
     }
@@ -725,12 +1028,16 @@ export function createInputManager(options: InputManagerOptions): InputManager {
           coalesceTimer: undefined,
           coalesced: undefined,
         };
+        // The upper rule first, then the prompt on the row under it: the
+        // band opens around the read rather than being drawn into by it.
+        openBand();
         rl.setPrompt(promptText);
         rl.prompt();
         // A fresh prompt starts on an empty buffer, but `/help` may have just
         // grown the command list: render so the state on screen is this
-        // read's, not the last one's.
-        renderMenu();
+        // read's, not the last one's — and so the lower rule is there before
+        // the first keystroke.
+        renderBelow();
       });
     },
 
@@ -766,10 +1073,11 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       const input = options.input as unknown as RawModeCapable;
       const wasRaw = input.isRaw === true;
       // The terminal is about to belong to someone else (a select prompt, a
-      // browser login): take the menu off the screen first, and stay quiet
-      // even though our keypress listener still hears their keystrokes.
-      hideMenu();
-      menuSuspended = true;
+      // browser login): take the whole band off the screen first, and stay
+      // quiet even though our keypress listener still hears their keystrokes.
+      eraseBelow();
+      closeBand(false);
+      suspended = true;
       rl.pause();
       input.setRawMode?.(false);
       try {
@@ -778,13 +1086,14 @@ export function createInputManager(options: InputManagerOptions): InputManager {
         const isTty = (options.input as unknown as { isTTY?: boolean }).isTTY;
         input.setRawMode?.(wasRaw || isTty === true);
         rl.resume();
-        menuSuspended = false;
+        suspended = false;
         if (readPending !== undefined) {
+          // Reopened, not restored: whatever the other consumer left on screen
+          // is where the band goes now, and it is drawn from scratch there.
+          openBand();
           rl.setPrompt(readPending.promptText);
           rl.prompt();
-          // The prompt was just redrawn wherever the other consumer left the
-          // screen; the menu belongs under it again.
-          renderMenu();
+          renderBelow();
         }
       }
     },

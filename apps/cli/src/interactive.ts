@@ -46,6 +46,8 @@ import {
   DEFAULT_BACKEND,
   isDelegatedBackend,
 } from "./backend.js";
+import type { BandDecor } from "./band.js";
+import { createBandDecor } from "./band.js";
 import type { CheckpointStore } from "./checkpoint.js";
 import { createCheckpointStore, undoLines } from "./checkpoint.js";
 import type { CustomCommand, LoadCustomCommandsResult } from "./commands.js";
@@ -2299,23 +2301,27 @@ async function bestEffortValue<T>(
 }
 
 /**
- * The prompt marker: `kapel>` in the user's own colour, so the line the
- * terminal echoes after it — the message you just sent — is found at a glance
- * in a transcript of tool traces and assistant prose.
+ * The prompt marker: `kapel>` in the user's own colour.
  *
- * The marker, not the echo: what follows it on that row is the terminal
- * repeating your keystrokes, and there is no way to style bytes that were
- * already printed short of erasing the row — which cannot be done reliably,
- * because how many rows a message wrapped onto depends on the display width of
- * every character in it. So the gutter carries the role, and the message is
- * never re-printed, never duplicated.
+ * It survives for exactly one caller — the piped line source, which writes it
+ * to stdout so `kapel chat < script.txt` still produces the interleaved
+ * `kapel> …` transcript it always has. A terminal gets no marker at all: the
+ * band's two rules say where the input is, far more clearly than a word can,
+ * and the message that was typed there is reprinted into the transcript as its
+ * own gray bar (see `band.ts`) rather than left as whatever the terminal
+ * echoed. A prompt word as well would be labelling a labelled thing.
  */
-/** Width the input rule falls back to on a terminal that reports none. */
-const DEFAULT_RULE_COLUMNS = 80;
-
 export function promptMarker(styles: Styles): string {
   return `${styles.user("kapel>")} `;
 }
+
+/**
+ * What the band's input row is prefixed with: nothing.
+ *
+ * Named rather than inlined because "" is not obviously a decision, and this
+ * is one — see {@link promptMarker}.
+ */
+export const BAND_PROMPT = "";
 
 /**
  * What a conversation needs before its first line: a usable model on the
@@ -2613,10 +2619,26 @@ export async function runInteractive(
         ),
     };
 
+    /**
+     * The band's strings, for both the halves of the screen that draw it: the
+     * renderer's status line while a turn runs, and the `InputManager` while
+     * the prompt is open. One object, so the rule over the input and the rule
+     * over the spinner can never come out as two different rules.
+     *
+     * Only on a terminal with a terminal on the other end of stdin, which is
+     * exactly the condition an `InputManager` exists under: a piped or
+     * redirected run has no band, no rules and no gray bar — it prints the
+     * bytes it always printed.
+     */
+    const band: BandDecor | undefined = promptTty
+      ? createBandDecor(styles)
+      : undefined;
+
     // The renderer owns everything the turn puts on screen: streamed assistant
-    // text, tool lines, and the status line that fills the silence in between.
+    // text, tool lines, and the band that fills the silence in between.
     const renderer = new TextRenderer(process.stdout, {
       styles,
+      ...(band === undefined ? {} : { frame: band }),
       tokens: () => {
         const totals = usage.totals().usage;
         return totals.inputTokens + totals.outputTokens;
@@ -2664,14 +2686,20 @@ export async function runInteractive(
             () => customCommandNames.current,
           ),
           onIdleSigint: () => activeTurn.current?.abort(),
-          // A continued line is still the user typing, so its marker wears
-          // the same colour the prompt's does.
-          continuationPrompt: `${styles.user(CONTINUATION_PROMPT.trimEnd())} `,
+          // A continued line still needs *something* in front of it, or the
+          // rows of a multiline block read as one paragraph the band happens
+          // to be wrapped around. One dim ellipsis, the quietest mark that
+          // still says "this line is a continuation of the one above".
+          continuationPrompt:
+            band === undefined
+              ? `${styles.user(CONTINUATION_PROMPT.trimEnd())} `
+              : `${styles.tool("…")} `,
           // The live `/` menu: same registry `/help` prints, read per
           // keystroke so a command file added mid-session shows up as soon as
           // the next `/help` has seen it.
           commandMenu: () => commandMenu.current,
           styles,
+          ...(band === undefined ? {} : { band }),
         })
       : undefined;
     inputManager = manager;
@@ -3061,30 +3089,6 @@ export async function runInteractive(
       console.log(styles.warn(started.note));
     }
 
-    /**
-     * The rule that opens the input band: one accent line, drawn immediately
-     * above each prompt, the way an input field's top edge sits above what you
-     * type in it. Printed, not painted — it is an ordinary line of output that
-     * the transcript keeps, so nothing has to track it, redraw it or take it
-     * back down.
-     *
-     * There is deliberately no matching rule *under* the prompt. The rows below
-     * the line being typed belong to the `InputManager`, and drawing there for
-     * every keystroke of every message runs into readline's disagreement with
-     * the terminal about where the caret is at an exact wrap boundary — see the
-     * comment above the menu block in `input.ts`. A band open at the bottom is
-     * a missing line; the alternative was a corrupted input area.
-     *
-     * Nothing at all off a terminal or under `NO_COLOR` — `styles.rule` is
-     * empty there, and a blank `console.log` would still be a blank line the
-     * transcript never used to have.
-     */
-    const printInputRule = (): void => {
-      const rule = styles.rule(process.stdout.columns ?? DEFAULT_RULE_COLUMNS);
-      if (rule === "") return;
-      console.log(rule);
-    };
-
     const lineSource =
       manager === undefined
         ? pipedLineSource()
@@ -3094,10 +3098,11 @@ export async function runInteractive(
         controller,
         lines: lineSource,
         promptState,
-        promptText: promptMarker(styles),
+        // The band's own row carries no marker; the piped source still writes
+        // one, because its transcript is the only place a marker still helps.
+        promptText: band === undefined ? promptMarker(styles) : BAND_PROMPT,
         styles,
         activeTurn,
-        openBand: printInputRule,
       });
     } finally {
       lineSource.close();
@@ -3133,15 +3138,6 @@ interface ReplLoopArgs {
    * which has no `InputManager` and relies on the real `SIGINT` below.
    */
   readonly activeTurn?: { current: AbortController | undefined };
-  /**
-   * Draws the rule that opens the input band, immediately above each prompt.
-   *
-   * Injected rather than computed here because the width it needs belongs to
-   * the shell's stdout, and because a piped REPL has no band at all — the
-   * shell hands in nothing, and this loop prints exactly the bytes it printed
-   * before the band existed.
-   */
-  readonly openBand?: () => void;
 }
 
 /**
@@ -3160,19 +3156,14 @@ interface ReplLoopArgs {
  * `onIdleSigint` reaches this same abort instead.
  */
 async function replLoop(args: ReplLoopArgs): Promise<number> {
-  const {
-    controller,
-    lines,
-    promptState,
-    promptText,
-    styles,
-    activeTurn,
-    openBand,
-  } = args;
+  const { controller, lines, promptState, promptText, styles, activeTurn } =
+    args;
   let armed = false;
 
   for (;;) {
-    openBand?.();
+    // Nothing is drawn here: the band opens and closes around each read inside
+    // the `InputManager`, which is the only thing that knows how many rows the
+    // line being typed took and therefore how many the erase has to climb.
     const line = await lines.next(promptText);
 
     if (line === undefined) {

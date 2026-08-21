@@ -9,11 +9,22 @@
  *
  * The roles, and the reasoning behind the palette:
  *
- * - **accent** — kapel's own colour, and the only one the *chrome* wears: the
- *   dashboard's box, the rule above the prompt, the bar down the side of a
- *   notice. A muted sky blue (#7EB6D9) rather than a vivid cyan, because
- *   furniture that shouts is furniture you end up reading. See
- *   {@link accentSgr} for how it degrades on terminals that cannot show it.
+ * - **accent** — kapel's own colour, and the one the *drawn* chrome wears: the
+ *   dashboard's box, the caret of a picker, the bar down the side of a notice.
+ *   A muted sky blue (#7EB6D9) rather than a vivid cyan, because furniture
+ *   that shouts is furniture you end up reading. See {@link accentSgr} for how
+ *   it degrades on terminals that cannot show it.
+ * - **chrome** — the two rules that bound the input band at the foot of the
+ *   screen. A soft white (xterm-256 grey 245) rather than the accent: the band
+ *   is where *you* are, and painting its edges in kapel's own colour made the
+ *   prompt read as one more thing kapel had drawn. It is the quietest visible
+ *   line the palette has — present enough to close the box, dim enough that
+ *   the eye goes to what is inside it. See {@link chromeSgr}.
+ * - **echo** — the gray bar a submitted message becomes on its way into the
+ *   transcript. A background, uniquely in this palette (see the note below),
+ *   because that is the one treatment that survives being scrolled past: the
+ *   message you sent is the landmark you scan for, and a bar finds the eye
+ *   where a coloured glyph does not. See {@link echoSgr}.
  * - **user** — the prompt marker, and with it the line the terminal echoed
  *   after it. The accent, in bold: the one thing on screen that is not kapel
  *   talking, and the anchor the eye uses to find "where did I ask this". It
@@ -43,8 +54,12 @@
  *   and the two should be able to part ways without hunting call sites.
  * - **ok / warn / error** — green, yellow, red, consistently and nowhere else.
  *
- * There are no background colours: a background that reads on a dark terminal
- * is a smear on a light one, and the gutter-plus-weight approach needs none.
+ * There is exactly one background colour, **echo**, and it is the exception
+ * that states the rule: a background that reads on a dark terminal is a smear
+ * on a light one, so everything else here uses a gutter, a weight or a hue
+ * instead. The echo bar earns it because it is not decoration — it is the only
+ * mark that says "this row is yours, not kapel's" in a transcript the user
+ * scrolls back through.
  *
  * Colour is off unless the stream is a terminal *and* `NO_COLOR` is unset —
  * see {@link colorEnabled}. A piped, redirected or `NO_COLOR=1` run gets the
@@ -53,6 +68,8 @@
 
 export type StyleRole =
   | "accent"
+  | "chrome"
+  | "echo"
   | "user"
   | "agent"
   | "tool"
@@ -95,11 +112,57 @@ export function accentSgr(env: AccentEnv = process.env): string {
   return (env.TERM ?? "").includes("256color") ? ACCENT_256 : ACCENT_BASIC;
 }
 
+/** xterm-256 grey 245 — the soft white the input band's rules are drawn in. */
+export const CHROME_256 = "38;5;245";
+/** Plain white. The only light neutral a 16-colour terminal is sure to have. */
+export const CHROME_BASIC = "37";
+
+/**
+ * The chrome's SGR parameters for one terminal, in two tiers.
+ *
+ * Unlike {@link accentSgr} there is no 24-bit tier to want: grey 245 *is* the
+ * colour, and a terminal that can show 16.7M colours can certainly show the
+ * 256-colour cube. What is left is the same veto the accent has — a terminal
+ * that never claimed 256 colours gets the white that has always existed rather
+ * than an escape it would print as text.
+ */
+export function chromeSgr(env: AccentEnv = process.env): string {
+  return has256Colors(env) ? CHROME_256 : CHROME_BASIC;
+}
+
+/** xterm-256 grey 237 — the background a submitted message is echoed on. */
+export const ECHO_256 = "48;5;237";
+/**
+ * aixterm's bright-black background. A single SGR parameter, so a terminal
+ * that does not know it *ignores* it (unlike the multi-parameter 24-bit form,
+ * which gets misparsed onto the screen) — the bar then simply has no bar, and
+ * the `> message` inside it still reads.
+ */
+export const ECHO_BASIC = "100";
+
+/** See {@link chromeSgr}; the echo bar degrades on the same terminal capability. */
+export function echoSgr(env: AccentEnv = process.env): string {
+  return has256Colors(env) ? ECHO_256 : ECHO_BASIC;
+}
+
+/** Whether this terminal has said it can address the 256-colour cube. */
+function has256Colors(env: AccentEnv): boolean {
+  const colorterm = (env.COLORTERM ?? "").toLowerCase();
+  if (colorterm === "truecolor" || colorterm === "24bit") return true;
+  return (env.TERM ?? "").includes("256color");
+}
+
 /** The bar kapel's own remarks are written behind. See the module comment. */
 export const NOTICE_GUTTER = "▌ ";
 
+/** The character every rule in this CLI is made of. */
+export const RULE_CHAR = "─";
+
 /** The roles whose codes no terminal capability can change. */
-const FIXED_SGR: Record<Exclude<StyleRole, "accent" | "user">, string> = {
+const FIXED_SGR: Record<
+  Exclude<StyleRole, "accent" | "user" | "chrome" | "echo">,
+  string
+> = {
   // The content, not the frame: no escape at all.
   agent: "",
   tool: "2",
@@ -121,7 +184,13 @@ export function roleSgr(
   env: AccentEnv = process.env,
 ): Record<StyleRole, string> {
   const accent = accentSgr(env);
-  return { ...FIXED_SGR, accent, user: `1;${accent}` };
+  return {
+    ...FIXED_SGR,
+    accent,
+    user: `1;${accent}`,
+    chrome: chromeSgr(env),
+    echo: echoSgr(env),
+  };
 }
 
 /**
@@ -159,17 +228,28 @@ export interface Styles {
    */
   readonly sgr: Record<StyleRole, string>;
   role(role: StyleRole, text: string): string;
-  /** kapel's own colour: the chrome, and nothing that is content. */
+  /** kapel's own colour: the drawn chrome, and nothing that is content. */
   accent(text: string): string;
   /**
-   * A horizontal rule `columns` cells wide, in the accent — the line above the
-   * prompt. Empty when colour is off: a rule is chrome, and chrome is the
-   * first thing `NO_COLOR` and a pipe are promised they will not see.
+   * A horizontal rule `columns` cells wide, in the soft white the input band
+   * is bounded with.
+   *
+   * Structure, not colour: `NO_COLOR` strips the escape and keeps the `─`
+   * characters, because a rule is what tells you where the band you type in
+   * begins and ends, and a user who asked for no colour did not ask to be
+   * left guessing. A stream that is not a terminal never asks for one at all —
+   * the band is a painted object, and nothing paints onto a pipe.
    *
    * One cell short of the width it is given, always. A row that exactly fills
    * a terminal wraps, and a wrapped rule is a second row nobody counted.
    */
   rule(columns: number): string;
+  /**
+   * One row of the gray bar a submitted message becomes. The caller pads the
+   * text to the width it wants the bar to be *before* calling: measuring a
+   * string that already carries escapes is how a bar ends up ragged.
+   */
+  echo(text: string): string;
   /** The user's own words: the prompt marker and the line echoed after it. */
   user(text: string): string;
   /** Assistant prose. Identity by design — see the module comment. */
@@ -214,8 +294,8 @@ export function createStyles(
     // disagree about what a notice looks like.
     role: (role, text) => (role === "notice" ? notice(text) : at(role, text)),
     accent: (text) => at("accent", text),
-    rule: (columns) =>
-      enabled ? at("accent", "─".repeat(Math.max(0, columns - 1))) : "",
+    rule: (columns) => at("chrome", RULE_CHAR.repeat(Math.max(0, columns - 1))),
+    echo: (text) => at("echo", text),
     user: (text) => at("user", text),
     agent: (text) => at("agent", text),
     tool: (text) => at("tool", text),

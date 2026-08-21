@@ -6,8 +6,14 @@ import {
   ACCENT_TRUECOLOR,
   accentSgr,
   ansi,
+  CHROME_256,
+  CHROME_BASIC,
+  chromeSgr,
   colorEnabled,
   createStyles,
+  ECHO_256,
+  ECHO_BASIC,
+  echoSgr,
   NOTICE_GUTTER,
   PLAIN_STYLES,
   ROLE_SGR,
@@ -22,6 +28,8 @@ const RESET = `${ESC}[0m`;
 /** Every role a caller can name. */
 const ROLES: readonly StyleRole[] = [
   "accent",
+  "chrome",
+  "echo",
   "user",
   "agent",
   "tool",
@@ -183,20 +191,64 @@ describe("accentSgr", () => {
   });
 });
 
+describe("chromeSgr", () => {
+  it("takes grey 245 wherever the terminal admits to 256 colours", () => {
+    expect(chromeSgr(TRUECOLOR)).toBe(CHROME_256);
+    expect(chromeSgr({ TERM: "xterm-256color" })).toBe(CHROME_256);
+  });
+
+  it("falls back to plain white on a terminal that claimed neither", () => {
+    expect(chromeSgr({})).toBe(CHROME_BASIC);
+    expect(chromeSgr({ TERM: "xterm" })).toBe(CHROME_BASIC);
+  });
+});
+
+describe("echoSgr", () => {
+  it("takes grey 237 as a background wherever 256 colours exist", () => {
+    expect(echoSgr(TRUECOLOR)).toBe(ECHO_256);
+    expect(echoSgr({ TERM: "screen-256color" })).toBe(ECHO_256);
+  });
+
+  it("falls back to one parameter an old terminal can safely ignore", () => {
+    // Single-parameter SGR: a terminal that does not know it drops it, and
+    // the `> message` inside the bar still reads. The multi-parameter 24-bit
+    // form would have been printed onto the screen as text.
+    expect(echoSgr({})).toBe(ECHO_BASIC);
+    expect(ECHO_BASIC).not.toContain(";");
+  });
+});
+
 describe("Styles.rule", () => {
   it("is one cell short of the width it is given, so it cannot wrap", () => {
     const rule = createStyles(true, TRUECOLOR).rule(20);
-    expect(rule).toBe(`${ESC}[${ACCENT_TRUECOLOR}m${"─".repeat(19)}${RESET}`);
+    expect(rule).toBe(`${ESC}[${CHROME_256}m${"─".repeat(19)}${RESET}`);
   });
 
-  it("is nothing at all with colour off — a rule is chrome", () => {
-    expect(PLAIN_STYLES.rule(80)).toBe("");
-    expect(stylesFor(stream(true), { NO_COLOR: "1" }).rule(80)).toBe("");
+  it("keeps its characters with colour off — structure is not decoration", () => {
+    // `NO_COLOR` strips the escape and nothing else: the rules are what say
+    // where the band you type in begins and ends. A stream that is not a
+    // terminal never asks for one at all — nothing paints onto a pipe.
+    expect(PLAIN_STYLES.rule(80)).toBe("─".repeat(79));
+    expect(stylesFor(stream(true), { NO_COLOR: "1" }).rule(80)).toBe(
+      "─".repeat(79),
+    );
   });
 
   it("never returns a negative-width run for an absurd terminal", () => {
     expect(createStyles(true).rule(0)).toBe("");
     expect(createStyles(true).rule(1)).toBe("");
+  });
+});
+
+describe("Styles.echo", () => {
+  it("wraps a row in the gray background and nothing else", () => {
+    expect(createStyles(true, TRUECOLOR).echo("> hi  ")).toBe(
+      `${ESC}[${ECHO_256}m> hi  ${RESET}`,
+    );
+  });
+
+  it("is the bare text with colour off", () => {
+    expect(PLAIN_STYLES.echo("> hi")).toBe("> hi");
   });
 });
 

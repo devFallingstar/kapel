@@ -12,6 +12,7 @@ import type {
 } from "@agent/coding-agent";
 import { MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
+import type { BandDecor } from "./band.js";
 import { previewInput } from "./prompter.js";
 import { StatusLine, type StatusLineStream } from "./status-line.js";
 import { type Styles, stylesFor } from "./styles.js";
@@ -277,6 +278,13 @@ export interface TextRendererOptions {
   readonly suspended?: () => boolean;
   /** Replaces the status line entirely. Tests inject a deterministic one. */
   readonly status?: StatusLine;
+  /**
+   * Turns the status line into the turn's shape of the REPL's input band —
+   * the same two rules, with the spinner between them (see `band.ts`). Only
+   * the interactive shell passes one: a one-shot `kapel run` has no band for
+   * its progress to be part of.
+   */
+  readonly frame?: BandDecor;
 }
 
 /**
@@ -322,6 +330,7 @@ export class TextRenderer implements Renderer {
         ...(options.suspended === undefined
           ? {}
           : { suspended: options.suspended }),
+        ...(options.frame === undefined ? {} : { frame: options.frame }),
       });
   }
 

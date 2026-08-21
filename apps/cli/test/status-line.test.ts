@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createBandDecor } from "../src/band.js";
 import {
   formatStatus,
   formatTokenCount,
   StatusLine,
 } from "../src/status-line.js";
+import { PLAIN_STYLES } from "../src/styles.js";
 
 /** Erase-the-line sequence the status line writes; see `status-line.ts`. */
 const ERASE = "\r[2K";
@@ -41,6 +43,7 @@ function harness(
     tokens?: () => number | undefined;
     suspended?: () => boolean;
     columns?: number;
+    band?: boolean;
   } = {},
 ): Harness {
   const stream = new CapturingStream();
@@ -62,6 +65,8 @@ function harness(
     ...(options.suspended === undefined
       ? {}
       : { suspended: options.suspended }),
+    ...(options.band === undefined ? {} : { styles: PLAIN_STYLES }),
+    ...(options.band === true ? { frame: createBandDecor(PLAIN_STYLES) } : {}),
   });
 
   return {
@@ -201,5 +206,64 @@ describe("StatusLine", () => {
     const painted = stream.chunks.at(-1) ?? "";
     const visible = painted.replaceAll("[2m", "").replaceAll("[0m", "");
     expect(visible.replace(ERASE, "").length).toBeLessThanOrEqual(19);
+  });
+});
+
+describe("StatusLine as the turn's band", () => {
+  const ERASE_BLOCK = "\r\u001b[0J";
+
+  it("paints the spinner between the same two rules the prompt sits between", () => {
+    const { status, stream } = harness({ band: true, columns: 20 });
+    status.start("thinking");
+    const rule = PLAIN_STYLES.rule(20);
+    // Three rows in one write, and the cursor walked back up to the first of
+    // them: the next erase starts where this paint did.
+    expect(stream.text).toBe(
+      `${ERASE_BLOCK}${rule}\r\n⠋ thinking 0s\r\n${rule}\u001b[2A\r`,
+    );
+  });
+
+  it("takes all three rows off with one clear-to-bottom", () => {
+    const { status, stream } = harness({ band: true, columns: 20 });
+    status.start("thinking");
+    stream.chunks.length = 0;
+    status.erase();
+    // `ESC[0J`, not `ESC[2K`: a block taller than one row needs the rows
+    // under the cursor gone too, and this leaves the cursor where the
+    // caller's next line of output belongs.
+    expect(stream.text).toBe(ERASE_BLOCK);
+  });
+
+  it("erases, lets output through, and repaints under it", () => {
+    const { status, stream } = harness({ band: true, columns: 20 });
+    status.start("thinking");
+    stream.chunks.length = 0;
+    status.erase();
+    stream.write("a line of output\n");
+    status.refresh();
+    const text = stream.text;
+    expect(text.indexOf("a line of output")).toBeGreaterThan(
+      text.indexOf(ERASE_BLOCK),
+    );
+    expect(text.lastIndexOf(PLAIN_STYLES.rule(20))).toBeGreaterThan(
+      text.indexOf("a line of output"),
+    );
+  });
+
+  it("is the one-row line it always was without a frame", () => {
+    const { status, stream } = harness({ columns: 20, band: false });
+    status.start("thinking");
+    expect(stream.text).toBe("\r\u001b[2K⠋ thinking 0s");
+    stream.chunks.length = 0;
+    status.erase();
+    expect(stream.text).toBe("\r\u001b[2K");
+  });
+
+  it("still writes nothing at all off a terminal", () => {
+    const { status, stream } = harness({ band: true, tty: false });
+    status.start("thinking");
+    status.refresh();
+    status.stop();
+    expect(stream.chunks).toEqual([]);
   });
 });

@@ -1,5 +1,7 @@
+import * as readline from "node:readline";
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
+import { createBandDecor } from "../src/band.js";
 import type { CommandMenuEntry, CompleterResult } from "../src/input.js";
 import {
   COMMAND_MENU_MAX_ROWS,
@@ -11,12 +13,14 @@ import {
   historyEntryFor,
   INPUT_SIGINT,
   initialAssembly,
+  localDisplayPos,
   reduceAssemblyLine,
   renderCommandMenu,
   toReadlineCompleter,
 } from "../src/input.js";
 import { createStyles, PLAIN_STYLES, ROLE_SGR } from "../src/styles.js";
 
+const ESC = "\u001b";
 const CTRL_C = "\x03";
 const CTRL_D = "\x04";
 
@@ -977,5 +981,355 @@ describe("InputManager command menu", () => {
     input.write("\n");
     await expect(result).resolves.toBe("/s");
     manager.close();
+  });
+});
+
+// --- the input band -----------------------------------------------------------
+
+/** The soft-white rules, plain, so the assertions read as rows and not escapes. */
+const BAND = createBandDecor(PLAIN_STYLES);
+
+/** A terminal wide enough to type in and short enough to reason about. */
+function bandIo(
+  columns = 20,
+  rows = 10,
+): {
+  input: FakeTtyInput;
+  output: FakeOutput;
+} {
+  const io = makeTtyIo(columns);
+  (io.output as FakeOutput & { rows?: number }).rows = rows;
+  return io;
+}
+
+describe("localDisplayPos", () => {
+  /**
+   * The fallback has to answer exactly what `readline` would, or the band and
+   * the editor inside it would be counting rows by two different rules. These
+   * are the cases where a wrong rule shows: the empty string, an exact row
+   * boundary (where readline reports the *next* row at column 0), a
+   * double-width character that will not fit in the last cell, and a string
+   * carrying escapes that occupy no cells at all.
+   */
+  it("agrees with readline's own model, boundaries included", () => {
+    const output = new FakeOutput();
+    output.isTTY = true;
+    output.columns = 10;
+    const rl = readline.createInterface({
+      input: new FakeTtyInput(),
+      output,
+      terminal: true,
+    });
+    const theirs = (
+      rl as unknown as {
+        _getDisplayPos: (value: string) => { rows: number; cols: number };
+      }
+    )._getDisplayPos;
+
+    for (const sample of [
+      "",
+      "a",
+      "abcdefghij",
+      "abcdefghijk",
+      "abcdefghijabcdefghij",
+      "日本語abcd",
+      "日本語abcde",
+      "日本語日本語",
+      `${ESC}[1mabcdefghij${ESC}[0m`,
+      "abc\ndef",
+    ]) {
+      expect({ sample, ...localDisplayPos(sample, 10) }).toEqual({
+        sample,
+        ...theirs.call(rl, sample),
+      });
+    }
+    rl.close();
+  });
+});
+
+describe("InputManager band", () => {
+  it("opens with a rule above the prompt and one below it", async () => {
+    const { input, output } = bandIo();
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    const rule = PLAIN_STYLES.rule(20);
+    // Two of them: one printed above, one painted below. The rules are what
+    // say where the band is now that no `kapel>` does.
+    expect(output.text.split(rule).length - 1).toBeGreaterThanOrEqual(2);
+    expect(output.text.startsWith(`${rule}\r\n`)).toBe(true);
+
+    input.write("hi\n");
+    await expect(pending).resolves.toBe("hi");
+    manager.close();
+  });
+
+  it("prints the sent message back as its own row, and takes the band down", async () => {
+    const { input, output } = bandIo();
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    input.write("hello");
+    await tick(10);
+    output.chunks = [];
+    input.write("\n");
+    await expect(pending).resolves.toBe("hello");
+
+    const submitted = output.text;
+    // Up over the input row and the rule above it, then clear to the bottom:
+    // the band, and the terminal's own echo of the keystrokes with it.
+    expect(submitted).toContain(`${ESC}[2A\r${ESC}[0J`);
+    // …and the message reappears as a row of the transcript instead.
+    expect(submitted).toContain("> hello\r\n");
+    expect(submitted.indexOf(`${ESC}[0J`)).toBeLessThan(
+      submitted.indexOf("> hello"),
+    );
+
+    manager.close();
+  });
+
+  it("echoes a multiline message as one row per line", async () => {
+    const { input, output } = bandIo();
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    output.chunks = [];
+    input.write("first\\\n");
+    await tick(10);
+    input.write("second\n");
+    await expect(pending).resolves.toBe("first\nsecond");
+
+    expect(output.text).toContain("> first\r\n");
+    expect(output.text).toContain("  second\r\n");
+    manager.close();
+  });
+
+  it("leaves nothing behind for a line thrown away with Ctrl-C", async () => {
+    const { input, output } = bandIo();
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    input.write("half a thought");
+    await tick(10);
+    output.chunks = [];
+    input.write(CTRL_C);
+    await expect(pending).resolves.toBe(INPUT_SIGINT);
+
+    // The band closes over the abandoned line: it was never sent, so it gets
+    // no bar, and half a message above the transcript would only be litter.
+    expect(output.text).toContain(`${ESC}[2A\r${ESC}[0J`);
+    expect(output.text).not.toContain(">");
+    manager.close();
+  });
+
+  it("keeps the lower rule under the whole block when the line wraps", async () => {
+    const { input, output } = bandIo(20);
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    // 25 cells on a 20-column terminal: two rows of input, and the rule has
+    // to be drawn under the second one.
+    input.write("x".repeat(25));
+    await tick(10);
+    output.chunks = [];
+    input.write("y");
+    await tick(10);
+
+    const rule = PLAIN_STYLES.rule(20);
+    const painted = output.text;
+    expect(painted).toContain(rule);
+    // One row below the caret's own row (the block's last), and back up by
+    // the same one: the caret ends where readline left it, every time.
+    expect(painted).toContain(`\r\n${ESC}[0J${rule}${ESC}[1A\r`);
+
+    input.write("\n");
+    await expect(pending).resolves.toBe(`${"x".repeat(25)}y`);
+    manager.close();
+  });
+
+  it("materializes the phantom row at an exact wrap boundary", async () => {
+    const { input, output } = bandIo(20);
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    output.chunks = [];
+    // Exactly one row's worth. The terminal is now holding a deferred wrap —
+    // caret at the last column of row 0 — while readline reports row 1,
+    // column 0. Node resolves that with a space of its own, but only on the
+    // code path a paste does not take, so the band writes one itself.
+    input.write("x".repeat(20));
+    await tick(10);
+    expect(output.text).toContain(` \r${ESC}[0K`);
+
+    input.write("\n");
+    await expect(pending).resolves.toBe("x".repeat(20));
+    manager.close();
+  });
+
+  it("erases the band from the top of a multiline block, however tall", async () => {
+    const { input, output } = bandIo(20);
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    input.write("one\\\n");
+    await tick(10);
+    input.write("two\\\n");
+    await tick(10);
+    output.chunks = [];
+    input.write("three\n");
+    await expect(pending).resolves.toBe("one\ntwo\nthree");
+
+    // Upper rule, then three echoed rows: the climb is four, not two.
+    expect(output.text).toContain(`${ESC}[4A\r${ESC}[0J`);
+    manager.close();
+  });
+
+  it("refuses to climb past the top of a screen the band has outgrown", async () => {
+    // A band taller than the terminal would have its erase stop at row 0 and
+    // take the transcript with it. Leaving it on screen is the better of the
+    // two failures, so that is what happens.
+    const { input, output } = bandIo(20, 4);
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    input.write("x".repeat(70));
+    await tick(10);
+    output.chunks = [];
+    input.write("\n");
+    await expect(pending).resolves.toBe("x".repeat(70));
+
+    // Nothing climbs, and no bar: the rows the band is still sitting on are
+    // showing the message as the terminal echoed it, and a second copy of it
+    // underneath would read as two messages.
+    expect(output.text).not.toContain(`${ESC}[4A`);
+    expect(output.text).not.toContain("> x");
+    manager.close();
+  });
+
+  it("draws the menu under the band, not inside it", async () => {
+    const { input, output } = bandIo(60);
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      commandMenu: () => MENU,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    output.chunks = [];
+    input.write("/re");
+    await tick(10);
+
+    const rule = PLAIN_STYLES.rule(60);
+    const painted = output.text;
+    // The rules bound what you are typing; a list of what you might be typing
+    // is a suggestion about it, and belongs outside the frame.
+    expect(painted.indexOf(rule)).toBeLessThan(painted.indexOf("/resume"));
+
+    input.write("\n");
+    await expect(pending).resolves.toBe("/re");
+    manager.close();
+  });
+
+  it("takes the band down for another consumer and puts it back after", async () => {
+    const { input, output } = bandIo();
+    const manager = createInputManager({
+      input,
+      output,
+      band: BAND,
+      pasteWindowMs: 5,
+    });
+
+    const pending = manager.readMessage("");
+    await tick(10);
+    output.chunks = [];
+    await manager.withSuspended(async () => {
+      await tick(5);
+      // A select prompt drawing here finds a clear screen: the band came down
+      // before it ran, rules and all.
+      expect(output.text).toContain(`${ESC}[0J`);
+      expect(output.text).not.toContain(PLAIN_STYLES.rule(20));
+    });
+    // …and is drawn again, from scratch, wherever the child left the cursor.
+    expect(output.text).toContain(PLAIN_STYLES.rule(20));
+
+    input.write("\n");
+    await expect(pending).resolves.toBe("");
+    manager.close();
+  });
+
+  it("writes not one byte of it when either end is not a terminal", async () => {
+    for (const [inputTty, outputTty] of [
+      [false, true],
+      [true, false],
+      [false, false],
+    ] as const) {
+      const io = makeIo();
+      io.input.isTTY = inputTty;
+      io.output.isTTY = outputTty;
+      io.output.columns = 20;
+      const manager = createInputManager({
+        input: io.input,
+        output: io.output,
+        band: BAND,
+        pasteWindowMs: 5,
+      });
+      const pending = manager.readMessage("kapel> ");
+      io.input.write("hello\n");
+      await expect(pending).resolves.toBe("hello");
+      expect(io.output.text).not.toContain("─");
+      expect(io.output.text).not.toContain("> hello");
+      manager.close();
+    }
   });
 });

@@ -1,12 +1,12 @@
 /**
- * The one-line, self-updating progress indicator the text renderer shows while
- * a turn is running and nothing else is being printed.
+ * The self-updating progress indicator the text renderer shows while a turn is
+ * running and nothing else is being printed.
  *
  * It exists because a model can think for tens of seconds with nothing to say
  * yet, and a screen that shows nothing at all is indistinguishable from a
- * hung process. The line is deliberately *one* line, rewritten in place with a
- * carriage return, so it costs no scrollback: whatever the run actually
- * produces still reads as a clean transcript afterwards.
+ * hung process. It is rewritten in place rather than printed, so it costs no
+ * scrollback: whatever the run actually produces still reads as a clean
+ * transcript afterwards.
  *
  * Two rules keep it honest:
  *
@@ -14,11 +14,32 @@
  *   not a terminal, so a pipe, a redirect or a CI log never sees `\r`, an ANSI
  *   escape or a spinner frame. There is no flag for this — a stream that
  *   cannot show a moving line does not get one.
- * - **Erase before anything real.** The line owns the cursor's current row and
- *   nothing else; the renderer erases it before writing a single character of
- *   actual output, and repaints afterwards.
+ * - **Erase before anything real.** The block owns the rows from the cursor's
+ *   current row downwards and nothing else; the renderer erases it before
+ *   writing a single character of actual output, and repaints afterwards.
+ *
+ * ## One line, or the band
+ *
+ * With no {@link StatusLineOptions.frame} this is exactly what it has always
+ * been: one row, `\r`-erased. Given one, it becomes the *turn's* shape of the
+ * input band (see `band.ts`) — the same two soft-white rules the prompt sits
+ * between, with the spinner where the line being typed goes:
+ *
+ * ```
+ *   ───────────────────────────
+ *   ⠹ thinking 4s · 1.2k tokens
+ *   ───────────────────────────
+ * ```
+ *
+ * The mechanism is unchanged and that is the point: erase, let the caller
+ * print, repaint underneath. Three rows instead of one only changes the
+ * arithmetic — the block is painted downwards from the cursor's row and the
+ * cursor is walked back up to it, so the next erase starts where this paint
+ * did, and the whole band moves down the screen as the transcript grows
+ * without a single absolute cursor address being written.
  */
 
+import type { BandDecor } from "./band.js";
 import { type Styles, stylesFor } from "./styles.js";
 
 /** Braille spinner frames. Every one of them is a single cell wide. */
@@ -29,6 +50,16 @@ const TICK_MS = 120;
 
 /** Carriage return plus "erase the whole line" — leaves the cursor at column 0. */
 const ERASE = "\r[2K";
+
+/** Control Sequence Introducer, spelled so no source file carries a raw ESC. */
+const CSI = "\u001b[";
+
+/**
+ * Carriage return plus "erase from here to the bottom of the screen" — what a
+ * block taller than one row needs. It leaves the cursor exactly where
+ * {@link ERASE} leaves it, which is what lets the two share every call site.
+ */
+const ERASE_BLOCK = `\r${CSI}0J`;
 
 /** Fallback width when the stream does not report one. */
 const DEFAULT_COLUMNS = 80;
@@ -71,6 +102,13 @@ export interface StatusLineOptions {
    * Injected by tests to keep painting deterministic.
    */
   readonly ticker?: (tick: () => void) => () => void;
+  /**
+   * The rules to bound the status with, turning it into the turn's shape of
+   * the input band — see the module comment. Absent (the default, and the only
+   * thing every non-REPL caller wants) leaves the one-row line untouched: a
+   * `kapel run` summary or an orchestration log has no band to be part of.
+   */
+  readonly frame?: BandDecor;
 }
 
 function defaultTicker(tick: () => void): () => void {
@@ -113,6 +151,7 @@ export class StatusLine {
   readonly #suspended: () => boolean;
   readonly #ticker: (tick: () => void) => () => void;
   readonly #styles: Styles;
+  readonly #band: BandDecor | undefined;
 
   #cancel: (() => void) | undefined;
   #label = "";
@@ -128,6 +167,7 @@ export class StatusLine {
     this.#suspended = options.suspended ?? (() => false);
     this.#ticker = options.ticker ?? defaultTicker;
     this.#styles = options.styles ?? stylesFor(this.#output);
+    this.#band = options.frame;
   }
 
   /** Whether this line will ever paint anything — false off a TTY. */
@@ -169,7 +209,14 @@ export class StatusLine {
   erase(): void {
     if (!this.#painted) return;
     this.#painted = false;
-    this.#output.write(ERASE);
+    if (this.#band === undefined) {
+      this.#output.write(ERASE);
+      return;
+    }
+    // The cursor was left on the block's first row by {@link #paint}, so the
+    // whole band comes off with one clear-to-bottom and the cursor stays
+    // exactly where the caller's next line of output belongs.
+    this.#output.write(ERASE_BLOCK);
   }
 
   /** Repaints immediately, if a status is running. */
@@ -202,8 +249,24 @@ export class StatusLine {
     // One column short of the edge: a line that exactly fills the terminal
     // wraps, and a wrapped line is one `\r` can no longer erase.
     const text = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
+    const line = this.#styles.tool(text);
 
-    this.#output.write(`${ERASE}${this.#styles.tool(text)}`);
+    const band = this.#band;
+    if (band === undefined) {
+      this.#output.write(`${ERASE}${line}`);
+      this.#painted = true;
+      return;
+    }
+
+    // `\r\n` rather than `ESC[B` between the rows: the two rows under the
+    // first one may not exist yet, and a newline is the one thing that makes
+    // the terminal scroll them into being. Whatever that scroll moved, it
+    // moved the whole block with it, which is why the walk back up is
+    // relative and lands where the paint started every time.
+    const rule = band.rule(columns);
+    const rows = [rule, line, rule];
+    const below = rows.length - 1;
+    this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
     this.#painted = true;
   }
 }
