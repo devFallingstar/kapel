@@ -44,8 +44,47 @@ async function cleanupWorkspace(workspacePath: string): Promise<void> {
   await rm(workspacePath, { recursive: true, force: true });
 }
 
-/** Copies the repo's `templates/default/.agent` fixture into `<workspacePath>/.agent`. */
+/**
+ * A policy written as prose — kapel's own wording before the canonical form
+ * existed, kept here because prose is what {@link runPolicyCompile}'s model
+ * path is *for*, and the shipped template no longer is any.
+ *
+ * Line 5 is load-bearing: the source-location tests quote a phrase from it.
+ */
+const PROSE_POLICY_SOURCE = `# Orchestration Policy
+
+Use \`lead\` as the main orchestrator. The orchestrator should focus on planning, decomposition, architectural judgment, delegation, and final validation rather than routine implementation.
+
+Use \`senior\` for complex or architectural implementation work. Use \`coder\` for normal implementation work. Use \`junior\` for trivial single-function changes. Use \`explorer\` for inexpensive read-only repository exploration. Use \`reviewer\` for independent review.
+
+Authentication, authorization, payment, secrets, and database migration changes require a blocking independent review before completion.
+
+Retry a failed worker once. If the second attempt fails, escalate the task one tier up (\`junior\` to \`coder\`, \`coder\` to \`senior\`).
+`;
+
+/**
+ * Copies the repo's `templates/default/.agent` fixture into
+ * `<workspacePath>/.agent`, then replaces its policy with prose.
+ *
+ * The replacement is what keeps these tests testing what they were written to
+ * test: the shipped policy is canonical now, so a compile against it never
+ * reaches a compiler at all and every injected `compilerFactory` here would
+ * go unused. {@link copyCanonicalTemplateAgentDir} is the fixture for that
+ * path.
+ */
 async function copyTemplateAgentDir(workspacePath: string): Promise<void> {
+  await copyCanonicalTemplateAgentDir(workspacePath);
+  await writeFile(
+    path.join(workspacePath, ".agent", "orchestration.md"),
+    PROSE_POLICY_SOURCE,
+    "utf8",
+  );
+}
+
+/** The template exactly as it ships — policy included, and therefore canonical. */
+async function copyCanonicalTemplateAgentDir(
+  workspacePath: string,
+): Promise<void> {
   await cp(TEMPLATE_AGENT_DIR, path.join(workspacePath, ".agent"), {
     recursive: true,
   });
@@ -169,6 +208,157 @@ describe("kapel policy", () => {
       },
     };
   }
+
+  describe("compile — the canonical path", () => {
+    /** Fails the test if anything reaches a model. */
+    const forbiddenCompiler: CompilerFactory = () => ({
+      compile: async () => {
+        throw new Error("a canonical policy must not reach a compiler");
+      },
+    });
+
+    beforeEach(async () => {
+      await rm(path.join(workspace, ".agent"), {
+        recursive: true,
+        force: true,
+      });
+      await copyCanonicalTemplateAgentDir(workspace);
+    });
+
+    it("compiles the shipped policy without calling a model", async () => {
+      const { output, lines, errLines } = capture();
+
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        { output, compilerFactory: forbiddenCompiler },
+      );
+
+      expect(code).toBe(0);
+      expect(errLines).toEqual([]);
+      const text = lines.join("\n");
+      expect(text).toContain("no model call");
+      // Nothing was spent, so nothing claims to have been.
+      expect(text).not.toContain("tokens —");
+
+      const lock = parseLockfile(
+        await readFile(path.join(workspace, ".agent", LOCK_FILE_NAME), "utf8"),
+      );
+      expect(lock.model).toBe("canonical");
+      expect(lock.policy.orchestrator).toBe("lead");
+      expect(lock.warnings).toEqual([]);
+    });
+
+    it("needs no provider credential at all", async () => {
+      // The prose path resolves a model before it compiles; this one never
+      // does, which is what lets a machine with no backend set itself up.
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      const { output, lines } = capture();
+
+      expect(
+        await runPolicyCompile(
+          { cwd: workspace, json: false, backend: "native" },
+          { output },
+        ),
+      ).toBe(0);
+      expect(lines.join("\n")).toContain("no model call");
+    });
+
+    it("reports the path it took in --json mode", async () => {
+      const { output, lines } = capture();
+
+      expect(
+        await runPolicyCompile(
+          { cwd: workspace, json: true, backend: "native" },
+          { output, compilerFactory: forbiddenCompiler },
+        ),
+      ).toBe(0);
+      expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
+        ok: true,
+        source: "canonical",
+      });
+    });
+
+    it("diffs against the lock for free", async () => {
+      const { output: first } = capture();
+      await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        { output: first },
+      );
+
+      const { output, lines } = capture();
+      expect(
+        await runPolicyDiff(
+          { cwd: workspace, json: false, backend: "native" },
+          { output, compilerFactory: forbiddenCompiler },
+        ),
+      ).toBe(0);
+      const text = lines.join("\n");
+      expect(text).toContain("No changes from the locked policy.");
+      expect(text).not.toContain("tokens —");
+    });
+
+    it("falls back to the model when a hand edit breaks the form, and says which line", async () => {
+      const policyPath = path.join(workspace, ".agent", "orchestration.md");
+      const source = await readFile(policyPath, "utf8");
+      await writeFile(
+        policyPath,
+        source.replace(
+          "- Run at most 4 agents at a time.",
+          "- Run whenever you feel like it.",
+        ),
+        "utf8",
+      );
+
+      const { output, lines, errLines } = capture();
+      const code = await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        {
+          output,
+          compilerFactory: fixedCompilerFactory({
+            policy: VALID_POLICY,
+            warnings: [],
+            ambiguities: [],
+          }),
+        },
+      );
+
+      expect(code).toBe(0);
+      // The edit is reported rather than swallowed: it just cost a model call
+      // the file existed to avoid.
+      expect(errLines.join("\n")).toMatch(
+        /no longer fits that form at line \d+/,
+      );
+      expect(lines.join("\n")).not.toContain("no model call");
+    });
+
+    it("treats a policy rewritten as prose as prose, with nothing to report", async () => {
+      await writeFile(
+        path.join(workspace, ".agent", "orchestration.md"),
+        "Send everything to `coder`.\n",
+        "utf8",
+      );
+
+      const { output, lines, errLines } = capture();
+      expect(
+        await runPolicyCompile(
+          { cwd: workspace, json: false, backend: "native" },
+          {
+            output,
+            compilerFactory: fixedCompilerFactory({
+              policy: VALID_POLICY,
+              warnings: [],
+              ambiguities: [],
+            }),
+          },
+        ),
+      ).toBe(0);
+      // Dropping the marker is how someone chooses prose — not a mistake, so
+      // it is not reported as one.
+      expect(errLines).toEqual([]);
+      expect(lines.join("\n")).not.toContain("no model call");
+    });
+  });
 
   describe("compile", () => {
     it("writes a fresh, parseable lock and reports warnings/ambiguities on success", async () => {

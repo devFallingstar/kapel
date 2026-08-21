@@ -1349,7 +1349,7 @@ describe("interactive controller — automatic project setup", () => {
     const result = await h.controller.handleLine("/plan add a route");
     expect(ran).toEqual(["init", "compile"]);
     expect(result.output).toEqual([
-      setupAnnounceLine("needs-init"),
+      setupAnnounceLine("needs-init", false),
       "Created /nowhere/.agent",
       "Lock written to /nowhere/.agent/orchestration.lock.json",
       "T01  implementation  medium  coder  -  Add the route",
@@ -1361,7 +1361,7 @@ describe("interactive controller — automatic project setup", () => {
     const h = await harness({ ensureProjectSetup, plan: async () => 0 });
 
     const result = await h.controller.handleLine("/plan add a route");
-    expect(result.output[0]).toBe(setupAnnounceLine("needs-policy"));
+    expect(result.output[0]).toBe(setupAnnounceLine("needs-policy", true));
     expect(ran).toEqual(["compile"]);
   });
 
@@ -1390,7 +1390,7 @@ describe("interactive controller — automatic project setup", () => {
     const first = await h.controller.handleLine("/plan add a route");
     expect(ran).toEqual(["init"]);
     expect(first.output).toEqual([
-      setupAnnounceLine("needs-init"),
+      setupAnnounceLine("needs-init", false),
       "Created /nowhere/.agent",
       "`kapel init` did not finish — kapel keeps working without it.",
       "No .agent directory found — run `kapel init` first",

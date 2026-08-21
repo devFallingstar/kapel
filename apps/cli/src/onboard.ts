@@ -1,5 +1,6 @@
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { isCanonicalPolicySource } from "@agent/coding-agent";
 
 /**
  * Automatic project onboarding: the two commands a new repository used to
@@ -76,19 +77,54 @@ export async function detectProjectSetup(
 }
 
 /**
- * The one line each state announces before it runs. Both name the cost up
- * front — files written, a model call spent — because that is what makes
- * kapel just doing this on its own a reasonable thing to do rather than a
- * surprise.
+ * Whether the compile this setup is about to run will call a model.
+ *
+ * A policy in kapel's canonical form is read rather than compiled (see
+ * `canonical.ts`), which is the case for every project kapel sets up itself —
+ * `kapel init` copies a canonical template, and a test keeps it that way. So
+ * a fresh project costs nothing but the files, and only a workspace whose
+ * policy has been rewritten as prose pays for a model.
+ *
+ * Answered by reading the source rather than assumed, because guessing wrong
+ * in either direction is a lie about a cost: promising a model call that
+ * never happens teaches people to distrust the line, and staying quiet about
+ * one that does is the surprise this whole announcement exists to prevent.
+ */
+export async function setupCallsModel(
+  workspacePath: string,
+  state: Exclude<ProjectSetupState, "ready">,
+): Promise<boolean> {
+  // `needs-init` means there is no policy here yet, so the one about to be
+  // compiled is the template's — canonical by construction.
+  if (state === "needs-init") return false;
+  try {
+    const markdown = await readFile(
+      path.join(workspacePath, ".agent", ORCHESTRATION_FILE),
+      "utf8",
+    );
+    return !isCanonicalPolicySource(markdown);
+  } catch {
+    // Unreadable here means the compile is about to fail on it anyway; claim
+    // the higher cost rather than the lower one.
+    return true;
+  }
+}
+
+/**
+ * The one line each state announces before it runs. Every one of them names
+ * the cost up front — files written, and a model call only when there will
+ * actually be one — because that is what makes kapel just doing this on its
+ * own a reasonable thing to do rather than a surprise.
  */
 export function setupAnnounceLine(
   state: Exclude<ProjectSetupState, "ready">,
+  callsModel: boolean,
 ): string {
+  const cost = callsModel ? " (one model call)" : "";
   return state === "needs-init"
     ? "setting this project up for kapel — creating .agent/ and compiling " +
-        "the orchestration policy (one model call)…"
-    : "compiling this project's orchestration policy for kapel (one model " +
-        "call)…";
+        `the orchestration policy${cost}…`
+    : `compiling this project's orchestration policy for kapel${cost}…`;
 }
 
 export interface ProjectSetupDeps {
@@ -164,7 +200,12 @@ export function createProjectSetup(deps: ProjectSetupDeps): ProjectSetup {
       if (state === "ready") return true;
       if (deps.interactive !== true) return false;
 
-      output.log(setupAnnounceLine(state));
+      output.log(
+        setupAnnounceLine(
+          state,
+          await setupCallsModel(deps.workspacePath, state),
+        ),
+      );
 
       if (state === "needs-init") {
         if (!(await step("`kapel init`", deps.init, output))) {

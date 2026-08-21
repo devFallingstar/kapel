@@ -142,7 +142,7 @@ describe("createProjectSetup", () => {
 
     expect(await setup.ensure(output)).toBe(true);
     expect(ran).toEqual(["init", "compile"]);
-    expect(lines).toEqual([setupAnnounceLine("needs-init")]);
+    expect(lines).toEqual([setupAnnounceLine("needs-init", false)]);
     expect(errLines).toEqual([]);
   });
 
@@ -151,7 +151,9 @@ describe("createProjectSetup", () => {
     const { output, lines } = capture();
 
     expect(await setup.ensure(output)).toBe(true);
-    expect(lines).toEqual([setupAnnounceLine("needs-policy")]);
+    // Nothing on disk here (the state is faked), so the announcement takes
+    // the cautious branch and names the model call it cannot rule out.
+    expect(lines).toEqual([setupAnnounceLine("needs-policy", true)]);
     expect(lines[0]).toContain("one model call");
     expect(ran).toEqual(["compile"]);
   });
@@ -207,10 +209,11 @@ describe("createProjectSetup", () => {
     ]);
   });
 
-  it("names both costs in the line it announces about a fresh project", () => {
-    const line = setupAnnounceLine("needs-init");
+  it("names the files a fresh project costs, and no model call it will not spend", () => {
+    const line = setupAnnounceLine("needs-init", false);
     expect(line).toContain(".agent/");
-    expect(line).toContain("one model call");
+    expect(line).not.toContain("one model call");
+    expect(setupAnnounceLine("needs-init", true)).toContain("one model call");
   });
 
   it("keeps every announce line to a single line", () => {
@@ -219,7 +222,9 @@ describe("createProjectSetup", () => {
       "needs-policy",
     ];
     for (const state of states) {
-      expect(setupAnnounceLine(state)).not.toContain("\n");
+      for (const callsModel of [true, false]) {
+        expect(setupAnnounceLine(state, callsModel)).not.toContain("\n");
+      }
     }
   });
 });
@@ -291,7 +296,7 @@ describe("createProjectSetup — over the real init and compile", () => {
 
     expect(await realSetup().ensure(output)).toBe(true);
     expect(errLines).toEqual([]);
-    expect(lines[0]).toBe(setupAnnounceLine("needs-init"));
+    expect(lines[0]).toBe(setupAnnounceLine("needs-init", false));
 
     const agentDir = path.join(workspace, ".agent");
     expect(await exists(path.join(agentDir, "orchestration.md"))).toBe(true);
@@ -302,13 +307,14 @@ describe("createProjectSetup — over the real init and compile", () => {
     );
     expect(await detectProjectSetup(workspace)).toBe("ready");
 
-    // The compile's own summary — warnings included — reaches the caller's
-    // sink, exactly as `kapel policy compile` prints it on the shell.
+    // The compile's own summary reaches the caller's sink, exactly as
+    // `kapel policy compile` prints it on the shell — and what it says is
+    // that the shipped template was read rather than compiled.
     const text = lines.join("\n");
     expect(text).toContain(`Created ${agentDir}`);
     expect(text).toContain("Lock written to");
-    expect(text).toContain("Warnings:");
-    expect(text).toContain("assumed default retry policy");
+    expect(text).toContain("no model call");
+    expect(text).not.toContain("assumed default retry policy");
 
     // `kapel init`'s .gitignore entries land too.
     const gitignore = await readFile(
@@ -316,6 +322,57 @@ describe("createProjectSetup — over the real init and compile", () => {
       "utf8",
     );
     expect(gitignore).toContain(".agent/sessions.db*");
+  });
+
+  it("sets a fresh project up with no provider credential at all", async () => {
+    // The canonical template never reaches a provider, so the compile that
+    // used to need `ANTHROPIC_API_KEY` (or a logged-in CLI) now needs
+    // nothing — which is the whole point of not calling a model to read it.
+    delete process.env.ANTHROPIC_API_KEY;
+    const { output, lines, errLines } = capture();
+
+    expect(
+      await createProjectSetup({
+        workspacePath: workspace,
+        interactive: true,
+        init: (out) => runInit({ cwd: workspace, fill: true, output: out }),
+        compile: (out) =>
+          runPolicyCompile(
+            { cwd: workspace, json: false, backend: "native" },
+            { output: out },
+          ),
+      }).ensure(output),
+    ).toBe(true);
+    expect(errLines).toEqual([]);
+    expect(lines.join("\n")).toContain("no model call");
+    expect(await detectProjectSetup(workspace)).toBe("ready");
+  });
+
+  it("still compiles a policy rewritten as prose, through the model", async () => {
+    const { output, lines } = capture();
+    expect(await realSetup().ensure(output)).toBe(true);
+
+    // Rewriting the policy in prose drops the canonical marker, which is how
+    // someone opts back into a model compile — and the compiler's warnings
+    // come back with it.
+    await writeFile(
+      path.join(workspace, ".agent", "orchestration.md"),
+      "Send everything to `coder`, and be quick about it.\n",
+      "utf8",
+    );
+    const second = capture();
+    expect(
+      await runPolicyCompile(
+        { cwd: workspace, json: false, backend: "native" },
+        { output: second.output, compilerFactory: fakeCompiler },
+      ),
+    ).toBe(0);
+
+    const text = second.lines.join("\n");
+    expect(text).toContain("Warnings:");
+    expect(text).toContain("assumed default retry policy");
+    expect(text).not.toContain("no model call");
+    expect(lines.length).toBeGreaterThan(0);
   });
 
   it("fills in a .agent that holds nothing but the session database", async () => {

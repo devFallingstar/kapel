@@ -95,16 +95,21 @@ describe("loadAgentProject - templates/default/.agent fixture", () => {
       // default still configures no validators.
       expect(project.config.validators).toEqual([]);
 
+      // The shipped policy is in kapel's canonical form (see `canonical.ts`),
+      // which is what lets a fresh project compile without a model call.
       expect(project.orchestrationMarkdown).toBeDefined();
       expect(project.orchestrationMarkdown).toContain("Orchestration Policy");
       expect(project.orchestrationMarkdown).toContain(
-        "Use `explorer` for inexpensive read-only repository exploration.",
+        "Use `lead` as the main orchestrator.",
       );
       expect(project.orchestrationMarkdown).toContain(
-        "Use `senior` for complex or architectural implementation work.",
+        "always route tasks of complex and architectural complexity to `senior`",
       );
       expect(project.orchestrationMarkdown).toContain(
-        "Use `junior` for trivial single-function changes.",
+        "always route tasks of trivial complexity to `junior`",
+      );
+      expect(project.orchestrationMarkdown).toContain(
+        "always route `exploration` tasks to `explorer`",
       );
 
       expect(project.agent("nonexistent")).toBeUndefined();

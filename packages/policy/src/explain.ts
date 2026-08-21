@@ -1,15 +1,10 @@
+import { joinList } from "./phrase.js";
 import type {
   EscalationRule,
   OrchestrationPolicy,
   ReviewRule,
   RoutingRule,
 } from "./schema.js";
-
-function joinList(values: readonly string[]): string {
-  if (values.length <= 1) return values[0] ?? "";
-  const head = values.slice(0, -1).join(", ");
-  return `${head} and ${values[values.length - 1] ?? ""}`;
-}
 
 /** "tasks", or the conditions that narrow which tasks a rule matches. */
 function matchClause(rule: {

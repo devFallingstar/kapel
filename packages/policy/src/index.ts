@@ -42,6 +42,17 @@ export function validatePolicy(
 }
 
 export type {
+  CanonicalParseFailure,
+  CanonicalParseOutcome,
+} from "./canonical.js";
+export {
+  CANONICAL_POLICY_MARKER,
+  isCanonicalPolicySource,
+  PolicyRenderError,
+  parsePolicyMarkdown,
+  renderPolicyMarkdown,
+} from "./canonical.js";
+export type {
   LlmPolicyCompilerOptions,
   PolicyCompileErrorInit,
   PolicyCompileIssue,

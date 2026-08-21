@@ -8,12 +8,14 @@ import type {
   EscalationRule,
   LocatedIssue,
   OrchestrationPolicy,
+  PolicyCompileResult,
   PolicyCompiler,
   PolicyLockfile,
   RoutingRule,
   SourceLocation,
 } from "@agent/coding-agent";
 import {
+  CANONICAL_POLICY_MARKER,
   checkLock,
   createLockfile,
   DelegatedPolicyCompiler,
@@ -27,6 +29,7 @@ import {
   PolicyCompileError,
   ProjectConfigError,
   parseLockfile,
+  parsePolicyMarkdown,
   serializeLockfile,
   validatePolicy,
 } from "@agent/coding-agent";
@@ -364,32 +367,79 @@ async function buildPolicyCompiler(
   return { compiler, model: resolved.model, usage };
 }
 
-/** Implements `kapel policy compile`: LLM-compiles `orchestration.md` and writes the policy lock. */
-export async function runPolicyCompile(
+/**
+ * One compiled policy, and how it was arrived at.
+ *
+ * `source` is the whole point: `canonical` means the source was read
+ * deterministically and no model was called, which is what the compile
+ * reports and what goes into the lock's `model` field.
+ */
+interface CompiledSource {
+  readonly result: PolicyCompileResult;
+  readonly source: "canonical" | "model";
+  /** The lock's `model` field — an id, or `canonical`. */
+  readonly modelId: string;
+  /** The line the compile opens with. */
+  readonly report: string;
+  /** Absent on the canonical path, which spends nothing to report. */
+  readonly usage?: UsageTracker;
+  readonly delegatedTo?: DelegatedBackendName;
+}
+
+/**
+ * Turns `.agent/orchestration.md` into a policy, without a model where that
+ * is possible.
+ *
+ * A source carrying {@link CANONICAL_POLICY_MARKER} is parsed outright (see
+ * `canonical.ts`) — no provider is resolved, no credential is needed and no
+ * tokens are spent, which is why this runs *before* {@link
+ * buildPolicyCompiler} rather than as a fallback inside it: a machine with no
+ * backend at all can still compile a canonical policy.
+ *
+ * Everything else is prose, and prose is what the model is for. A source that
+ * claims to be canonical but no longer parses says so on the way past — it
+ * is about to cost a model call the file exists to avoid, and that is worth a
+ * line — but is otherwise treated exactly like prose.
+ */
+async function compilePolicySource(
   options: PolicyCompileOptions,
-  deps: RunPolicyCompileDeps = {},
-): Promise<number> {
-  const output = deps.output ?? consoleOutput;
-  const workspacePath = path.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
+  deps: RunPolicyCompileDeps,
+  context: {
+    readonly workspacePath: string;
+    readonly project: AgentProject;
+    readonly markdown: string;
+    readonly output: PolicyOutput;
+  },
+): Promise<CompiledSource | { readonly exitCode: number }> {
+  const { markdown, output } = context;
 
-  const loaded = await loadProjectForPolicy(
-    workspacePath,
-    output,
-    options.json,
-  );
-  if ("exitCode" in loaded) return loaded.exitCode;
-  const { project, markdown } = loaded;
+  const canonical = parsePolicyMarkdown(markdown);
+  if ("policy" in canonical) {
+    return {
+      result: { policy: canonical.policy, warnings: [], ambiguities: [] },
+      source: "canonical",
+      modelId: "canonical",
+      report: "Read the policy from its canonical form — no model call.",
+    };
+  }
+  if (canonical.failure.reason === "unreadable" && !options.json) {
+    const where =
+      canonical.failure.line === undefined
+        ? ""
+        : ` at line ${canonical.failure.line}`;
+    output.error(
+      `This policy carries the ${CANONICAL_POLICY_MARKER} marker but no ` +
+        `longer fits that form${where}: ${canonical.failure.message}. ` +
+        "Compiling it with a model instead — `kapel policy edit` rewrites it " +
+        "in the canonical form, which compiles without one.",
+    );
+  }
 
-  const built = await buildPolicyCompiler(options, deps, {
-    workspacePath,
-    project,
-    output,
-  });
-  if ("exitCode" in built) return built.exitCode;
+  const built = await buildPolicyCompiler(options, deps, context);
+  if ("exitCode" in built) return built;
   const { compiler, model, usage, delegatedTo } = built;
 
-  let result: Awaited<ReturnType<PolicyCompiler["compile"]>>;
+  let result: PolicyCompileResult;
   try {
     result = await compiler.compile(markdown);
   } catch (error) {
@@ -406,10 +456,50 @@ export async function runPolicyCompile(
       } else {
         output.error(error.message);
       }
-      return 1;
+      return { exitCode: 1 };
     }
     throw error;
   }
+
+  return {
+    result,
+    source: "model",
+    modelId: model.id,
+    report: `Compiled policy using ${model.id} (${model.provider})`,
+    usage,
+    ...(delegatedTo === undefined ? {} : { delegatedTo }),
+  };
+}
+
+/**
+ * Implements `kapel policy compile`: turns `.agent/orchestration.md` into the
+ * policy lock, reading it deterministically where it can and compiling it
+ * with a model where it cannot (see {@link compilePolicySource}).
+ */
+export async function runPolicyCompile(
+  options: PolicyCompileOptions,
+  deps: RunPolicyCompileDeps = {},
+): Promise<number> {
+  const output = deps.output ?? consoleOutput;
+  const workspacePath = path.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+
+  const loaded = await loadProjectForPolicy(
+    workspacePath,
+    output,
+    options.json,
+  );
+  if ("exitCode" in loaded) return loaded.exitCode;
+  const { project, markdown } = loaded;
+
+  const compiled = await compilePolicySource(options, deps, {
+    workspacePath,
+    project,
+    markdown,
+    output,
+  });
+  if ("exitCode" in compiled) return compiled.exitCode;
+  const { result, usage, delegatedTo } = compiled;
 
   const validation = validatePolicy(result.policy, project.knownAgentNames());
   const validationErrors = validation.filter(
@@ -433,7 +523,7 @@ export async function runPolicyCompile(
     return 1;
   }
 
-  const lock = createLockfile({ markdown, result, model: model.id });
+  const lock = createLockfile({ markdown, result, model: compiled.modelId });
   const serialized = serializeLockfile(lock);
   const lockPath = path.join(project.root, LOCK_FILE_NAME);
   await writeFile(lockPath, serialized, "utf8");
@@ -449,6 +539,9 @@ export async function runPolicyCompile(
     jsonLine(output, {
       ok: true,
       lockPath,
+      // Which path produced this: `canonical` spent nothing, `model`
+      // compiled the prose. Scripts that budget model calls read this.
+      source: compiled.source,
       policy: result.policy,
       warnings,
       ambiguities,
@@ -461,12 +554,17 @@ export async function runPolicyCompile(
     return 0;
   }
 
-  output.log(`Compiled policy using ${model.id} (${model.provider})`);
+  output.log(compiled.report);
   output.log(`Lock written to ${lockPath}`);
   output.log(
     `Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`,
   );
-  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  // Nothing was spent on the canonical path, and a `input: 0, output: 0`
+  // ledger would read as a compile that happened to be free rather than as
+  // one that never called anything.
+  if (usage !== undefined) {
+    output.log(policyUsageLine(usage.totals(), delegatedTo));
+  }
   printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
   return 0;
@@ -657,14 +755,14 @@ export async function runPolicyExplain(
 export type RunPolicyDiffDeps = RunPolicyCompileDeps;
 
 /**
- * Implements `kapel policy diff`: recompiles `orchestration.md` (same LLM
- * call as `kapel policy compile`) and diffs the result against the
- * currently locked policy, without writing anything — a way to preview what
- * `kapel policy compile` would change before committing to it.
+ * Implements `kapel policy diff`: recompiles `orchestration.md` the same way
+ * `kapel policy compile` does and diffs the result against the currently
+ * locked policy, without writing anything — a way to preview what a compile
+ * would change before committing to it.
  *
- * "Same LLM call" includes the backend: the compiler comes from the same
- * {@link buildPolicyCompiler} `compile` uses, so a delegated compile diffs
- * with no API key exactly as it compiles with none.
+ * "The same way" is {@link compilePolicySource}, which means a canonical
+ * policy diffs for free, and a prose one diffs through the same backend it
+ * compiles through — so a delegated diff needs no API key either.
  */
 export async function runPolicyDiff(
   options: PolicyCompileOptions,
@@ -701,35 +799,14 @@ export async function runPolicyDiff(
     return 1;
   }
 
-  const built = await buildPolicyCompiler(options, deps, {
+  const compiled = await compilePolicySource(options, deps, {
     workspacePath,
     project,
+    markdown,
     output,
   });
-  if ("exitCode" in built) return built.exitCode;
-  const { compiler, usage, delegatedTo } = built;
-
-  let result: Awaited<ReturnType<PolicyCompiler["compile"]>>;
-  try {
-    result = await compiler.compile(markdown);
-  } catch (error) {
-    if (error instanceof PolicyCompileError) {
-      if (options.json) {
-        jsonLine(output, {
-          ok: false,
-          error: error.message,
-          attempts: error.attempts,
-          issues: (error.lastIssues ?? []).map(
-            (issue) => `${issue.path}: ${issue.message}`,
-          ),
-        });
-      } else {
-        output.error(error.message);
-      }
-      return 1;
-    }
-    throw error;
-  }
+  if ("exitCode" in compiled) return compiled.exitCode;
+  const { result, usage, delegatedTo } = compiled;
 
   const diff = diffPolicies(existingLock.policy, result.policy);
   const warnings = [
@@ -747,6 +824,7 @@ export async function runPolicyDiff(
       escalation: diff.escalation,
       warnings,
       ambiguities: result.ambiguities,
+      source: compiled.source,
     });
     return 0;
   }
@@ -760,8 +838,12 @@ export async function runPolicyDiff(
     output.log("");
     for (const line of formatPolicyDiff(diff)) output.log(line);
   }
-  // A diff costs a real compile, so it reports its spend like `compile` does.
-  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  // A diff that went through a model costs a real compile, so it reports its
+  // spend like `compile` does; one read from the canonical form spent nothing
+  // and says nothing.
+  if (usage !== undefined) {
+    output.log(policyUsageLine(usage.totals(), delegatedTo));
+  }
   printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(
     output,
