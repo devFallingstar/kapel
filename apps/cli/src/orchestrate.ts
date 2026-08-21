@@ -552,6 +552,9 @@ export interface RunUsageView {
   breakdownBy(dimension: UsageDimension): ReadonlyMap<string, UsageBreakdown>;
 }
 
+/** The agent name planning spend is attributed to; it belongs to no task. */
+export const PLANNER_AGENT = "planner";
+
 /**
  * The per-task columns: which model did the work, what it spent, what that
  * cost.
@@ -587,17 +590,245 @@ function summaryRow(
 }
 
 /**
+ * What {@link runSummaryLines} and the `--json` run summary need to attribute
+ * the per-agent table's orchestrator row and look up each participant's
+ * project-declared role.
+ */
+export interface RunSummaryContext {
+  readonly objective: string;
+  readonly policy: OrchestrationPolicy;
+  readonly project: AgentProject;
+  /**
+   * Task ids of the reviews the policy injected into the plan, when the
+   * caller has that (a fresh `/orchestrate` does; a resumed run's request
+   * omits it, since the plan it re-executes already has them baked in).
+   */
+  readonly injectedReviews?: readonly string[];
+}
+
+/** Longest a DID cell is allowed to print before it is truncated with an ellipsis. */
+const DIGEST_MAX_CHARS = 64;
+
+/** Keeps a table row on one line at typical terminal widths. */
+function truncateDigest(text: string): string {
+  if (text.length <= DIGEST_MAX_CHARS) return text;
+  return `${text.slice(0, DIGEST_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+/** The project's declared role for `agent`, or `-` when the project doesn't know it. */
+function agentRoleLabel(project: AgentProject, agent: string): string {
+  return project.agent(agent)?.role ?? "-";
+}
+
+/** One agent's tasks, in the order the agent first appears in the run. */
+interface AgentTaskGroup {
+  readonly agent: string;
+  readonly tasks: readonly RuntimeTask[];
+}
+
+/**
+ * Groups tasks by {@link RuntimeTask.assignedAgent}, in first-appearance
+ * order. A task never dispatched (its dependency failed or the run was
+ * aborted before it started) carries no `assignedAgent` and is skipped here —
+ * it already renders as `cancelled` in the per-task table above, and no agent
+ * did anything to it.
+ *
+ * Escalation needs no special handling: the scheduler overwrites
+ * `assignedAgent` on every attempt (`DeterministicScheduler#attempt`), so by
+ * the time a task is terminal this is already the agent whose attempt
+ * completed it — or, for a task that failed every attempt, the last agent
+ * that tried.
+ */
+function groupTasksByAgent(
+  tasks: readonly RuntimeTask[],
+): readonly AgentTaskGroup[] {
+  const order: string[] = [];
+  const byAgent = new Map<string, RuntimeTask[]>();
+  for (const task of tasks) {
+    const agent = task.assignedAgent;
+    if (agent === undefined) continue;
+    let group = byAgent.get(agent);
+    if (group === undefined) {
+      group = [];
+      byAgent.set(agent, group);
+      order.push(agent);
+    }
+    group.push(task);
+  }
+  return order.map((agent) => {
+    const group = byAgent.get(agent);
+    // `agent` only ever came from `order`, which is only ever populated
+    // alongside a `byAgent.set`, so the lookup here cannot miss.
+    return { agent, tasks: group as readonly RuntimeTask[] };
+  });
+}
+
+/** The TASKS cell for a worker row: counts of each terminal status it reached. */
+function workerTasksLabel(tasks: readonly RuntimeTask[]): string {
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  const failed = tasks.filter((task) => task.status === "failed").length;
+  const cancelled = tasks.filter((task) => task.status === "cancelled").length;
+  const parts: string[] = [];
+  if (completed > 0) parts.push(`${completed} ok`);
+  if (failed > 0) parts.push(`${failed} failed`);
+  if (cancelled > 0) parts.push(`${cancelled} cancelled`);
+  return parts.length === 0 ? "0 tasks" : parts.join(" · ");
+}
+
+/** The DID cell for a worker row: what it actually finished, not what it attempted. */
+function workerDid(tasks: readonly RuntimeTask[]): string {
+  const titles = tasks
+    .filter((task) => task.status === "completed")
+    .map((task) => task.spec.title);
+  return titles.length === 0 ? "-" : truncateDigest(titles.join(", "));
+}
+
+/** The TASKS cell for the orchestrator row: what it planned, not what ran. */
+function orchestratorTasksLabel(
+  totalPlanned: number,
+  injectedReviews: readonly string[] | undefined,
+): string {
+  const base = `planned ${totalPlanned} task${totalPlanned === 1 ? "" : "s"}`;
+  const reviews = injectedReviews?.length ?? 0;
+  if (reviews === 0) return base;
+  return `${base} · ${reviews} review${reviews === 1 ? "" : "s"} injected`;
+}
+
+/**
+ * One row of the per-agent summary table, in both the shape the text table
+ * renders and the shape the `--json` `agents` array reports — built once so
+ * neither can disagree with the other about who did what.
+ */
+interface AgentSummaryEntry {
+  readonly agent: string;
+  readonly role: string;
+  readonly models: readonly string[];
+  readonly tasksLabel: string;
+  readonly did: string;
+  readonly spent: UsageBreakdown | undefined;
+  readonly tasksCompleted: number;
+  readonly tasksFailed: number;
+  readonly tasksCancelled: number;
+  /** Set only on the orchestrator row. */
+  readonly tasksPlanned?: number;
+  /** Set only on the orchestrator row, and only when it injected at least one. */
+  readonly reviewsInjected?: number;
+}
+
+/**
+ * The per-agent summary: one row per participant that actually did something,
+ * orchestrator first.
+ *
+ * The orchestrator row is always present, even for a degenerate run where
+ * every task was cancelled before any worker ran — "planned N tasks" still
+ * describes what the orchestrator did. Its BACKEND·MODEL and TOKENS columns
+ * come from the `PLANNER_AGENT` usage bucket (see `planningThrough`/
+ * `delegatedPlanningThrough`) — the planner identity the run actually used —
+ * not from whatever the orchestrator's own agent name happened to execute, if
+ * anything; a project whose orchestrator also takes worker tasks gets a
+ * second row for that, keyed on its agent name like any other worker.
+ */
+function buildAgentSummaries(
+  tasks: readonly RuntimeTask[],
+  usage: RunUsageView,
+  context: RunSummaryContext,
+): readonly AgentSummaryEntry[] {
+  const byAgent = usage.breakdownBy("agent");
+  const entries: AgentSummaryEntry[] = [];
+
+  const orchestratorName = context.policy.orchestrator;
+  const plannerSpend = byAgent.get(PLANNER_AGENT);
+  const reviewsInjected = context.injectedReviews?.length ?? 0;
+  entries.push({
+    agent: orchestratorName,
+    role: agentRoleLabel(context.project, orchestratorName),
+    models: plannerSpend?.models ?? [],
+    tasksLabel: orchestratorTasksLabel(tasks.length, context.injectedReviews),
+    did: truncateDigest(context.objective),
+    spent: plannerSpend,
+    tasksCompleted: 0,
+    tasksFailed: 0,
+    tasksCancelled: 0,
+    tasksPlanned: tasks.length,
+    ...(reviewsInjected > 0 ? { reviewsInjected } : {}),
+  });
+
+  for (const group of groupTasksByAgent(tasks)) {
+    entries.push({
+      agent: group.agent,
+      role: agentRoleLabel(context.project, group.agent),
+      models: byAgent.get(group.agent)?.models ?? [],
+      tasksLabel: workerTasksLabel(group.tasks),
+      did: workerDid(group.tasks),
+      spent: byAgent.get(group.agent),
+      tasksCompleted: group.tasks.filter((task) => task.status === "completed")
+        .length,
+      tasksFailed: group.tasks.filter((task) => task.status === "failed")
+        .length,
+      tasksCancelled: group.tasks.filter((task) => task.status === "cancelled")
+        .length,
+    });
+  }
+  return entries;
+}
+
+/** {@link AgentSummaryEntry} as one row of the text table. */
+function agentSummaryRow(entry: AgentSummaryEntry): readonly string[] {
+  return [
+    entry.agent,
+    entry.role,
+    entry.models.length === 0 ? "-" : entry.models.join("+"),
+    entry.tasksLabel,
+    entry.did,
+    entry.spent === undefined
+      ? "-"
+      : `${formatTokenCount(entry.spent.usage.inputTokens)}/${formatTokenCount(entry.spent.usage.outputTokens)}`,
+  ];
+}
+
+/** {@link AgentSummaryEntry} as one element of the `--json` `agents` array. */
+function agentSummaryJson(entry: AgentSummaryEntry): Record<string, unknown> {
+  return {
+    agent: entry.agent,
+    role: entry.role === "-" ? null : entry.role,
+    models: entry.models,
+    tasksCompleted: entry.tasksCompleted,
+    tasksFailed: entry.tasksFailed,
+    ...(entry.tasksCancelled > 0
+      ? { tasksCancelled: entry.tasksCancelled }
+      : {}),
+    ...(entry.tasksPlanned === undefined
+      ? {}
+      : { tasksPlanned: entry.tasksPlanned }),
+    ...(entry.reviewsInjected === undefined
+      ? {}
+      : { reviewsInjected: entry.reviewsInjected }),
+    did: entry.did,
+    usage: entry.spent === undefined ? null : entry.spent.usage,
+    costUsd:
+      entry.spent === undefined
+        ? null
+        : entry.spent.pricing === "unknown"
+          ? null
+          : entry.spent.costUsd,
+  };
+}
+
+/**
  * The end-of-run report, as lines.
  *
- * Three views of the same numbers, narrowing from what to who to how much: one
- * row per task, one line per model, then the run total. The per-model rollup
- * is the only place a reader can check the claim the whole project rests on —
- * that the expensive model planned and cheap workers executed — so it is
- * derived from the same tracker as the total and always adds up to it.
+ * Four views of the same run, narrowing from what to who to how much: one row
+ * per task, one row per agent, one line per model, then the run total. The
+ * per-agent table answers "who did what" — one row per participant that
+ * actually did something, orchestrator first; the per-model rollup is the
+ * only place a reader can check the claim the whole project rests on — that
+ * the expensive model planned and cheap workers executed — so it is derived
+ * from the same tracker as the total and always adds up to it.
  */
 export function runSummaryLines(
   tasks: readonly RuntimeTask[],
   usage: RunUsageView,
+  context: RunSummaryContext,
 ): readonly string[] {
   const completed = tasks.filter((task) => task.status === "completed").length;
   const byTask = usage.breakdownBy("task");
@@ -609,6 +840,12 @@ export function runSummaryLines(
     ),
     "",
     `${completed}/${tasks.length} tasks completed`,
+    "",
+    ...formatTable(
+      ["AGENT", "ROLE", "BACKEND·MODEL", "TASKS", "DID", "TOKENS"],
+      buildAgentSummaries(tasks, usage, context).map(agentSummaryRow),
+    ),
+    "",
     ...usageRollupLines(usage.breakdownBy("model"), { countTasks: true }),
     usageLine(usage.totals()),
   ];
@@ -637,6 +874,7 @@ function renderRunSummary(
   usage: RunUsageView,
   output: OrchestrationOutput,
   json: boolean,
+  context: RunSummaryContext,
 ): number {
   const completed = tasks.filter((task) => task.status === "completed").length;
   const ok = completed === tasks.length;
@@ -665,6 +903,7 @@ function renderRunSummary(
           ...(task.result === undefined ? {} : { result: task.result }),
         };
       }),
+      agents: buildAgentSummaries(tasks, usage, context).map(agentSummaryJson),
       models: modelRollupJson(usage),
       usage: totals.usage,
       costUsd: totals.costUsd,
@@ -672,7 +911,7 @@ function renderRunSummary(
     return ok ? 0 : 1;
   }
 
-  for (const line of runSummaryLines(tasks, usage)) output.log(line);
+  for (const line of runSummaryLines(tasks, usage, context)) output.log(line);
   return ok ? 0 : 1;
 }
 
@@ -742,6 +981,14 @@ export interface ExecuteRunRequest {
    * Omitted, execution starts from an empty one.
    */
   readonly usage?: UsageTracker;
+  /**
+   * Task ids of the reviews the policy injected into this plan — surfaced in
+   * the end-of-run summary's orchestrator row. `runOrchestrate` passes
+   * `preparePlan`'s `injectedReviews` through; `/resume-run` re-executes an
+   * already-rewritten plan and has no fresh count of its own, so it omits
+   * this and the orchestrator row simply says nothing about reviews.
+   */
+  readonly injectedReviews?: readonly string[];
   readonly options: ExecuteRunOptions;
 }
 
@@ -877,11 +1124,15 @@ export async function executePreparedPlan(
   // what survives in the scrollback, so it must not land inside a live frame.
   await closeTui(tui, outcomeLine(tasks));
 
-  return renderRunSummary(runId, tasks, usage, output, options.json);
+  return renderRunSummary(runId, tasks, usage, output, options.json, {
+    objective: request.objective,
+    policy,
+    project: request.project,
+    ...(request.injectedReviews === undefined
+      ? {}
+      : { injectedReviews: request.injectedReviews }),
+  });
 }
-
-/** The agent name planning spend is attributed to; it belongs to no task. */
-export const PLANNER_AGENT = "planner";
 
 /**
  * Wraps a planner factory so the planning call records what it spent.
@@ -1015,6 +1266,7 @@ export async function runOrchestrate(
         plan: prepared.plan,
         graph: new TaskGraph(prepared.plan),
         usage,
+        injectedReviews: prepared.injectedReviews,
         options: {
           json: options.json,
           backend: options.backend,

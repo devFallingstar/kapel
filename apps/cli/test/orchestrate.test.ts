@@ -5,6 +5,7 @@ import type { ModelDefinition, ModelEvent, ModelProvider } from "@agent/ai";
 import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type {
   AgentProject,
+  OrchestrationPolicy,
   ProjectAgent,
   ProjectValidator,
   RuntimeTask,
@@ -27,6 +28,7 @@ import { writeScriptedCli } from "../../../packages/coding-agent/test/planning/d
 import type {
   ExecutorFactoryArgs,
   OrchestrateCommandOptions,
+  RunSummaryContext,
 } from "../src/orchestrate.js";
 import {
   DEFAULT_ISOLATION,
@@ -69,6 +71,30 @@ function emptyProject(): AgentProject {
     handoff: undefined,
     knownAgentNames: () => new Set<string>(),
     agent: () => undefined,
+  };
+}
+
+/** A minimal `.agent/agents/<name>.md` agent, for role lookups in summary tests. */
+function projectAgent(name: string, role: ProjectAgent["role"]): ProjectAgent {
+  return {
+    name,
+    modelAlias: name,
+    role,
+    tools: [],
+    systemPrompt: "",
+    sourcePath: `/virtual/.agent/agents/${name}.md`,
+  };
+}
+
+/** {@link emptyProject} whose `agent()` answers from a fixed role table. */
+function projectWithRoles(agents: readonly ProjectAgent[]): AgentProject {
+  const base = emptyProject();
+  const byName = new Map(agents.map((agent) => [agent.name, agent]));
+  return {
+    ...base,
+    agents,
+    knownAgentNames: () => new Set(byName.keys()),
+    agent: (name) => byName.get(name),
   };
 }
 
@@ -817,6 +843,20 @@ describe("kapel orchestrate", () => {
     expect(parsed.tasks.map((entry: { agent: string }) => entry.agent)).toEqual(
       ["explorer", "coder", "reviewer"],
     );
+
+    // The per-agent table, orchestrator first: the template's "lead" agent
+    // planned the run, then each routed worker that actually ran gets a row.
+    expect(
+      parsed.agents.map((entry: { agent: string }) => entry.agent),
+    ).toEqual(["lead", "explorer", "coder", "reviewer"]);
+    const [lead, explorer] = parsed.agents;
+    expect(lead.role).toBe("orchestrator");
+    expect(lead.tasksPlanned).toBe(3);
+    expect(lead.did).toBe("add a health endpoint");
+    expect(explorer.role).toBe("worker");
+    expect(explorer.tasksCompleted).toBe(1);
+    expect(explorer.tasksFailed).toBe(0);
+    expect(explorer.did).toBe("Survey the server");
   });
 
   it("reports an executor that cannot be built, without running anything", async () => {
@@ -1042,6 +1082,23 @@ describe("runSummaryLines", () => {
     };
   }
 
+  const SUMMARY_POLICY: OrchestrationPolicy = {
+    ...ROUTING_POLICY,
+    orchestrator: "lead",
+  };
+
+  /** A {@link RunSummaryContext} for tests that don't care about role lookups. */
+  function summaryContext(
+    overrides: Partial<RunSummaryContext> = {},
+  ): RunSummaryContext {
+    return {
+      objective: "add a health endpoint",
+      policy: SUMMARY_POLICY,
+      project: emptyProject(),
+      ...overrides,
+    };
+  }
+
   /** A three-task run: an expensive planner, a cheap worker, one review. */
   function threeTaskRun(): { tasks: RuntimeTask[]; usage: UsageTracker } {
     const usage = new UsageTracker();
@@ -1073,7 +1130,7 @@ describe("runSummaryLines", () => {
 
   it("puts the model, tokens and cost of each task in the table", () => {
     const { tasks, usage } = threeTaskRun();
-    const lines = runSummaryLines(tasks, usage);
+    const lines = runSummaryLines(tasks, usage, summaryContext());
 
     expect(lines[1]).toBe(
       "STATUS     ID   AGENT     TRIES  MODEL             TOKENS      $      TITLE",
@@ -1085,10 +1142,12 @@ describe("runSummaryLines", () => {
 
   it("rolls the run up per model, then reports the grand total", () => {
     const { tasks, usage } = threeTaskRun();
-    const lines = runSummaryLines(tasks, usage);
+    const lines = runSummaryLines(tasks, usage, summaryContext());
 
-    expect(lines.slice(-4)).toEqual([
-      "3/3 tasks completed",
+    expect(lines).toContain("3/3 tasks completed");
+    // The model rollup and grand total still close the report, after the
+    // per-agent table.
+    expect(lines.slice(-3)).toEqual([
       // Planning is attributed to the model that did it, and to no task.
       "claude-opus-5: 0 tasks · 12.3k in / 2.1k out · $0.11",
       "claude-haiku-4-5: 3 tasks · 30.0k in / 6.0k out · $0.06",
@@ -1115,7 +1174,7 @@ describe("runSummaryLines", () => {
 
   it("shows a dash for a task nothing was recorded against", () => {
     const tasks = [runtimeTask("T01", "coder")];
-    const lines = runSummaryLines(tasks, new UsageTracker());
+    const lines = runSummaryLines(tasks, new UsageTracker(), summaryContext());
 
     expect(lines[2]).toBe(
       "completed  T01  coder  1      -      -       -  Task T01",
@@ -1135,7 +1194,11 @@ describe("runSummaryLines", () => {
       { inputTokens: 4_000, outputTokens: 900 },
       { agent: "coder", taskId: "T01" },
     );
-    const lines = runSummaryLines([runtimeTask("T01", "coder")], usage);
+    const lines = runSummaryLines(
+      [runtimeTask("T01", "coder")],
+      usage,
+      summaryContext(),
+    );
 
     expect(lines[2]).toBe(
       "completed  T01  coder  1      <codex default>  4.0k/900  n/a  Task T01",
@@ -1154,12 +1217,130 @@ describe("runSummaryLines", () => {
       { inputTokens: 4_000, outputTokens: 900 },
       { agent: "coder", taskId: "T01" },
     );
-    const lines = runSummaryLines([runtimeTask("T01", "coder")], usage);
+    const lines = runSummaryLines(
+      [runtimeTask("T01", "coder")],
+      usage,
+      summaryContext(),
+    );
 
     expect(lines[2]).toBe(
       "completed  T01  coder  1      gpt-5.1  4.0k/900  n/a  Task T01",
     );
     expect(lines.at(-2)).toBe("gpt-5.1: 1 task · 4.0k in / 900 out · n/a");
+  });
+
+  describe("per-agent summary table", () => {
+    /** The agent table's header row, plus the rows below it up to the next blank line. */
+    function agentTableRows(lines: readonly string[]): readonly string[] {
+      const start = lines.findIndex((line) => line.startsWith("AGENT"));
+      const end = lines.indexOf("", start);
+      return lines.slice(start, end === -1 ? undefined : end);
+    }
+
+    it("puts the orchestrator first, then one row per worker that ran, role and spend included", () => {
+      const { tasks, usage } = threeTaskRun();
+      const project = projectWithRoles([
+        projectAgent("lead", "orchestrator"),
+        projectAgent("explorer", "worker"),
+        projectAgent("coder", "worker"),
+        projectAgent("reviewer", "reviewer"),
+      ]);
+      const lines = runSummaryLines(
+        tasks,
+        usage,
+        summaryContext({ project, injectedReviews: ["T03"] }),
+      );
+
+      expect(agentTableRows(lines)).toEqual([
+        "AGENT     ROLE          BACKEND·MODEL     TASKS                                DID                    TOKENS",
+        "lead      orchestrator  claude-opus-5     planned 3 tasks · 1 review injected  add a health endpoint  12.3k/2.1k",
+        "explorer  worker        claude-haiku-4-5  1 ok                                 Task T01               10.0k/2.0k",
+        "coder     worker        claude-haiku-4-5  1 ok                                 Task T02               10.0k/2.0k",
+        "reviewer  reviewer      claude-haiku-4-5  1 ok                                 Task T03               10.0k/2.0k",
+      ]);
+    });
+
+    it("shows a dash for role, model and tokens when the project or the ledger has nothing to say", () => {
+      const lines = runSummaryLines(
+        [runtimeTask("T01", "coder")],
+        new UsageTracker(),
+        summaryContext(),
+      );
+
+      const rows = agentTableRows(lines);
+      expect(rows[1]).toBe(
+        "lead   -     -              planned 1 task  add a health endpoint  -",
+      );
+      expect(rows[2]).toBe(
+        "coder  -     -              1 ok            Task T01               -",
+      );
+    });
+
+    it("attributes an escalated task to the agent whose attempt completed it, not the one it started with", () => {
+      const tasks: RuntimeTask[] = [
+        {
+          spec: task("T01", { title: "Fix the flaky test" }),
+          status: "completed",
+          assignedAgent: "senior",
+          attempts: 2,
+          lastEscalation: {
+            rule: "junior-to-senior",
+            from: "junior",
+            to: "senior",
+          },
+        },
+      ];
+      const lines = runSummaryLines(
+        tasks,
+        new UsageTracker(),
+        summaryContext(),
+      );
+
+      const rows = agentTableRows(lines);
+      expect(rows.some((row) => row.startsWith("senior "))).toBe(true);
+      expect(rows.find((row) => row.startsWith("senior "))).toContain("1 ok");
+      // The agent it escalated away from never completed anything, so it gets
+      // no row of its own.
+      expect(rows.some((row) => row.startsWith("junior"))).toBe(false);
+    });
+
+    it("counts a task that failed under every agent it was tried with as failed, under the last one", () => {
+      const tasks: RuntimeTask[] = [
+        {
+          spec: task("T01", { title: "Fix the flaky test" }),
+          status: "failed",
+          assignedAgent: "senior",
+          attempts: 2,
+        },
+      ];
+      const lines = runSummaryLines(
+        tasks,
+        new UsageTracker(),
+        summaryContext(),
+      );
+
+      const rows = agentTableRows(lines);
+      const seniorRow = rows.find((row) => row.startsWith("senior "));
+      expect(seniorRow).toContain("1 failed");
+      // Nothing completed, so there is nothing to name in DID.
+      expect(seniorRow).toContain("-");
+    });
+
+    it("still renders coherently when every task is cancelled before any agent runs", () => {
+      const tasks: RuntimeTask[] = [
+        { spec: task("T01"), status: "cancelled", attempts: 0 },
+        { spec: task("T02"), status: "cancelled", attempts: 0 },
+      ];
+      const lines = runSummaryLines(
+        tasks,
+        new UsageTracker(),
+        summaryContext(),
+      );
+
+      // Only the orchestrator row: nothing was ever dispatched to a worker.
+      expect(agentTableRows(lines)).toHaveLength(2);
+      expect(agentTableRows(lines)[1]).toContain("planned 2 tasks");
+    });
   });
 });
 
