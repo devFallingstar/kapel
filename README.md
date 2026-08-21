@@ -96,7 +96,7 @@ kapel> calc.test.js is failing — find out why and fix it
   - return a - b;
   + return a + b;
   a = always allow edit_file this session
-allow edit_file? [y/n/a] y
+allow edit_file? [y/n/a, or say what to do instead] y
   ✓
 `add` subtracted instead of adding. Fixed and `node calc.test.js` now prints PASS.
 tokens +4210 in, +318 out  (~$0.0138)
@@ -121,6 +121,8 @@ Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; an
 The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, a single self-updating line at the bottom shows a spinner, how long the current wait has been, and the conversation's token count so far. That line is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
 
 The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Tab completes what is under the cursor: a `/` command name, the argument of a command that has a fixed vocabulary (`/model ` offers the built-in aliases), or an `@` file mention.
+
+**`/` opens the command list.** Typing a slash as the first character of a message draws this session's commands under the input line — one per row, each with the same sentence `/help` prints beside it, built-ins first and then whatever `.agent/commands/` contributed. It narrows live as you keep typing: `/re` leaves `/resume` and `/resume-run`, and the part you have already typed stays lit in the prompt's own colour inside every candidate so you can see how much of each name you have pinned down. Eight rows at a time, with `… and N more` counting the rest. It closes itself the moment the name is finished (a space starts the arguments), the line stops beginning with a slash, or nothing matches at all. The list only ever *shows*: Tab still completes exactly as it did, and Enter sends precisely the characters in your buffer even when one command is all that is left on screen — a menu that quietly retyped your line for you would be a worse thing to have than no menu. Like the spinner, it is a terminal courtesy and nothing else: a piped or redirected `kapel` draws no menu and writes no escape for one.
 
 **`@` mentions a file.** Type `@` and part of a path, then Tab: the match is fuzzy over the whole path, so `@clisrc` finds `apps/cli/src/…` and `@input.ts` finds it wherever it lives. A unique winner is filled in; several share whatever prefix they have in common, and pressing Tab again lists them. The candidates are the workspace's files as `git ls-files --cached --others --exclude-standard` reports them — tracked files plus untracked ones your `.gitignore` does not exclude — cached for a few seconds so holding Tab down does not spawn a process per keystroke. Outside a git repo the list comes from a bounded walk instead (four levels deep, `node_modules`/`.git`/`dist` skipped).
 
@@ -378,11 +380,15 @@ backend — so a Claude Code lead and a Codex worker seed `anthropic` and
 
 ### Permissions
 
-`write_file`/`edit_file`/`bash` ask at the prompt (`[y/n/a]` — "a" remembers the
-answer for the rest of that session only, never written anywhere). There is no
-flag to turn the asking off: the REPL is the one place a human is definitely
-present. A `permission` block, hand-edited into either config file, changes what
-asks and what doesn't — opencode's syntax, unchanged:
+`write_file`/`edit_file`/`bash` ask at the prompt (`[y/n/a, or say what to do
+instead]` — "a" remembers the answer for the rest of that session only, never
+written anywhere). Answering with a sentence rather than a letter — "왜 이
+파일을 지우려는 거야?", "use the config file instead" — declines the call *and*
+sends what you typed to the agent, so it answers you and proposes something
+else without your having to start the turn over. There is no flag to turn the
+asking off: the REPL is the one place a human is definitely present. A
+`permission` block, hand-edited into either config file, changes what asks and
+what doesn't — opencode's syntax, unchanged:
 
 ```jsonc
 // ~/.kapel/config.json

@@ -1,16 +1,21 @@
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import type { CompleterResult } from "../src/input.js";
+import type { CommandMenuEntry, CompleterResult } from "../src/input.js";
 import {
+  COMMAND_MENU_MAX_ROWS,
   CONTINUATION_PROMPT,
+  commandMenuToken,
   createInputManager,
+  filterCommandMenu,
   flushAssembly,
   historyEntryFor,
   INPUT_SIGINT,
   initialAssembly,
   reduceAssemblyLine,
+  renderCommandMenu,
   toReadlineCompleter,
 } from "../src/input.js";
+import { createStyles, PLAIN_STYLES, ROLE_SGR } from "../src/styles.js";
 
 const CTRL_C = "\x03";
 const CTRL_D = "\x04";
@@ -32,6 +37,8 @@ class FakeTtyInput extends PassThrough {
 
 class FakeOutput extends Writable {
   isTTY = false;
+  /** Left undefined by default, exactly as a non-terminal stream is. */
+  columns: number | undefined = undefined;
   chunks: string[] = [];
 
   override _write(
@@ -50,6 +57,14 @@ class FakeOutput extends Writable {
 
 function makeIo(): { input: FakeTtyInput; output: FakeOutput } {
   return { input: new FakeTtyInput(), output: new FakeOutput() };
+}
+
+/** Both ends a terminal — the only shape the `/` menu draws in. */
+function makeTtyIo(columns = 80): { input: FakeTtyInput; output: FakeOutput } {
+  const io = makeIo();
+  io.output.isTTY = true;
+  io.output.columns = columns;
+  return io;
 }
 
 /** Lets queued microtasks/macrotasks (readline's keypress + line handling) settle. */
@@ -471,6 +486,418 @@ describe("InputManager.withSuspended", () => {
 
     input.write("real\n");
     await expect(pending).resolves.toBe("real");
+    manager.close();
+  });
+});
+
+// --- the live slash-command menu ----------------------------------------------
+
+const MENU: readonly CommandMenuEntry[] = [
+  { name: "/help", description: "show this list" },
+  { name: "/resume", description: "switch to a stored conversation" },
+  {
+    name: "/resume-run",
+    description: "re-execute the unfinished tasks of a recorded run",
+  },
+  { name: "/runs", description: "list this workspace's recorded runs" },
+];
+
+/** The escape only `hideMenu` writes: down past the input, clear, come back. */
+const HIDE = "[1B\r[0J";
+/** The escape only `dropMenu` writes, from the row Enter's `\r\n` landed on. */
+const DROP = "\r[0J";
+
+describe("commandMenuToken", () => {
+  it("offers the token as soon as a message starts with a slash", () => {
+    expect(commandMenuToken("/", 1)).toBe("/");
+    expect(commandMenuToken("/re", 3)).toBe("/re");
+  });
+
+  it("says nothing about a line that does not start with one", () => {
+    expect(commandMenuToken("", 0)).toBeUndefined();
+    expect(commandMenuToken("hello", 5)).toBeUndefined();
+    expect(commandMenuToken(" /help", 6)).toBeUndefined();
+    expect(commandMenuToken("what about /help", 16)).toBeUndefined();
+  });
+
+  it("closes the moment a space ends the command name", () => {
+    // The keystroke that completes the command is the keystroke that hides
+    // the menu: after the space the cursor is past the token's end.
+    expect(commandMenuToken("/model", 6)).toBe("/model");
+    expect(commandMenuToken("/model ", 7)).toBeUndefined();
+    expect(commandMenuToken("/model opus", 11)).toBeUndefined();
+  });
+
+  it("reopens when the cursor moves back into a finished name", () => {
+    // The buffer is offering a name again, so the list describing it belongs
+    // back on screen — and it describes the whole token, not its left half.
+    expect(commandMenuToken("/model opus", 3)).toBe("/model");
+    expect(commandMenuToken("/model opus", 6)).toBe("/model");
+    expect(commandMenuToken("/model opus", 0)).toBe("/model");
+  });
+});
+
+describe("filterCommandMenu", () => {
+  it("keeps every command under a bare slash, in registration order", () => {
+    expect(filterCommandMenu(MENU, "/").map((entry) => entry.name)).toEqual([
+      "/help",
+      "/resume",
+      "/resume-run",
+      "/runs",
+    ]);
+  });
+
+  it("narrows to the commands that start with what has been typed", () => {
+    expect(filterCommandMenu(MENU, "/re").map((entry) => entry.name)).toEqual([
+      "/resume",
+      "/resume-run",
+    ]);
+    expect(
+      filterCommandMenu(MENU, "/resume-").map((entry) => entry.name),
+    ).toEqual(["/resume-run"]);
+  });
+
+  it("matches case-insensitively", () => {
+    expect(filterCommandMenu(MENU, "/HE").map((entry) => entry.name)).toEqual([
+      "/help",
+    ]);
+  });
+
+  it("matches nothing for a name no command has", () => {
+    expect(filterCommandMenu(MENU, "/zzz")).toEqual([]);
+  });
+});
+
+describe("renderCommandMenu", () => {
+  const plain = { columns: 80, styles: PLAIN_STYLES };
+
+  it("draws one aligned `name  description` row per match", () => {
+    const rows = renderCommandMenu(
+      filterCommandMenu(MENU, "/re"),
+      "/re",
+      plain,
+    );
+    expect(rows).toEqual([
+      "  /resume      switch to a stored conversation",
+      "  /resume-run  re-execute the unfinished tasks of a recorded run",
+    ]);
+  });
+
+  it("renders nothing at all when nothing matches", () => {
+    expect(renderCommandMenu([], "/zzz", plain)).toEqual([]);
+  });
+
+  it("caps the rows and counts the rest", () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({
+      name: `/c${index}`,
+      description: `command ${index}`,
+    }));
+    const rows = renderCommandMenu(many, "/", { ...plain, maxRows: 3 });
+    expect(rows).toHaveLength(4);
+    expect(rows[3]).toBe("  … and 9 more");
+  });
+
+  it("defaults the cap to COMMAND_MENU_MAX_ROWS", () => {
+    const many = Array.from({ length: COMMAND_MENU_MAX_ROWS + 2 }, (_, i) => ({
+      name: `/c${i}`,
+      description: "x",
+    }));
+    const rows = renderCommandMenu(many, "/", plain);
+    expect(rows).toHaveLength(COMMAND_MENU_MAX_ROWS + 1);
+    expect(rows[COMMAND_MENU_MAX_ROWS]).toBe("  … and 2 more");
+  });
+
+  it("truncates a row to one cell short of the terminal's width", () => {
+    // One short, because a row that exactly fills the width is wrapped by the
+    // terminal — one more physical line than the redraw arithmetic counted.
+    const rows = renderCommandMenu(filterCommandMenu(MENU, "/help"), "/help", {
+      columns: 20,
+      styles: PLAIN_STYLES,
+    });
+    expect(rows[0]).toBe("  /help  show this…");
+    expect([...(rows[0] ?? "")].length).toBeLessThanOrEqual(19);
+  });
+
+  it("lifts the typed prefix out of each row in the user's own colour", () => {
+    const rows = renderCommandMenu(filterCommandMenu(MENU, "/re"), "/re", {
+      columns: 80,
+      styles: createStyles(true),
+    });
+    const reset = "[0m";
+    expect(rows[0]).toBe(
+      `  [${ROLE_SGR.user}m/re${reset}[${ROLE_SGR.menu}msume      switch to a stored conversation${reset}`,
+    );
+  });
+
+  it("marks no row as selected — nothing here is armed to Enter", () => {
+    const rows = renderCommandMenu(MENU, "/", plain);
+    for (const row of rows) {
+      expect(row).not.toContain("❯");
+      expect(row.startsWith("  /")).toBe(true);
+    }
+  });
+});
+
+describe("InputManager command menu", () => {
+  it("opens on `/`, narrows as the name is typed, and erases on submit", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const result = manager.readMessage("> ");
+
+    // A bare slash lists everything the session has registered.
+    output.chunks = [];
+    input.write("/");
+    await tick(10);
+    const opened = output.text;
+    expect(opened).toContain("/help");
+    expect(opened).toContain("show this list");
+    expect(opened).toContain("/resume-run");
+
+    // One letter in, `/runs` is still a candidate…
+    output.chunks = [];
+    input.write("r");
+    await tick(10);
+    expect(output.text).toContain("recorded runs");
+
+    // …and one more leaves only the two `/re…` commands.
+    output.chunks = [];
+    input.write("e");
+    await tick(10);
+    const narrowed = output.text;
+    expect(narrowed).toContain("/resume");
+    expect(narrowed).toContain("/resume-run");
+    expect(narrowed).not.toContain("show this list");
+    expect(narrowed).not.toContain("recorded runs");
+
+    // Enter sends what was typed — not the one command the menu was down to.
+    output.chunks = [];
+    input.write("\n");
+    await expect(result).resolves.toBe("/re");
+    const submitted = output.text;
+    expect(submitted).toContain(DROP);
+    expect(submitted).not.toContain("resume");
+
+    manager.close();
+  });
+
+  it("erases the menu the moment a space completes the command", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("/resume");
+    await tick(10);
+    expect(output.text).toContain("switch to a stored conversation");
+
+    output.chunks = [];
+    input.write(" ");
+    await tick(10);
+    expect(output.text).toContain(HIDE);
+    expect(output.text).not.toContain("switch to a stored conversation");
+
+    input.write("abc\n");
+    await expect(result).resolves.toBe("/resume abc");
+    manager.close();
+  });
+
+  it("erases it when the line stops being a command at all", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("/h");
+    await tick(10);
+    expect(output.text).toContain("show this list");
+
+    // Backspace over the slash: no first token, no menu.
+    input.write("\x7f");
+    await tick(10);
+    output.chunks = [];
+    input.write("\x7f");
+    await tick(10);
+    expect(output.text).toContain(HIDE);
+    expect(output.text).not.toContain("show this list");
+
+    input.write("hello\n");
+    await expect(result).resolves.toBe("hello");
+    manager.close();
+  });
+
+  it("shows nothing for a name no command has", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("/");
+    await tick(10);
+    output.chunks = [];
+    input.write("zzz");
+    await tick(10);
+    // A list of no commands is worse than no list: the first `z` takes it
+    // down and nothing after it puts anything back.
+    expect(output.text).toContain(HIDE);
+    expect(output.text).not.toContain("/help");
+    expect(output.text).not.toContain("… and");
+
+    input.write("\n");
+    await expect(result).resolves.toBe("/zzz");
+    manager.close();
+  });
+
+  it("erases the menu on Ctrl-C", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("/re");
+    await tick(10);
+    expect(output.text).toContain("/resume-run");
+
+    output.chunks = [];
+    input.write(CTRL_C);
+    await expect(result).resolves.toBe(INPUT_SIGINT);
+    expect(output.text).toContain(HIDE);
+
+    manager.close();
+  });
+
+  it("hides the menu while the terminal belongs to someone else", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const pending = manager.readMessage("> ");
+    input.write("/re");
+    await tick(10);
+
+    output.chunks = [];
+    await manager.withSuspended(async () => {
+      await tick(5);
+      // Whatever a select prompt writes here finds a clear screen below the
+      // prompt: the menu came down before this ran.
+      expect(output.text).toContain(HIDE);
+      expect(output.text).not.toContain("/resume-run");
+    });
+
+    // …and it is back under the re-issued prompt once control returns.
+    expect(output.text).toContain("/resume-run");
+
+    input.write("\n");
+    await expect(pending).resolves.toBe("/re");
+    manager.close();
+  });
+
+  it("draws nothing at all when either end is not a terminal", async () => {
+    for (const [inputTty, outputTty] of [
+      [false, true],
+      [true, false],
+      [false, false],
+    ] as const) {
+      const { input, output } = makeTtyIo();
+      input.isTTY = inputTty;
+      output.isTTY = outputTty;
+      const manager = createInputManager({
+        input,
+        output,
+        pasteWindowMs: 5,
+        commandMenu: () => MENU,
+      });
+
+      const result = manager.readMessage("> ");
+      input.write("/re\n");
+      await expect(result).resolves.toBe("/re");
+      expect(output.text).not.toContain("/resume-run");
+      expect(output.text).not.toContain(HIDE);
+      manager.close();
+    }
+  });
+
+  it("draws nothing when no command list was handed in", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    const result = manager.readMessage("> ");
+    input.write("/re\n");
+    await expect(result).resolves.toBe("/re");
+    expect(output.text).not.toContain(HIDE);
+    manager.close();
+  });
+
+  it("never opens over a question — that prompt composes no message", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => MENU,
+    });
+
+    const answer = manager.question("allow? [y/N] ");
+    output.chunks = [];
+    input.write("/");
+    await tick(10);
+    expect(output.text).not.toContain("show this list");
+
+    input.write("\n");
+    await expect(answer).resolves.toBe("/");
+    manager.close();
+  });
+
+  it("reads the command list afresh on every keystroke", async () => {
+    const { input, output } = makeTtyIo();
+    let entries: readonly CommandMenuEntry[] = MENU;
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      commandMenu: () => entries,
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("/");
+    await tick(10);
+    expect(output.text).not.toContain("/ship-it");
+
+    // What `/help` rescanning `.agent/commands/` looks like from here.
+    entries = [...MENU, { name: "/ship-it", description: "cut a release" }];
+    output.chunks = [];
+    input.write("s");
+    await tick(10);
+    expect(output.text).toContain("/ship-it");
+    expect(output.text).toContain("cut a release");
+
+    input.write("\n");
+    await expect(result).resolves.toBe("/s");
     manager.close();
   });
 });

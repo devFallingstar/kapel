@@ -20,6 +20,7 @@ const ROLES: readonly StyleRole[] = [
   "tool",
   "notice",
   "heading",
+  "menu",
   "ok",
   "warn",
   "error",
@@ -104,8 +105,16 @@ describe("createStyles", () => {
     expect(new Set(codes).size).toBe(codes.length);
   });
 
+  it("keeps a menu row quieter than the prefix highlighted inside it", () => {
+    // The one contrast the `/` menu depends on: the typed prefix wears the
+    // user's own colour, the rest of the row recedes.
+    expect(ROLE_SGR.menu).not.toBe(ROLE_SGR.user);
+    expect(ROLE_SGR.menu).toBe("2");
+  });
+
   it("named methods agree with role()", () => {
     const styled = createStyles(true);
+    expect(styled.menu("a")).toBe(styled.role("menu", "a"));
     expect(styled.user("a")).toBe(styled.role("user", "a"));
     expect(styled.warn("a")).toBe(styled.role("warn", "a"));
     expect(styled.error("a")).toBe(styled.role("error", "a"));

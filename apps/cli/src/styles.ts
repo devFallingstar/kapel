@@ -22,6 +22,13 @@
  *   for the trace of a tool that ran.
  * - **heading** — a table's header row, a section title. Bold; bodies stay
  *   plain, so the header is the only thing the eye has to skip.
+ * - **menu** — the rows of a completion menu drawn under the prompt: the live
+ *   `/` command list. Dim, because a menu is scaffolding around the line being
+ *   typed rather than something the session said — and because the one part of
+ *   each row that is *not* dim is the prefix the user has already typed, which
+ *   wears **user** like every other echo of their own words. It shares dim
+ *   with **tool** today and still gets its own name: a menu is not a trace,
+ *   and the two should be able to part ways without hunting call sites.
  * - **ok / warn / error** — green, yellow, red, consistently and nowhere else.
  *
  * There are no background colours: a background that reads on a dark terminal
@@ -38,6 +45,7 @@ export type StyleRole =
   | "tool"
   | "notice"
   | "heading"
+  | "menu"
   | "ok"
   | "warn"
   | "error";
@@ -55,6 +63,7 @@ export const ROLE_SGR: Record<StyleRole, string> = {
   tool: "2",
   notice: "2;35",
   heading: "1",
+  menu: "2",
   ok: "32",
   warn: "33",
   error: "31",
@@ -90,6 +99,8 @@ export interface Styles {
   notice(text: string): string;
   /** A table header or a section title. */
   heading(text: string): string;
+  /** A completion-menu row under the prompt — see the module comment. */
+  menu(text: string): string;
   ok(text: string): string;
   warn(text: string): string;
   error(text: string): string;
@@ -106,6 +117,7 @@ export function createStyles(enabled: boolean): Styles {
     tool: (text) => at("tool", text),
     notice: (text) => at("notice", text),
     heading: (text) => at("heading", text),
+    menu: (text) => at("menu", text),
     ok: (text) => at("ok", text),
     warn: (text) => at("warn", text),
     error: (text) => at("error", text),

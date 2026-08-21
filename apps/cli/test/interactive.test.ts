@@ -22,7 +22,7 @@ import type {
   LoadCustomCommandsResult,
 } from "../src/commands.js";
 import type { InputManager } from "../src/input.js";
-import { INPUT_SIGINT } from "../src/input.js";
+import { filterCommandMenu, INPUT_SIGINT } from "../src/input.js";
 import type {
   InteractiveController,
   InteractiveControllerDeps,
@@ -39,6 +39,7 @@ import {
   instructionsBannerLine,
   invalidSessionName,
   openChatStore,
+  replCommandMenuEntries,
   resolveStartSession,
   SIGINT_LINE,
   shortId,
@@ -2211,6 +2212,77 @@ describe("createReplCompleter", () => {
     const completer = createReplCompleter();
     expect(completer("look at @clisrc")).toEqual([[], "look at @clisrc"]);
     expect(completer("/mo")).toEqual([["/model"], "/mo"]);
+  });
+});
+
+describe("replCommandMenuEntries", () => {
+  const shipIt: CustomCommand = {
+    name: "ship-it",
+    description: "cut a release",
+    template: "ship it",
+    sourcePath: ".agent/commands/ship-it.md",
+  };
+
+  it("says about each built-in exactly what /help says", async () => {
+    // The menu is a view of the registry `/help` prints, not a second copy:
+    // every name and every sentence has to be findable in the table.
+    const h = await harness();
+    const help = (await h.controller.handleLine("/help")).output.join("\n");
+    const entries = replCommandMenuEntries();
+    expect(entries.length).toBeGreaterThan(10);
+    for (const entry of entries) {
+      expect(help).toContain(entry.name);
+      expect(help).toContain(entry.description);
+    }
+  });
+
+  it("narrows to the /re… family, in registration order", () => {
+    const names = filterCommandMenu(replCommandMenuEntries(), "/re").map(
+      (entry) => entry.name,
+    );
+    expect(names).toEqual(["/resume", "/resume-run"]);
+  });
+
+  it("appends this session's custom commands after the built-ins", () => {
+    const entries = replCommandMenuEntries([shipIt]);
+    expect(entries.at(-1)).toEqual({
+      name: "/ship-it",
+      description: "cut a release",
+    });
+    expect(entries[0]?.name).toBe("/help");
+  });
+
+  it("falls back to the same '(no description)' /help prints", async () => {
+    const undescribed: CustomCommand = {
+      name: "quiet",
+      template: "hush",
+      sourcePath: ".agent/commands/quiet.md",
+    };
+    const source = customCommandsFixture({
+      commands: [undescribed],
+      warnings: [],
+    });
+    const h = await harness({ customCommands: source.load });
+    const help = (await h.controller.handleLine("/help")).output.join("\n");
+
+    const entry = replCommandMenuEntries([undescribed]).at(-1);
+    expect(entry?.name).toBe("/quiet");
+    expect(help).toContain(`/quiet  ${entry?.description}`);
+  });
+
+  it("hands the whole scanned commands to onCustomCommandsChanged", async () => {
+    // Names alone would do for Tab; the menu needs the descriptions the scan
+    // has already read, and this is the only callback that has them.
+    const source = customCommandsFixture({
+      commands: [shipIt],
+      warnings: [],
+    });
+    const seen: (readonly CustomCommand[])[] = [];
+    await harness({
+      customCommands: source.load,
+      onCustomCommandsChanged: (commands) => seen.push(commands),
+    });
+    expect(seen).toEqual([[shipIt]]);
   });
 });
 

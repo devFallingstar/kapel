@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import { PLAIN_STYLES, type Styles } from "./styles.js";
 
 /**
  * The input-editor core: one long-lived `readline` interface owning stdin
@@ -84,6 +85,139 @@ export function historyEntryFor(message: string): string {
   return message.replace(/\n/g, " ").trim();
 }
 
+// --- The live slash-command menu ---------------------------------------------
+
+/**
+ * The `/` menu, as three pure functions — which token the buffer is offering
+ * (below), which commands that token still matches, and what the rows look
+ * like — plus the redraw shell further down in {@link createInputManager}.
+ *
+ * The menu *shows*; it never *decides*. Tab still completes (readline owns
+ * that, unchanged), and Enter sends exactly the characters in the buffer even
+ * when only one command is left on screen. Anything else would mean the list
+ * that appeared to help you type could quietly retype your line for you.
+ */
+
+/** One row: a command name with its leading `/`, and what it does. */
+export interface CommandMenuEntry {
+  readonly name: string;
+  readonly description: string;
+}
+
+/** Rows shown before the list gives up and counts the rest. */
+export const COMMAND_MENU_MAX_ROWS = 8;
+
+/**
+ * The command token the buffer is currently offering the menu, or `undefined`
+ * when there is none and the menu must not be on screen.
+ *
+ * The rule is the whole feature in one line: the buffer's **first** token
+ * starts with `/` and the cursor is inside it. So the menu opens on the `/`
+ * that starts a message, narrows as the name is typed, and closes the moment
+ * a space ends the token (the cursor is then past its end) — or the moment
+ * the line stops starting with a slash at all. A cursor moved back into a
+ * finished command's name reopens it, because the buffer is once again
+ * offering a name to complete.
+ *
+ * The token is the *whole* first word, not the slice before the cursor: what
+ * the list has to describe is the command the buffer would send, not the half
+ * of it that happens to precede the caret.
+ */
+export function commandMenuToken(
+  line: string,
+  cursor: number,
+): string | undefined {
+  if (!line.startsWith("/")) return undefined;
+  const space = line.search(/\s/);
+  const end = space === -1 ? line.length : space;
+  return cursor > end ? undefined : line.slice(0, end);
+}
+
+/**
+ * The commands still matching `token`, in the order they were registered —
+ * built-ins first, then `.agent/commands/` — so the list never reshuffles
+ * itself under a typing hand. Matching is case-insensitive on a prefix,
+ * exactly what {@link commandMenuToken}'s caller would eventually dispatch.
+ */
+export function filterCommandMenu(
+  entries: readonly CommandMenuEntry[],
+  token: string,
+): readonly CommandMenuEntry[] {
+  const prefix = token.toLowerCase();
+  return entries.filter((entry) => entry.name.toLowerCase().startsWith(prefix));
+}
+
+export interface CommandMenuRenderOptions {
+  /** The terminal's width; rows are truncated to fit inside it. */
+  readonly columns: number;
+  readonly styles: Styles;
+  /** Defaults to {@link COMMAND_MENU_MAX_ROWS}. */
+  readonly maxRows?: number;
+}
+
+const MENU_INDENT = "  ";
+const MENU_GAP = "  ";
+
+/** `text` cut to `max` display cells, with `…` standing in for what was cut. */
+function truncateTo(text: string, max: number): string {
+  const chars = [...text];
+  if (chars.length <= max) return text;
+  if (max <= 0) return "";
+  if (max === 1) return "…";
+  return `${chars.slice(0, max - 1).join("")}…`;
+}
+
+/**
+ * The menu's rows, ready to be written one per line under the input.
+ *
+ * Empty when nothing matches: a list of no commands is worse than no list,
+ * and the shell reads the empty array as "erase". Rows are dim (`menu`) with
+ * the typed prefix lifted out in `user` — the point of the highlight is to
+ * show *your* keystrokes inside each candidate, so the eye can see at a glance
+ * how much of each name it has already pinned down.
+ *
+ * No row is marked as selected, because none is: nothing here is armed to
+ * Enter, so a `❯` would be a promise the menu does not keep.
+ *
+ * Rows are truncated to one cell short of the terminal's width. That last
+ * cell is not politeness — a row that exactly fills the width makes the
+ * terminal wrap it, which would put one more physical line on screen than the
+ * shell counted, and the redraw arithmetic below is all relative.
+ */
+export function renderCommandMenu(
+  matches: readonly CommandMenuEntry[],
+  token: string,
+  options: CommandMenuRenderOptions,
+): readonly string[] {
+  if (matches.length === 0) return [];
+
+  const maxRows = Math.max(1, options.maxRows ?? COMMAND_MENU_MAX_ROWS);
+  const visible = matches.slice(0, maxRows);
+  const hidden = matches.length - visible.length;
+  const limit = Math.max(1, options.columns - 1);
+  const width = Math.max(...visible.map((entry) => entry.name.length));
+  const styles = options.styles;
+  const typed = [...token].length;
+
+  const rows = visible.map((entry) => {
+    const plain = `${MENU_INDENT}${entry.name.padEnd(width)}${MENU_GAP}${entry.description}`;
+    const chars = [...truncateTo(plain, limit)];
+    const start = Math.min(MENU_INDENT.length, chars.length);
+    const end = Math.min(start + typed, chars.length);
+    const indent = chars.slice(0, start).join("");
+    const prefix = chars.slice(start, end).join("");
+    const rest = chars.slice(end).join("");
+    return `${indent}${styles.user(prefix)}${styles.menu(rest)}`;
+  });
+
+  if (hidden > 0) {
+    rows.push(
+      styles.menu(truncateTo(`${MENU_INDENT}… and ${hidden} more`, limit)),
+    );
+  }
+  return rows;
+}
+
 // --- InputManager -------------------------------------------------------------
 
 export const INPUT_SIGINT: unique symbol = Symbol("input-sigint");
@@ -148,7 +282,10 @@ export function toReadlineCompleter(
 
 export interface InputManagerOptions {
   readonly input: NodeJS.ReadableStream & { isTTY?: boolean };
-  readonly output: NodeJS.WritableStream;
+  readonly output: NodeJS.WritableStream & {
+    isTTY?: boolean;
+    columns?: number;
+  };
   /** Newest-first, matching `readline`'s own history convention. */
   readonly history?: readonly string[];
   /** Called once per accepted top-level message, with its recall-safe form. */
@@ -166,6 +303,20 @@ export interface InputManagerOptions {
   readonly continuationPrompt?: string;
   /** How long to wait for more lines before resolving a paste as one message. */
   readonly pasteWindowMs?: number;
+  /**
+   * The session's slash commands, for the live menu drawn under the input
+   * while a `/` name is being typed (see {@link commandMenuToken}).
+   *
+   * A getter, read afresh on every keystroke, for the same reason the Tab
+   * completer takes one: this manager is built before the controller that
+   * owns the command list exists, and that list grows a `.agent/commands/`
+   * entry on every `/help`. Omitting it turns the menu off entirely.
+   */
+  readonly commandMenu?: () => readonly CommandMenuEntry[];
+  /** The palette the menu is painted with. Plain (no escapes) by default. */
+  readonly styles?: Styles;
+  /** Menu rows before the `… and N more` tail. */
+  readonly commandMenuRows?: number;
 }
 
 export interface InputManager {
@@ -228,6 +379,164 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       }
     | undefined;
 
+  // --- the live slash-command menu ------------------------------------------
+  //
+  // Drawn *below* the input line, per keystroke, with the same relative-cursor
+  // moves the select prompt uses (`ESC[nA/B`, `ESC[0J`) — nothing here ever
+  // addresses an absolute screen position, so a scroll (or an alt-screen) can
+  // move the whole block without invalidating a single escape.
+  //
+  // One keystroke redraws like this: readline's own `_refreshLine` has already
+  // run by the time our `keypress` listener is called (it was registered
+  // first), and it clears from the top of the input block downwards — so the
+  // previous menu is usually gone before we draw. `drawMenu` re-clears anyway,
+  // because the keys that move only the cursor never trigger that refresh.
+  //
+  // The cursor always ends where it started: on the input line, in the column
+  // readline believes it is in. readline's own bookkeeping is therefore never
+  // touched, which is what keeps ↑-history, wrapping and Tab intact.
+
+  const CSI = "[";
+  const menuEntries = options.commandMenu;
+  const menuStyles = options.styles ?? PLAIN_STYLES;
+  const menuMaxRows = options.commandMenuRows ?? COMMAND_MENU_MAX_ROWS;
+  /**
+   * Both ends must be a terminal: a piped stdin has no keystrokes to react to
+   * and a redirected stdout must never receive a cursor escape. A run without
+   * a menu writes exactly the bytes it wrote before this existed.
+   */
+  const menuEnabled =
+    menuEntries !== undefined &&
+    options.input.isTTY === true &&
+    options.output.isTTY === true;
+  /** Physical rows the menu currently occupies below the input block. */
+  let menuRows = 0;
+  /** True while another consumer owns the terminal (see `withSuspended`). */
+  let menuSuspended = false;
+
+  const write = (text: string): void => {
+    options.output.write(text);
+  };
+
+  const columns = (): number => {
+    const value = options.output.columns;
+    return typeof value === "number" && value > 0 ? value : 80;
+  };
+
+  /** Where readline believes the cursor is, relative to the prompt's start. */
+  const cursorPos = (): { readonly rows: number; readonly cols: number } => {
+    const get = (
+      rl as unknown as {
+        getCursorPos?: () => { rows: number; cols: number };
+      }
+    ).getCursorPos;
+    if (typeof get !== "function") return { rows: 0, cols: 0 };
+    try {
+      return get.call(rl);
+    } catch {
+      return { rows: 0, cols: 0 };
+    }
+  };
+
+  /**
+   * How many rows of the input block sit *below* the cursor's own row — the
+   * tail of a wrapped line the user has arrowed back into. The menu goes under
+   * the whole block, not under the caret.
+   */
+  const rowsBelowCursor = (cols: number): number => {
+    const tail = [...rl.line.slice(rl.cursor)].length;
+    return Math.floor((cols + tail) / columns());
+  };
+
+  /** Climb `down` rows back to the caret's column. */
+  const backToCursor = (down: number, cols: number): string =>
+    `${down > 0 ? `${CSI}${down}A` : ""}\r${cols > 0 ? `${CSI}${cols}C` : ""}`;
+
+  /** Erase the menu with the caret still sitting in the input line. */
+  const hideMenu = (): void => {
+    if (menuRows === 0) return;
+    menuRows = 0;
+    const { cols } = cursorPos();
+    // `ESC[nB` rather than newlines: the rows are known to exist (a menu is on
+    // them), so moving down cannot scroll, and nothing below is ever created.
+    const down = rowsBelowCursor(cols) + 1;
+    write(`${CSI}${down}B\r${CSI}0J${backToCursor(down, cols)}`);
+  };
+
+  /**
+   * Erase it from where readline's own `\r\n` has already left the caret: the
+   * menu's first row. This is the Enter path — by the time the `line` event
+   * fires, the caret has left the input line, so {@link hideMenu}'s arithmetic
+   * no longer applies and a plain clear-to-end-of-screen is both correct and
+   * cheaper.
+   */
+  const dropMenu = (): void => {
+    if (menuRows === 0) return;
+    menuRows = 0;
+    write(`\r${CSI}0J`);
+  };
+
+  const drawMenu = (lines: readonly string[]): void => {
+    const { cols } = cursorPos();
+    const below = rowsBelowCursor(cols);
+    // `\r\n` (not `ESC[B`) for the step onto the first menu row: that row may
+    // not exist yet, and a newline is the one thing that makes the terminal
+    // scroll one into being.
+    const down = below + lines.length;
+    write(
+      `${below > 0 ? `${CSI}${below}B` : ""}\r\n${CSI}0J${lines.join("\r\n")}${backToCursor(down, cols)}`,
+    );
+    menuRows = lines.length;
+  };
+
+  /** Recompute the menu from the buffer and put the screen in that state. */
+  const renderMenu = (): void => {
+    if (!menuEnabled || menuSuspended) return;
+    // Only ever under a message being composed: a `question()` answer and an
+    // idle prompt-less terminal are not places to offer commands.
+    if (readPending === undefined) {
+      hideMenu();
+      return;
+    }
+    const token = commandMenuToken(rl.line, rl.cursor);
+    if (token === undefined) {
+      hideMenu();
+      return;
+    }
+    const matches = filterCommandMenu(menuEntries?.() ?? [], token);
+    const lines = renderCommandMenu(matches, token, {
+      columns: columns(),
+      styles: menuStyles,
+      maxRows: menuMaxRows,
+    });
+    if (lines.length === 0) {
+      hideMenu();
+      return;
+    }
+    drawMenu(lines);
+  };
+
+  const onKeypress = (): void => {
+    renderMenu();
+  };
+  /**
+   * A resize invalidates every row already on screen (the terminal reflows
+   * them itself, by rules that differ between emulators). Re-rendering is the
+   * defensive move: `drawMenu` clears from the input line down before it
+   * writes, so whatever the reflow left behind goes with it.
+   */
+  const onResize = (): void => {
+    renderMenu();
+  };
+
+  if (menuEnabled) {
+    // `readline` already turned this stream into a keypress emitter; our
+    // listener is simply the second one, so it sees the buffer *after*
+    // readline has applied the key.
+    options.input.on("keypress", onKeypress);
+    options.output.on("resize", onResize);
+  }
+
   function clearCoalesceTimer(): void {
     if (readPending?.coalesceTimer !== undefined) {
       clearTimeout(readPending.coalesceTimer);
@@ -275,6 +584,10 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   }
 
   rl.on("line", (line: string) => {
+    // readline has already written the `\r\n` that ends the echoed line, so
+    // the caret is standing on the menu's first row: wipe it there, before
+    // anything the REPL prints next lands on top of a stale list.
+    dropMenu();
     if (questionPending !== undefined) {
       // readline routes lines to the question callback while a question is
       // pending, not to this listener — nothing to do here in that case.
@@ -303,6 +616,11 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   });
 
   rl.on("SIGINT", () => {
+    // Ctrl-C leaves the caret exactly where it was — readline neither echoes
+    // nor refreshes — so the ordinary erase applies, and it has to happen
+    // here: this handler runs *before* the keypress listener, and by the time
+    // that one fires the read it would have rendered for is already resolved.
+    hideMenu();
     if (questionPending !== undefined) {
       const { resolve } = questionPending;
       questionPending = undefined;
@@ -319,6 +637,11 @@ export function createInputManager(options: InputManagerOptions): InputManager {
 
   rl.on("close", () => {
     closed = true;
+    hideMenu();
+    if (menuEnabled) {
+      options.input.removeListener("keypress", onKeypress);
+      options.output.removeListener("resize", onResize);
+    }
     if (questionPending !== undefined) {
       const { resolve } = questionPending;
       questionPending = undefined;
@@ -345,6 +668,10 @@ export function createInputManager(options: InputManagerOptions): InputManager {
         };
         rl.setPrompt(promptText);
         rl.prompt();
+        // A fresh prompt starts on an empty buffer, but `/help` may have just
+        // grown the command list: render so the state on screen is this
+        // read's, not the last one's.
+        renderMenu();
       });
     },
 
@@ -376,6 +703,11 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     async withSuspended<T>(fn: () => Promise<T>): Promise<T> {
       const input = options.input as unknown as RawModeCapable;
       const wasRaw = input.isRaw === true;
+      // The terminal is about to belong to someone else (a select prompt, a
+      // browser login): take the menu off the screen first, and stay quiet
+      // even though our keypress listener still hears their keystrokes.
+      hideMenu();
+      menuSuspended = true;
       rl.pause();
       input.setRawMode?.(false);
       try {
@@ -384,9 +716,13 @@ export function createInputManager(options: InputManagerOptions): InputManager {
         const isTty = (options.input as unknown as { isTTY?: boolean }).isTTY;
         input.setRawMode?.(wasRaw || isTty === true);
         rl.resume();
+        menuSuspended = false;
         if (readPending !== undefined) {
           rl.setPrompt(readPending.promptText);
           rl.prompt();
+          // The prompt was just redrawn wherever the other consumer left the
+          // screen; the menu belongs under it again.
+          renderMenu();
         }
       }
     },

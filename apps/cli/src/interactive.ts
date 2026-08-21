@@ -82,7 +82,11 @@ import {
 import { loadDotEnvFile } from "./env.js";
 import { createHistoryAppender, loadHistory } from "./history.js";
 import { runInit } from "./init.js";
-import type { CompleterResult, InputCompleter } from "./input.js";
+import type {
+  CommandMenuEntry,
+  CompleterResult,
+  InputCompleter,
+} from "./input.js";
 import {
   CONTINUATION_PROMPT,
   createInputManager,
@@ -715,12 +719,17 @@ export interface InteractiveControllerDeps {
   readonly customCommands?: () => Promise<LoadCustomCommandsResult>;
   /**
    * Called after every custom-command scan (initial load and each `/help`
-   * rescan) with the names found, so a caller that built its Tab completer
+   * rescan) with the commands found, so a caller that built its Tab completer
    * before the controller existed (the REPL's `InputManager` has to — see
    * `runInteractive`) can keep offering current names without re-scanning
    * itself.
+   *
+   * The whole commands, not just their names: the `/` menu shows each one's
+   * description beside it, and the scan is the only place that has read them.
    */
-  readonly onCustomCommandsChanged?: (names: readonly string[]) => void;
+  readonly onCustomCommandsChanged?: (
+    commands: readonly CustomCommand[],
+  ) => void;
   /**
    * The role palette every line this controller emits is painted with (see
    * `styles.ts`).
@@ -851,6 +860,38 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     help: "re-execute the unfinished tasks of a recorded run (see /runs)",
   },
 ];
+
+/** What `/help` and the `/` menu say about a command file with no `description`. */
+const NO_DESCRIPTION = "(no description)";
+
+/**
+ * The one command list the REPL shows the user, in both places it shows it:
+ * the `/help` table and the live menu that opens under the prompt on `/`.
+ *
+ * Same array, same order, same sentences — built-ins first, then whatever
+ * `.agent/commands/` contributed to *this* session. The menu is a view of the
+ * registry, not a second copy of it, so a command can never appear in one and
+ * not the other, or describe itself differently in each.
+ *
+ * `usage` is deliberately not what the menu lists: `/resume <id|name>` is the
+ * right thing to read in a table you called up on purpose, and the wrong thing
+ * to have flickering under your cursor while you type — the name is what you
+ * are matching against, and the argument shape is one `/help` away.
+ */
+export function replCommandMenuEntries(
+  custom: readonly CustomCommand[] = [],
+): readonly CommandMenuEntry[] {
+  return [
+    ...SLASH_COMMANDS.map((command) => ({
+      name: `/${command.name}`,
+      description: command.help,
+    })),
+    ...custom.map((command) => ({
+      name: `/${command.name}`,
+      description: command.description ?? NO_DESCRIPTION,
+    })),
+  ];
+}
 
 /**
  * Tab completion for slash commands, in two halves.
@@ -1063,9 +1104,7 @@ export async function createInteractiveController(
     const result = await loadCommands();
     customCommands = result.commands;
     customCommandWarnings = result.warnings;
-    deps.onCustomCommandsChanged?.(
-      customCommands.map((command) => command.name),
-    );
+    deps.onCustomCommandsChanged?.(customCommands);
   };
 
   /**
@@ -1338,7 +1377,7 @@ export async function createInteractiveController(
       );
       for (const command of customCommands) {
         const usage = `/${command.name}`.padEnd(customWidth);
-        emit(`  ${usage}  ${command.description ?? "(no description)"}`);
+        emit(`  ${usage}  ${command.description ?? NO_DESCRIPTION}`);
       }
     }
     for (const warning of customCommandWarnings) {
@@ -2598,6 +2637,11 @@ export async function runInteractive(
     // prompter this manager backs, so the completer cannot simply ask the
     // controller for its list at build time.
     const customCommandNames: { current: readonly string[] } = { current: [] };
+    // The same scan, in the shape the live `/` menu reads: built-ins plus
+    // whatever `.agent/commands/` currently holds, descriptions and all.
+    const commandMenu: { current: readonly CommandMenuEntry[] } = {
+      current: replCommandMenuEntries(),
+    };
 
     // Held in a local as well as in the outer `inputManager` (which
     // `withSuspended` reads, and which had to exist before this point):
@@ -2616,6 +2660,11 @@ export async function runInteractive(
           // A continued line is still the user typing, so its marker wears
           // the same colour the prompt's does.
           continuationPrompt: `${styles.user(CONTINUATION_PROMPT.trimEnd())} `,
+          // The live `/` menu: same registry `/help` prints, read per
+          // keystroke so a command file added mid-session shows up as soon as
+          // the next `/help` has seen it.
+          commandMenu: () => commandMenu.current,
+          styles,
         })
       : undefined;
     inputManager = manager;
@@ -2857,8 +2906,9 @@ export async function runInteractive(
       // One store for the whole REPL: the checkpoints outlive `/new`,
       // `/resume` and `/model`, because the working tree does too.
       checkpoints: createCheckpointStore({ workspacePath }),
-      onCustomCommandsChanged: (names) => {
-        customCommandNames.current = names;
+      onCustomCommandsChanged: (commands) => {
+        customCommandNames.current = commands.map((command) => command.name);
+        commandMenu.current = replCommandMenuEntries(commands);
       },
       // The one layer that knows stdout is a terminal is the one that decides
       // the controller may write escapes; see `InteractiveControllerDeps.styles`.
