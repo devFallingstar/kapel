@@ -1388,8 +1388,19 @@ function event(runId, type, taskId, data) {
   };
 }
 
-// packages/policy/dist/compiler.js
-import { z as z3 } from "zod";
+// packages/policy/dist/phrase.js
+function joinList(values) {
+  if (values.length <= 1)
+    return values[0] ?? "";
+  const head = values.slice(0, -1).join(", ");
+  return `${head} and ${values[values.length - 1] ?? ""}`;
+}
+function splitJoinedList(text2) {
+  const trimmed = text2.trim();
+  if (trimmed === "")
+    return [];
+  return trimmed.replace(/ and /g, ", ").split(", ").map((item) => item.trim()).filter((item) => item !== "");
+}
 
 // packages/policy/dist/schema.js
 import { z as z2 } from "zod";
@@ -1435,7 +1446,447 @@ var PolicySchema = z2.object({
   defaultMaxAttempts: z2.number().int().positive().default(2)
 });
 
+// packages/policy/dist/canonical.js
+var CANONICAL_POLICY_MARKER = "<!-- kapel:policy v1 -->";
+var MARKER_PATTERN = /^<!--\s*kapel:policy\s+v1\b.*?-->$/;
+var UNQUOTABLE = /[`\r\n]/;
+var PolicyRenderError = class extends Error {
+  field;
+  value;
+  constructor(field2, value) {
+    super(`Cannot write ${field2} to the canonical policy form: ${JSON.stringify(value)} contains a backtick or a line break.`);
+    this.name = "PolicyRenderError";
+    this.field = field2;
+    this.value = value;
+  }
+};
+function isCanonicalPolicySource(markdown) {
+  return markdown.split(/\r\n|\r|\n/).some((line) => MARKER_PATTERN.test(line.trim()));
+}
+function quote(field2, value) {
+  if (value === "" || UNQUOTABLE.test(value)) {
+    throw new PolicyRenderError(field2, value);
+  }
+  return `\`${value}\``;
+}
+function quoteList(field2, values) {
+  return joinList(values.map((value) => quote(field2, value)));
+}
+function renderClause(field2, rule) {
+  const taskTypes = rule.taskTypes ?? [];
+  const riskCategories = rule.riskCategories ?? [];
+  const complexity = rule.complexity ?? [];
+  let clause = taskTypes.length > 0 ? `${quoteList(`${field2} task type`, taskTypes)} tasks` : "tasks";
+  if (riskCategories.length > 0) {
+    clause += ` touching ${quoteList(`${field2} risk category`, riskCategories)}`;
+  }
+  if (complexity.length > 0) {
+    clause += ` of ${joinList([...complexity])} complexity`;
+  }
+  return clause;
+}
+function renderNumber(value) {
+  return String(value);
+}
+function renderRouting(rule) {
+  const verb = rule.strength === "hard" ? "always route" : "prefer to route";
+  const weight = rule.weight === 1 ? "" : ` (weight ${renderNumber(rule.weight)})`;
+  return `- ${quote("routing id", rule.id)}: ${verb} ${renderClause("routing", rule)} to ${quote("routing agent", rule.agent)}${weight}.`;
+}
+function renderReview(rule) {
+  const floor = rule.minimumComplexity === void 0 ? "" : ` at ${rule.minimumComplexity} complexity or above`;
+  const blocking = rule.blocking ? "blocking" : "advisory";
+  const strength = rule.strength === "hard" ? "required" : "preferred";
+  return `- ${quote("review id", rule.id)}: ${quote("review reviewer", rule.reviewer)} reviews ${renderClause("review", rule)}${floor}; ${blocking}, ${strength}.`;
+}
+function renderEscalation(rule) {
+  const triggers = [];
+  if (rule.afterFailures !== void 0) {
+    triggers.push(`after ${rule.afterFailures} failed attempt${rule.afterFailures === 1 ? "" : "s"}`);
+  }
+  if (rule.confidenceBelow !== void 0) {
+    triggers.push(`when confidence drops below ${renderNumber(rule.confidenceBelow)}`);
+  }
+  const when = triggers.length === 0 ? "on request" : triggers.join(" or ");
+  return `- ${quote("escalation id", rule.id)}: hand off from ${quote("escalation source", rule.fromAgent)} to ${quote("escalation target", rule.toAgent)} ${when}.`;
+}
+var EMPTY_SECTION = "None.";
+function renderSection(title, rules, render2) {
+  return [
+    `## ${title}`,
+    "",
+    ...rules.length === 0 ? [EMPTY_SECTION] : rules.map(render2),
+    ""
+  ];
+}
+function renderPolicyMarkdown(policy) {
+  const lines = [
+    "# Orchestration Policy",
+    "",
+    CANONICAL_POLICY_MARKER,
+    "",
+    "This file is kapel's canonical policy form: `kapel policy compile` reads",
+    "it without calling a model. Edit it here or through `kapel policy edit`.",
+    "Rewriting it in your own prose is fine too \u2014 kapel then falls back to",
+    "compiling it with a model, which is what the marker line above turns off.",
+    "",
+    "## Orchestrator",
+    "",
+    `Use ${quote("orchestrator", policy.orchestrator)} as the main orchestrator.`,
+    "",
+    "## Execution",
+    "",
+    `- Run at most ${policy.maxConcurrency} agent${policy.maxConcurrency === 1 ? "" : "s"} at a time.`,
+    `- Independent tasks ${policy.parallelizeIndependentTasks ? "may run in parallel" : "run one at a time"}.`,
+    `- Give each task ${policy.defaultMaxAttempts} attempt${policy.defaultMaxAttempts === 1 ? "" : "s"} before giving up.`,
+    "",
+    ...renderSection("Routing", policy.routing, renderRouting),
+    ...renderSection("Review", policy.review, renderReview),
+    ...renderSection("Escalation", policy.escalation, renderEscalation)
+  ];
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+var ParseError = class extends Error {
+  line;
+  constructor(message, line) {
+    super(message);
+    this.line = line;
+  }
+};
+var NO_CUT = -1;
+function occurrences(haystack, needle) {
+  const found = [];
+  let at = haystack.indexOf(needle);
+  while (at !== -1) {
+    found.unshift(at);
+    at = haystack.indexOf(needle, at + 1);
+  }
+  return found;
+}
+function parseQuotedList(text2) {
+  const items = [];
+  let rest = text2;
+  for (; ; ) {
+    const item = /^`([^`]+)`/.exec(rest);
+    if (item === null)
+      return void 0;
+    items.push(item[1] ?? "");
+    rest = rest.slice(item[0].length);
+    if (rest === "")
+      return items;
+    const separator = /^(?:, | and )(?=`)/.exec(rest);
+    if (separator === null)
+      return void 0;
+    rest = rest.slice(separator[0].length);
+  }
+}
+function parseComplexityList(text2) {
+  const items = splitJoinedList(text2);
+  if (items.length === 0)
+    return void 0;
+  const parsed = [];
+  for (const item of items) {
+    const outcome = ComplexitySchema.safeParse(item);
+    if (!outcome.success)
+      return void 0;
+    parsed.push(outcome.data);
+  }
+  return parsed;
+}
+function parseClause(text2) {
+  for (const complexityCut of [...occurrences(text2, " of "), NO_CUT]) {
+    let head = text2;
+    let complexity = [];
+    if (complexityCut >= 0) {
+      if (!text2.endsWith(" complexity"))
+        continue;
+      const inner = text2.slice(complexityCut + " of ".length, text2.length - " complexity".length);
+      const parsed = parseComplexityList(inner);
+      if (parsed === void 0)
+        continue;
+      complexity = parsed;
+      head = text2.slice(0, complexityCut);
+    }
+    for (const touchingCut of [...occurrences(head, " touching "), NO_CUT]) {
+      let front = head;
+      let riskCategories = [];
+      if (touchingCut >= 0) {
+        const parsed = parseQuotedList(head.slice(touchingCut + " touching ".length));
+        if (parsed === void 0)
+          continue;
+        riskCategories = parsed;
+        front = head.slice(0, touchingCut);
+      }
+      if (front === "tasks") {
+        return { taskTypes: [], riskCategories, complexity };
+      }
+      if (front.endsWith(" tasks")) {
+        const taskTypes = parseQuotedList(front.slice(0, front.length - " tasks".length));
+        if (taskTypes !== void 0) {
+          return { taskTypes, riskCategories, complexity };
+        }
+      }
+    }
+  }
+  return void 0;
+}
+function parseInteger(text2) {
+  return /^\d+$/.test(text2) ? Number.parseInt(text2, 10) : void 0;
+}
+function parseFraction(text2) {
+  return /^\d+(?:\.\d+)?$/.test(text2) ? Number.parseFloat(text2) : void 0;
+}
+function parseRouting(body, line) {
+  const head = /^`([^`]+)`: (always route|prefer to route) (.*)$/.exec(body);
+  if (head === null)
+    throw new ParseError("not a routing rule", line);
+  const id = head[1] ?? "";
+  const strength = head[2] === "always route" ? "hard" : "preference";
+  let rest = head[3] ?? "";
+  let weight = 1;
+  const weighted = / \(weight ([0-9.]+)\)$/.exec(rest);
+  if (weighted !== null) {
+    const parsed = parseFraction(weighted[1] ?? "");
+    if (parsed === void 0)
+      throw new ParseError("unreadable weight", line);
+    weight = parsed;
+    rest = rest.slice(0, rest.length - weighted[0].length);
+  }
+  for (const cut of occurrences(rest, " to `")) {
+    const tail3 = rest.slice(cut + " to ".length);
+    const agent = /^`([^`]+)`$/.exec(tail3);
+    if (agent === null)
+      continue;
+    const clause = parseClause(rest.slice(0, cut));
+    if (clause === void 0)
+      continue;
+    return {
+      id,
+      taskTypes: [...clause.taskTypes],
+      riskCategories: [...clause.riskCategories],
+      complexity: [...clause.complexity],
+      agent: agent[1] ?? "",
+      strength,
+      weight
+    };
+  }
+  throw new ParseError("unreadable routing rule", line);
+}
+var REVIEW_FLAGS = {
+  "blocking, required": { blocking: true, strength: "hard" },
+  "blocking, preferred": { blocking: true, strength: "preference" },
+  "advisory, required": { blocking: false, strength: "hard" },
+  "advisory, preferred": { blocking: false, strength: "preference" }
+};
+function parseReview(body, line) {
+  const head = /^`([^`]+)`: `([^`]+)` reviews (.*)$/.exec(body);
+  if (head === null)
+    throw new ParseError("not a review rule", line);
+  const id = head[1] ?? "";
+  const reviewer = head[2] ?? "";
+  const rest = head[3] ?? "";
+  for (const cut of occurrences(rest, "; ")) {
+    const flags = REVIEW_FLAGS[rest.slice(cut + "; ".length)];
+    if (flags === void 0)
+      continue;
+    let clauseText = rest.slice(0, cut);
+    let minimumComplexity;
+    const floor = / at (\S+) complexity or above$/.exec(clauseText);
+    if (floor !== null) {
+      const parsed = ComplexitySchema.safeParse(floor[1]);
+      if (parsed.success) {
+        minimumComplexity = parsed.data;
+        clauseText = clauseText.slice(0, clauseText.length - floor[0].length);
+      }
+    }
+    const clause = parseClause(clauseText);
+    if (clause === void 0 || clause.taskTypes.length > 0 || clause.complexity.length > 0) {
+      continue;
+    }
+    return {
+      id,
+      riskCategories: [...clause.riskCategories],
+      reviewer,
+      blocking: flags.blocking,
+      strength: flags.strength,
+      ...minimumComplexity === void 0 ? {} : { minimumComplexity }
+    };
+  }
+  throw new ParseError("unreadable review rule", line);
+}
+function parseEscalation(body, line) {
+  const head = /^`([^`]+)`: hand off from `([^`]+)` to `([^`]+)` (.*)$/.exec(body);
+  if (head === null)
+    throw new ParseError("not an escalation rule", line);
+  const trigger = head[4] ?? "";
+  let afterFailures;
+  let confidenceBelow;
+  if (trigger !== "on request") {
+    for (const part of trigger.split(" or ")) {
+      const failures = /^after (\d+) failed attempts?$/.exec(part);
+      if (failures !== null && afterFailures === void 0) {
+        afterFailures = parseInteger(failures[1] ?? "");
+        if (afterFailures !== void 0)
+          continue;
+      }
+      const confidence = /^when confidence drops below ([0-9.]+)$/.exec(part);
+      if (confidence !== null && confidenceBelow === void 0) {
+        confidenceBelow = parseFraction(confidence[1] ?? "");
+        if (confidenceBelow !== void 0)
+          continue;
+      }
+      throw new ParseError("unreadable escalation trigger", line);
+    }
+  }
+  return {
+    id: head[1] ?? "",
+    fromAgent: head[2] ?? "",
+    toAgent: head[3] ?? "",
+    ...afterFailures === void 0 ? {} : { afterFailures },
+    ...confidenceBelow === void 0 ? {} : { confidenceBelow }
+  };
+}
+var SECTION_TITLES = [
+  "Orchestrator",
+  "Execution",
+  "Routing",
+  "Review",
+  "Escalation"
+];
+function splitSections(markdown) {
+  const lines = markdown.split(/\r\n|\r|\n/);
+  const sections = /* @__PURE__ */ new Map();
+  let current;
+  for (const [index2, raw] of lines.entries()) {
+    const line = index2 + 1;
+    const text2 = raw.trimEnd();
+    const heading = /^##\s+(.+)$/.exec(text2);
+    if (heading !== null) {
+      const title = (heading[1] ?? "").trim();
+      if (!SECTION_TITLES.includes(title)) {
+        throw new ParseError(`unknown section "${title}"`, line);
+      }
+      if (sections.has(title)) {
+        throw new ParseError(`duplicate section "${title}"`, line);
+      }
+      current = [];
+      sections.set(title, current);
+      continue;
+    }
+    if (current === void 0 || text2.trim() === "")
+      continue;
+    current.push({ text: text2.trim(), line });
+  }
+  for (const title of SECTION_TITLES) {
+    if (!sections.has(title)) {
+      throw new ParseError(`missing "## ${title}" section`);
+    }
+  }
+  return sections;
+}
+function bodyOf(sections, title) {
+  return sections.get(title) ?? [];
+}
+function readOrchestrator(body) {
+  const only = body[0];
+  if (body.length !== 1 || only === void 0) {
+    throw new ParseError("the Orchestrator section takes exactly one sentence", body[1]?.line);
+  }
+  const match = /^Use `([^`]+)` as the main orchestrator\.$/.exec(only.text);
+  if (match === null) {
+    throw new ParseError("unreadable orchestrator sentence", only.line);
+  }
+  return match[1] ?? "";
+}
+function readExecution(body) {
+  let maxConcurrency;
+  let parallelize;
+  let attempts;
+  for (const { text: text2, line } of body) {
+    const concurrency = /^- Run at most (\d+) agents? at a time\.$/.exec(text2);
+    if (concurrency !== null && maxConcurrency === void 0) {
+      maxConcurrency = parseInteger(concurrency[1] ?? "");
+      if (maxConcurrency !== void 0)
+        continue;
+    }
+    const parallel = /^- Independent tasks (may run in parallel|run one at a time)\.$/.exec(text2);
+    if (parallel !== null && parallelize === void 0) {
+      parallelize = parallel[1] === "may run in parallel";
+      continue;
+    }
+    const attemptLine = /^- Give each task (\d+) attempts? before giving up\.$/.exec(text2);
+    if (attemptLine !== null && attempts === void 0) {
+      attempts = parseInteger(attemptLine[1] ?? "");
+      if (attempts !== void 0)
+        continue;
+    }
+    throw new ParseError("unreadable execution setting", line);
+  }
+  if (maxConcurrency === void 0 || parallelize === void 0 || attempts === void 0) {
+    throw new ParseError("the Execution section must state concurrency, parallelism and attempts", body[0]?.line);
+  }
+  return {
+    maxConcurrency,
+    parallelizeIndependentTasks: parallelize,
+    defaultMaxAttempts: attempts
+  };
+}
+function readRules(body, read) {
+  const only = body[0];
+  if (body.length === 1 && only?.text === EMPTY_SECTION)
+    return [];
+  return body.map(({ text: text2, line }) => {
+    if (text2 === EMPTY_SECTION) {
+      throw new ParseError(`"${EMPTY_SECTION}" cannot sit beside rules`, line);
+    }
+    if (!text2.startsWith("- ") || !text2.endsWith(".")) {
+      throw new ParseError("not a rule bullet", line);
+    }
+    return read(text2.slice("- ".length, text2.length - 1), line);
+  });
+}
+function parsePolicyMarkdown(markdown) {
+  if (!isCanonicalPolicySource(markdown)) {
+    return {
+      failure: {
+        reason: "not-canonical",
+        message: `no ${CANONICAL_POLICY_MARKER} marker \u2014 this policy is prose`
+      }
+    };
+  }
+  try {
+    const sections = splitSections(markdown);
+    const draft = {
+      version: 1,
+      orchestrator: readOrchestrator(bodyOf(sections, "Orchestrator")),
+      ...readExecution(bodyOf(sections, "Execution")),
+      routing: readRules(bodyOf(sections, "Routing"), parseRouting),
+      review: readRules(bodyOf(sections, "Review"), parseReview),
+      escalation: readRules(bodyOf(sections, "Escalation"), parseEscalation)
+    };
+    const parsed = PolicySchema.safeParse(draft);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new ParseError(`${issue?.path.join(".") ?? "(root)"}: ${issue?.message ?? "invalid"}`);
+    }
+    return { policy: parsed.data };
+  } catch (error) {
+    if (error instanceof ParseError) {
+      return {
+        failure: {
+          reason: "unreadable",
+          message: error.message,
+          ...error.line === void 0 ? {} : { line: error.line }
+        }
+      };
+    }
+    throw error;
+  }
+}
+
 // packages/policy/dist/compiler.js
+import { z as z3 } from "zod";
 var EMIT_POLICY_TOOL_NAME = "emit_policy";
 var DEFAULT_MAX_ATTEMPTS2 = 3;
 var PolicyDraftSchema = z3.object({
@@ -1773,12 +2224,6 @@ function formatPolicyDiff(diff) {
 }
 
 // packages/policy/dist/explain.js
-function joinList(values) {
-  if (values.length <= 1)
-    return values[0] ?? "";
-  const head = values.slice(0, -1).join(", ");
-  return `${head} and ${values[values.length - 1] ?? ""}`;
-}
 function matchClause(rule) {
   const parts = [];
   const taskTypes = rule.taskTypes ?? [];
@@ -4929,14 +5374,14 @@ var EditFileTool = class {
     } catch (err) {
       throw new Error(`failed to read file "${input.path}": ${err.message}`);
     }
-    const occurrences = raw.split(input.oldText).length - 1;
-    if (occurrences === 0) {
+    const occurrences2 = raw.split(input.oldText).length - 1;
+    if (occurrences2 === 0) {
       throw new Error(`oldText not found in "${input.path}"`);
     }
-    if (!input.replaceAll && occurrences > 1) {
-      throw new Error(`oldText occurs ${occurrences} times in "${input.path}"; pass replaceAll: true to replace all occurrences, or provide more surrounding context to make oldText unique`);
+    if (!input.replaceAll && occurrences2 > 1) {
+      throw new Error(`oldText occurs ${occurrences2} times in "${input.path}"; pass replaceAll: true to replace all occurrences, or provide more surrounding context to make oldText unique`);
     }
-    const replacements = input.replaceAll ? occurrences : 1;
+    const replacements = input.replaceAll ? occurrences2 : 1;
     const newContent = input.replaceAll ? raw.split(input.oldText).join(input.newText) : raw.replace(input.oldText, input.newText);
     checkAbort(context.signal);
     await writeFile(target, newContent, "utf8");
@@ -9343,6 +9788,37 @@ function runSelectPrompt(io, options) {
     draw();
   });
 }
+var DEFAULT_TEXT_FOOTER = "enter confirm \xB7 clear the line to leave it unchanged";
+function runTextPrompt(io, options) {
+  const initial = options.initial ?? "";
+  if (io.input.isTTY !== true) {
+    return Promise.resolve(initial === "" ? void 0 : initial);
+  }
+  const color = io.output.isTTY === true;
+  io.output.write(`${ansi(ROLE_SGR.heading, options.title, color)}
+`);
+  io.output.write(`${ansi(ROLE_SGR.tool, options.footer ?? DEFAULT_TEXT_FOOTER, color)}
+`);
+  const rl = readline.createInterface({
+    input: io.input,
+    output: io.output,
+    terminal: true
+  });
+  return new Promise((resolve5) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled)
+        return;
+      settled = true;
+      rl.close();
+      resolve5(value === void 0 || value.trim() === "" ? void 0 : value);
+    };
+    rl.on("SIGINT", () => finish(void 0));
+    rl.question("> ", (answer) => finish(answer));
+    if (initial !== "")
+      rl.write(initial);
+  });
+}
 
 // apps/cli/dist/config-runtime.js
 function present(value) {
@@ -13176,7 +13652,7 @@ ${blocks.join("\n")}`,
 }
 
 // apps/cli/dist/onboard.js
-import { stat as stat8 } from "node:fs/promises";
+import { readFile as readFile16, stat as stat8 } from "node:fs/promises";
 import path13 from "node:path";
 var ORCHESTRATION_FILE = "orchestration.md";
 var LOCK_FILE = "orchestration.lock.json";
@@ -13198,8 +13674,19 @@ async function detectProjectSetup(workspacePath) {
   }
   return "ready";
 }
-function setupAnnounceLine(state) {
-  return state === "needs-init" ? "setting this project up for kapel \u2014 creating .agent/ and compiling the orchestration policy (one model call)\u2026" : "compiling this project's orchestration policy for kapel (one model call)\u2026";
+async function setupCallsModel(workspacePath, state) {
+  if (state === "needs-init")
+    return false;
+  try {
+    const markdown = await readFile16(path13.join(workspacePath, ".agent", ORCHESTRATION_FILE), "utf8");
+    return !isCanonicalPolicySource(markdown);
+  } catch {
+    return true;
+  }
+}
+function setupAnnounceLine(state, callsModel) {
+  const cost = callsModel ? " (one model call)" : "";
+  return state === "needs-init" ? `setting this project up for kapel \u2014 creating .agent/ and compiling the orchestration policy${cost}\u2026` : `compiling this project's orchestration policy for kapel${cost}\u2026`;
 }
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
@@ -13229,7 +13716,7 @@ function createProjectSetup(deps) {
         return true;
       if (deps.interactive !== true)
         return false;
-      output.log(setupAnnounceLine(state));
+      output.log(setupAnnounceLine(state, await setupCallsModel(deps.workspacePath, state)));
       if (state === "needs-init") {
         if (!await step("`kapel init`", deps.init, output)) {
           settled = true;
@@ -13458,7 +13945,7 @@ function createPrompter(options) {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const state = options.state;
-  const ask2 = options.ask;
+  const ask3 = options.ask;
   const allowlist = options.allowlist;
   const color = options.color ?? output.isTTY === true;
   return {
@@ -13476,7 +13963,7 @@ function createPrompter(options) {
           output.write(`${lines.join("\n")}
 `);
         const query = createStyles(color).heading(prompt.query);
-        const raw = ask2 === void 0 ? await askOnce(query, input, output) : await ask2(query);
+        const raw = ask3 === void 0 ? await askOnce(query, input, output) : await ask3(query);
         const answer = parsePermissionAnswer(raw);
         if (answer === "feedback") {
           const feedback = permissionFeedback(raw);
@@ -14855,8 +15342,497 @@ async function loadRepoPermissionRules(workspacePath) {
 }
 
 // apps/cli/dist/policy.js
-import { readFile as readFile16, writeFile as writeFile7 } from "node:fs/promises";
+import { readFile as readFile17, writeFile as writeFile7 } from "node:fs/promises";
 import path14 from "node:path";
+
+// apps/cli/dist/policy-edit.js
+var BACK = "back";
+var CANCEL2 = "cancel";
+var SAVE = "save";
+var ADD = "add";
+var REMOVE = "remove";
+var COMPLEXITIES = [
+  "trivial",
+  "normal",
+  "complex",
+  "architectural"
+];
+var LIST_FOOTER = "comma-separated \xB7 clear the line to leave it unchanged";
+async function ask2(deps, title, choices, initial) {
+  const values = await deps.prompt.select({
+    title,
+    choices,
+    ...initial === void 0 ? {} : { initial }
+  });
+  return values?.[0];
+}
+function asChoices(values) {
+  return values.map((value) => ({ value, label: value }));
+}
+function describeList(values) {
+  return values.length === 0 ? "(any)" : values.join(", ");
+}
+function parseList(raw) {
+  return raw.split(",").map((item) => item.trim()).filter((item) => item !== "");
+}
+async function askList(deps, title, current) {
+  const raw = await deps.prompt.text({
+    title: `${title} \u2014 type "-" for none`,
+    initial: current.join(", "),
+    footer: LIST_FOOTER
+  });
+  if (raw === void 0)
+    return void 0;
+  return raw.trim() === "-" ? [] : parseList(raw);
+}
+async function askCount(deps, title, current, offered) {
+  const choices = Array.from({ length: offered }, (_, index2) => ({ value: String(index2 + 1), label: String(index2 + 1) }));
+  choices.push({ value: "other", label: "another number\u2026" });
+  const answer = await ask2(deps, title, choices, current <= offered ? String(current) : "other");
+  if (answer === void 0)
+    return void 0;
+  if (answer !== "other")
+    return Number.parseInt(answer, 10);
+  const typed = await deps.prompt.text({
+    title: `${title} \u2014 a whole number above zero`,
+    initial: String(current)
+  });
+  if (typed === void 0)
+    return void 0;
+  const parsed = Number.parseInt(typed.trim(), 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    deps.write(`"${typed.trim()}" is not a whole number above zero \u2014 unchanged.`);
+    return void 0;
+  }
+  return parsed;
+}
+async function askFraction(deps, title, current) {
+  const typed = await deps.prompt.text({
+    title: `${title} \u2014 between 0 and 1, or "-" for none`,
+    initial: current === void 0 ? "" : String(current)
+  });
+  if (typed === void 0)
+    return void 0;
+  if (typed.trim() === "-")
+    return null;
+  const parsed = Number.parseFloat(typed.trim());
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    deps.write(`"${typed.trim()}" is not a number between 0 and 1 \u2014 unchanged.`);
+    return void 0;
+  }
+  return parsed;
+}
+async function askAgent(deps, title, current) {
+  if (deps.knownAgents.length === 0) {
+    return await deps.prompt.text({ title, initial: current });
+  }
+  return await ask2(deps, title, asChoices(deps.knownAgents), current);
+}
+async function askComplexity(deps, title, current) {
+  const values = await deps.prompt.select({
+    title: `${title} (space to toggle; none means any)`,
+    choices: asChoices(COMPLEXITIES),
+    multi: true,
+    initial: [...current],
+    footer: "\u2191\u2193 move \xB7 space toggle \xB7 enter confirm \xB7 esc cancel"
+  });
+  if (values === void 0)
+    return void 0;
+  return COMPLEXITIES.filter((item) => values.includes(item));
+}
+async function askId(deps, current) {
+  const typed = await deps.prompt.text({
+    title: "Rule id \u2014 a short name for this rule",
+    initial: current
+  });
+  return typed?.trim() === "" ? void 0 : typed?.trim();
+}
+function summarizeRouting2(rule) {
+  const narrows = [
+    ...rule.taskTypes.length > 0 ? [rule.taskTypes.join("/")] : [],
+    ...rule.riskCategories.length > 0 ? [`touching ${rule.riskCategories.join("/")}`] : [],
+    ...rule.complexity.length > 0 ? [rule.complexity.join("/")] : []
+  ];
+  const verb = rule.strength === "hard" ? "always" : "prefer";
+  const where = narrows.length === 0 ? "anything" : narrows.join(" ");
+  return `${rule.id}: ${verb} ${where} \u2192 ${rule.agent}`;
+}
+function summarizeReview2(rule) {
+  const where = rule.riskCategories.length === 0 ? "anything" : rule.riskCategories.join("/");
+  const floor = rule.minimumComplexity === void 0 ? "" : ` \u2265${rule.minimumComplexity}`;
+  return `${rule.id}: ${rule.reviewer} reviews ${where}${floor} (${rule.blocking ? "blocking" : "advisory"})`;
+}
+function summarizeEscalation2(rule) {
+  const triggers = [
+    ...rule.afterFailures === void 0 ? [] : [`after ${rule.afterFailures}`],
+    ...rule.confidenceBelow === void 0 ? [] : [`below ${rule.confidenceBelow}`]
+  ];
+  return `${rule.id}: ${rule.fromAgent} \u2192 ${rule.toAgent}${triggers.length === 0 ? "" : ` (${triggers.join(", ")})`}`;
+}
+async function editRoutingRule(deps, rule) {
+  let draft = rule;
+  for (; ; ) {
+    const field2 = await ask2(deps, summarizeRouting2(draft), [
+      { value: "id", label: `Id: ${draft.id}` },
+      { value: "agent", label: `Route to: ${draft.agent}` },
+      {
+        value: "strength",
+        label: `Strength: ${draft.strength === "hard" ? "always" : "prefer"}`
+      },
+      {
+        value: "taskTypes",
+        label: `Task types: ${describeList(draft.taskTypes)}`
+      },
+      {
+        value: "riskCategories",
+        label: `Risk categories: ${describeList(draft.riskCategories)}`
+      },
+      {
+        value: "complexity",
+        label: `Complexity: ${describeList(draft.complexity)}`
+      },
+      { value: "weight", label: `Weight: ${draft.weight}` },
+      { value: REMOVE, label: "Remove this rule" },
+      { value: BACK, label: "Back" }
+    ]);
+    if (field2 === void 0)
+      return { kind: "cancel" };
+    if (field2 === BACK)
+      return { kind: "keep", rule: draft };
+    if (field2 === REMOVE)
+      return { kind: "remove" };
+    if (field2 === "id") {
+      const id = await askId(deps, draft.id);
+      if (id !== void 0)
+        draft = { ...draft, id };
+    } else if (field2 === "agent") {
+      const agent = await askAgent(deps, "Route to", draft.agent);
+      if (agent !== void 0)
+        draft = { ...draft, agent };
+    } else if (field2 === "strength") {
+      const strength = await ask2(deps, "How firm is this rule?", [
+        { value: "hard", label: "always \u2014 a requirement" },
+        { value: "preference", label: "prefer \u2014 a leaning" }
+      ], draft.strength);
+      if (strength === "hard" || strength === "preference") {
+        draft = { ...draft, strength };
+      }
+    } else if (field2 === "taskTypes") {
+      const taskTypes = await askList(deps, "Task types", draft.taskTypes);
+      if (taskTypes !== void 0)
+        draft = { ...draft, taskTypes: [...taskTypes] };
+    } else if (field2 === "riskCategories") {
+      const riskCategories = await askList(deps, "Risk categories", draft.riskCategories);
+      if (riskCategories !== void 0) {
+        draft = { ...draft, riskCategories: [...riskCategories] };
+      }
+    } else if (field2 === "complexity") {
+      const complexity = await askComplexity(deps, "Complexity", draft.complexity);
+      if (complexity !== void 0) {
+        draft = { ...draft, complexity: [...complexity] };
+      }
+    } else if (field2 === "weight") {
+      const weight = await askFraction(deps, "Weight \u2014 a tie-breaker among preferences", draft.weight);
+      if (typeof weight === "number")
+        draft = { ...draft, weight };
+      else if (weight === null)
+        draft = { ...draft, weight: 1 };
+    }
+  }
+}
+async function editReviewRule(deps, rule) {
+  let draft = rule;
+  for (; ; ) {
+    const field2 = await ask2(deps, summarizeReview2(draft), [
+      { value: "id", label: `Id: ${draft.id}` },
+      { value: "reviewer", label: `Reviewer: ${draft.reviewer}` },
+      {
+        value: "riskCategories",
+        label: `Risk categories: ${describeList(draft.riskCategories)}`
+      },
+      {
+        value: "minimumComplexity",
+        label: `Minimum complexity: ${draft.minimumComplexity ?? "(any)"}`
+      },
+      {
+        value: "blocking",
+        label: `Verdict: ${draft.blocking ? "blocking" : "advisory"}`
+      },
+      {
+        value: "strength",
+        label: `Strength: ${draft.strength === "hard" ? "required" : "preferred"}`
+      },
+      { value: REMOVE, label: "Remove this rule" },
+      { value: BACK, label: "Back" }
+    ]);
+    if (field2 === void 0)
+      return { kind: "cancel" };
+    if (field2 === BACK)
+      return { kind: "keep", rule: draft };
+    if (field2 === REMOVE)
+      return { kind: "remove" };
+    if (field2 === "id") {
+      const id = await askId(deps, draft.id);
+      if (id !== void 0)
+        draft = { ...draft, id };
+    } else if (field2 === "reviewer") {
+      const reviewer = await askAgent(deps, "Reviewer", draft.reviewer);
+      if (reviewer !== void 0)
+        draft = { ...draft, reviewer };
+    } else if (field2 === "riskCategories") {
+      const riskCategories = await askList(deps, "Risk categories", draft.riskCategories);
+      if (riskCategories !== void 0) {
+        draft = { ...draft, riskCategories: [...riskCategories] };
+      }
+    } else if (field2 === "minimumComplexity") {
+      const answer = await ask2(deps, "Review work at this complexity or above", [
+        { value: "any", label: "(any complexity)" },
+        ...asChoices(COMPLEXITIES)
+      ], draft.minimumComplexity ?? "any");
+      if (answer === "any") {
+        const { minimumComplexity: _dropped, ...rest } = draft;
+        draft = rest;
+      } else if (answer !== void 0) {
+        draft = { ...draft, minimumComplexity: answer };
+      }
+    } else if (field2 === "blocking") {
+      const answer = await ask2(deps, "What does this review decide?", [
+        {
+          value: "blocking",
+          label: "blocking \u2014 must pass before work lands"
+        },
+        { value: "advisory", label: "advisory \u2014 reported, never gating" }
+      ], draft.blocking ? "blocking" : "advisory");
+      if (answer !== void 0)
+        draft = { ...draft, blocking: answer === "blocking" };
+    } else if (field2 === "strength") {
+      const answer = await ask2(deps, "How firm is this rule?", [
+        { value: "hard", label: "required" },
+        { value: "preference", label: "preferred" }
+      ], draft.strength);
+      if (answer === "hard" || answer === "preference") {
+        draft = { ...draft, strength: answer };
+      }
+    }
+  }
+}
+async function editEscalationRule(deps, rule) {
+  let draft = rule;
+  for (; ; ) {
+    const field2 = await ask2(deps, summarizeEscalation2(draft), [
+      { value: "id", label: `Id: ${draft.id}` },
+      { value: "fromAgent", label: `From: ${draft.fromAgent}` },
+      { value: "toAgent", label: `To: ${draft.toAgent}` },
+      {
+        value: "afterFailures",
+        label: `After failed attempts: ${draft.afterFailures ?? "(never)"}`
+      },
+      {
+        value: "confidenceBelow",
+        label: `When confidence below: ${draft.confidenceBelow ?? "(never)"}`
+      },
+      { value: REMOVE, label: "Remove this rule" },
+      { value: BACK, label: "Back" }
+    ]);
+    if (field2 === void 0)
+      return { kind: "cancel" };
+    if (field2 === BACK)
+      return { kind: "keep", rule: draft };
+    if (field2 === REMOVE)
+      return { kind: "remove" };
+    if (field2 === "id") {
+      const id = await askId(deps, draft.id);
+      if (id !== void 0)
+        draft = { ...draft, id };
+    } else if (field2 === "fromAgent") {
+      const fromAgent = await askAgent(deps, "Escalate from", draft.fromAgent);
+      if (fromAgent !== void 0)
+        draft = { ...draft, fromAgent };
+    } else if (field2 === "toAgent") {
+      const toAgent = await askAgent(deps, "Escalate to", draft.toAgent);
+      if (toAgent !== void 0)
+        draft = { ...draft, toAgent };
+    } else if (field2 === "afterFailures") {
+      const answer = await ask2(deps, "Escalate after how many failed attempts?", [
+        { value: "never", label: "(never on failures)" },
+        ...asChoices(["1", "2", "3", "4", "5"])
+      ], draft.afterFailures === void 0 ? "never" : String(draft.afterFailures));
+      if (answer === "never") {
+        const { afterFailures: _dropped, ...rest } = draft;
+        draft = rest;
+      } else if (answer !== void 0) {
+        draft = { ...draft, afterFailures: Number.parseInt(answer, 10) };
+      }
+    } else if (field2 === "confidenceBelow") {
+      const answer = await askFraction(deps, "Escalate when confidence drops below", draft.confidenceBelow);
+      if (answer === null) {
+        const { confidenceBelow: _dropped, ...rest } = draft;
+        draft = rest;
+      } else if (answer !== void 0) {
+        draft = { ...draft, confidenceBelow: answer };
+      }
+    }
+  }
+}
+async function editRuleList(deps, title, rules, summarize, blank, edit) {
+  let draft = [...rules];
+  let changed = false;
+  for (; ; ) {
+    const answer = await ask2(deps, title, [
+      ...draft.map((rule, index3) => ({
+        value: String(index3),
+        label: summarize(rule)
+      })),
+      { value: ADD, label: "Add a rule\u2026" },
+      { value: BACK, label: "Back" }
+    ]);
+    if (answer === void 0 || answer === BACK) {
+      return changed ? draft : void 0;
+    }
+    if (answer === ADD) {
+      const created = await edit(deps, blank());
+      if (created.kind === "keep") {
+        draft.push(created.rule);
+        changed = true;
+      }
+      continue;
+    }
+    const index2 = Number.parseInt(answer, 10);
+    const existing = draft[index2];
+    if (existing === void 0)
+      continue;
+    const updated = await edit(deps, existing);
+    if (updated.kind === "remove") {
+      draft = draft.filter((_, at) => at !== index2);
+      changed = true;
+    } else if (updated.kind === "keep") {
+      draft = draft.map((rule, at) => at === index2 ? updated.rule : rule);
+      changed = true;
+    }
+  }
+}
+var EDITOR_TITLE = "Orchestration policy";
+function mainChoices(policy, deps) {
+  return [
+    { value: "orchestrator", label: `Orchestrator: ${policy.orchestrator}` },
+    {
+      value: "concurrency",
+      label: `Concurrency: up to ${policy.maxConcurrency} agent${policy.maxConcurrency === 1 ? "" : "s"} at a time`
+    },
+    {
+      value: "parallel",
+      label: `Independent tasks: ${policy.parallelizeIndependentTasks ? "may run in parallel" : "run one at a time"}`
+    },
+    {
+      value: "attempts",
+      label: `Attempts per task: ${policy.defaultMaxAttempts}`
+    },
+    { value: "routing", label: `Routing rules (${policy.routing.length})\u2026` },
+    { value: "review", label: `Review rules (${policy.review.length})\u2026` },
+    {
+      value: "escalation",
+      label: `Escalation rules (${policy.escalation.length})\u2026`
+    },
+    {
+      value: SAVE,
+      label: deps.converting === true ? "Save \u2014 rewrite .agent/orchestration.md in canonical form (replaces the prose there)" : "Save \u2014 write .agent/orchestration.md and its lock"
+    },
+    { value: CANCEL2, label: "Discard changes" }
+  ];
+}
+async function runPolicyEditor(deps) {
+  const fallbackAgent = deps.knownAgents[0] ?? deps.policy.orchestrator;
+  let draft = deps.policy;
+  const update = (patch) => {
+    const parsed = PolicySchema.safeParse({ ...draft, ...patch });
+    if (parsed.success)
+      draft = parsed.data;
+  };
+  for (; ; ) {
+    const section2 = await ask2(deps, EDITOR_TITLE, mainChoices(draft, deps));
+    if (section2 === void 0 || section2 === CANCEL2)
+      return void 0;
+    if (section2 === SAVE) {
+      const issues = validatePolicy(draft, new Set(deps.knownAgents));
+      const errors = issues.filter((issue) => issue.severity === "error");
+      for (const issue of issues.filter((i) => i.severity === "warning")) {
+        deps.write(`warning: ${issue.message}`);
+      }
+      if (errors.length > 0) {
+        deps.write("This policy cannot be saved yet:");
+        for (const issue of errors)
+          deps.write(`  - ${issue.message}`);
+        continue;
+      }
+      return draft;
+    }
+    if (section2 === "orchestrator") {
+      const orchestrator = await askAgent(deps, "Which agent plans and delegates?", draft.orchestrator);
+      if (orchestrator !== void 0)
+        update({ orchestrator });
+    } else if (section2 === "concurrency") {
+      const maxConcurrency = await askCount(deps, "How many agents may run at once?", draft.maxConcurrency, 8);
+      if (maxConcurrency !== void 0)
+        update({ maxConcurrency });
+    } else if (section2 === "parallel") {
+      const answer = await ask2(deps, "May independent tasks run side by side?", [
+        { value: "yes", label: "yes \u2014 run them in parallel" },
+        { value: "no", label: "no \u2014 one task at a time" }
+      ], draft.parallelizeIndependentTasks ? "yes" : "no");
+      if (answer !== void 0) {
+        update({ parallelizeIndependentTasks: answer === "yes" });
+      }
+    } else if (section2 === "attempts") {
+      const defaultMaxAttempts = await askCount(deps, "How many attempts does a task get?", draft.defaultMaxAttempts, 5);
+      if (defaultMaxAttempts !== void 0)
+        update({ defaultMaxAttempts });
+    } else if (section2 === "routing") {
+      const routing = await editRuleList(deps, "Routing rules \u2014 which agent handles which work", draft.routing, summarizeRouting2, () => ({
+        id: `route-${draft.routing.length + 1}`,
+        taskTypes: [],
+        riskCategories: [],
+        complexity: [],
+        agent: fallbackAgent,
+        strength: "hard",
+        weight: 1
+      }), editRoutingRule);
+      if (routing !== void 0)
+        update({ routing: [...routing] });
+    } else if (section2 === "review") {
+      const review = await editRuleList(deps, "Review rules \u2014 when a second agent has to look", draft.review, summarizeReview2, () => ({
+        id: `review-${draft.review.length + 1}`,
+        riskCategories: [],
+        reviewer: fallbackAgent,
+        blocking: true,
+        strength: "hard"
+      }), editReviewRule);
+      if (review !== void 0)
+        update({ review: [...review] });
+    } else if (section2 === "escalation") {
+      const escalation = await editRuleList(deps, "Escalation rules \u2014 where stuck work goes next", draft.escalation, summarizeEscalation2, () => ({
+        id: `escalate-${draft.escalation.length + 1}`,
+        fromAgent: fallbackAgent,
+        toAgent: fallbackAgent,
+        afterFailures: 2
+      }), editEscalationRule);
+      if (escalation !== void 0)
+        update({ escalation: [...escalation] });
+    }
+  }
+}
+function ttyPolicyEditPrompt(io, suspend) {
+  const target = io ?? {
+    input: process.stdin,
+    output: process.stdout
+  };
+  const run = suspend ?? ((fn) => fn());
+  return {
+    select: (options) => run(() => runSelectPrompt(target, options)),
+    text: (options) => run(() => runTextPrompt(target, options))
+  };
+}
+
+// apps/cli/dist/policy.js
 var consoleOutput3 = {
   log: (line) => console.log(line),
   error: (line) => console.error(line)
@@ -14869,7 +15845,7 @@ function jsonLine3(output, value) {
 }
 async function readOptionalFile2(filePath) {
   try {
-    return await readFile16(filePath, "utf8");
+    return await readFile17(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -14985,21 +15961,24 @@ async function buildPolicyCompiler(options, deps, context) {
   });
   return { compiler, model: resolved.model, usage };
 }
-async function runPolicyCompile(options, deps = {}) {
-  const output = deps.output ?? consoleOutput3;
-  const workspacePath = path14.resolve(options.cwd);
-  await loadDotEnvFile(workspacePath);
-  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
-  if ("exitCode" in loaded)
-    return loaded.exitCode;
-  const { project, markdown } = loaded;
-  const built = await buildPolicyCompiler(options, deps, {
-    workspacePath,
-    project,
-    output
-  });
+async function compilePolicySource(options, deps, context) {
+  const { markdown, output } = context;
+  const canonical = parsePolicyMarkdown(markdown);
+  if ("policy" in canonical) {
+    return {
+      result: { policy: canonical.policy, warnings: [], ambiguities: [] },
+      source: "canonical",
+      modelId: "canonical",
+      report: "Read the policy from its canonical form \u2014 no model call."
+    };
+  }
+  if (canonical.failure.reason === "unreadable" && !options.json) {
+    const where = canonical.failure.line === void 0 ? "" : ` at line ${canonical.failure.line}`;
+    output.error(`This policy carries the ${CANONICAL_POLICY_MARKER} marker but no longer fits that form${where}: ${canonical.failure.message}. Compiling it with a model instead \u2014 \`kapel policy edit\` rewrites it in the canonical form, which compiles without one.`);
+  }
+  const built = await buildPolicyCompiler(options, deps, context);
   if ("exitCode" in built)
-    return built.exitCode;
+    return built;
   const { compiler, model, usage, delegatedTo } = built;
   let result;
   try {
@@ -15016,10 +15995,36 @@ async function runPolicyCompile(options, deps = {}) {
       } else {
         output.error(error.message);
       }
-      return 1;
+      return { exitCode: 1 };
     }
     throw error;
   }
+  return {
+    result,
+    source: "model",
+    modelId: model.id,
+    report: `Compiled policy using ${model.id} (${model.provider})`,
+    usage,
+    ...delegatedTo === void 0 ? {} : { delegatedTo }
+  };
+}
+async function runPolicyCompile(options, deps = {}) {
+  const output = deps.output ?? consoleOutput3;
+  const workspacePath = path14.resolve(options.cwd);
+  await loadDotEnvFile(workspacePath);
+  const loaded = await loadProjectForPolicy(workspacePath, output, options.json);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const compiled = await compilePolicySource(options, deps, {
+    workspacePath,
+    project,
+    markdown,
+    output
+  });
+  if ("exitCode" in compiled)
+    return compiled.exitCode;
+  const { result, usage, delegatedTo } = compiled;
   const validation = validatePolicy(result.policy, project.knownAgentNames());
   const validationErrors = validation.filter((issue) => issue.severity === "error");
   const validationWarnings = validation.filter((issue) => issue.severity === "warning");
@@ -15036,7 +16041,7 @@ async function runPolicyCompile(options, deps = {}) {
     }
     return 1;
   }
-  const lock = createLockfile({ markdown, result, model: model.id });
+  const lock = createLockfile({ markdown, result, model: compiled.modelId });
   const serialized = serializeLockfile(lock);
   const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
   await writeFile7(lockPath, serialized, "utf8");
@@ -15050,6 +16055,9 @@ async function runPolicyCompile(options, deps = {}) {
     jsonLine3(output, {
       ok: true,
       lockPath,
+      // Which path produced this: `canonical` spent nothing, `model`
+      // compiled the prose. Scripts that budget model calls read this.
+      source: compiled.source,
       policy: result.policy,
       warnings,
       ambiguities,
@@ -15061,10 +16069,12 @@ async function runPolicyCompile(options, deps = {}) {
     });
     return 0;
   }
-  output.log(`Compiled policy using ${model.id} (${model.provider})`);
+  output.log(compiled.report);
   output.log(`Lock written to ${lockPath}`);
   output.log(`Routing rules: ${result.policy.routing.length}, review rules: ${result.policy.review.length}, escalation rules: ${result.policy.escalation.length}`);
-  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  if (usage !== void 0) {
+    output.log(policyUsageLine(usage.totals(), delegatedTo));
+  }
   printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(ambiguities, markdown));
   return 0;
@@ -15211,33 +16221,15 @@ async function runPolicyDiff(options, deps = {}) {
       output.error(message);
     return 1;
   }
-  const built = await buildPolicyCompiler(options, deps, {
+  const compiled = await compilePolicySource(options, deps, {
     workspacePath,
     project,
+    markdown,
     output
   });
-  if ("exitCode" in built)
-    return built.exitCode;
-  const { compiler, usage, delegatedTo } = built;
-  let result;
-  try {
-    result = await compiler.compile(markdown);
-  } catch (error) {
-    if (error instanceof PolicyCompileError) {
-      if (options.json) {
-        jsonLine3(output, {
-          ok: false,
-          error: error.message,
-          attempts: error.attempts,
-          issues: (error.lastIssues ?? []).map((issue) => `${issue.path}: ${issue.message}`)
-        });
-      } else {
-        output.error(error.message);
-      }
-      return 1;
-    }
-    throw error;
-  }
+  if ("exitCode" in compiled)
+    return compiled.exitCode;
+  const { result, usage, delegatedTo } = compiled;
   const diff = diffPolicies(existingLock.policy, result.policy);
   const warnings = [
     ...result.warnings,
@@ -15252,7 +16244,8 @@ async function runPolicyDiff(options, deps = {}) {
       review: diff.review,
       escalation: diff.escalation,
       warnings,
-      ambiguities: result.ambiguities
+      ambiguities: result.ambiguities,
+      source: compiled.source
     });
     return 0;
   }
@@ -15262,21 +16255,100 @@ async function runPolicyDiff(options, deps = {}) {
     for (const line of formatPolicyDiff(diff))
       output.log(line);
   }
-  output.log(policyUsageLine(usage.totals(), delegatedTo));
+  if (usage !== void 0) {
+    output.log(policyUsageLine(usage.totals(), delegatedTo));
+  }
   printLocatedList(output, "Warnings", locateIssues(warnings, markdown));
   printLocatedList(output, "Ambiguities", locateIssues(result.ambiguities, markdown));
   output.log("");
   output.log("Run `kapel policy compile` to update the lock.");
   return 0;
 }
+var ORCHESTRATION_FILE_NAME = "orchestration.md";
+function startingPoint(markdown, lockContent) {
+  const canonical = parsePolicyMarkdown(markdown);
+  if ("policy" in canonical) {
+    return { policy: canonical.policy, converting: false };
+  }
+  const status = checkLock(markdown, lockContent);
+  if (status.fresh)
+    return { policy: status.lock.policy, converting: true };
+  if (status.reason === "stale-source") {
+    return {
+      error: "orchestration.md has changed since the policy lock was compiled, so there is no policy here that matches what the file says. Run `kapel policy compile` first, then edit."
+    };
+  }
+  return {
+    error: "This policy is prose and has never been compiled, so there is nothing to edit yet. Run `kapel policy compile` once (one model call) and `kapel policy edit` will work from the result \u2014 after which editing it costs nothing at all."
+  };
+}
+async function runPolicyEdit(options, deps = {}) {
+  const output = deps.output ?? consoleOutput3;
+  const workspacePath = path14.resolve(options.cwd);
+  if (deps.prompt === void 0) {
+    output.error("`kapel policy edit` needs a terminal to ask on. Edit .agent/orchestration.md directly and run `kapel policy compile`.");
+    return 1;
+  }
+  const loaded = await loadProjectForPolicy(workspacePath, output, false);
+  if ("exitCode" in loaded)
+    return loaded.exitCode;
+  const { project, markdown } = loaded;
+  const lockPath = path14.join(project.root, LOCK_FILE_NAME2);
+  const start = startingPoint(markdown, await readOptionalFile2(lockPath));
+  if ("error" in start) {
+    output.error(start.error);
+    return 1;
+  }
+  const edited = await runPolicyEditor({
+    prompt: deps.prompt,
+    write: (line) => output.log(line),
+    policy: start.policy,
+    knownAgents: [...project.knownAgentNames()],
+    converting: start.converting
+  });
+  if (edited === void 0) {
+    output.log("Nothing written \u2014 the policy is unchanged.");
+    return 0;
+  }
+  let rendered;
+  try {
+    rendered = renderPolicyMarkdown(edited);
+  } catch (error) {
+    if (error instanceof PolicyRenderError) {
+      output.error(error.message);
+      return 1;
+    }
+    throw error;
+  }
+  const policyPath = path14.join(project.root, ORCHESTRATION_FILE_NAME);
+  await writeFile7(policyPath, rendered, "utf8");
+  await writeFile7(lockPath, serializeLockfile(createLockfile({
+    markdown: rendered,
+    result: { policy: edited, warnings: [], ambiguities: [] },
+    model: "canonical"
+  })), "utf8");
+  const diff = diffPolicies(start.policy, edited);
+  output.log(`Wrote ${policyPath}`);
+  output.log(`Lock written to ${lockPath}`);
+  if (diff.unchanged) {
+    output.log("The policy itself is unchanged.");
+  } else {
+    output.log("");
+    for (const line of formatPolicyDiff(diff))
+      output.log(line);
+  }
+  output.log("");
+  output.log("No model was called.");
+  return 0;
+}
 
 // apps/cli/dist/resume-cmd.js
-import { readFile as readFile17 } from "node:fs/promises";
+import { readFile as readFile18 } from "node:fs/promises";
 import path15 from "node:path";
 var LOCK_FILE_NAME3 = "orchestration.lock.json";
 async function readOptionalFile3(filePath) {
   try {
-    return await readFile17(filePath, "utf8");
+    return await readFile18(filePath, "utf8");
   } catch {
     return void 0;
   }
@@ -15578,7 +16650,7 @@ function enterAltScreen(options = {}) {
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.13.0";
+var CLI_VERSION = "0.14.0";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -15773,6 +16845,11 @@ var SLASH_COMMANDS = [
     name: "undo",
     usage: "/undo",
     help: "restore the files to before the last prompt"
+  },
+  {
+    name: "policy",
+    usage: "/policy",
+    help: "edit this project's orchestration policy \u2014 no model call"
   },
   {
     name: "plan",
@@ -16378,6 +17455,18 @@ async function createInteractiveController(deps) {
     }
     return drain();
   };
+  const slashPolicy = async () => {
+    if (deps.editPolicy === void 0) {
+      emitWarn("/policy needs a terminal to ask on.");
+      return drain();
+    }
+    try {
+      await deps.editPolicy(replOutput);
+    } catch (error) {
+      emitError(errorText3(error));
+    }
+    return drain();
+  };
   const slashRuns = async () => {
     if (deps.runs === void 0) {
       emitWarn("/runs is not available here.");
@@ -16496,6 +17585,8 @@ async function createInteractiveController(deps) {
         return await slashCompact();
       case "undo":
         return await slashUndo();
+      case "policy":
+        return await slashPolicy();
       case "plan":
         return await slashPlan(argument);
       case "orchestrate":
@@ -16941,6 +18032,16 @@ async function runInteractive(options) {
       // The same setup startup ran (or tried to), through the same object —
       // so a failure there is remembered here, and nothing runs twice.
       ensureProjectSetup: (output) => projectSetup.ensure(output),
+      // `/policy` runs while the REPL's own InputManager owns stdin, so its
+      // pickers borrow the terminal the same way `/config`'s do. Only wired
+      // on a real terminal — there is nothing to edit a policy with on a
+      // pipe, and the command says so rather than hanging.
+      ...wizardTty ? {
+        editPolicy: (output) => runPolicyEdit({ cwd: options.cwd, json: false }, {
+          output,
+          prompt: ttyPolicyEditPrompt(void 0, withSuspended)
+        })
+      } : {},
       resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), { output }),
       login: {
         backends: loginBackends,
@@ -17306,8 +18407,11 @@ function createProgram() {
     };
   }
   const POLICY_SUBCOMMANDS = ["compile", "check", "explain", "diff"];
-  const policyCommand = program.command("policy").description("Manage orchestration policies (compile, check, explain, diff)").argument("[unknownCommand]", "compile | check | explain | diff");
-  policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock using an LLM").option("--json", "emit the compile result as JSON", false).action(async (opts, command) => {
+  const policyCommand = program.command("policy").description("Manage orchestration policies (edit, compile, check, explain, diff)").argument("[unknownCommand]", "edit | compile | check | explain | diff");
+  policyCommand.command("edit").description("Edit the orchestration policy and rewrite it in canonical form (no LLM calls)").action(async (_opts, command) => {
+    process.exitCode = await runPolicyEdit(policyOptions(command, false, void 0), process.stdin.isTTY === true && process.stdout.isTTY === true ? { prompt: ttyPolicyEditPrompt() } : {});
+  });
+  policyCommand.command("compile").description("Compile .agent/orchestration.md into a policy lock, calling an LLM only for a policy written as prose").option("--json", "emit the compile result as JSON", false).action(async (opts, command) => {
     const config = await runtimeConfig(command.optsWithGlobals(), opts.json);
     process.exitCode = await runPolicyCompile(await policyCompileOptions(command, opts.json, config));
   });

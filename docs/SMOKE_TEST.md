@@ -12,13 +12,13 @@
 빌드 없이 저장소에 포함된 패키지 tarball을 전역 설치합니다 (한 줄):
 
 ```bash
-npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.13.0.tgz
+npm install -g https://raw.githubusercontent.com/devFallingstar/kapel/main/release/devfallingstar-kapel-0.14.0.tgz
 kapel --version
 ```
 
 npm 레지스트리 배포 후에는 `npm install -g @devfallingstar/kapel` 로 대체됩니다.
 URL 접근이 안 되는 네트워크라면: 레포를 클론한 뒤
-`npm install -g ./kapel/release/devfallingstar-kapel-0.13.0.tgz`. 제거는
+`npm install -g ./kapel/release/devfallingstar-kapel-0.14.0.tgz`. 제거는
 `npm uninstall -g @devfallingstar/kapel`.
 
 > `npm install -g github:...` 형태는 쓰지 마세요 — npm의 워크스페이스
@@ -214,13 +214,19 @@ kapel --no-setup          # REPL 진입 — 4장에서 손으로 준비해 볼 �
 
 `kapel`은 이제 프로젝트를 준비할지 **묻지 않습니다** — `.agent/`가 없는 새
 저장소면 배너가 뜨기 전에 다음 한 줄을 찍고 `kapel init`과
-`kapel policy compile`을 곧바로 그 자리에서 실행합니다(모델 호출 1회), 두
-명령이 셸에서 출력하는 것과 같은 요약(경고 포함)이 REPL에 그대로 찍힙니다:
+`kapel policy compile`을 곧바로 그 자리에서 실행합니다. 두 명령이 셸에서
+출력하는 것과 같은 요약이 REPL에 그대로 찍힙니다:
 
 ```text
 setting this project up for kapel — creating .agent/ and compiling the
-orchestration policy (one model call)…
+orchestration policy…
 ```
+
+**모델 호출이 없다는 점을 확인하세요.** 안내 줄에 `(one model call)`이
+없어야 하고, 이어지는 요약에 `Read the policy from its canonical form — no
+model call.`이 있어야 합니다. 템플릿이 제공하는 정책은 kapel의 정규
+형식(canonical form)이라 컴파일이 아니라 파싱으로 처리됩니다 —
+자격증명이 하나도 없는 머신에서도 이 준비는 끝까지 완주합니다.
 
 실패해도 REPL은 멈추지 않고 대화로 이어지며, 같은 세션에서는(`/plan`이나
 `/orchestrate`를 쳐도) 다시 시도하지 않습니다. 파이프·리다이렉트 입력이나
@@ -239,7 +245,7 @@ C(4장)에서 `kapel init`과 `kapel policy compile`을 손으로 실행해 볼
 토큰 합계)입니다:
 
 ```text
-╭─ kapel v0.13.0 ──────────────────────────────────────────────────────────────╮
+╭─ kapel v0.14.0 ──────────────────────────────────────────────────────────────╮
 ├───────────────────────────────────────┬──────────────────────────────────────┤
 │ setup                                 │ activity                             │
 │ workspace    /tmp/agent-fixture       │ today    no runs yet                 │
@@ -259,7 +265,7 @@ kapel>
 **확인할 것**:
 
 - 새 저장소이므로 활동 칸은 `no runs yet`이어야 합니다(0이 늘어선 줄이 아니라).
-- **제목은 상자 위 테두리 안에 박혀 있습니다** — `╭─ kapel v0.13.0 ───…─╮`.
+- **제목은 상자 위 테두리 안에 박혀 있습니다** — `╭─ kapel v0.14.0 ───…─╮`.
   제목만 굵게, 테두리·기둥·구분선은 모두 강조색(muted sky blue)으로 그려집니다.
   예전처럼 상자 **안에** 제목 줄이 따로 있으면 안 됩니다. `/stats`로 다시 그려도
   똑같이 나와야 합니다.
@@ -296,7 +302,7 @@ kapel>
 - 폭이 80칸보다 좁으면 두 칸이 위아래로 쌓인 한 칸 상자로 바뀝니다. 터미널을
   좁혀 놓고 다시 `/stats`를 쳐서 확인해 보세요.
 - **파이프·리다이렉트로 실행하면 대시보드는 뜨지 않습니다** — 예전 그대로의
-  평문 배너(`kapel v0.13.0  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
+  평문 배너(`kapel v0.14.0  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
   문자는 하나도 섞이지 않습니다. 확인:
   `printf '/exit\n' | kapel chat --no-save | cat -A` 에 `^[` 가 없어야 합니다.
 - **깨끗한 화면에서 시작합니다** — 터미널에서 실행하면 `vim`/`less`처럼 대체
@@ -631,7 +637,7 @@ kapel --backend claude-code     # REPL을 Claude Code 백엔드로 엶
 kapel --backend claude-code            # 목적 없이 실행 → 대화형
 ```
 
-배너가 `kapel v0.13.0  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
+배너가 `kapel v0.14.0  claude-code · opus  session 0f3c9a2b` 형태로 뜨고, 그
 아래에 `approvals are enforced by the Claude Code CLI — kapel does not prompt here`
 가 표시됩니다 — 이 경로에서는 kapel이 `allow …? [y/n/a, …]`를 묻지 않습니다(승인은
 Claude Code CLI가 자체 정책으로 처리).
@@ -684,17 +690,35 @@ kapel init                      # .agent/ 템플릿 복사
 이후:
 
 ```bash
-kapel policy compile            # 자연어 정책 → orchestration.lock.json (LLM 1회 호출)
-                                # warnings/ambiguities에 orchestration.md:N 줄 번호가 붙는지 확인
+kapel policy compile            # 정규 형식 정책 → orchestration.lock.json
+                                # `Read the policy from its canonical form — no model call.`
+                                # `tokens — …` 줄이 **없어야** 합니다 (쓴 게 없으니까)
 kapel policy explain            # 컴파일된 정책 요약 확인
 kapel policy check              # 오프라인 신선도 검사 (CI용)
 
-# orchestration.md를 한 줄 고친 뒤(예: 동시성 숫자 변경), 아직 컴파일하지 않고:
-kapel policy diff                # lock 대비 변경 예정 사항만 미리보기 (lock은 그대로)
+# .agent/orchestration.md를 열어 정규 형식인지 확인하세요 — 첫머리에
+# `<!-- kapel:policy v1 -->` 마커가 있고, `## Execution` / `## Routing` 아래에
+# 한 줄짜리 규칙들이 있어야 합니다.
+
+# 편집기: 모델을 부르지 않고 정책을 고칩니다.
+kapel policy edit               # "Concurrency" 선택 → 숫자 변경 → "Save"
+                                # `No model was called.` 로 끝나고, 바뀐 항목이 diff로 출력됩니다
+kapel policy check              # 편집 직후에도 lock이 이미 fresh여야 합니다 (컴파일 불필요)
+
+# 정규 형식을 손으로 고친 뒤:
+kapel policy diff                # lock 대비 변경 예정 사항만 미리보기 (lock은 그대로, 모델 호출 없음)
 kapel policy compile             # 실제로 lock을 갱신
 
+# 산문으로 되돌리면 모델 경로로 넘어갑니다. orchestration.md를 통째로
+# 자연어 몇 문단으로 바꾼 뒤(마커 줄도 지우고):
+kapel policy compile            # 이번에는 `Compiled policy using …` + `tokens — …`
+                                # warnings/ambiguities에 orchestration.md:N 줄 번호가 붙는지 확인
+
+# 마커는 남기고 규칙 한 줄만 망가뜨리면, 몇 번째 줄인지 stderr로 알린 뒤
+# 모델로 컴파일합니다 — 조용히 무시하지 않는지 확인하세요.
+
 # 위임 백엔드에서도 동일하게 동작합니다(API 키 불필요 — 3.4/3.5 참고):
-kapel policy compile --backend codex   # `tokens — …` 줄에 CLI가 보고한 토큰이,
+kapel policy compile --backend codex   # 산문 정책일 때 `tokens — …` 줄에 CLI가 보고한 토큰이,
 kapel policy diff --backend codex      # 보고가 없으면 `none reported by the codex CLI`가 출력됩니다
 
 ```
@@ -737,13 +761,47 @@ TOKENS 열로, 오케스트레이터 행은 `planned N tasks`(정책이 리뷰�
 확인해 보려면 `.agent/`가 없는 빈 디렉터리에서 `kapel --no-setup`을 연 뒤
 `/plan 아무거나`를 입력하세요 — 아무 안내 줄도 없이 예전 그대로
 `No .agent directory found — run \`kapel init\` first`가 출력됩니다.
-(대화형 세션에서 자동 준비 자체가 실패했을 때는 — 예를 들어 모델
-자격증명이 없을 때 — 실패를 알리는 한 줄이 뜨고, 같은 세션의 다음
-`/plan`·`/orchestrate`에서는 다시 시도하지 않고 에러만 납니다.)
+(대화형 세션에서 자동 준비 자체가 실패했을 때는 실패를 알리는 한 줄이
+뜨고, 같은 세션의 다음 `/plan`·`/orchestrate`에서는 다시 시도하지 않고
+에러만 납니다. 정규 형식 정책은 모델을 부르지 않으므로 자격증명이 없다는
+이유로 여기서 실패하지는 않습니다 — 정책을 산문으로 다시 쓴 프로젝트만
+그렇습니다.)
 
 격리(worktree), 검증기, 백엔드는 이제 플래그가 아니라 설정에서 결정됩니다 —
 `--worker-mode`/`--isolation`/`--tui`/`--dry-run`/`--no-validate`는 제거되었고,
 워커는 항상 이 프로세스의 네이티브 루프(또는 위임 백엔드의 CLI)에서 돕니다.
+
+## 4.5. `/policy` — 모델 없이 정책 고치기
+
+REPL 안에서:
+
+```text
+kapel> /policy                  ← 화살표 목록이 뜹니다
+```
+
+**기대 동작**: `Orchestration policy` 제목 아래 `Orchestrator` / `Concurrency`
+/ `Independent tasks` / `Attempts per task` / `Routing rules (5)…` /
+`Review rules (1)…` / `Escalation rules (2)…` / `Save` / `Discard changes`
+가 보입니다. 확인할 것:
+
+- **스칼라 편집** — `Attempts per task`를 골라 숫자를 바꾸고 `Save`.
+  `Wrote …/orchestration.md`, `Lock written to …`, 바뀐 항목 diff
+  (`defaultMaxAttempts: 2 -> 4`), 마지막에 `No model was called.`
+- **규칙 추가** — `Routing rules…` → `Add a rule…` → 필드를 고친 뒤 `Back`.
+  목록에 새 규칙이 늘어나야 합니다. 반대로 규칙 화면에서 **esc**로 빠져나오면
+  추가되지 **않아야** 합니다(아무것도 안 고치고 `Back`을 누른 경우는 추가됩니다).
+- **규칙 삭제** — 규칙을 고른 뒤 `Remove this rule`.
+- **취소** — `Discard changes`를 고르면 `Nothing written — the policy is
+  unchanged.` 가 뜨고 파일이 그대로여야 합니다.
+- **저장 직후 신선함** — 셸에서 `kapel policy check` → `policy lock is up to
+  date`. 편집기가 lock까지 쓰므로 컴파일이 남아 있지 않습니다.
+- **잘못된 에이전트 거부** — 편집기는 이 프로젝트가 정의하지 않은 에이전트를
+  저장하지 못합니다(에이전트 필드가 목록 선택이라 정상 경로에서는 나오지
+  않지만, `.agent/agents/`에서 파일 하나를 지운 뒤 `Save`를 눌러 보면
+  `This policy cannot be saved yet:` 가 뜹니다).
+
+파이프·리다이렉트에서는 `/policy`도 `kapel policy edit`도 물어볼 터미널이
+없다고 알리고 종료합니다.
 
 ## 5. 세션·재개·설명 (M6)
 
