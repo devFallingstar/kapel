@@ -7,6 +7,7 @@ import {
   sessionRuleFor,
 } from "@agent/coding-agent";
 import { formatToolPreview, previewInput } from "./preview.js";
+import { createStyles } from "./styles.js";
 
 export { previewInput } from "./preview.js";
 
@@ -117,10 +118,14 @@ export function createPrompter(
         if (color) output.write(ERASE_LINE);
         if (lines.length > 0) output.write(`${lines.join("\n")}\n`);
 
+        // The question is the one line here that has to be *acted* on, so it
+        // is the one line that is bold — never coloured, because a permission
+        // ask is not an error and must not read as one.
+        const query = createStyles(color).heading(prompt.query);
         const raw =
           ask === undefined
-            ? await askOnce(prompt.query, input, output)
-            : await ask(prompt.query);
+            ? await askOnce(query, input, output)
+            : await ask(query);
         const answer = parsePermissionAnswer(raw);
         if (answer === "deny") return false;
         if (answer === "always" && allowlist !== undefined) {
@@ -142,8 +147,9 @@ export function createPrompter(
   };
 }
 
+/** The prompt's asides — what `a` would remember, what it just remembered. */
 function dim(text: string, enabled: boolean): string {
-  return enabled ? `[2m${text}[0m` : text;
+  return createStyles(enabled).tool(text);
 }
 
 /** The preview block plus the "what `a` would remember" hint, as lines. */

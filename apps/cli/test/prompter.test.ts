@@ -182,6 +182,9 @@ describe("createPrompter", () => {
   it("passes the injected ask the same query text askOnce would show", async () => {
     let received: string | undefined;
     const prompter = createPrompter({
+      // `color: false` so this asserts the *text*, not the styling: on a
+      // terminal the question is handed over bold (see `createPrompter`).
+      color: false,
       yes: false,
       interactive: true,
       state: createPromptState(),

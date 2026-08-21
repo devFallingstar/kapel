@@ -23,7 +23,7 @@ import {
 import type { KapelModels, KapelRole } from "./config.js";
 import { KAPEL_ROLES } from "./config.js";
 import type { KapelProjectConfig } from "./config-project.js";
-import { ansi } from "./render.js";
+import { ansi, ROLE_SGR } from "./styles.js";
 
 // --- The model --------------------------------------------------------------
 
@@ -193,11 +193,16 @@ const LEFT_SHARE = 0.5;
 
 type SegmentStyle = "dim" | "bold" | "ok" | "warn";
 
+/**
+ * The box's four styles, spelled in the shell's own role vocabulary
+ * (`styles.ts`) rather than in SGR codes of its own: a dashboard whose "dim"
+ * drifted from the transcript's would be two programs on one screen.
+ */
 const SGR: Record<SegmentStyle, string> = {
-  dim: "2",
-  bold: "1",
-  ok: "32",
-  warn: "33",
+  dim: ROLE_SGR.tool,
+  bold: ROLE_SGR.heading,
+  ok: ROLE_SGR.ok,
+  warn: ROLE_SGR.warn,
 };
 
 /**

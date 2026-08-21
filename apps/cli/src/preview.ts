@@ -12,6 +12,8 @@
  * the renderer) can share it without sharing a stream.
  */
 
+import { ansi, ROLE_SGR } from "./styles.js";
+
 const PREVIEW_MAX = 120;
 
 /** Most lines any single preview block may occupy, tail line included. */
@@ -31,13 +33,14 @@ const LCS_MAX_LINES = 300;
 /** Leading lines of a `write_file` body shown before truncating. */
 const WRITE_PREVIEW_LINES = 20;
 
-const RED = "31";
-const GREEN = "32";
-const DIM = "2";
-
-function ansi(code: string, text: string, enabled: boolean): string {
-  return enabled ? `[${code}m${text}[0m` : text;
-}
+/**
+ * A removal, an addition and the surrounding chrome, in the shell's own role
+ * vocabulary — the preview is read inside a permission prompt, next to the
+ * transcript, and must not have its own idea of what red means.
+ */
+const RED = ROLE_SGR.error;
+const GREEN = ROLE_SGR.ok;
+const DIM = ROLE_SGR.tool;
 
 export interface PreviewOptions {
   /** ANSI colouring. Off unless the caller knows it is writing to a TTY. */

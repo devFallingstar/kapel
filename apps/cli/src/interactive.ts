@@ -84,6 +84,7 @@ import { createHistoryAppender, loadHistory } from "./history.js";
 import { runInit } from "./init.js";
 import type { CompleterResult, InputCompleter } from "./input.js";
 import {
+  CONTINUATION_PROMPT,
   createInputManager,
   INPUT_SIGINT,
   type InputManager,
@@ -128,6 +129,12 @@ import type { AltScreen } from "./screen.js";
 import { enterAltScreen } from "./screen.js";
 import { runSelectPrompt } from "./select-prompt.js";
 import { isoTime } from "./sessions.js";
+import {
+  colorEnabled,
+  PLAIN_STYLES,
+  type Styles,
+  stylesFor,
+} from "./styles.js";
 
 /**
  * The CLI's version, shown by `--version` and in the interactive banner. Kept
@@ -714,6 +721,16 @@ export interface InteractiveControllerDeps {
    * itself.
    */
   readonly onCustomCommandsChanged?: (names: readonly string[]) => void;
+  /**
+   * The role palette every line this controller emits is painted with (see
+   * `styles.ts`).
+   *
+   * Defaults to {@link PLAIN_STYLES}: a controller is built with no terminal
+   * in sight, and the shell — the one layer that knows whether stdout is one —
+   * hands in a coloured palette when it is. Which is also what keeps the
+   * `DispatchResult.output` the tests read free of escapes.
+   */
+  readonly styles?: Styles;
 }
 
 /** The REPL's brain: everything a typed line can do, with no terminal in sight. */
@@ -1051,10 +1068,37 @@ export async function createInteractiveController(
     );
   };
 
+  /**
+   * The controller's voice, in roles (see `styles.ts`). Plain unless the shell
+   * handed in a terminal's palette.
+   *
+   * The distinction each `emit*` below encodes: `emit` is *the answer you
+   * asked for* (a model name, a table body, a dashboard already styled by its
+   * own renderer) and stays undecorated; `emitNotice` is kapel remarking on
+   * the session; `emitHeading` titles a block; and warn/error are exactly what
+   * they say, so red and yellow keep meaning something.
+   */
+  const styles = deps.styles ?? PLAIN_STYLES;
+
   const lines: string[] = [];
   const emit = (line: string): void => {
     lines.push(line);
     deps.write(line);
+  };
+  const emitNotice = (line: string): void => {
+    emit(styles.notice(line));
+  };
+  const emitHeading = (line: string): void => {
+    emit(styles.heading(line));
+  };
+  const emitWarn = (line: string): void => {
+    emit(styles.warn(line));
+  };
+  const emitError = (line: string): void => {
+    emit(styles.error(line));
+  };
+  const emitOk = (line: string): void => {
+    emit(styles.ok(line));
   };
   const drain = (effect?: InteractiveEffect): DispatchResult => {
     const output = lines.slice();
@@ -1096,7 +1140,7 @@ export async function createInteractiveController(
       titleDirty = false;
       return true;
     } catch (error) {
-      emit(`(not saved: ${errorText(error)})`);
+      emitWarn(`(not saved: ${errorText(error)})`);
       return false;
     }
   };
@@ -1129,7 +1173,7 @@ export async function createInteractiveController(
     } catch (error) {
       // Recording a conversation is an observer of it, never a participant:
       // a store that has gone away costs history, not the conversation.
-      emit(`(not saved: ${errorText(error)})`);
+      emitWarn(`(not saved: ${errorText(error)})`);
     }
   };
 
@@ -1211,7 +1255,7 @@ export async function createInteractiveController(
     // of a 20-deep stack. It covers the delegated backends too — an external
     // CLI edits the same working tree kapel is standing in.
     const checkpointWarning = await deps.checkpoints?.capture(text);
-    if (checkpointWarning !== undefined) emit(checkpointWarning);
+    if (checkpointWarning !== undefined) emitWarn(checkpointWarning);
 
     if (title === "") {
       title = chatTitleFrom(text);
@@ -1230,7 +1274,7 @@ export async function createInteractiveController(
     });
     // An image that could not be attached is a note, never a failed turn: the
     // message still goes, with that mention as an ordinary path.
-    for (const notice of prepared.notices) emit(notice);
+    for (const notice of prepared.notices) emitNotice(notice);
 
     const before = deps.usage.totals();
     let result: ChatTurnLike | undefined;
@@ -1246,17 +1290,19 @@ export async function createInteractiveController(
         prepared.imagePaths,
       );
     } catch (error) {
-      emit(`error: ${errorText(error)}`);
+      emitError(`error: ${errorText(error)}`);
     }
 
     await persist();
 
     if (result !== undefined && result.status !== "success") {
-      emit(`(${result.status}) ${result.summary}`);
+      const line = `(${result.status}) ${result.summary}`;
+      if (result.status === "failed") emitError(line);
+      else emitWarn(line);
     }
     const after = deps.usage.totals();
     await recordTurnUsage(before, after);
-    emit(usageDeltaLine(before, after));
+    emit(styles.tool(usageDeltaLine(before, after)));
     return drain();
   };
 
@@ -1275,18 +1321,18 @@ export async function createInteractiveController(
     // enough to redo on every `/help`.
     await refreshCustomCommands();
 
-    emit("commands:");
+    emitHeading("commands:");
     const width = Math.max(
       ...SLASH_COMMANDS.map((command) => command.usage.length),
     );
     for (const command of SLASH_COMMANDS) {
       emit(`  ${command.usage.padEnd(width)}  ${command.help}`);
     }
-    emit("anything else is sent to the agent.");
+    emitNotice("anything else is sent to the agent.");
 
     if (customCommands.length > 0) {
       emit("");
-      emit("custom commands (.agent/commands/):");
+      emitHeading("custom commands (.agent/commands/):");
       const customWidth = Math.max(
         ...customCommands.map((command) => command.name.length + 1),
       );
@@ -1296,7 +1342,7 @@ export async function createInteractiveController(
       }
     }
     for (const warning of customCommandWarnings) {
-      emit(`warning: ${warning}`);
+      emitWarn(`warning: ${warning}`);
     }
     return drain();
   };
@@ -1310,18 +1356,18 @@ export async function createInteractiveController(
     // No `sessionRef`: a new conversation must not continue the last one on
     // the delegating backend's side either.
     await build([]);
-    emit(`started a new session ${shortId(sessionId)}`);
+    emitNotice(`started a new session ${shortId(sessionId)}`);
     return drain("new-session");
   };
 
   const slashSessions = async (): Promise<DispatchResult> => {
     if (deps.store === undefined) {
-      emit("sessions are not being recorded (--no-save).");
+      emitNotice("sessions are not being recorded (--no-save).");
       return drain();
     }
     const records = await listRecords();
     if (records.length === 0) {
-      emit(`No chat sessions recorded for ${deps.workspacePath} yet.`);
+      emitNotice(`No chat sessions recorded for ${deps.workspacePath} yet.`);
       return drain();
     }
     // A NAME column only when it would say something — matching `kapel
@@ -1344,21 +1390,23 @@ export async function createInteractiveController(
     const headers = showName
       ? ["", "ID", "NAME", "UPDATED", "MSGS", "TITLE"]
       : ["", "ID", "UPDATED", "MSGS", "TITLE"];
-    for (const line of formatTable(headers, rows)) {
-      emit(line);
-    }
+    const table = formatTable(headers, rows);
+    table.forEach((line, index) => {
+      if (index === 0) emitHeading(line);
+      else emit(line);
+    });
     return drain();
   };
 
   const slashResume = async (argument: string): Promise<DispatchResult> => {
     if (deps.store === undefined) {
-      emit(
+      emitNotice(
         "sessions are not being recorded (--no-save), so there is none to resume.",
       );
       return drain();
     }
     if (argument === "") {
-      emit("usage: /resume <id|name>  — see /sessions");
+      emitNotice("usage: /resume <id|name>  — see /sessions");
       return drain();
     }
     const records = await listRecords();
@@ -1367,20 +1415,20 @@ export async function createInteractiveController(
     // sessions share that name, resolved to the newer one" without treating
     // the ambiguity as an error.
     const matched = resolveChatSessionReference(records, argument, {
-      onNote: (note) => emit(note),
+      onNote: (note) => emitWarn(note),
     });
     if ("error" in matched) {
-      emit(matched.error);
+      emitError(matched.error);
       return drain();
     }
     if (matched.record.id === sessionId) {
-      emit(`already on ${shortId(sessionId)}`);
+      emitNotice(`already on ${shortId(sessionId)}`);
       return drain();
     }
 
     const transcript = await deps.store.loadChatSession(matched.record.id);
     if (transcript === undefined) {
-      emit(`Chat session ${matched.record.id} could not be read.`);
+      emitError(`Chat session ${matched.record.id} could not be read.`);
       return drain();
     }
 
@@ -1391,7 +1439,7 @@ export async function createInteractiveController(
     persisted = true;
     titleDirty = false;
     await build(transcript.messages);
-    emit(
+    emitNotice(
       `resumed ${title === "" ? shortId(sessionId) : title} (${transcript.messages.length} messages)`,
     );
     return drain("resumed");
@@ -1414,13 +1462,13 @@ export async function createInteractiveController(
     }
     const problem = invalidSessionName(argument);
     if (problem !== undefined) {
-      emit(problem);
+      emitError(problem);
       return drain();
     }
 
     sessionName = argument;
     if (deps.store === undefined) {
-      emit(
+      emitNotice(
         `named "${sessionName}" for this run (not persisted — sessions are not being recorded, --no-save).`,
       );
       return drain();
@@ -1434,11 +1482,11 @@ export async function createInteractiveController(
       try {
         await deps.store.renameChatSession(sessionId, sessionName);
       } catch (error) {
-        emit(`(not saved: ${errorText(error)})`);
+        emitWarn(`(not saved: ${errorText(error)})`);
         return drain();
       }
     }
-    emit(`named "${sessionName}"`);
+    emitNotice(`named "${sessionName}"`);
     return drain("renamed");
   };
 
@@ -1456,7 +1504,7 @@ export async function createInteractiveController(
    */
   const slashFork = async (argument: string): Promise<DispatchResult> => {
     if (deps.store === undefined) {
-      emit(
+      emitNotice(
         "sessions are not being recorded (--no-save), so there is nothing to fork.",
       );
       return drain();
@@ -1464,14 +1512,14 @@ export async function createInteractiveController(
     if (argument !== "") {
       const problem = invalidSessionName(argument);
       if (problem !== undefined) {
-        emit(problem);
+        emitError(problem);
         return drain();
       }
     }
 
     await persist();
     if (!persisted) {
-      emit("nothing to fork yet — say something first.");
+      emitNotice("nothing to fork yet — say something first.");
       return drain();
     }
 
@@ -1483,7 +1531,7 @@ export async function createInteractiveController(
         forkName === undefined ? {} : { name: forkName },
       );
     } catch (error) {
-      emit(`could not fork: ${errorText(error)}`);
+      emitError(`could not fork: ${errorText(error)}`);
       return drain();
     }
 
@@ -1500,7 +1548,7 @@ export async function createInteractiveController(
     persisted = true;
     titleDirty = false;
     await build(messages);
-    emit(
+    emitNotice(
       `forked to ${shortId(sessionId)}${forkName === undefined ? "" : ` (${forkName})`} — now on the new session.`,
     );
     return drain("forked");
@@ -1523,7 +1571,7 @@ export async function createInteractiveController(
     if (backend === "native") {
       const resolved = await resolveModel(argument);
       if ("error" in resolved) {
-        emit(resolved.error);
+        emitError(resolved.error);
         return drain();
       }
       model = resolved.model;
@@ -1536,7 +1584,7 @@ export async function createInteractiveController(
     // The history moves to the new model as-is; the turns already taken keep
     // whatever model produced them, so only future turns change hands.
     await rebuildSession(true);
-    emit(`model switched to ${modelAlias} — future turns use it.`);
+    emitNotice(`model switched to ${modelAlias} — future turns use it.`);
     return drain("model-changed");
   };
 
@@ -1550,7 +1598,7 @@ export async function createInteractiveController(
    */
   const slashConfig = async (): Promise<DispatchResult> => {
     if (deps.configure === undefined) {
-      emit("/config needs a terminal — run `kapel config` from one.");
+      emitWarn("/config needs a terminal — run `kapel config` from one.");
       return drain();
     }
 
@@ -1563,7 +1611,7 @@ export async function createInteractiveController(
     const nextBackend = soleExecutionBackend(config);
     const nextAlias = config.models.orchestrator.model;
     if (nextBackend === backend && nextAlias === modelAlias) {
-      emit("config unchanged.");
+      emitNotice("config unchanged.");
       return drain();
     }
 
@@ -1572,8 +1620,8 @@ export async function createInteractiveController(
       if ("error" in resolved) {
         // The config is saved either way — it is the machine's setting, not
         // this conversation's — but this REPL keeps what still works.
-        emit(resolved.error);
-        emit("keeping the current backend for this conversation.");
+        emitError(resolved.error);
+        emitWarn("keeping the current backend for this conversation.");
         return drain();
       }
       model = resolved.model;
@@ -1593,7 +1641,7 @@ export async function createInteractiveController(
     modelAlias = nextAlias;
 
     await rebuildSession(!backendChanged);
-    emit(`${changes.join(", ")} — future turns use it.`);
+    emitNotice(`${changes.join(", ")} — future turns use it.`);
     return drain("config-changed");
   };
 
@@ -1616,7 +1664,7 @@ export async function createInteractiveController(
   const slashLogin = async (): Promise<DispatchResult> => {
     const login = deps.login;
     if (login === undefined) {
-      emit("/login is not available here.");
+      emitWarn("/login is not available here.");
       return drain();
     }
 
@@ -1626,27 +1674,28 @@ export async function createInteractiveController(
           hasValue(login.env.ANTHROPIC_API_KEY) ||
           hasValue(login.env.ANTHROPIC_AUTH_TOKEN) ||
           hasValue(login.env.OPENAI_API_KEY);
-        emit(
-          configured
-            ? "native: credential present"
-            : "native: credential missing — set ANTHROPIC_API_KEY, " +
-                "ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY",
-        );
+        if (configured) emitOk("native: credential present");
+        else {
+          emitWarn(
+            "native: credential missing — set ANTHROPIC_API_KEY, " +
+              "ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY",
+          );
+        }
         continue;
       }
 
       const result = await login.check(target);
       if (result.installed === false) {
         const detail = result.detail === undefined ? "" : ` (${result.detail})`;
-        emit(`${target}: not installed${detail}`);
+        emitWarn(`${target}: not installed${detail}`);
         continue;
       }
       if (result.ok) {
-        emit(`${target}: logged in`);
+        emitOk(`${target}: logged in`);
         continue;
       }
 
-      emit(`${target}: not logged in`);
+      emitWarn(`${target}: not logged in`);
       if (target === "codex" || target === "claude-code") {
         const label = target === "codex" ? "Codex" : "Claude Code";
         const loginCmd =
@@ -1660,13 +1709,16 @@ export async function createInteractiveController(
           `${label} is installed but not logged in — run \`${loginCmd}\` now?`,
         );
         if (!yes) continue;
-        emit(`running \`${loginCmd}\` — follow the prompts in your terminal…`);
-        const after = await runLogin();
-        emit(
-          after.ok
-            ? `${target}: now logged in.`
-            : `${target}: still not logged in${after.detail === undefined ? "" : `: ${after.detail}`}`,
+        emitNotice(
+          `running \`${loginCmd}\` — follow the prompts in your terminal…`,
         );
+        const after = await runLogin();
+        if (after.ok) emitOk(`${target}: now logged in.`);
+        else {
+          emitWarn(
+            `${target}: still not logged in${after.detail === undefined ? "" : `: ${after.detail}`}`,
+          );
+        }
       }
     }
     return drain();
@@ -1683,7 +1735,7 @@ export async function createInteractiveController(
    */
   const slashStats = async (): Promise<DispatchResult> => {
     if (deps.dashboard === undefined) {
-      emit("/stats is not available here.");
+      emitWarn("/stats is not available here.");
       return drain();
     }
     for (const line of await deps.dashboard({
@@ -1708,7 +1760,7 @@ export async function createInteractiveController(
   const slashCompact = async (): Promise<DispatchResult> => {
     if (chat.compactNow === undefined) {
       const cli = backend === "codex" ? "Codex" : "Claude Code";
-      emit(`/compact is not supported with the ${cli} backend.`);
+      emitWarn(`/compact is not supported with the ${cli} backend.`);
       return drain();
     }
 
@@ -1716,7 +1768,7 @@ export async function createInteractiveController(
       runId: sessionId,
       workspacePath: deps.workspacePath,
     });
-    emit(
+    emitNotice(
       result.elided === 0
         ? "nothing to compact."
         : `compacted: elided ${result.elided} tool result${result.elided === 1 ? "" : "s"}, saved ~${result.savedChars} chars`,
@@ -1734,10 +1786,12 @@ export async function createInteractiveController(
    */
   const slashUndo = async (): Promise<DispatchResult> => {
     if (deps.checkpoints === undefined) {
-      emit("/undo is not available here.");
+      emitWarn("/undo is not available here.");
       return drain();
     }
-    for (const line of undoLines(await deps.checkpoints.undo())) emit(line);
+    for (const line of undoLines(await deps.checkpoints.undo())) {
+      emitNotice(line);
+    }
     return drain();
   };
 
@@ -1750,7 +1804,7 @@ export async function createInteractiveController(
    * `error` deliberately goes to the same place: there is no stderr worth
    * separating out at a prompt.
    */
-  const replOutput: OrchestrationOutput = { log: emit, error: emit };
+  const replOutput: OrchestrationOutput = { log: emit, error: emitError };
 
   /**
    * Records this conversation before a slash command that will record a *run*.
@@ -1779,11 +1833,11 @@ export async function createInteractiveController(
    */
   const slashPlan = async (objective: string): Promise<DispatchResult> => {
     if (deps.plan === undefined) {
-      emit("/plan is not available here.");
+      emitWarn("/plan is not available here.");
       return drain();
     }
     if (objective === "") {
-      emit('usage: /plan "<objective>"');
+      emitNotice('usage: /plan "<objective>"');
       return drain();
     }
     // A project that was never set up (or whose policy was never compiled)
@@ -1796,7 +1850,7 @@ export async function createInteractiveController(
     } catch (error) {
       // A failed plan (stale policy lock, unusable planner model, …) is a
       // thing to fix and retry, not a reason to lose the conversation.
-      emit(errorText(error));
+      emitError(errorText(error));
     }
     return drain();
   };
@@ -1804,13 +1858,13 @@ export async function createInteractiveController(
   /** `/runs` — the recorded runs, newest first, so `/resume-run` has an id to take. */
   const slashRuns = async (): Promise<DispatchResult> => {
     if (deps.runs === undefined) {
-      emit("/runs is not available here.");
+      emitWarn("/runs is not available here.");
       return drain();
     }
     try {
       await deps.runs(replOutput);
     } catch (error) {
-      emit(errorText(error));
+      emitError(errorText(error));
     }
     return drain();
   };
@@ -1825,18 +1879,18 @@ export async function createInteractiveController(
    */
   const slashResumeRun = async (runId: string): Promise<DispatchResult> => {
     if (deps.resumeRun === undefined) {
-      emit("/resume-run is not available here.");
+      emitWarn("/resume-run is not available here.");
       return drain();
     }
     if (runId === "") {
-      emit("usage: /resume-run <runId>  — see /runs");
+      emitNotice("usage: /resume-run <runId>  — see /runs");
       return drain();
     }
     await registerForRun(`/resume-run ${runId}`);
     try {
       await deps.resumeRun(runId, replOutput);
     } catch (error) {
-      emit(errorText(error));
+      emitError(errorText(error));
     }
     return drain();
   };
@@ -1845,11 +1899,11 @@ export async function createInteractiveController(
     objective: string,
   ): Promise<DispatchResult> => {
     if (deps.orchestrate === undefined) {
-      emit("/orchestrate is not available here.");
+      emitWarn("/orchestrate is not available here.");
       return drain();
     }
     if (objective === "") {
-      emit('usage: /orchestrate "<objective>"');
+      emitNotice('usage: /orchestrate "<objective>"');
       return drain();
     }
     // Same automatic setup `/plan` runs, for the same reason — see `slashPlan`.
@@ -1857,11 +1911,11 @@ export async function createInteractiveController(
     await registerForRun(objective);
     try {
       const code = await deps.orchestrate(objective);
-      if (code !== 0) emit(`orchestrate exited ${code}`);
+      if (code !== 0) emitWarn(`orchestrate exited ${code}`);
     } catch (error) {
       // A failed pipeline (stale policy lock, dirty worktree, …) is a thing
       // to fix and retry, not a reason to lose the conversation.
-      emit(errorText(error));
+      emitError(errorText(error));
     }
     return drain();
   };
@@ -1895,7 +1949,7 @@ export async function createInteractiveController(
       return await handleMessage(instruction, signal);
     }
     if (backend !== "native") {
-      emit(
+      emitNotice(
         `note: /${command.name} asks for model "${command.model}", but the ` +
           `${backend} backend has no per-command model to switch — running ` +
           "on the session's current model.",
@@ -1904,7 +1958,7 @@ export async function createInteractiveController(
     }
     const resolved = await resolveModel(command.model);
     if ("error" in resolved) {
-      emit(
+      emitNotice(
         `note: /${command.name} asks for model "${command.model}": ${resolved.error} — running on the session's current model.`,
       );
       return await handleMessage(instruction, signal);
@@ -1967,7 +2021,7 @@ export async function createInteractiveController(
         for (const line of usageRollupLines(
           deps.usage.breakdownBy?.("model") ?? new Map(),
         )) {
-          emit(`  ${line}`);
+          emit(styles.tool(`  ${line}`));
         }
         return drain();
       case "stats":
@@ -1992,7 +2046,7 @@ export async function createInteractiveController(
         if (custom !== undefined) {
           return await dispatchCustomCommand(custom, argument, signal);
         }
-        emit(`Unknown command "/${name}". Type /help for the list.`);
+        emitWarn(`Unknown command "/${name}". Type /help for the list.`);
         return drain();
       }
     }
@@ -2210,8 +2264,20 @@ async function bestEffortValue<T>(
   }
 }
 
-function dim(text: string, color: boolean): string {
-  return color ? `[2m${text}[0m` : text;
+/**
+ * The prompt marker: `kapel>` in the user's own colour, so the line the
+ * terminal echoes after it — the message you just sent — is found at a glance
+ * in a transcript of tool traces and assistant prose.
+ *
+ * The marker, not the echo: what follows it on that row is the terminal
+ * repeating your keystrokes, and there is no way to style bytes that were
+ * already printed short of erasing the row — which cannot be done reliably,
+ * because how many rows a message wrapped onto depends on the display width of
+ * every character in it. So the gutter carries the role, and the message is
+ * never re-printed, never duplicated.
+ */
+export function promptMarker(styles: Styles): string {
+  return `${styles.user("kapel>")} `;
 }
 
 /**
@@ -2264,6 +2330,14 @@ export async function runInteractive(
   options: InteractiveOptions,
 ): Promise<number> {
   const workspacePath = path.resolve(options.cwd);
+  // One answer about styling for the whole shell — the renderer, the
+  // controller, the dashboard, the prompt marker and the startup lines below
+  // all paint from these, so a pipe or `NO_COLOR` silences every one of them
+  // together. Two of them, because stdout and stderr can be redirected apart:
+  // a run whose transcript is piped to a file still has a terminal to report
+  // a setup failure on, and vice versa.
+  const styles = stylesFor(process.stdout, process.env);
+  const errorStyles = stylesFor(process.stderr, process.env);
   await loadDotEnvFile(workspacePath);
   const instructions = loadInstructions(workspacePath, process.env);
   // P1-5: same permission-rule merge as one-shot runs (run.ts) — defaults <
@@ -2303,7 +2377,7 @@ export async function runInteractive(
 
   const startup = await startDelegatedOrNative(backend, alias);
   if ("error" in startup) {
-    console.error(startup.error);
+    console.error(errorStyles.error(startup.error));
     return 1;
   }
 
@@ -2415,10 +2489,10 @@ export async function runInteractive(
   });
   await projectSetup.ensure({
     log: (line) => {
-      console.log(line);
+      console.log(styles.notice(line));
     },
     error: (line) => {
-      console.error(line);
+      console.error(errorStyles.error(line));
     },
   });
 
@@ -2431,7 +2505,7 @@ export async function runInteractive(
       ...(options.session === undefined ? {} : { session: options.session }),
     });
     if ("error" in started) {
-      console.error(started.error);
+      console.error(errorStyles.error(started.error));
       return 1;
     }
 
@@ -2496,6 +2570,7 @@ export async function runInteractive(
     // The renderer owns everything the turn puts on screen: streamed assistant
     // text, tool lines, and the status line that fills the silence in between.
     const renderer = new TextRenderer(process.stdout, {
+      styles,
       tokens: () => {
         const totals = usage.totals().usage;
         return totals.inputTokens + totals.outputTokens;
@@ -2538,6 +2613,9 @@ export async function runInteractive(
             () => customCommandNames.current,
           ),
           onIdleSigint: () => activeTurn.current?.abort(),
+          // A continued line is still the user typing, so its marker wears
+          // the same colour the prompt's does.
+          continuationPrompt: `${styles.user(CONTINUATION_PROMPT.trimEnd())} `,
         })
       : undefined;
     inputManager = manager;
@@ -2751,7 +2829,7 @@ export async function runInteractive(
         ...(quota === undefined ? {} : { quota }),
       };
       return renderDashboard(dashboardModel, {
-        color: process.stdout.isTTY === true,
+        color: colorEnabled(process.stdout, process.env),
         ...(process.stdout.columns === undefined
           ? {}
           : { columns: process.stdout.columns }),
@@ -2782,6 +2860,9 @@ export async function runInteractive(
       onCustomCommandsChanged: (names) => {
         customCommandNames.current = names;
       },
+      // The one layer that knows stdout is a terminal is the one that decides
+      // the controller may write escapes; see `InteractiveControllerDeps.styles`.
+      styles,
       // `chatAlias`, not `alias`: on a delegated backend the conversation
       // already decided what it honestly calls its model — the chosen id, or
       // `default` when nobody chose one — and `/plan` and `/orchestrate` must
@@ -2866,7 +2947,6 @@ export async function runInteractive(
         : {}),
     });
 
-    const color = process.stdout.isTTY === true;
     /**
      * The session's opening: the dashboard on a terminal, the plain banner
      * off one — a pipe or a redirect keeps the latter, so
@@ -2878,7 +2958,7 @@ export async function runInteractive(
      * (see `withSuspendedFullScreen`).
      */
     const printOpening = async (): Promise<void> => {
-      if (color) {
+      if (process.stdout.isTTY === true) {
         for (const line of await buildDashboard(
           {
             sessionId: controller.sessionId(),
@@ -2890,7 +2970,7 @@ export async function runInteractive(
           console.log(line);
         }
         for (const line of bannerHints(controller.backend())) {
-          console.log(dim(line, color));
+          console.log(styles.notice(line));
         }
       } else {
         for (const line of controller.banner(workspacePath)) console.log(line);
@@ -2899,17 +2979,17 @@ export async function runInteractive(
     repaintScreen = printOpening;
     await printOpening();
     const instructionsLine = instructionsBannerLine(instructions.sources);
-    if (instructionsLine !== undefined)
-      console.log(dim(instructionsLine, color));
+    if (instructionsLine !== undefined) {
+      console.log(styles.notice(instructionsLine));
+    }
     if (started.start.persisted) {
       const label =
         started.start.title === ""
           ? shortId(started.start.sessionId)
           : started.start.title;
       console.log(
-        dim(
+        styles.notice(
           `resumed ${label} (${started.start.messages.length} messages)`,
-          color,
         ),
       );
     }
@@ -2918,7 +2998,7 @@ export async function runInteractive(
     // this just says so, so a name that turns out to be ambiguous is
     // noticed here rather than after acting on the wrong conversation.
     if ("note" in started && started.note !== undefined) {
-      console.log(dim(started.note, color));
+      console.log(styles.warn(started.note));
     }
 
     const lineSource =
@@ -2930,8 +3010,8 @@ export async function runInteractive(
         controller,
         lines: lineSource,
         promptState,
-        promptText: dim("kapel> ", color),
-        color,
+        promptText: promptMarker(styles),
+        styles,
         activeTurn,
       });
     } finally {
@@ -2959,7 +3039,8 @@ interface ReplLoopArgs {
   readonly lines: LineSource;
   readonly promptState: PromptState;
   readonly promptText: string;
-  readonly color: boolean;
+  /** The shell's role palette — plain off a terminal. See `styles.ts`. */
+  readonly styles: Styles;
   /**
    * The in-flight turn's `AbortController`, kept current for the duration of
    * `handleLine` so an `InputManager`'s `onIdleSigint` (see
@@ -2985,7 +3066,7 @@ interface ReplLoopArgs {
  * `onIdleSigint` reaches this same abort instead.
  */
 async function replLoop(args: ReplLoopArgs): Promise<number> {
-  const { controller, lines, promptState, promptText, color, activeTurn } =
+  const { controller, lines, promptState, promptText, styles, activeTurn } =
     args;
   let armed = false;
 
@@ -3002,7 +3083,7 @@ async function replLoop(args: ReplLoopArgs): Promise<number> {
         return 0;
       }
       armed = true;
-      console.log(dim("(/exit to quit, Ctrl-C again to force)", color));
+      console.log(styles.notice("(/exit to quit, Ctrl-C again to force)"));
       continue;
     }
     armed = false;

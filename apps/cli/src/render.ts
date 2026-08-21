@@ -14,6 +14,7 @@ import { MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import { previewInput } from "./prompter.js";
 import { StatusLine, type StatusLineStream } from "./status-line.js";
+import { type Styles, stylesFor } from "./styles.js";
 
 /** How a run can finish: the native loop, or one of the delegating backends. */
 export type CliRunResult =
@@ -243,17 +244,11 @@ function firstLine(text: unknown): string {
 }
 
 /**
- * Wraps `text` in an SGR escape when `enabled`, and returns it untouched when
- * not — the one place this file (and the dashboard, which imports it) decides
- * whether a stream gets control characters at all.
- *
- * Exported so `dashboard.ts` styles its box with the same machinery the
- * transcript is styled with, rather than growing a second, subtly different
- * idea of what "dim" means.
+ * Re-exported for the callers that took it from here before `styles.ts`
+ * existed. The definition — and every SGR code in this CLI — now lives
+ * there; see that module for the role vocabulary this renderer paints with.
  */
-export function ansi(code: string, text: string, enabled: boolean): string {
-  return enabled ? `[${code}m${text}[0m` : text;
-}
+export { ansi } from "./styles.js";
 
 const EXIT_LABEL: Record<CliRunResult["status"], string> = {
   success: "success",
@@ -271,6 +266,11 @@ export interface TextRendererOptions {
    */
   readonly tokens?: () => number | undefined;
   /**
+   * The role palette to paint with. Defaults to whatever `output` and the
+   * environment allow (see `stylesFor`); tests pass an explicit one.
+   */
+  readonly styles?: Styles;
+  /**
    * While this returns `true` the status line stays erased: something else
    * owns the screen, e.g. a permission question waiting for an answer.
    */
@@ -280,7 +280,9 @@ export interface TextRendererOptions {
 }
 
 /**
- * Plain-text human renderer. Uses ANSI dim/bold only when `output` is a TTY.
+ * Plain-text human renderer. Styled only when `output` is a TTY and the
+ * environment allows colour; every escape it writes comes from one role in
+ * `styles.ts`, and the assistant's own text is the one thing it never styles.
  *
  * Assistant text is streamed: `model.text.delta` events are written as they
  * arrive, without a trailing newline, and the line is terminated when the turn
@@ -291,7 +293,7 @@ export interface TextRendererOptions {
  */
 export class TextRenderer implements Renderer {
   readonly #output: NodeJS.WritableStream;
-  readonly #color: boolean;
+  readonly #styles: Styles;
   readonly #status: StatusLine;
   /** A streamed line is open — text was written with no newline after it. */
   #streaming = false;
@@ -311,8 +313,7 @@ export class TextRenderer implements Renderer {
     options: TextRendererOptions = {},
   ) {
     this.#output = output;
-    this.#color =
-      "isTTY" in output && (output as { isTTY?: boolean }).isTTY === true;
+    this.#styles = options.styles ?? stylesFor(output as { isTTY?: boolean });
     this.#status =
       options.status ??
       new StatusLine({
@@ -389,12 +390,29 @@ export class TextRenderer implements Renderer {
     this.#status.stop();
   }
 
+  /** The machine's trace: tool calls, task lifecycle, metering. */
   #dim(text: string): string {
-    return ansi("2", text, this.#color);
+    return this.#styles.tool(text);
   }
 
+  /** A verdict or a section title. */
   #bold(text: string): string {
-    return ansi("1", text, this.#color);
+    return this.#styles.heading(text);
+  }
+
+  /** `✓`-shaped good news. */
+  #ok(text: string): string {
+    return this.#styles.ok(text);
+  }
+
+  /** Something the run survived but the reader has to know about. */
+  #warn(text: string): string {
+    return this.#styles.warn(text);
+  }
+
+  /** Something failed. */
+  #bad(text: string): string {
+    return this.#styles.error(text);
   }
 
   emit(event: AgentEvent): void {
@@ -458,7 +476,11 @@ export class TextRenderer implements Renderer {
       case "tool.execution.completed": {
         const ok = data.ok === true;
         const denied = data.denied === true;
-        this.#write(ok ? "  ✓" : `  ✗ (${denied ? "denied" : "error"})`);
+        this.#write(
+          ok
+            ? `  ${this.#ok("✓")}`
+            : `  ${this.#bad("✗")} ${this.#dim(`(${denied ? "denied" : "error"})`)}`,
+        );
         this.#waiting(THINKING_LABEL);
         break;
       }
@@ -516,7 +538,9 @@ export class TextRenderer implements Renderer {
           routing === undefined
             ? `attempt ${attempt}`
             : `${routing}, attempt ${attempt}`;
-        this.#write(`▶ ${taskId} → ${agent}${modelSuffix} (${parens})`);
+        this.#write(
+          `${this.#dim("▶")} ${taskId} → ${agent}${modelSuffix} ${this.#dim(`(${parens})`)}`,
+        );
         break;
       }
       case "task.completed": {
@@ -527,19 +551,19 @@ export class TextRenderer implements Renderer {
         const retrying = data.final === false;
         const suffix = retrying ? this.#dim(" (retrying)") : "";
         this.#write(
-          `${ok ? "✔" : "✖"} ${taskId} — ${firstLine(result.summary)}${suffix}`,
+          `${ok ? this.#ok("✔") : this.#bad("✖")} ${taskId} — ${firstLine(result.summary)}${suffix}`,
         );
         break;
       }
       case "task.escalated": {
         const from = stringOrUndefined(data.from) ?? "(unassigned)";
         const to = stringOrUndefined(data.to) ?? "?";
-        this.#write(`↑ ${taskId} rerouted ${from} → ${to}`);
+        this.#write(`${this.#warn("↑")} ${taskId} rerouted ${from} → ${to}`);
         break;
       }
       case "task.cancelled": {
         const reason = stringOrUndefined(data.reason) ?? "cancelled";
-        this.#write(`⊘ ${taskId} (${reason})`);
+        this.#write(`${this.#warn("⊘")} ${taskId} ${this.#dim(`(${reason})`)}`);
         break;
       }
       case "task.low_confidence": {
@@ -550,7 +574,7 @@ export class TextRenderer implements Renderer {
         const verdict =
           data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
         this.#write(
-          `↻ ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} — ${verdict}`,
+          `${this.#warn("↻")} ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} — ${verdict}`,
         );
         break;
       }
@@ -575,14 +599,14 @@ export class TextRenderer implements Renderer {
     switch (type) {
       case "worktree.created": {
         const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(`⎇ ${taskId} worktree created (${branch})`);
+        this.#write(this.#dim(`⎇ ${taskId} worktree created (${branch})`));
         break;
       }
       case "worktree.integrated": {
         if (data.merged === true) {
           const commit = stringOrUndefined(data.commit);
           const suffix = commit === undefined ? "" : ` → ${commit.slice(0, 8)}`;
-          this.#write(`⇡ ${taskId} merged${suffix}`);
+          this.#write(`${this.#ok("⇡")} ${taskId} merged${suffix}`);
           break;
         }
         const files = Array.isArray(data.conflictFiles)
@@ -591,7 +615,9 @@ export class TextRenderer implements Renderer {
             )
           : [];
         if (files.length > 0) {
-          this.#write(`⚠ ${taskId} merge conflict: ${files.join(", ")}`);
+          this.#write(
+            this.#warn(`⚠ ${taskId} merge conflict: ${files.join(", ")}`),
+          );
           break;
         }
         // The reason alone ("dirty-base") does not say what is in the way;
@@ -600,9 +626,11 @@ export class TextRenderer implements Renderer {
         const reason = stringOrUndefined(data.reason) ?? "unknown reason";
         const detail = stringOrUndefined(data.detail);
         this.#write(
-          detail === undefined
-            ? `⚠ ${taskId} not merged (${reason})`
-            : `⚠ ${taskId} not merged (${reason}): ${detail}`,
+          this.#warn(
+            detail === undefined
+              ? `⚠ ${taskId} not merged (${reason})`
+              : `⚠ ${taskId} not merged (${reason}): ${detail}`,
+          ),
         );
         break;
       }
@@ -643,12 +671,16 @@ export class TextRenderer implements Renderer {
           typeof data.durationMs === "number" ? data.durationMs / 1000 : 0;
         const duration = `${seconds.toFixed(1)}s`;
         if (passed) {
-          this.#write(`  ✓ ${name} (${duration})`);
+          this.#write(
+            `  ${this.#ok("✓")} ${name} ${this.#dim(`(${duration})`)}`,
+          );
           break;
         }
         const exitCode =
           typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
-        this.#write(`  ✗ ${name} (exit ${exitCode}, ${duration})`);
+        this.#write(
+          `  ${this.#bad("✗")} ${name} ${this.#bad(`(exit ${exitCode}, ${duration})`)}`,
+        );
         break;
       }
       default:
@@ -678,13 +710,17 @@ export class TextRenderer implements Renderer {
       case "command_execution": {
         const command = codexCommandText(item);
         if (command !== undefined) {
-          this.#write(`→ codex: ${truncate(command, 120)}`);
+          this.#write(
+            `${this.#dim("→")} codex: ${this.#dim(truncate(command, 120))}`,
+          );
         }
         break;
       }
       case "file_change": {
         const summary = codexFileChangeText(item);
-        if (summary !== undefined) this.#write(`✎ ${summary}`);
+        if (summary !== undefined) {
+          this.#write(`${this.#dim("✎")} ${summary}`);
+        }
         break;
       }
       default:
@@ -747,7 +783,16 @@ export class TextRenderer implements Renderer {
   result(result: CliRunResult, usage: UsageTotals): void {
     this.#endTurn();
     this.#write("");
-    this.#write(this.#bold(`status: ${EXIT_LABEL[result.status]}`));
+    // The verdict is the one line of a finished run that has to be findable
+    // from across the room: bold always, and coloured by what it says.
+    const verdict = this.#bold(`status: ${EXIT_LABEL[result.status]}`);
+    this.#write(
+      result.status === "success"
+        ? this.#ok(verdict)
+        : result.status === "partial"
+          ? this.#warn(verdict)
+          : this.#bad(verdict),
+    );
     this.#write(result.summary);
 
     if (isDelegatedResult(result)) {

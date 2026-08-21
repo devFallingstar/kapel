@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import { ansi, ROLE_SGR } from "./styles.js";
 
 /**
  * A dependency-free arrow-key list picker, split into a pure reducer and a
@@ -208,10 +209,6 @@ export function reduceSelectKey(
 
 // --- Rendering --------------------------------------------------------------
 
-function ansi(code: string, text: string, enabled: boolean): string {
-  return enabled ? `[${code}m${text}[0m` : text;
-}
-
 function glyph(state: SelectState, selected: boolean): string {
   if (state.multi) return selected ? "☑" : "☐";
   return selected ? "◉" : "◯";
@@ -227,21 +224,25 @@ export function renderSelect(
   },
 ): readonly string[] {
   const color = options.color;
-  const lines: string[] = [ansi("1", options.title, color)];
+  const lines: string[] = [ansi(ROLE_SGR.heading, options.title, color)];
 
   state.choices.forEach((choice, index) => {
     const marker = index === state.cursor ? "❯ " : "  ";
     const box = glyph(state, state.selected.includes(choice.value));
     const label =
-      index === state.cursor ? ansi("1", choice.label, color) : choice.label;
+      index === state.cursor
+        ? ansi(ROLE_SGR.heading, choice.label, color)
+        : choice.label;
     const hint =
       choice.hint === undefined
         ? ""
-        : ` ${ansi("2", `(${choice.hint})`, color)}`;
+        : ` ${ansi(ROLE_SGR.tool, `(${choice.hint})`, color)}`;
     lines.push(`${marker}${box} ${label}${hint}`);
   });
 
-  lines.push(ansi("2", options.footer ?? DEFAULT_SELECT_FOOTER, color));
+  lines.push(
+    ansi(ROLE_SGR.tool, options.footer ?? DEFAULT_SELECT_FOOTER, color),
+  );
   return lines;
 }
 
@@ -262,7 +263,7 @@ export function summarizeSelection(
       : values.length === 0
         ? "(none)"
         : values.map((value) => labelFor(choices, value)).join(", ");
-  return `${ansi("1", options.title, options.color)} ${ansi("2", "›", options.color)} ${answer}`;
+  return `${ansi(ROLE_SGR.heading, options.title, options.color)} ${ansi(ROLE_SGR.tool, "›", options.color)} ${answer}`;
 }
 
 // --- The TTY shell ----------------------------------------------------------

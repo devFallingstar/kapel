@@ -19,6 +19,8 @@
  *   actual output, and repaints afterwards.
  */
 
+import { type Styles, stylesFor } from "./styles.js";
+
 /** Braille spinner frames. Every one of them is a single cell wide. */
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
@@ -57,6 +59,12 @@ export interface StatusLineOptions {
    * screen, e.g. a permission question waiting for a keypress.
    */
   readonly suspended?: () => boolean;
+  /**
+   * The role palette the line paints itself with. Defaults to whatever
+   * `output` and the environment allow; `NO_COLOR` costs the dimming, never
+   * the line itself — a spinner is progress, not decoration.
+   */
+  readonly styles?: Styles;
   /**
    * Starts the repaint timer and returns its canceller. Defaults to an
    * unref'd `setInterval`, so a spinner never keeps the process alive.
@@ -104,6 +112,7 @@ export class StatusLine {
   readonly #tokens: (() => number | undefined) | undefined;
   readonly #suspended: () => boolean;
   readonly #ticker: (tick: () => void) => () => void;
+  readonly #styles: Styles;
 
   #cancel: (() => void) | undefined;
   #label = "";
@@ -118,6 +127,7 @@ export class StatusLine {
     this.#tokens = options.tokens;
     this.#suspended = options.suspended ?? (() => false);
     this.#ticker = options.ticker ?? defaultTicker;
+    this.#styles = options.styles ?? stylesFor(this.#output);
   }
 
   /** Whether this line will ever paint anything — false off a TTY. */
@@ -193,7 +203,7 @@ export class StatusLine {
     // wraps, and a wrapped line is one `\r` can no longer erase.
     const text = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
 
-    this.#output.write(`${ERASE}[2m${text}[0m`);
+    this.#output.write(`${ERASE}${this.#styles.tool(text)}`);
     this.#painted = true;
   }
 }

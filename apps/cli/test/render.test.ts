@@ -13,6 +13,7 @@ import {
   usageRollupLines,
 } from "../src/render.js";
 import { StatusLine } from "../src/status-line.js";
+import { stylesFor } from "../src/styles.js";
 
 /** Minimal fake `NodeJS.WritableStream` that just captures every write. */
 class CapturingStream {
@@ -966,6 +967,59 @@ describe("TextRenderer / status line", () => {
     r.emit(loopEvent("chat.turn.started", { turn: 1 }));
     r.emit(loopEvent("chat.turn.completed", { turn: 1, status: "success" }));
     expect(stream.chunks).toEqual([]);
+  });
+});
+
+// --- The role palette on a terminal -----------------------------------------
+
+const GREEN = "\u001b[32m";
+const RED = "\u001b[31m";
+const BOLD = "\u001b[1m";
+
+describe("TextRenderer / roles on a terminal", () => {
+  it("marks a finished tool call green and a failed one red", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.emit(loopEvent("tool.execution.completed", { ok: true }));
+    expect(stream.chunks.join("")).toContain(`${GREEN}\u2713${RESET}`);
+
+    const failed = ttyRenderer();
+    failed.renderer.emit(
+      loopEvent("tool.execution.completed", { ok: false, denied: true }),
+    );
+    const text = failed.stream.chunks.join("");
+    expect(text).toContain(`${RED}\u2717${RESET}`);
+    expect(text).toContain(`${DIM}(denied)${RESET}`);
+  });
+
+  it("leaves assistant text undecorated — it is the content, not the frame", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.emit(delta("Hello"));
+    expect(stream.chunks.at(-1)).toBe("Hello");
+  });
+
+  it("colours the run's verdict by what it says, and keeps it bold", () => {
+    const { renderer: r, stream } = ttyRenderer();
+    r.result(
+      {
+        status: "success",
+        summary: "Done.",
+        exitCode: 0,
+        events: 1,
+      } as CodexRunResult,
+      new UsageTracker().totals(),
+    );
+    expect(stream.chunks.join("")).toContain(`${GREEN}${BOLD}status: success`);
+  });
+
+  it("writes not one escape when NO_COLOR is set, TTY or not", () => {
+    const stream = new TtyStream();
+    const r = new TextRenderer(stream as unknown as NodeJS.WritableStream, {
+      styles: stylesFor(stream, { NO_COLOR: "1" }),
+      status: new StatusLine({ tty: false }),
+    });
+    r.emit(loopEvent("tool.execution.started", { tool: "bash", input: {} }));
+    r.emit(loopEvent("tool.execution.completed", { ok: true }));
+    expect(stream.chunks.join("")).not.toContain("\u001b[");
   });
 });
 

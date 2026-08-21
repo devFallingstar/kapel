@@ -157,6 +157,13 @@ export interface InputManagerOptions {
   readonly completer?: InputCompleter;
   /** Ctrl-C while no read is pending — e.g. a turn is running. */
   readonly onIdleSigint?: () => void;
+  /**
+   * What to show in place of the prompt while a multiline block is open.
+   * Defaults to the plain {@link CONTINUATION_PROMPT}; the REPL passes a
+   * styled one so a continued line still reads as the user's own (see
+   * `promptMarker` in `interactive.ts`).
+   */
+  readonly continuationPrompt?: string;
   /** How long to wait for more lines before resolving a paste as one message. */
   readonly pasteWindowMs?: number;
 }
@@ -186,6 +193,7 @@ function rlHistory(rl: readline.Interface): string[] | undefined {
 
 export function createInputManager(options: InputManagerOptions): InputManager {
   const pasteWindowMs = options.pasteWindowMs ?? DEFAULT_PASTE_WINDOW_MS;
+  const continuationPrompt = options.continuationPrompt ?? CONTINUATION_PROMPT;
 
   const rl = readline.createInterface({
     input: options.input,
@@ -277,7 +285,7 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     const action = reduceAssemblyLine(readPending.assembly, line);
     if (action.type === "continue") {
       readPending.assembly = action.state;
-      rl.setPrompt(CONTINUATION_PROMPT);
+      rl.setPrompt(continuationPrompt);
       rl.prompt();
       return;
     }
