@@ -114,7 +114,7 @@ describe("kapel config --show", () => {
       `backends: Claude Code (claude-code), Codex (codex)  (from ${projectConfigPath(workspace)})`,
     );
     expect(text).toContain(
-      `worker model (everyday tasks): gpt-5.1 (codex)  (from ${projectConfigPath(workspace)})`,
+      `worker model (routine, non-trivial tasks): gpt-5.1 (codex)  (from ${projectConfigPath(workspace)})`,
     );
     expect(text).toContain(
       `orchestrator model: opus (claude-code)  (from ${kapelConfigPath(env)})`,

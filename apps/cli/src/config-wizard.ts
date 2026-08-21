@@ -7,6 +7,7 @@ import type {
 } from "./config.js";
 import {
   backendChoices,
+  canonicalRoleModel,
   decodeRoleModel,
   defaultRoleModel,
   describeConfig,
@@ -113,7 +114,7 @@ const BACKEND_FOOTER =
 const ROLE_TITLES: Readonly<Record<KapelRole, string>> = {
   orchestrator: "Main orchestrator model",
   complex: "Worker model — most complex coding tasks",
-  middle: "Worker model — everyday tasks",
+  middle: "Worker model — routine, non-trivial tasks",
   low: "Worker model — small, single-function tasks",
 };
 
@@ -166,6 +167,13 @@ async function askBackends(
  * selection still offers it, otherwise the suggested default for those
  * backends. Re-running the wizard after dropping a backend therefore never
  * pre-selects a model that backend was the only one to serve.
+ *
+ * Both the stored answer and the suggested default go through
+ * {@link canonicalRoleModel} first: the choice list no longer shows a Claude
+ * Code alias as its own row (see `claudeCodeChoices` in `config.ts`), so a
+ * config or default still expressed as one (`opus`, say) has to be resolved
+ * to the full id that row actually is before it can be found on — and park
+ * the cursor on — the list the wizard is about to show.
  */
 function initialFor(
   backends: readonly KapelBackend[],
@@ -175,10 +183,10 @@ function initialFor(
 ): string {
   const previous = current?.models[role];
   if (previous !== undefined) {
-    const encoded = encodeRoleModel(previous);
+    const encoded = encodeRoleModel(canonicalRoleModel(previous));
     if (choices.some((choice) => choice.value === encoded)) return encoded;
   }
-  return encodeRoleModel(defaultRoleModel(backends, role));
+  return encodeRoleModel(canonicalRoleModel(defaultRoleModel(backends, role)));
 }
 
 const CONTINUING_LINE =

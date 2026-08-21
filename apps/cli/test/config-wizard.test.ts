@@ -113,7 +113,7 @@ describe("runConfigWizard", () => {
       BACKEND_TITLE,
       "Main orchestrator model",
       "Worker model — most complex coding tasks",
-      "Worker model — everyday tasks",
+      "Worker model — routine, non-trivial tasks",
       "Worker model — small, single-function tasks",
     ]);
   });
@@ -164,13 +164,17 @@ describe("runConfigWizard", () => {
       model: "gpt-5.1",
     });
     const modelStep = prompt.calls[1];
-    // `default` leads; the rest is every named/catalog id sorted
-    // alphabetically (see `codexChoices` in `src/config.ts`).
+    // `orchestrator`'s pinned block (Sol 5.6, Terra 5.6) leads, then every
+    // other named/catalog id sorted alphabetically, then `default` last (see
+    // `PINNED_MODELS_BY_ROLE` and `codexChoices` in `src/config.ts`).
     expect(modelStep?.choices.map((choice) => choice.value)).toEqual([
-      "codex:default",
+      "codex:sol-5.6",
+      "codex:terra-5.6",
       "codex:gpt-5-mini",
       "codex:gpt-5.1",
       "codex:gpt-5.1-codex",
+      "codex:luna-5.6",
+      "codex:default",
     ]);
   });
 
@@ -192,12 +196,16 @@ describe("runConfigWizard", () => {
     });
 
     const values = prompt.calls[1]?.choices.map((choice) => choice.value) ?? [];
-    expect(values).toContain("claude-code:opus");
+    // `claude-code:opus` no longer exists as its own row — `opus` and
+    // `claude-opus-5` are the same model, and the wizard now shows only the
+    // full id (see `claudeCodeChoices` in `src/config.ts`).
+    expect(values).toContain("claude-code:claude-opus-5");
+    expect(values).not.toContain("claude-code:opus");
     expect(values).toContain("codex:gpt-5.1-codex");
     expect(await loadKapelConfig(env)).toEqual(config);
   });
 
-  it("names the backend beside every model once several are selected", async () => {
+  it("names the backend beside every non-pinned model once several are selected", async () => {
     const prompt = new ScriptedPrompt([
       ["claude-code", "codex"],
       "claude-code:opus",
@@ -211,7 +219,8 @@ describe("runConfigWizard", () => {
       choices.find((choice) => choice.value === "codex:gpt-5.1")?.hint,
     ).toContain("Codex · ");
     expect(
-      choices.find((choice) => choice.value === "claude-code:opus")?.hint,
+      choices.find((choice) => choice.value === "claude-code:claude-sonnet-5")
+        ?.hint,
     ).toContain("Claude Code · ");
   });
 
@@ -287,12 +296,15 @@ describe("runConfigWizard", () => {
     const current = await loadKapelConfig(env);
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt, { current }));
+    // Every stored alias is canonicalized to the full id before it is
+    // checked against the (alias-free) choice list — see `canonicalRoleModel`
+    // and `initialFor` in `src/config-wizard.ts`.
     expect(prompt.initials).toEqual([
       ["claude-code"],
-      "claude-code:opus",
-      "claude-code:sonnet",
-      "claude-code:sonnet",
-      "claude-code:haiku",
+      "claude-code:claude-opus-5",
+      "claude-code:claude-sonnet-5",
+      "claude-code:claude-sonnet-5",
+      "claude-code:claude-haiku-4-5",
     ]);
   });
 
@@ -311,11 +323,12 @@ describe("runConfigWizard", () => {
     // Switching to claude-code: none of the stored pairs exist in that list.
     const prompt = new ScriptedPrompt(CLAUDE_ANSWERS);
     await runConfigWizard(deps(prompt, { current }));
+    // The fallback default is canonicalized too, same as a stored answer.
     expect(prompt.initials.slice(1)).toEqual([
-      "claude-code:opus",
-      "claude-code:opus",
-      "claude-code:sonnet",
-      "claude-code:haiku",
+      "claude-code:claude-opus-5",
+      "claude-code:claude-opus-5",
+      "claude-code:claude-sonnet-5",
+      "claude-code:claude-haiku-4-5",
     ]);
   });
 

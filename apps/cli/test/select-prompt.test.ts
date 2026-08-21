@@ -187,6 +187,60 @@ describe("reduceSelectKey navigation", () => {
       type: "noop",
     });
   });
+
+  // Regression: every real single-select question in the wizard seeds
+  // `initial` with the current or suggested model, so `selected` is never
+  // empty going in. Before this fix, moving the cursor away from that
+  // pre-selection left `selected` pointing at the old item — the ❯ marker
+  // moved, the ◉ marker did not, and enter submitted the stale answer.
+  // A bare `space` press synced the two, which is exactly the "arrow keys do
+  // nothing until you press space once" bug report.
+  it("keeps a pre-selected value in lockstep with the cursor on the very first arrow press", () => {
+    const before = state({}, { initial: "a" });
+    expect(before.selected).toEqual(["a"]);
+    expect(before.cursor).toBe(0);
+
+    const action = reduceSelectKey(before, key("down"));
+    expect(action).toEqual({
+      type: "state",
+      state: state({ cursor: 1, selected: ["b"] }, { initial: "a" }),
+    });
+  });
+
+  it("submits the item the cursor lands on, not the original pre-selection", () => {
+    const moved = reduceSelectKey(state({}, { initial: "a" }), key("down"));
+    if (moved.type !== "state") throw new Error("expected a state action");
+    expect(reduceSelectKey(moved.state, key("return"))).toEqual({
+      type: "submit",
+      values: ["b"],
+    });
+  });
+
+  it("stays in sync over several consecutive moves, including wrap-around", () => {
+    let action = reduceSelectKey(state({}, { initial: "a" }), key("down"));
+    if (action.type !== "state") throw new Error("expected a state action");
+    action = reduceSelectKey(action.state, key("down"));
+    if (action.type !== "state") throw new Error("expected a state action");
+    expect(action.state.cursor).toBe(2);
+    expect(action.state.selected).toEqual(["c"]);
+
+    action = reduceSelectKey(action.state, key("down"));
+    if (action.type !== "state") throw new Error("expected a state action");
+    expect(action.state.cursor).toBe(0);
+    expect(action.state.selected).toEqual(["a"]);
+  });
+
+  it("multi-select is untouched: moving the cursor never edits the ticks", () => {
+    const multi = initialSelectState(CHOICES, {
+      multi: true,
+      initial: ["a"],
+    });
+    const action = reduceSelectKey(multi, key("down"));
+    expect(action).toEqual({
+      type: "state",
+      state: { ...multi, cursor: 1 },
+    });
+  });
 });
 
 // --- selection --------------------------------------------------------------
@@ -474,5 +528,43 @@ describe("runSelectPrompt", () => {
     input.write("\r");
     await pending;
     expect(output.text.trimEnd().endsWith("Pick › Gamma")).toBe(true);
+  });
+
+  // Regression coverage for the arrow-key bug (absorbed from the throwaway
+  // `zzrepro-arrowbug.test.ts` repro, then deleted): a down arrow as the very
+  // first keypress must move the selection, whether it arrives in one write
+  // (a paste, or a fast terminal) or split across two (a real keypress).
+  it("moves the cursor on a bare down arrow with no space, in one write", async () => {
+    const input = new FakeTtyInput();
+    const { io } = makeIo(input);
+    const pending = runSelectPrompt(io, { title: "Pick", choices: CHOICES });
+    input.write("\x1B[B\r");
+    expect(await pending).toEqual(["b"]);
+  });
+
+  it("moves the cursor on a bare down arrow with no space, split across writes", async () => {
+    const input = new FakeTtyInput();
+    const { io } = makeIo(input);
+    const pending = runSelectPrompt(io, { title: "Pick", choices: CHOICES });
+    input.write("\x1B[B");
+    await new Promise((resolve) => setImmediate(resolve));
+    input.write("\r");
+    expect(await pending).toEqual(["b"]);
+  });
+
+  // The bug proper: every real single-select question seeds `initial` with
+  // the current or suggested model, so `selected` is never empty going in —
+  // this is the shape that actually shipped, not the empty-selection case
+  // above (which happened to work even before the fix).
+  it("moves off a pre-selected initial value on the very first arrow press, no space needed", async () => {
+    const input = new FakeTtyInput();
+    const { io } = makeIo(input);
+    const pending = runSelectPrompt(io, {
+      title: "Pick",
+      choices: CHOICES,
+      initial: "a",
+    });
+    input.write("\x1B[B\r");
+    expect(await pending).toEqual(["b"]);
   });
 });

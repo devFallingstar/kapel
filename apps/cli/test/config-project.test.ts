@@ -300,7 +300,7 @@ describe("describeEffectiveConfig", () => {
       "backends: Claude Code (claude-code), Codex (codex)  (from /home/me/.kapel/config.json)",
       "orchestrator model: opus (claude-code)  (from /home/me/.kapel/config.json)",
       "worker model (complex tasks): opus (claude-code)  (from /home/me/.kapel/config.json)",
-      "worker model (everyday tasks): gpt-5.1 (codex)  (from /repo/.agent/config.local.json)",
+      "worker model (routine, non-trivial tasks): gpt-5.1 (codex)  (from /repo/.agent/config.local.json)",
       "worker model (small tasks): haiku (claude-code)  (from /home/me/.kapel/config.json)",
       "updated: 2023-11-14T22:13:20.000Z",
     ]);

@@ -458,33 +458,37 @@ function catalogIdsForProvider(
 }
 
 /**
- * Claude Code's `--model` takes both aliases and full model ids. The wizard
- * offers every model the provider serves — kapel does not pre-guess which
- * tier an account is on, since that guess is exactly the kind of gatekeeping
- * that goes stale the moment a plan changes. A model the account cannot
- * actually use fails clearly at run time instead (see the model-access hint
- * in `packages/coding-agent/src/backends/claude-code.ts`).
+ * Claude Code's `--model` takes both aliases (`opus`/`sonnet`/`haiku`) and
+ * full model ids, and today the two name the same models: `opus` is
+ * `claude-opus-5`, `sonnet` is `claude-sonnet-5`, `haiku` is
+ * `claude-haiku-4-5` (see {@link CLAUDE_CODE_ALIAS_CANONICAL}). Listing both
+ * would show every one of those three models twice, so the wizard shows only
+ * the full id — the alias remains a perfectly valid `--model` value and a
+ * config or default expressed with one still loads and pre-selects
+ * correctly (via {@link CLAUDE_CODE_ALIAS_CANONICAL} in `config-wizard.ts`'s
+ * `initialFor`); it is just not offered as a *second* row for a model
+ * already on the list.
  *
- * Order: the three stable aliases first (what most people want, and they
- * stay valid across catalog churn), then every Anthropic catalog id sorted
- * alphabetically, then `default` last as the catch-all "whatever the account
- * defaults to" choice.
+ * The wizard otherwise offers every model the provider serves — kapel does
+ * not pre-guess which tier an account is on, since that guess is exactly the
+ * kind of gatekeeping that goes stale the moment a plan changes. A model the
+ * account cannot actually use fails clearly at run time instead (see the
+ * model-access hint in `packages/coding-agent/src/backends/claude-code.ts` —
+ * that hint is the safety net for a mistyped or unavailable id, not this
+ * list).
+ *
+ * Order: every Anthropic catalog id, sorted alphabetically, then `default`
+ * last as the catch-all "whatever the account defaults to" choice.
  */
 function claudeCodeChoices(): readonly SelectChoice[] {
-  const aliases: readonly SelectChoice[] = [
-    { value: "opus", label: "opus", hint: "Claude Opus — highest capability" },
-    { value: "sonnet", label: "sonnet", hint: "Claude Sonnet — balanced" },
-    { value: "haiku", label: "haiku", hint: "Claude Haiku — fastest/cheapest" },
-  ];
   const fullIds: readonly SelectChoice[] = catalogIdsForProvider(
     "anthropic",
   ).map((id) => ({
     value: id,
     label: id,
-    hint: "full model id — errors at run time if your plan lacks it",
+    hint: "errors at run time if your plan lacks it",
   }));
   return [
-    ...aliases,
     ...fullIds,
     {
       value: "default",
@@ -497,15 +501,22 @@ function claudeCodeChoices(): readonly SelectChoice[] {
 /**
  * The Codex CLI accepts any model id a plan allows, and which ids that is
  * varies by account — kapel does not pre-filter the list down to a guess.
- * `default` leads because it is what the wizard recommends (the Codex CLI
- * picks its own default when no `-m` is passed); every other id is offered
- * with a neutral hint since there is no way to know from here whether the
- * signed-in account has it.
+ * Every named id is offered with a neutral hint since there is no way to know
+ * from here whether the signed-in account has it; a wrong one fails clearly
+ * at run time instead (the model-access hint in
+ * `packages/coding-agent/src/backends/codex.ts` — the safety net for this,
+ * same as Claude Code's).
  *
  * `gpt-5.1-codex` is listed by hand because it is a real, Codex-CLI-specific
  * id that is not part of the shared catalog (it is never used through the
- * native API path {@link defaultModelCatalog} models). Every other id comes
- * from the catalog's OpenAI entries, sorted alphabetically alongside it.
+ * native API path {@link defaultModelCatalog} models). Every other named id
+ * comes from the catalog's OpenAI entries — including `sol-5.6`, `terra-5.6`
+ * and `luna-5.6`, registered there so they exist as real catalog entries and
+ * not just wizard labels — sorted alphabetically alongside it. `default`
+ * comes last, same as Claude Code's, rather than leading: a specific,
+ * recommended model is a better first impression than a catch-all, and the
+ * pinned block at the top of {@link modelChoicesFor} already carries the
+ * per-role recommendation `default` used to.
  */
 function codexChoices(): readonly SelectChoice[] {
   const runTimeHint = "errors at run time if your plan lacks it";
@@ -513,8 +524,8 @@ function codexChoices(): readonly SelectChoice[] {
     new Set(["gpt-5.1-codex", ...catalogIdsForProvider("openai")]),
   ).sort();
   return [
-    { value: "default", label: "default", hint: "let the Codex CLI choose" },
     ...named.map((id) => ({ value: id, label: id, hint: runTimeHint })),
+    { value: "default", label: "default", hint: "let the Codex CLI choose" },
   ];
 }
 
@@ -562,15 +573,106 @@ export function decodeRoleModel(value: string): KapelRoleModel | undefined {
 }
 
 /**
- * The models on offer for one role across every selected backend, with the
- * one this role defaults to marked so the list explains itself without a
- * second prompt.
+ * What every Claude Code alias currently means, in full-id terms — the other
+ * half of the dedup in {@link claudeCodeChoices}: the choice list drops the
+ * alias row, but a backend+model pair naming one has to still resolve to
+ * *something* on that list.
+ */
+const CLAUDE_CODE_ALIAS_CANONICAL: Readonly<Record<string, string>> = {
+  opus: "claude-opus-5",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+};
+
+/**
+ * A role's backend+model pair, with a Claude Code alias resolved to the full
+ * id the wizard's choice list actually shows (see
+ * {@link CLAUDE_CODE_ALIAS_CANONICAL}). Every other pair, including every
+ * `native`/`codex` one, passes through unchanged — the alias/full-id overlap
+ * is a Claude Code-only wrinkle.
  *
- * With a single backend selected this is exactly that backend's own list, in
- * its own order. With several, the lists are concatenated in the order the
- * backends were chosen and every hint is prefixed with the backend's name, so
- * two identically-named models stay tellable apart on screen — the values
- * themselves are qualified either way (see {@link encodeRoleModel}).
+ * `defaultModelsFor` and configs already on disk keep naming Claude Code's
+ * three tiers by alias (`opus`/`sonnet`/`haiku`); this is what lets the
+ * wizard still park the cursor on the right row for them, in
+ * `config-wizard.ts`'s `initialFor`.
+ */
+export function canonicalRoleModel(entry: KapelRoleModel): KapelRoleModel {
+  if (entry.backend !== "claude-code") return entry;
+  const canonical = CLAUDE_CODE_ALIAS_CANONICAL[entry.model];
+  return canonical === undefined
+    ? entry
+    : { backend: entry.backend, model: canonical };
+}
+
+/**
+ * The curated "recommended" row shown pinned at the top of one role's
+ * question, before the rest of that role's list.
+ */
+interface PinnedModel {
+  readonly backend: KapelBackend;
+  readonly model: string;
+  readonly label: string;
+}
+
+/**
+ * Per role, the models pinned at the top of its question, in display order.
+ * An entry only shows up when its backend is one of the ticked ones — the
+ * pinned block, like the rest of the list, only ever offers backends the
+ * user actually selected.
+ *
+ * `orchestrator` and `complex` share the same four (the hardest coding work
+ * warrants the same short list); `middle` and `low` step down a tier on both
+ * providers.
+ */
+const PINNED_MODELS_BY_ROLE: Readonly<
+  Record<KapelRole, readonly PinnedModel[]>
+> = {
+  orchestrator: [
+    { backend: "claude-code", model: "claude-fable-5", label: "Fable 5" },
+    { backend: "claude-code", model: "claude-opus-5", label: "Opus 5" },
+    { backend: "codex", model: "sol-5.6", label: "Sol 5.6" },
+    { backend: "codex", model: "terra-5.6", label: "Terra 5.6" },
+  ],
+  complex: [
+    { backend: "claude-code", model: "claude-fable-5", label: "Fable 5" },
+    { backend: "claude-code", model: "claude-opus-5", label: "Opus 5" },
+    { backend: "codex", model: "sol-5.6", label: "Sol 5.6" },
+    { backend: "codex", model: "terra-5.6", label: "Terra 5.6" },
+  ],
+  middle: [
+    { backend: "claude-code", model: "claude-opus-5", label: "Opus 5" },
+    { backend: "claude-code", model: "claude-sonnet-5", label: "Sonnet 5" },
+    { backend: "codex", model: "terra-5.6", label: "Terra 5.6" },
+    { backend: "codex", model: "luna-5.6", label: "Luna 5.6" },
+  ],
+  low: [
+    { backend: "claude-code", model: "claude-sonnet-5", label: "Sonnet 5" },
+    { backend: "claude-code", model: "claude-haiku-4-5", label: "Haiku 4.5" },
+    { backend: "codex", model: "terra-5.6", label: "Terra 5.6" },
+    { backend: "codex", model: "luna-5.6", label: "Luna 5.6" },
+  ],
+};
+
+/**
+ * The models on offer for one role across every selected backend: a pinned
+ * "recommended" block first, then the rest, with the one this role defaults
+ * to marked (outside the pinned block — see below) so the list explains
+ * itself without a second prompt.
+ *
+ * The pinned block ({@link PINNED_MODELS_BY_ROLE}) comes first, filtered to
+ * the backends actually ticked, each hinted `recommended · <Backend>`. The
+ * rest follows: every remaining backend/model pair — minus whatever the
+ * pinned block already showed, so nothing is ever offered twice — in the
+ * order the backends were chosen, each backend's own `default` sentinel
+ * held back to the very end rather than wherever it naturally sits, so
+ * "let the CLI choose" reads as the fallback it is instead of competing with
+ * a specific recommendation.
+ *
+ * With a single backend selected the "rest" section is that backend's own
+ * list, in its own order, minus its pinned entries. With several, hints are
+ * prefixed with the backend's name so two identically-named models stay
+ * tellable apart on screen — the values themselves are qualified either way
+ * (see {@link encodeRoleModel}).
  */
 export function modelChoicesFor(
   backends: readonly KapelBackend[],
@@ -578,10 +680,31 @@ export function modelChoicesFor(
 ): readonly SelectChoice[] {
   const suggested = defaultRoleModel(backends, role);
   const qualify = backends.length > 1;
-  const choices: SelectChoice[] = [];
+  const tickedBackends = new Set(backends);
 
+  const pinned: SelectChoice[] = [];
+  const pinnedValues = new Set<string>();
+  for (const entry of PINNED_MODELS_BY_ROLE[role]) {
+    if (!tickedBackends.has(entry.backend)) continue;
+    const value = encodeRoleModel({
+      backend: entry.backend,
+      model: entry.model,
+    });
+    pinned.push({
+      value,
+      label: entry.label,
+      hint: `recommended · ${backendLabel(entry.backend)}`,
+    });
+    pinnedValues.add(value);
+  }
+
+  const rest: SelectChoice[] = [];
+  const defaults: SelectChoice[] = [];
   for (const backend of backends) {
     for (const choice of choicesForBackend(backend)) {
+      const value = encodeRoleModel({ backend, model: choice.value });
+      if (pinnedValues.has(value)) continue;
+
       const parts: string[] = [];
       if (qualify) parts.push(backendLabel(backend));
       if (choice.hint !== undefined) parts.push(choice.hint);
@@ -589,14 +712,16 @@ export function modelChoicesFor(
         parts.push("suggested for this role");
       }
       const hint = parts.join(" · ");
-      choices.push({
-        value: encodeRoleModel({ backend, model: choice.value }),
+      const built: SelectChoice = {
+        value,
         label: choice.label,
         ...(hint === "" ? {} : { hint }),
-      });
+      };
+      (choice.value === "default" ? defaults : rest).push(built);
     }
   }
-  return choices;
+
+  return [...pinned, ...rest, ...defaults];
 }
 
 /**
@@ -721,7 +846,7 @@ export function backendLabel(backend: KapelBackend): string {
 export const ROLE_DESCRIPTIONS: Readonly<Record<KapelRole, string>> = {
   orchestrator: "orchestrator model",
   complex: "worker model (complex tasks)",
-  middle: "worker model (everyday tasks)",
+  middle: "worker model (routine, non-trivial tasks)",
   low: "worker model (small tasks)",
 };
 

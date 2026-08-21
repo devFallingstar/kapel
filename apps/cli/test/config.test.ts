@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KapelConfig, KapelModels } from "../src/config.js";
 import {
   backendChoices,
+  canonicalRoleModel,
   decodeRoleModel,
   defaultModelsFor,
   defaultRoleModel,
@@ -587,24 +588,92 @@ describe("modelChoicesFor", () => {
     .filter((id) => defaultModelCatalog()[id]?.provider === "openai")
     .sort();
 
-  it("offers the Claude Code aliases, every catalog id, and default", () => {
+  // The pinned "recommended" block per role — mirrors
+  // `PINNED_MODELS_BY_ROLE` in `src/config.ts`. Kept alongside the tests
+  // (rather than imported) so a test failure here means the exported
+  // behaviour actually moved, not just this fixture.
+  const PINNED: Record<string, readonly string[]> = {
+    orchestrator: ["claude-fable-5", "claude-opus-5", "sol-5.6", "terra-5.6"],
+    complex: ["claude-fable-5", "claude-opus-5", "sol-5.6", "terra-5.6"],
+    middle: ["claude-opus-5", "claude-sonnet-5", "terra-5.6", "luna-5.6"],
+    low: ["claude-sonnet-5", "claude-haiku-4-5", "terra-5.6", "luna-5.6"],
+  };
+
+  it("pins the recommended block on top, then every other catalog id, then default", () => {
+    const pinned = PINNED.orchestrator?.filter((id) => id.startsWith("claude"));
+    const rest = anthropicCatalogIds.filter((id) => !pinned?.includes(id));
     expect(
       modelChoicesFor(["claude-code"], "orchestrator").map(
         (choice) => choice.value,
       ),
     ).toEqual(
-      ["opus", "sonnet", "haiku", ...anthropicCatalogIds, "default"].map(
+      [...(pinned ?? []), ...rest, "default"].map(
         (model) => `claude-code:${model}`,
       ),
     );
   });
 
-  it("labels each choice with the bare model id", () => {
+  it("labels the pinned entries with their curated names, everything else with the bare id", () => {
+    const choices = modelChoicesFor(["claude-code"], "orchestrator");
+    expect(choices[0]).toMatchObject({
+      value: "claude-code:claude-fable-5",
+      label: "Fable 5",
+    });
+    expect(choices[1]).toMatchObject({
+      value: "claude-code:claude-opus-5",
+      label: "Opus 5",
+    });
     expect(
-      modelChoicesFor(["claude-code"], "orchestrator").map(
-        (choice) => choice.label,
-      ),
-    ).toEqual(["opus", "sonnet", "haiku", ...anthropicCatalogIds, "default"]);
+      choices.find((choice) => choice.value === "claude-code:claude-sonnet-5"),
+    ).toMatchObject({ label: "claude-sonnet-5" });
+  });
+
+  it("never repeats a model between the pinned block and the rest", () => {
+    for (const role of ["orchestrator", "complex", "middle", "low"] as const) {
+      const values = modelChoicesFor(["claude-code", "codex"], role).map(
+        (choice) => choice.value,
+      );
+      expect(new Set(values).size).toBe(values.length);
+    }
+  });
+
+  it("only pins entries whose backend was actually ticked", () => {
+    const claudeOnly = modelChoicesFor(["claude-code"], "orchestrator");
+    expect(claudeOnly.some((choice) => choice.value.startsWith("codex:"))).toBe(
+      false,
+    );
+    expect(claudeOnly.slice(0, 2).map((choice) => choice.value)).toEqual([
+      "claude-code:claude-fable-5",
+      "claude-code:claude-opus-5",
+    ]);
+
+    const codexOnly = modelChoicesFor(["codex"], "orchestrator");
+    expect(codexOnly.slice(0, 2).map((choice) => choice.value)).toEqual([
+      "codex:sol-5.6",
+      "codex:terra-5.6",
+    ]);
+  });
+
+  it("drops the alias entries: opus/sonnet/haiku no longer appear as their own rows", () => {
+    for (const role of ["orchestrator", "complex", "middle", "low"] as const) {
+      const values = modelChoicesFor(["claude-code"], role).map(
+        (choice) => choice.value,
+      );
+      expect(values).not.toContain("claude-code:opus");
+      expect(values).not.toContain("claude-code:sonnet");
+      expect(values).not.toContain("claude-code:haiku");
+    }
+  });
+
+  it("hints every pinned entry with its backend, `recommended · <Backend>`", () => {
+    const choices = modelChoicesFor(["claude-code", "codex"], "orchestrator");
+    for (const model of PINNED.orchestrator ?? []) {
+      const backend = model.startsWith("claude") ? "claude-code" : "codex";
+      const label = backend === "claude-code" ? "Claude Code" : "Codex";
+      expect(
+        choices.find((choice) => choice.value === `${backend}:${model}`)?.hint,
+      ).toBe(`recommended · ${label}`);
+    }
   });
 
   it("does not gate the Claude Code catalog ids behind an account guess", () => {
@@ -613,51 +682,53 @@ describe("modelChoicesFor", () => {
     }
   });
 
-  it("marks the role's suggestion in the Claude Code list", () => {
-    const hintOf = (
-      role: "orchestrator" | "complex" | "middle" | "low",
-      value: string,
-    ): string | undefined =>
-      modelChoicesFor(["claude-code"], role).find(
-        (choice) => choice.value === `claude-code:${value}`,
-      )?.hint;
-
-    expect(hintOf("orchestrator", "opus")).toContain("suggested for this role");
-    expect(hintOf("orchestrator", "sonnet")).not.toContain("suggested");
-    expect(hintOf("complex", "opus")).toContain("suggested for this role");
-    expect(hintOf("middle", "sonnet")).toContain("suggested for this role");
-    expect(hintOf("low", "haiku")).toContain("suggested for this role");
-  });
-
   it("leaves a single backend's hints unqualified", () => {
-    const opus = modelChoicesFor(["claude-code"], "middle").find(
-      (choice) => choice.value === "claude-code:opus",
+    // `claude-haiku-4-5` is not pinned for `middle`, so it stays in the
+    // plain "rest" section with an unqualified, un-tagged hint.
+    const haiku = modelChoicesFor(["claude-code"], "middle").find(
+      (choice) => choice.value === "claude-code:claude-haiku-4-5",
     );
-    expect(opus?.hint).toBe("Claude Opus — highest capability");
+    expect(haiku?.hint).toBe("errors at run time if your plan lacks it");
   });
 
-  it("leads the Codex list with `default` and offers every catalog id", () => {
-    const expectedNamed = Array.from(
-      new Set(["gpt-5.1-codex", ...openaiCatalogIds]),
-    ).sort();
+  it("puts codex's `default` at the very bottom, after the pinned block and the rest", () => {
     for (const role of ["orchestrator", "complex", "middle", "low"] as const) {
+      const pinned = PINNED[role]?.filter((id) => !id.startsWith("claude"));
+      const named = Array.from(
+        new Set(["gpt-5.1-codex", ...openaiCatalogIds]),
+      ).sort();
+      const rest = named.filter((id) => !pinned?.includes(id));
       const choices = modelChoicesFor(["codex"], role);
-      expect(choices[0]?.value).toBe("codex:default");
-      expect(choices[0]?.hint).toContain("suggested for this role");
       expect(choices.map((choice) => choice.value)).toEqual(
-        ["default", ...expectedNamed].map((model) => `codex:${model}`),
+        [...(pinned ?? []), ...rest, "default"].map(
+          (model) => `codex:${model}`,
+        ),
       );
+      // codex's default is still every role's suggestion — it is simply no
+      // longer first.
+      expect(choices.at(-1)?.hint).toContain("suggested for this role");
     }
   });
 
   it("does not gate the named Codex ids behind an account guess", () => {
     const named = modelChoicesFor(["codex"], "middle").filter(
-      (choice) => choice.value !== "codex:default",
+      (choice) =>
+        choice.value !== "codex:default" &&
+        choice.hint?.startsWith("recommended") !== true,
     );
     expect(named.length).toBeGreaterThan(0);
     for (const choice of named) {
       expect(choice.hint).not.toContain("only if your account has it");
       expect(choice.hint).toContain("errors at run time");
+    }
+  });
+
+  it("registers sol-5.6/terra-5.6/luna-5.6 as real Codex choices", () => {
+    const values = modelChoicesFor(["codex"], "orchestrator").map(
+      (choice) => choice.value,
+    );
+    for (const model of ["sol-5.6", "terra-5.6", "luna-5.6"]) {
+      expect(values).toContain(`codex:${model}`);
     }
   });
 
@@ -686,39 +757,53 @@ describe("modelChoicesFor", () => {
     expect(openai?.hint).toBe("openai");
   });
 
-  it("concatenates several backends' lists in the order they were chosen", () => {
+  it("puts the pinned block first regardless of the order backends were ticked", () => {
     const choices = modelChoicesFor(["codex", "claude-code"], "middle");
     const values = choices.map((choice) => choice.value);
-    expect(values[0]).toBe("codex:default");
-    expect(values).toContain("claude-code:sonnet");
-    // Every Codex entry comes before every Claude Code one.
-    const firstClaude = values.findIndex((value) =>
-      value.startsWith("claude-code:"),
-    );
+    expect(values.slice(0, 4)).toEqual([
+      "claude-code:claude-opus-5",
+      "claude-code:claude-sonnet-5",
+      "codex:terra-5.6",
+      "codex:luna-5.6",
+    ]);
+    expect(values).toContain("claude-code:claude-sonnet-4-6");
+    expect(values).toContain("codex:gpt-5.1");
+    // Every `default` — one per ticked backend — trails everything else,
+    // never repeating a model and never leaking into the middle of the list.
+    const tailDefaults = values.slice(-2);
+    expect(tailDefaults.sort()).toEqual([
+      "claude-code:default",
+      "codex:default",
+    ]);
     expect(
-      values.slice(0, firstClaude).every((value) => value.startsWith("codex:")),
-    ).toBe(true);
+      values.slice(0, -2).some((value) => value.endsWith(":default")),
+    ).toBe(false);
   });
 
-  it("names the backend in every hint once more than one is selected", () => {
+  it("names the backend in every non-pinned hint once more than one is selected", () => {
     for (const choice of modelChoicesFor(["claude-code", "codex"], "low")) {
-      const expected = choice.value.startsWith("codex:")
+      const backend = choice.value.startsWith("codex:")
         ? "Codex"
         : "Claude Code";
-      expect(choice.hint?.startsWith(expected)).toBe(true);
+      if (choice.hint?.startsWith("recommended")) {
+        expect(choice.hint).toBe(`recommended · ${backend}`);
+      } else {
+        expect(choice.hint?.startsWith(backend)).toBe(true);
+      }
     }
   });
 
-  it("suggests Claude Code's tier default when it is one of the selection", () => {
-    const suggested = modelChoicesFor(
-      ["codex", "claude-code"],
-      "middle",
-    ).filter(
-      (choice) => choice.hint?.includes("suggested for this role") === true,
+  it("marks a claude-code tier default as pinned rather than tagging it 'suggested' a second time", () => {
+    const choices = modelChoicesFor(["codex", "claude-code"], "middle");
+    const sonnet = choices.find(
+      (choice) => choice.value === "claude-code:claude-sonnet-5",
     );
-    expect(suggested.map((choice) => choice.value)).toEqual([
-      "claude-code:sonnet",
-    ]);
+    expect(sonnet?.hint).toBe("recommended · Claude Code");
+    expect(
+      choices.some((choice) =>
+        choice.hint?.includes("suggested for this role"),
+      ),
+    ).toBe(false);
   });
 
   it("suggests Codex's default when Claude Code is not selected", () => {
@@ -726,6 +811,41 @@ describe("modelChoicesFor", () => {
       (choice) => choice.hint?.includes("suggested for this role") === true,
     );
     expect(suggested.map((choice) => choice.value)).toEqual(["codex:default"]);
+  });
+});
+
+describe("canonicalRoleModel", () => {
+  it("maps every Claude Code alias to the full id its choice list actually shows", () => {
+    expect(canonicalRoleModel(cc("opus"))).toEqual(cc("claude-opus-5"));
+    expect(canonicalRoleModel(cc("sonnet"))).toEqual(cc("claude-sonnet-5"));
+    expect(canonicalRoleModel(cc("haiku"))).toEqual(cc("claude-haiku-4-5"));
+  });
+
+  it("leaves a Claude Code full id unchanged", () => {
+    expect(canonicalRoleModel(cc("claude-opus-5"))).toEqual(
+      cc("claude-opus-5"),
+    );
+  });
+
+  it("leaves every other backend untouched, alias-shaped model string or not", () => {
+    expect(canonicalRoleModel({ backend: "codex", model: "opus" })).toEqual({
+      backend: "codex",
+      model: "opus",
+    });
+    expect(canonicalRoleModel({ backend: "native", model: "sonnet" })).toEqual({
+      backend: "native",
+      model: "sonnet",
+    });
+  });
+
+  it("every canonical id it can produce is a real entry on the Claude Code list", () => {
+    const values = new Set(
+      modelChoicesFor(["claude-code"], "middle").map((choice) => choice.value),
+    );
+    for (const alias of ["opus", "sonnet", "haiku"]) {
+      const canonical = canonicalRoleModel(cc(alias));
+      expect(values.has(encodeRoleModel(canonical))).toBe(true);
+    }
   });
 });
 
@@ -812,7 +932,7 @@ describe("describeConfig", () => {
       "backends: Claude Code (claude-code)",
       "orchestrator model: opus (claude-code)",
       "worker model (complex tasks): opus (claude-code)",
-      "worker model (everyday tasks): sonnet (claude-code)",
+      "worker model (routine, non-trivial tasks): sonnet (claude-code)",
       "worker model (small tasks): haiku (claude-code)",
       "updated: 2026-01-02T03:04:05.000Z",
     ]);
@@ -827,6 +947,8 @@ describe("describeConfig", () => {
     };
     const lines = describeConfig(config);
     expect(lines[0]).toBe("backends: Claude Code (claude-code), Codex (codex)");
-    expect(lines[3]).toBe("worker model (everyday tasks): gpt-5.1 (codex)");
+    expect(lines[3]).toBe(
+      "worker model (routine, non-trivial tasks): gpt-5.1 (codex)",
+    );
   });
 });

@@ -99,6 +99,19 @@ function moveTo(state: SelectState, cursor: number): SelectAction {
   // A move that does not move keeps the very same object, so a shell can use
   // reference equality to decide whether a redraw is needed.
   if (cursor === state.cursor) return { type: "state", state };
+  // Single-select only, and only once something is already selected (an
+  // `initial` value, typically): keep the selection in lockstep with the
+  // cursor. Without this, the highlighted row (❯) and the ticked row (◉)
+  // drift apart the moment the arrow keys move away from the pre-selected
+  // item, and submit() below hands back the *old* selection until a `space`
+  // press resyncs it — from the user's seat, arrow keys do nothing until
+  // they press space once. Before anything is selected there is nothing to
+  // keep in sync; submit() already falls back to the highlighted item then.
+  if (!state.multi && state.selected.length > 0) {
+    const next = state.choices[cursor];
+    const selected = next === undefined ? state.selected : [next.value];
+    return { type: "state", state: { ...state, cursor, selected } };
+  }
   return { type: "state", state: { ...state, cursor } };
 }
 

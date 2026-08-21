@@ -73,5 +73,23 @@ export function defaultModelCatalog(): Readonly<
       id: "gpt-5-mini",
       capabilities: FULL_CAPABILITIES,
     },
+    // Codex CLI models offered by the kapel wizard's pinned/recommended
+    // lists (see `apps/cli/src/config.ts`). No pricing shipped, same as
+    // every other OpenAI entry above.
+    "sol-5.6": {
+      provider: "openai",
+      id: "sol-5.6",
+      capabilities: FULL_CAPABILITIES,
+    },
+    "terra-5.6": {
+      provider: "openai",
+      id: "terra-5.6",
+      capabilities: FULL_CAPABILITIES,
+    },
+    "luna-5.6": {
+      provider: "openai",
+      id: "luna-5.6",
+      capabilities: FULL_CAPABILITIES,
+    },
   };
 }
