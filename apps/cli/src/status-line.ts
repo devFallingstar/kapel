@@ -32,13 +32,30 @@
  * ```
  *
  * The mechanism is unchanged and that is the point: erase, let the caller
- * print, repaint underneath. Three rows instead of one only changes the
- * arithmetic — the block is painted downwards from the cursor's row and the
- * cursor is walked back up to it, so the next erase starts where this paint
- * did, and the whole band moves down the screen as the transcript grows
- * without a single absolute cursor address being written.
+ * print, repaint underneath. More rows than one only changes the arithmetic —
+ * the block is painted downwards from the cursor's row and the cursor is
+ * walked back up to it, so the next erase starts where this paint did, and the
+ * whole band moves down the screen as the transcript grows without a single
+ * absolute cursor address being written.
  *
- * A fourth row joins them while the user types into the running turn:
+ * ## What goes between the rules
+ *
+ * Three rows is only the common case. The block paints however many rows it
+ * has, tracks the count, and erases exactly that many; two things vary it, and
+ * both ride on the same paint rather than on a painter of their own, because
+ * one painting authority per screen is the whole discipline this file exists
+ * to keep.
+ *
+ * **Rows the caller owns.** A spinner speaks for one wait, and an
+ * orchestration run is several at once: four workers in four worktrees have
+ * four things to say and no single label that says them. So the block's
+ * content is pluggable — see {@link StatusLineOptions.rows} — and a caller
+ * with something better to show than `⠹ thinking 4s` (the per-worker row in
+ * `worker-band.ts`) supplies it. Such a block is opened with {@link open}
+ * rather than {@link start}: there is no wait to name.
+ *
+ * **The line being typed into the running turn.** It joins the content rows,
+ * under them and inside the band, while the user is mid-sentence:
  *
  * ```
  *   ───────────────────────────
@@ -48,9 +65,10 @@
  * ```
  *
  * That row is drawn here rather than echoed by `readline` for the same reason
- * everything else in the block is: these rows have exactly one painter, and a
- * second one writing into them a few times a second is how a status line and a
- * line being typed turn into a smear. See {@link StatusLineOptions.pending}.
+ * the content rows are: a second writer into these rows a few times a second
+ * is how a status line and a line being typed turn into a smear. See
+ * {@link StatusLineOptions.pending}, and {@link StatusLineOptions.queued} for
+ * the `N queued` clause that counts the lines it did not steer.
  */
 
 import type { BandDecor } from "./band.js";
@@ -124,19 +142,35 @@ export interface StatusLineOptions {
    */
   readonly frame?: BandDecor;
   /**
+   * The block's content rows, in place of the spinner — already styled, and
+   * already narrow enough for `columns` (nothing here folds them: a block that
+   * silently grew a row would leave the row above it uneraseable).
+   *
+   * Called on every repaint, so the rows may move on their own between events:
+   * that is how a worker row's elapsed seconds tick. Returning an empty array
+   * means "nothing to show right now" and leaves the screen clean without
+   * ending the block — the next tick puts it back if there is something to say
+   * by then.
+   */
+  readonly rows?: (columns: number) => readonly string[];
+  /**
    * The line the user is typing *into* the running turn, as a row of text
    * (see `composePendingRow` in `input.ts`), or `undefined` when they are not
    * typing one.
    *
    * Mid-turn keystrokes are not echoed by `readline` — they would land on
    * whichever row this block happens to be repainting — so the block shows
-   * them itself, as a fourth row inside the band. That keeps one painter in
-   * charge of these rows, which is the only arrangement in which a spinner
-   * and a line being typed can share them without fighting.
+   * them itself, as a row under whatever it is already reporting. That keeps
+   * one painter in charge of these rows, which is the only arrangement in
+   * which a spinner and a line being typed can share them without fighting.
    *
-   * Only ever drawn inside a {@link frame}: without one there is a single
-   * `\r`-erased row, and a second row would be one this line could not take
-   * back.
+   * Unlike {@link rows} this one is folded to fit, from the *end* (see
+   * {@link clipToEnd}), because it is a row the user is still writing.
+   *
+   * Only ever drawn inside a {@link frame}: the typed row is part of the
+   * band's shape, and a caller with no band — a `kapel run` summary, an
+   * orchestration log — has a single `\r`-erased row and nobody at a prompt to
+   * be typing into it.
    */
   readonly pending?: () => string | undefined;
   /**
@@ -186,6 +220,16 @@ export function formatStatus(
 }
 
 /**
+ * The widest a row this block may write.
+ *
+ * One column short of the edge: a line that exactly fills the terminal wraps,
+ * and a wrapped line is one `\r` can no longer erase.
+ */
+function rowWidth(columns: number): number {
+  return Math.max(1, columns - 1);
+}
+
+/**
  * Clips a row to the width the block may write, keeping its *end*.
  *
  * The status text is clipped from the front like every other line on screen,
@@ -209,14 +253,17 @@ export class StatusLine {
   readonly #ticker: (tick: () => void) => () => void;
   readonly #styles: Styles;
   readonly #band: BandDecor | undefined;
+  readonly #rows: ((columns: number) => readonly string[]) | undefined;
   readonly #pending: (() => string | undefined) | undefined;
   readonly #queued: (() => number) | undefined;
 
   #cancel: (() => void) | undefined;
-  #label = "";
+  /** The wait being reported, or `undefined` for a block opened without one. */
+  #label: string | undefined;
   #startedAt = 0;
   #frame = 0;
-  #painted = false;
+  /** How many rows the last paint left on screen; `0` when nothing is up. */
+  #paintedRows = 0;
 
   constructor(options: StatusLineOptions = {}) {
     this.#output = options.output ?? process.stdout;
@@ -227,6 +274,7 @@ export class StatusLine {
     this.#ticker = options.ticker ?? defaultTicker;
     this.#styles = options.styles ?? stylesFor(this.#output);
     this.#band = options.frame;
+    this.#rows = options.rows;
     this.#pending = options.pending;
     this.#queued = options.queued;
   }
@@ -251,15 +299,35 @@ export class StatusLine {
   start(label: string): void {
     if (!this.#enabled) return;
     this.#label = label;
-    if (this.#cancel === undefined) {
-      this.#startedAt = this.#now();
-      this.#frame = 0;
-      this.#cancel = this.#ticker(() => {
-        this.#frame += 1;
-        this.#paint();
-      });
-    }
+    this.#begin();
     this.#paint();
+  }
+
+  /**
+   * Starts a block with no wait to report: whatever
+   * {@link StatusLineOptions.rows} says is the whole of it.
+   *
+   * The clock still runs and the ticker still repaints, because rows that
+   * report on several tasks at once age between events exactly as a spinner
+   * does — see `worker-band.ts`, whose seconds tick without an event to
+   * prompt them.
+   */
+  open(): void {
+    if (!this.#enabled) return;
+    this.#label = undefined;
+    this.#begin();
+    this.#paint();
+  }
+
+  /** Starts the repaint timer, if it is not already running. */
+  #begin(): void {
+    if (this.#cancel !== undefined) return;
+    this.#startedAt = this.#now();
+    this.#frame = 0;
+    this.#cancel = this.#ticker(() => {
+      this.#frame += 1;
+      this.#paint();
+    });
   }
 
   /**
@@ -268,14 +336,15 @@ export class StatusLine {
    * writing real output.
    */
   erase(): void {
-    if (!this.#painted) return;
-    this.#painted = false;
-    if (this.#band === undefined) {
+    const rows = this.#paintedRows;
+    if (rows === 0) return;
+    this.#paintedRows = 0;
+    if (rows === 1) {
       this.#output.write(ERASE);
       return;
     }
     // The cursor was left on the block's first row by {@link #paint}, so the
-    // whole band comes off with one clear-to-bottom and the cursor stays
+    // whole block comes off with one clear-to-bottom and the cursor stays
     // exactly where the caller's next line of output belongs.
     this.#output.write(ERASE_BLOCK);
   }
@@ -300,41 +369,86 @@ export class StatusLine {
       return;
     }
 
+    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
+    const content = this.#contentRows(columns);
+    if (content.length === 0) {
+      // Nothing to say this instant — a block that is running but momentarily
+      // empty leaves a clean screen rather than a stale one.
+      this.erase();
+      return;
+    }
+
+    const band = this.#band;
+    const rows =
+      band === undefined
+        ? content
+        : [
+            band.rule(columns),
+            ...content,
+            ...this.#typedRow(columns),
+            band.rule(columns),
+          ];
+
+    if (rows.length === 1) {
+      this.#output.write(`${ERASE}${rows[0]}`);
+      this.#paintedRows = 1;
+      return;
+    }
+
+    // `\r\n` rather than `ESC[B` between the rows: the rows under the first
+    // one may not exist yet, and a newline is the one thing that makes the
+    // terminal scroll them into being. Whatever that scroll moved, it moved
+    // the whole block with it, which is why the walk back up is relative and
+    // lands where the paint started every time.
+    const below = rows.length - 1;
+    this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
+    this.#paintedRows = rows.length;
+  }
+
+  /**
+   * What the block is reporting: the caller's rows when it has any, and
+   * otherwise the spinner for the wait {@link start} named.
+   *
+   * The caller's rows win rather than joining the spinner. A block reports one
+   * thing at a time — during an orchestration run the spinner never starts at
+   * all (every event carries a task id, so no turn-level wait is ever
+   * declared) — and two ideas of "what is happening" stacked on top of each
+   * other would be the screen contradicting itself.
+   */
+  #contentRows(columns: number): readonly string[] {
+    const rows = this.#rows?.(columns);
+    if (rows !== undefined && rows.length > 0) return rows;
+
+    const label = this.#label;
+    if (label === undefined) return [];
+
     const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
     const status = formatStatus(
-      this.#label,
+      label,
       this.#now() - this.#startedAt,
       this.#tokens?.(),
       this.#queued?.(),
     );
-    const columns = this.#output.columns ?? DEFAULT_COLUMNS;
-    // One column short of the edge: a line that exactly fills the terminal
-    // wraps, and a wrapped line is one `\r` can no longer erase.
-    const width = Math.max(1, columns - 1);
-    const text = `${frame} ${status}`.slice(0, width);
-    const line = this.#styles.tool(text);
+    const text = `${frame} ${status}`.slice(0, rowWidth(columns));
+    return [this.#styles.tool(text)];
+  }
 
-    const band = this.#band;
-    if (band === undefined) {
-      this.#output.write(`${ERASE}${line}`);
-      this.#painted = true;
-      return;
-    }
-
+  /**
+   * The line the user is typing, as the band's last row before the closing
+   * rule — or nothing at all, which is every case but a REPL mid-turn.
+   *
+   * A row rather than part of {@link #contentRows} because it is not content:
+   * it says nothing about what the block is reporting on, it only shows the
+   * user their own keystrokes, and it sits *under* whatever the block has to
+   * say so the band still reads with the input at the bottom of it — where the
+   * prompt would be if the turn were over. Which also means a block with
+   * nothing to report is still off screen: {@link #paint} erases on empty
+   * content before it gets here, and a lone typed row hanging between two
+   * rules would be a band around no status at all.
+   */
+  #typedRow(columns: number): readonly string[] {
     const pending = this.#pending?.();
-
-    // `\r\n` rather than `ESC[B` between the rows: the two rows under the
-    // first one may not exist yet, and a newline is the one thing that makes
-    // the terminal scroll them into being. Whatever that scroll moved, it
-    // moved the whole block with it, which is why the walk back up is
-    // relative and lands where the paint started every time.
-    const rule = band.rule(columns);
-    const rows =
-      pending === undefined
-        ? [rule, line, rule]
-        : [rule, line, this.#styles.user(clipToEnd(pending, width)), rule];
-    const below = rows.length - 1;
-    this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
-    this.#painted = true;
+    if (pending === undefined) return [];
+    return [this.#styles.user(clipToEnd(pending, rowWidth(columns)))];
   }
 }

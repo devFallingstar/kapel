@@ -107,7 +107,10 @@ import {
   workspaceImageReader,
 } from "./mention.js";
 import { createProjectSetup } from "./onboard.js";
-import type { OrchestrateCommandOptions } from "./orchestrate.js";
+import type {
+  OrchestrateCommandOptions,
+  OrchestratePresentation,
+} from "./orchestrate.js";
 import { DEFAULT_ISOLATION, runOrchestrate } from "./orchestrate.js";
 import {
   DEFAULT_PERMISSIONS,
@@ -136,6 +139,7 @@ import type { AltScreen } from "./screen.js";
 import { enterAltScreen } from "./screen.js";
 import { runSelectPrompt } from "./select-prompt.js";
 import { isoTime } from "./sessions.js";
+import type { StatusLine } from "./status-line.js";
 import { PLAIN_STYLES, type Styles, stylesFor } from "./styles.js";
 
 /**
@@ -2889,6 +2893,38 @@ export async function runInteractive(
       queued: () => queue.depth(),
     });
 
+    /**
+     * The same three facts, for the commands that run a whole orchestration
+     * inside this REPL.
+     *
+     * `/orchestrate` and `/resume-run` paint at the foot of the screen too —
+     * a live row of what every worker is doing — and until they were told
+     * about this one they built a renderer of their own, with a default
+     * palette and no idea the band was there: two objects painting the same
+     * rows, and whichever wrote last won. Handing them the REPL's palette,
+     * band and screen-owner check is what makes the run's row *this* band's
+     * middle row for as long as the run lasts, and hands the screen straight
+     * back afterwards.
+     */
+    /**
+     * The block such a run is painting its row in, while one is up.
+     *
+     * The REPL still has lines of its own to print mid-run — a line typed
+     * while the run works is answered with "queued" the moment it is Entered —
+     * and `renderer.interject` only knows how to take down the block the
+     * renderer itself owns. This is the handle on the other one.
+     */
+    const runBand: { current: StatusLine | undefined } = { current: undefined };
+
+    const replPresentation = (): OrchestratePresentation => ({
+      styles,
+      ...(band === undefined ? {} : { frame: band }),
+      suspended: () => promptState.active,
+      onBand: (block) => {
+        runBand.current = block;
+      },
+    });
+
     // The turn currently in flight, if any — a persistent `InputManager`
     // never lets go of raw mode long enough for a mid-turn Ctrl-C to reach
     // the process as a real `SIGINT` (see `inputManagerLineSource`), so its
@@ -3208,6 +3244,7 @@ export async function runInteractive(
         runOrchestrate(
           objective,
           orchestrateOptionsFor(options, chatAlias, backend),
+          { presentation: replPresentation() },
         ),
       plan: (objective, output) =>
         runPlan(objective, planOptionsFor(options, chatAlias, backend), {
@@ -3238,7 +3275,10 @@ export async function runInteractive(
           }
         : {}),
       resumeRun: (runId, output) =>
-        runResume(runId, resumeOptionsFor(options, backend), { output }),
+        runResume(runId, resumeOptionsFor(options, backend), {
+          output,
+          presentation: replPresentation(),
+        }),
       login: {
         backends: loginBackends,
         check: (target) => checkBackendAvailability(target),
@@ -3375,8 +3415,17 @@ export async function runInteractive(
         // status band is on screen while they are written, and only the
         // renderer knows how to take those rows back and put them straight
         // back afterwards.
+        //
+        // Unless the band on screen is not the renderer's at all: a run
+        // started from `/orchestrate` paints its own (see `replPresentation`),
+        // and it is taken down and put back around the notice by the same
+        // erase-print-repaint, from out here, because it is the one block the
+        // renderer cannot see.
         write: (line) => {
+          const run = runBand.current;
+          run?.erase();
           renderer.interject(line);
+          run?.refresh();
         },
       });
     } finally {

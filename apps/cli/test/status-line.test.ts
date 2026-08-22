@@ -45,6 +45,7 @@ function harness(
     suspended?: () => boolean;
     columns?: number;
     band?: boolean;
+    rows?: (columns: number) => readonly string[];
     pending?: () => string | undefined;
     queued?: () => number;
   } = {},
@@ -70,6 +71,7 @@ function harness(
       : { suspended: options.suspended }),
     ...(options.band === undefined ? {} : { styles: PLAIN_STYLES }),
     ...(options.band === true ? { frame: createBandDecor(PLAIN_STYLES) } : {}),
+    ...(options.rows === undefined ? {} : { rows: options.rows }),
     ...(options.pending === undefined ? {} : { pending: options.pending }),
     ...(options.queued === undefined ? {} : { queued: options.queued }),
   });
@@ -299,6 +301,81 @@ describe("StatusLine as the turn's band", () => {
   });
 });
 
+describe("StatusLine with rows the caller owns", () => {
+  const ERASE_BLOCK = "\r[0J";
+
+  it("paints the caller's rows in place of the spinner", () => {
+    const { status, stream } = harness({ rows: () => ["[T01 x] [T02 .]"] });
+    status.open();
+    expect(stream.text).toBe(`${ERASE}[T01 x] [T02 .]`);
+  });
+
+  it("hands the rows the width they have to fit into", () => {
+    const widths: number[] = [];
+    const { status } = harness({
+      columns: 42,
+      rows: (columns) => {
+        widths.push(columns);
+        return ["row"];
+      },
+    });
+    status.open();
+    expect(widths).toEqual([42]);
+  });
+
+  it("re-asks for the rows on every tick, so they can move on their own", () => {
+    const frames = { count: 0 };
+    const { status, stream, tick } = harness({
+      rows: () => [`frame ${frames.count++}`],
+    });
+    status.open();
+    tick();
+    expect(stream.chunks.at(-1)).toBe(`${ERASE}frame 1`);
+  });
+
+  it("bounds them with the band when there is one, and erases all of it", () => {
+    const { status, stream } = harness({
+      band: true,
+      columns: 20,
+      rows: () => ["[T01 x]"],
+    });
+    status.open();
+    const rule = PLAIN_STYLES.rule(20);
+    expect(stream.text).toBe(
+      `${ERASE_BLOCK}${rule}\r\n[T01 x]\r\n${rule}[2A\r`,
+    );
+    stream.chunks.length = 0;
+    status.erase();
+    expect(stream.text).toBe(ERASE_BLOCK);
+  });
+
+  it("leaves a clean screen while the rows have nothing to say", () => {
+    const rows: string[] = [];
+    const { status, stream, tick } = harness({ rows: () => rows });
+    status.open();
+    expect(stream.chunks).toEqual([]);
+
+    rows.push("[T01 x]");
+    tick();
+    expect(stream.text).toBe(`${ERASE}[T01 x]`);
+
+    rows.length = 0;
+    tick();
+    expect(stream.chunks.at(-1)).toBe(ERASE);
+  });
+
+  it("writes nothing at all off a terminal", () => {
+    const { status, stream, tick } = harness({
+      tty: false,
+      rows: () => ["[T01 x]"],
+    });
+    status.open();
+    tick();
+    status.stop();
+    expect(stream.chunks).toEqual([]);
+  });
+});
+
 describe("StatusLine — typing into the running turn", () => {
   it("paints the line being typed as a fourth row inside the band", () => {
     const { status, stream } = harness({
@@ -364,5 +441,28 @@ describe("StatusLine — typing into the running turn", () => {
     status.start("thinking");
 
     expect(stream.text).not.toContain("not here");
+  });
+
+  it("rides under the rows a caller owns, and comes off with them", () => {
+    const ERASE_BLOCK = "\r[0J";
+    const { status, stream } = harness({
+      columns: 20,
+      band: true,
+      rows: () => ["[T01 x]"],
+      pending: () => "> and this",
+    });
+
+    status.open();
+
+    // Four rows now, and the walk back up counts them: the typed row sits
+    // under whatever the block is reporting, whether that is the spinner or a
+    // caller's own rows.
+    const rule = PLAIN_STYLES.rule(20);
+    expect(stream.text).toBe(
+      `${ERASE_BLOCK}${rule}\r\n[T01 x]\r\n> and this\r\n${rule}[3A\r`,
+    );
+    stream.chunks.length = 0;
+    status.erase();
+    expect(stream.text).toBe(ERASE_BLOCK);
   });
 });
