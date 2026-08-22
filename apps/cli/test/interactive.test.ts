@@ -376,6 +376,82 @@ describe("interactive controller — messages", () => {
     expect(result.effect).toBeUndefined();
   });
 
+  // --- notify: turn finished -------------------------------------------------
+
+  /** A clock that returns each value in `times`, then repeats the last one. */
+  function clockOf(times: readonly number[]): () => number {
+    let i = 0;
+    return () => times[Math.min(i++, times.length - 1)] ?? 0;
+  }
+
+  function fakeNotifier(): {
+    readonly turnFinishedCalls: number[];
+    readonly notify: {
+      turnFinished(elapsedMs: number): void;
+      runFinished(): void;
+      waitingForApproval(): void;
+    };
+  } {
+    const turnFinishedCalls: number[] = [];
+    return {
+      turnFinishedCalls,
+      notify: {
+        turnFinished: (elapsedMs) => turnFinishedCalls.push(elapsedMs),
+        runFinished: () => {},
+        waitingForApproval: () => {},
+      },
+    };
+  }
+
+  it("rings turnFinished with the elapsed time, reusing the injected clock", async () => {
+    const { turnFinishedCalls, notify } = fakeNotifier();
+    const h = await harness({
+      store: undefined,
+      now: clockOf([1_000, 13_000]),
+      notify,
+    });
+
+    await h.controller.handleLine("hello");
+
+    expect(turnFinishedCalls).toEqual([12_000]);
+  });
+
+  it("still rings turnFinished for a failed turn, not only a successful one", async () => {
+    const { turnFinishedCalls, notify } = fakeNotifier();
+    const h = await harness({
+      store: undefined,
+      now: clockOf([0, 20_000]),
+      notify,
+    });
+    h.session().status = "failed";
+
+    await h.controller.handleLine("do the thing");
+
+    expect(turnFinishedCalls).toEqual([20_000]);
+  });
+
+  it("never rings turnFinished for a turn the user aborted", async () => {
+    const { turnFinishedCalls, notify } = fakeNotifier();
+    const h = await harness({
+      store: undefined,
+      now: clockOf([0, 20_000]),
+      notify,
+    });
+    const turn = new AbortController();
+    h.session().onSend = () => {
+      turn.abort();
+    };
+
+    await h.controller.handleLine("fix the tests", turn.signal);
+
+    expect(turnFinishedCalls).toEqual([]);
+  });
+
+  it("works with no notify at all — the default for every other test in this file", async () => {
+    const h = await harness();
+    await expect(h.controller.handleLine("hello")).resolves.toBeDefined();
+  });
+
   it("keeps the conversation and still persists when a send throws", async () => {
     const h = await harness();
     h.session().failWith = new Error("provider exploded");

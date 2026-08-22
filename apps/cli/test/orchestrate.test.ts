@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // already tests its delegated steps through; reused rather than reinvented so
 // the mixed-backend run below is asserted against the same shell scripts.
 import { writeScriptedCli } from "../../../packages/coding-agent/test/planning/delegated-cli-harness.js";
+import type { Notifier } from "../src/notify.js";
 import type {
   ExecutorFactoryArgs,
   OrchestrateCommandOptions,
@@ -1083,6 +1084,83 @@ describe("kapel orchestrate", () => {
     } finally {
       await cleanupWorkspace(bare);
     }
+  });
+
+  describe("notify wiring", () => {
+    function fakeNotifier(): {
+      readonly calls: string[];
+      readonly notify: Notifier;
+    } {
+      const calls: string[] = [];
+      return {
+        calls,
+        notify: {
+          turnFinished: () => {},
+          runFinished: (summary: string) => calls.push(summary),
+          waitingForApproval: () => {},
+        },
+      };
+    }
+
+    it("rings runFinished once, after the summary, with a success outcome", async () => {
+      const { output, lines } = capture();
+      const { calls, notify } = fakeNotifier();
+
+      await runOrchestrate("add a health endpoint", options(workspace), {
+        output,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => new ScriptedExecutor(),
+        notify,
+      });
+
+      expect(calls).toEqual(["completed 3/3 tasks"]);
+      // The summary table is already in `lines` by the time notify rings —
+      // never a race between the two.
+      expect(lines.join("\n")).toContain("3/3 tasks completed");
+    });
+
+    it("rings runFinished with the failure outcome when a task fails", async () => {
+      const { output } = capture();
+      const { calls, notify } = fakeNotifier();
+
+      await runOrchestrate("add a health endpoint", options(workspace), {
+        output,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => new ScriptedExecutor(new Set(["T02"])),
+        notify,
+      });
+
+      expect(calls).toEqual(["failed: 1 task failed, 1 cancelled"]);
+    });
+
+    it("never rings under --json — that stream is a parser's, not a terminal's", async () => {
+      const { output } = capture();
+      const { calls, notify } = fakeNotifier();
+
+      await runOrchestrate(
+        "add a health endpoint",
+        options(workspace, { json: true }),
+        {
+          output,
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          executorFactory: () => new ScriptedExecutor(),
+          notify,
+        },
+      );
+
+      expect(calls).toEqual([]);
+    });
+
+    it("works with no notify at all", async () => {
+      const { output } = capture();
+      await expect(
+        runOrchestrate("add a health endpoint", options(workspace), {
+          output,
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          executorFactory: () => new ScriptedExecutor(),
+        }),
+      ).resolves.toBe(0);
+    });
   });
 
   describe("run header validators note", () => {

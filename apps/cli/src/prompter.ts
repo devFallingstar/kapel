@@ -7,6 +7,7 @@ import {
   type SessionRule,
   sessionRuleFor,
 } from "@agent/coding-agent";
+import type { Notifier } from "./notify.js";
 import { formatToolPreview, previewInput } from "./preview.js";
 import { createStyles } from "./styles.js";
 
@@ -98,6 +99,12 @@ interface CreatePrompterOptions {
    * readline opening on top of it.
    */
   readonly ask?: (query: string) => Promise<string | undefined | symbol>;
+  /**
+   * Rung once, right as this prompt starts waiting — see `notify.ts`. Absent
+   * (the tests, a caller that opted out) means no attention signal, same as
+   * every other optional dependency here.
+   */
+  readonly notify?: Notifier;
 }
 
 /**
@@ -126,6 +133,7 @@ export function createPrompter(
   const state = options.state;
   const ask = options.ask;
   const allowlist = options.allowlist;
+  const notify = options.notify;
   // One probe answers two questions: a terminal is what can show colour, and
   // what may be holding a status line on the row the prompt is about to use.
   const color = options.color ?? (output as { isTTY?: boolean }).isTTY === true;
@@ -133,6 +141,16 @@ export function createPrompter(
   return {
     ask: async (request: PermissionRequest): Promise<boolean | AskOutcome> => {
       state.active = true;
+      // Unconditional, and fired the instant this question opens rather than
+      // after the block below is drawn: a run blocked on an answer nobody has
+      // seen is the worst case this feature exists for, so it gets no
+      // threshold and no delay. Written before the preview's own escapes
+      // (the erase, then the block) rather than interleaved with them — a
+      // self-terminated BEL/OSC 9 pair ahead of a line is exactly as safe as
+      // one after it, and putting it first means one `try` covers the whole
+      // synchronous run of writes this function makes before its first
+      // `await`.
+      notify?.waitingForApproval();
       try {
         const prompt = formatPermissionPrompt(request, { color });
         // The preview goes to the screen ahead of the question: the question

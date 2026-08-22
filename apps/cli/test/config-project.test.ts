@@ -117,6 +117,16 @@ describe("parseProjectConfig", () => {
       parseProjectConfig({ models: { middle: { backend: "codex" } } }),
     ).toBeUndefined();
   });
+
+  it("accepts a notify-only override", () => {
+    expect(parseProjectConfig({ notify: "bell" })).toEqual({
+      notify: "bell",
+    });
+  });
+
+  it("refuses an unrecognised notify value", () => {
+    expect(parseProjectConfig({ notify: "loud" })).toBeUndefined();
+  });
 });
 
 // --- loading ----------------------------------------------------------------
@@ -193,6 +203,13 @@ describe("saveProjectConfig", () => {
       saveProjectConfig(workspace, { backends: ["codex"] }),
     ).rejects.toThrow(/kapel init/);
   });
+
+  it("round-trips a notify override", async () => {
+    await mkdir(path.join(workspace, ".agent"));
+    const config: KapelProjectConfig = { notify: "off" };
+    await saveProjectConfig(workspace, config);
+    expect(await loadProjectConfig(workspace)).toEqual(config);
+  });
 });
 
 // --- merging ----------------------------------------------------------------
@@ -206,7 +223,10 @@ describe("mergeKapelConfigs", () => {
   it("passes the machine config through untouched with no override", () => {
     const machine = machineConfig();
     const merged = mergeKapelConfigs(machine, undefined);
-    expect(merged?.config).toEqual(machine);
+    // `notify` is always present on the merged config (defaulted to "auto"
+    // when neither layer named it), unlike `permission`, which stays absent
+    // — see `mergeKapelConfigs`.
+    expect(merged?.config).toEqual({ ...machine, notify: "auto" });
     expect(merged?.sources).toEqual({
       backends: "machine",
       models: {
@@ -215,6 +235,7 @@ describe("mergeKapelConfigs", () => {
         middle: "machine",
         low: "machine",
       },
+      notify: "default",
     });
   });
 
@@ -280,6 +301,37 @@ describe("mergeKapelConfigs", () => {
     expect(merged?.config.permission).toEqual({ edit_file: "allow" });
     expect(merged?.config.updatedAt).toBe(1_700_000_000_000);
   });
+
+  it("prefers the project's notify setting over the machine's", () => {
+    const merged = mergeKapelConfigs(machineConfig({ notify: "bell" }), {
+      notify: "off",
+    });
+    expect(merged?.config.notify).toBe("off");
+    expect(merged?.sources.notify).toBe("project");
+  });
+
+  it("falls back to the machine's notify setting with no project override", () => {
+    const merged = mergeKapelConfigs(machineConfig({ notify: "osc9" }), {
+      backends: ["claude-code"],
+    });
+    expect(merged?.config.notify).toBe("osc9");
+    expect(merged?.sources.notify).toBe("machine");
+  });
+
+  it('defaults notify to "auto" when neither layer names one', () => {
+    const merged = mergeKapelConfigs(machineConfig(), {
+      backends: ["claude-code"],
+    });
+    expect(merged?.config.notify).toBe("auto");
+    expect(merged?.sources.notify).toBe("default");
+  });
+
+  it("yields an effective config from a notify-only project override with no machine config", () => {
+    const merged = mergeKapelConfigs(undefined, { notify: "bell" });
+    expect(merged?.config.notify).toBe("bell");
+    expect(merged?.sources.notify).toBe("project");
+    expect(merged?.config.backends).toEqual(["native"]);
+  });
 });
 
 // --- display ----------------------------------------------------------------
@@ -302,6 +354,7 @@ describe("describeEffectiveConfig", () => {
       "worker model (complex tasks): opus (claude-code)  (from /home/me/.kapel/config.json)",
       "worker model (routine, non-trivial tasks): gpt-5.1 (codex)  (from /repo/.agent/config.local.json)",
       "worker model (small tasks): haiku (claude-code)  (from /home/me/.kapel/config.json)",
+      "notify: auto  (built-in default)",
       "updated: 2023-11-14T22:13:20.000Z",
     ]);
   });

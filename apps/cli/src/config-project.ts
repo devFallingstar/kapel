@@ -15,9 +15,11 @@ import {
   KAPEL_CONFIG_VERSION,
   KAPEL_ROLES,
   parseBackendList,
+  parseNotifySetting,
   parseRoleModel,
   ROLE_DESCRIPTIONS,
 } from "./config.js";
+import type { NotifySetting } from "./notify.js";
 
 /**
  * The per-project override of the machine-level configuration.
@@ -67,6 +69,12 @@ export async function hasProjectAgentDir(
 export interface KapelProjectConfig {
   readonly backends?: readonly KapelBackend[];
   readonly models?: Readonly<Partial<Record<KapelRole, KapelRoleModel>>>;
+  /**
+   * This checkout's override of the machine's `notify` setting — see
+   * `KapelConfig.notify`. Hand-edited only, same as the machine key; merged in
+   * {@link mergeKapelConfigs}.
+   */
+  readonly notify?: NotifySetting;
 }
 
 // --- Reading and writing ----------------------------------------------------
@@ -116,9 +124,17 @@ export function parseProjectConfig(
     models = parsed;
   }
 
+  let notify: NotifySetting | undefined;
+  if (raw.notify !== undefined) {
+    const parsedNotify = parseNotifySetting(raw.notify);
+    if (parsedNotify.value === undefined) return undefined;
+    notify = parsedNotify.value;
+  }
+
   return {
     ...(backends === undefined ? {} : { backends }),
     ...(models === undefined ? {} : { models }),
+    ...(notify === undefined ? {} : { notify }),
   };
 }
 
@@ -185,6 +201,7 @@ export async function saveProjectConfig(
   const body: Record<string, unknown> = {};
   if (config.backends !== undefined) body.backends = [...config.backends];
   if (config.models !== undefined) body.models = config.models;
+  if (config.notify !== undefined) body.notify = config.notify;
   await writeFile(filePath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
   return filePath;
 }
@@ -207,6 +224,7 @@ export type ConfigOrigin = "project" | "machine" | "default";
 export interface EffectiveConfigSources {
   readonly backends: ConfigOrigin;
   readonly models: Readonly<Record<KapelRole, ConfigOrigin>>;
+  readonly notify: ConfigOrigin;
 }
 
 export interface EffectiveConfig {
@@ -244,7 +262,8 @@ export function mergeKapelConfigs(
   if (
     machine === undefined &&
     project?.backends === undefined &&
-    !hasProjectModels
+    !hasProjectModels &&
+    project?.notify === undefined
   ) {
     return undefined;
   }
@@ -279,6 +298,17 @@ export function mergeKapelConfigs(
     }
   }
 
+  // Same shape as backends: a project either has an opinion about `notify` or
+  // it doesn't, and the machine's answer (or the built-in default) fills the
+  // gap.
+  const notify = project?.notify ?? machine?.notify ?? "auto";
+  const notifySource: ConfigOrigin =
+    project?.notify !== undefined
+      ? "project"
+      : machine?.notify !== undefined
+        ? "machine"
+        : "default";
+
   return {
     config: {
       version: KAPEL_CONFIG_VERSION,
@@ -288,10 +318,12 @@ export function mergeKapelConfigs(
       ...(machine?.permission === undefined
         ? {}
         : { permission: machine.permission }),
+      notify,
     },
     sources: {
       backends: backendsSource,
       models: sources as Readonly<Record<KapelRole, ConfigOrigin>>,
+      notify: notifySource,
     },
   };
 }
@@ -354,6 +386,7 @@ export function describeEffectiveConfig(
       (role) =>
         `${ROLE_DESCRIPTIONS[role]}: ${describeRoleModel(config.models[role])}${from(sources.models[role])}`,
     ),
+    `notify: ${config.notify ?? "auto"}${from(sources.notify)}`,
     `updated: ${new Date(config.updatedAt).toISOString()}`,
   ];
 }

@@ -18,6 +18,7 @@ import { mergeKapelConfigs } from "./config-project.js";
 import type { ConfigWizardDeps, WizardPrompt } from "./config-wizard.js";
 import { ensureKapelConfig } from "./config-wizard.js";
 import { DEFAULT_MODEL_ALIAS } from "./models.js";
+import type { NotifySetting } from "./notify.js";
 import type { SelectPromptIo } from "./select-prompt.js";
 import { runSelectPrompt } from "./select-prompt.js";
 
@@ -97,6 +98,42 @@ export function resolveBackendSetting(
     };
   }
   return { value: DEFAULT_BACKEND, source: "default" };
+}
+
+/**
+ * The effective `notify` setting: `KAPEL_NO_NOTIFY=1`, then this directory's
+ * `.agent/config.local.json`, then the stored machine config, then `"auto"`.
+ *
+ * `KAPEL_NO_NOTIFY` sits where a flag would in every other setting's order
+ * here, ahead of both config layers — it exists for the same reason
+ * `--no-altscreen` and `NO_COLOR` do: a hard, per-shell "not for this run"
+ * that does not require finding and editing a config file, for a CI runner, a
+ * screen-reader session, or anyone who simply never wants the bell. It is
+ * spelled as an environment variable rather than a CLI flag because every
+ * caller of `notify` — the REPL, `/orchestrate` inside it — is long-running
+ * and has no flag of its own to carry it; `AGENT_BACKEND`/`AGENT_MODEL` are
+ * `kapel`'s existing precedent for "a setting that only makes sense as a
+ * shell variable". Any value other than the literal string `"1"` is not a
+ * request to turn notifications off — same rule `present()` applies to every
+ * other environment override below, so an accidentally-exported empty
+ * `KAPEL_NO_NOTIFY=` does not silently disable the feature.
+ */
+export function resolveNotifySetting(
+  env: EnvLike,
+  config: KapelConfig | undefined,
+  project?: KapelProjectConfig | undefined,
+): ResolvedSetting<NotifySetting> {
+  if (env.KAPEL_NO_NOTIFY === "1") {
+    return { value: "off", source: "env" };
+  }
+  const effective = mergeKapelConfigs(config, project);
+  if (effective !== undefined) {
+    return {
+      value: effective.config.notify ?? "auto",
+      source: effective.sources.notify === "project" ? "project" : "config",
+    };
+  }
+  return { value: "auto", source: "default" };
 }
 
 // --- Backend auto-detection -------------------------------------------------

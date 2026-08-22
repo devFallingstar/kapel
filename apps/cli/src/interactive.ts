@@ -68,6 +68,7 @@ import {
   codexLoginRunner,
   delegatedModelOverride,
   detectBackendSetting,
+  resolveNotifySetting,
   resolveOrchestratorModel,
   ttyWizardPrompt,
 } from "./config-runtime.js";
@@ -112,6 +113,8 @@ import {
   workspaceImagePathReader,
   workspaceImageReader,
 } from "./mention.js";
+import type { Notifier } from "./notify.js";
+import { createNotifier } from "./notify.js";
 import { createProjectSetup } from "./onboard.js";
 import type {
   OrchestrateCommandOptions,
@@ -815,6 +818,13 @@ export interface InteractiveControllerDeps {
   readonly newId?: () => string;
   readonly now?: () => number;
   /**
+   * Rings once a chat turn finishes — success or failure, never a turn the
+   * user themselves cut short with Ctrl-C — provided it ran long enough to be
+   * worth mentioning (see `notify.ts`). Absent means no attention signal, the
+   * same shape of absence as every other optional dependency here.
+   */
+  readonly notify?: Notifier;
+  /**
    * Scans `.agent/commands/*.md` for custom slash commands (P1-4). Defaults
    * to the real filesystem scan rooted at {@link workspacePath}; tests
    * substitute a fake source to avoid touching disk. Runs once when the
@@ -1473,6 +1483,13 @@ export async function createInteractiveController(
     );
 
     const before = deps.usage.totals();
+    // The same clock every other bookkeeping call in this function already
+    // uses (`registerSession`'s `createdAt`, and `now` throughout the rest of
+    // the controller) — reused here rather than a fresh `Date.now()` so a
+    // test that injects `now` sees consistent, controllable timestamps for
+    // the turn-finished notification below, same as everywhere else `now` is
+    // read.
+    const turnStartedAt = now();
     const turnContext: AgentLoopRunContext = {
       runId: sessionId,
       workspacePath: deps.workspacePath,
@@ -1547,6 +1564,17 @@ export async function createInteractiveController(
     const after = deps.usage.totals();
     await recordTurnUsage(before, after);
     emit(styles.tool(usageDeltaLine(before, after)));
+    // Last, and only once every line this turn produces has already gone
+    // through `emit` — a notification is not itself part of the transcript,
+    // so it never lands ahead of the output it is about. Never for a turn the
+    // user themselves cut short: they are already looking at it, mid-Ctrl-C,
+    // which is the one case an attention signal would be pointless noise.
+    // `success` and `failed`/`partial` both count as "finished" — see
+    // `Notifier.turnFinished`'s own doc for why there is no third case to
+    // exclude here.
+    if (signal?.aborted !== true) {
+      deps.notify?.turnFinished(now() - turnStartedAt);
+    }
     return drain();
   };
 
@@ -2886,6 +2914,25 @@ export async function runInteractive(
     options.projectConfig,
   )?.config;
 
+  // One notifier for the whole REPL — the permission prompter, every chat
+  // turn and every `/orchestrate`/`/resume-run` all ring through this same
+  // object, bound to `process.stdout`: the stream the renderer and the band
+  // already write through, so a BEL/OSC 9 pair lands at whatever line those
+  // are on right now instead of through a second, uncoordinated handle on the
+  // same terminal. `notifySupported` inside it is what actually decides
+  // whether any byte goes out at all — this is built unconditionally, on a
+  // pipe exactly as on a terminal, because building it costs nothing and
+  // every call site would otherwise have to know that too.
+  const notifier = createNotifier({
+    stream: process.stdout,
+    env: process.env,
+    setting: resolveNotifySetting(
+      process.env,
+      options.config,
+      options.projectConfig,
+    ).value,
+  });
+
   // The REPL's persistent stdin owner, once there is one. Declared out here
   // because `withSuspended` below is used before it exists (automatic project
   // setup runs before the store is even opened) and after — and with no
@@ -3211,6 +3258,7 @@ export async function runInteractive(
       interactive: interactiveTty,
       state: promptState,
       allowlist: sessionAllowlist,
+      notify: notifier,
       ...(manager === undefined
         ? {}
         : { ask: (query: string) => manager.question(query) }),
@@ -3427,6 +3475,7 @@ export async function runInteractive(
       workspacePath,
       ...(store === undefined ? {} : { store }),
       createSession,
+      notify: notifier,
       // Through the renderer rather than straight to the console: the REPL's
       // own lines land while a turn's status line may still be on screen, and
       // only the renderer knows how to take the cursor back from it.
@@ -3482,7 +3531,7 @@ export async function runInteractive(
         runOrchestrate(
           objective,
           orchestrateOptionsFor(options, chatAlias, backend),
-          { presentation: replPresentation() },
+          { presentation: replPresentation(), notify: notifier },
         ),
       plan: (objective, output) =>
         runPlan(objective, planOptionsFor(options, chatAlias, backend), {
@@ -3516,6 +3565,7 @@ export async function runInteractive(
         runResume(runId, resumeOptionsFor(options, backend), {
           output,
           presentation: replPresentation(),
+          notify: notifier,
         }),
       login: {
         backends: loginBackends,
