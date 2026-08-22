@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import type { AgentRunInput, AgentRunResult } from "@agent/core";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type { EventSink, PassthroughEventType } from "@agent/protocol";
+import { agentEvent } from "@agent/protocol";
 import {
   detachedSpawnOptions,
   executableCandidates,
@@ -301,17 +302,16 @@ export class ClaudeCodeBackend {
     // Events are enqueued synchronously as lines arrive and drained in order,
     // so the sink observes the same ordering as the Claude Code stream.
     let queue: Promise<void> = Promise.resolve();
-    const emit = (type: string, data: unknown): void => {
+    const emit = (type: PassthroughEventType, data: unknown): void => {
       const sink = this.#options.events;
       if (sink === undefined) return;
-      const event: AgentEvent = {
-        id: crypto.randomUUID(),
-        runId: context.runId,
-        timestamp: Date.now(),
-        type,
-        ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
-        data,
-      };
+      const event = agentEvent(
+        {
+          runId: context.runId,
+          ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
+        },
+        { type, data },
+      );
       queue = queue.then(async () => {
         try {
           await sink.emit(event);
@@ -530,7 +530,7 @@ export class ClaudeCodeBackend {
     signal: AbortSignal | undefined,
     timeoutSignal: AbortSignal | undefined,
     state: RunState,
-    emit: (type: string, data: unknown) => void,
+    emit: (type: PassthroughEventType, data: unknown) => void,
   ): Promise<SpawnOutcome> {
     return new Promise<SpawnOutcome>((resolve) => {
       const child = spawn(binary, [...args], {
@@ -731,7 +731,7 @@ function isFinalResult(line: Record<string, unknown>): boolean {
 function applyLine(
   line: Record<string, unknown>,
   state: RunState,
-  emit: (type: string, data: unknown) => void,
+  emit: (type: PassthroughEventType, data: unknown) => void,
 ): void {
   if (isFinalResult(line)) {
     emit("claude-code.result", line);
@@ -803,7 +803,7 @@ function markPartialContent(state: RunState): void {
 function applyAssistantMessage(
   line: Record<string, unknown>,
   state: RunState,
-  emit: (type: string, data: unknown) => void,
+  emit: (type: PassthroughEventType, data: unknown) => void,
 ): void {
   const message = isRecord(line.message) ? line.message : undefined;
   if (message === undefined) return;
@@ -867,7 +867,7 @@ function applyStreamEvent(
   kind: string,
   event: Record<string, unknown>,
   state: RunState,
-  emit: (type: string, data: unknown) => void,
+  emit: (type: PassthroughEventType, data: unknown) => void,
 ): void {
   switch (kind) {
     case "message_start": {

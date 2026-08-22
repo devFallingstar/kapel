@@ -1,4 +1,5 @@
-import type { AgentEvent } from "@agent/protocol";
+import type { AgentEvent, AgentEventData } from "@agent/protocol";
+import { parseAgentEvent } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
 import {
   finishTuiState,
@@ -11,10 +12,35 @@ import {
 
 let seq = 0;
 
-function event(
-  type: string,
-  data?: unknown,
-  extra?: { taskId?: string; timestamp?: number; runId?: string },
+interface Envelope {
+  taskId?: string;
+  timestamp?: number;
+  runId?: string;
+}
+
+/**
+ * The payload fields one of these tests actually supplies.
+ *
+ * Deliberately partial: the reducer reads each field on its own, so a case
+ * about the log line for a merged worktree has no business also carrying the
+ * `path` its checkout was created at. Field *names* are still checked against
+ * the tag, which is what catches a payload rename — the thing this union
+ * exists to catch. Nested objects (a task result) come from a builder below,
+ * since `Partial` only reaches one level.
+ */
+type Payload<T extends AgentEvent["type"]> =
+  AgentEventData<T> extends object
+    ? Partial<AgentEventData<T>>
+    : AgentEventData<T>;
+
+/**
+ * One event of tag `T`. The assembled object needs an assertion: the signature
+ * ties `data` to `type`, but TypeScript cannot see that through the generic.
+ */
+function event<T extends AgentEvent["type"]>(
+  type: T,
+  data?: Payload<T>,
+  extra?: Envelope,
 ): AgentEvent {
   seq += 1;
   return {
@@ -24,7 +50,21 @@ function event(
     type,
     ...(extra?.taskId === undefined ? {} : { taskId: extra.taskId }),
     ...(data === undefined ? {} : { data }),
-  };
+  } as AgentEvent;
+}
+
+/** An event whose type this build has no schema for — see `parseAgentEvent`. */
+function legacyEvent(type: string, data?: unknown): AgentEvent {
+  seq += 1;
+  const parsed = parseAgentEvent({
+    id: `e${seq}`,
+    runId: "run-abcdef123456",
+    timestamp: 1_000,
+    type,
+    ...(data === undefined ? {} : { data }),
+  });
+  if (parsed === undefined) throw new Error(`unparseable legacy event ${type}`);
+  return parsed;
 }
 
 function reduceAll(
@@ -40,8 +80,25 @@ function taskOf(state: TuiState, id: string) {
   return task;
 }
 
+/** A complete task result; the reducer only reads `status` and `summary`. */
+function taskResult(
+  status: "success" | "failed",
+  summary: string,
+): AgentEventData<"task.completed">["result"] {
+  return {
+    taskId: "t1",
+    status,
+    summary,
+    decisions: [],
+    changedFiles: [],
+    tests: { passed: 0, failed: 0, commands: [] },
+    unresolvedIssues: [],
+    confidence: status === "success" ? 0.9 : 0.2,
+  };
+}
+
 function successResult(summary: string) {
-  return { status: "success", summary };
+  return taskResult("success", summary);
 }
 
 describe("initialTuiState", () => {
@@ -99,7 +156,10 @@ describe("reduceTuiEvent — envelope", () => {
       initialTuiState(),
       event("task.started", { agent: "planner" }, { taskId: "t1" }),
     );
-    const after = reduceTuiEvent(seeded, event("mystery.event", { a: 1 }));
+    const after = reduceTuiEvent(
+      seeded,
+      legacyEvent("mystery.event", { a: 1 }),
+    );
     expect(after).toBe(seeded);
   });
 
@@ -134,9 +194,9 @@ describe("reduceTuiEvent — task rows", () => {
   it("takes the taskId from the payload when the envelope omits it", () => {
     const state = reduceTuiEvent(
       initialTuiState(),
-      event("task.started", { taskId: "t9", agent: "coder", attempt: 1 }),
+      event("task.held", { taskId: "t9", conflictsWith: "t4" }),
     );
-    expect(taskOf(state, "t9").status).toBe("running");
+    expect(taskOf(state, "t9").status).toBe("held");
   });
 
   it("completes a task with its summary", () => {
@@ -173,7 +233,7 @@ describe("reduceTuiEvent — task rows", () => {
           agent: "coder",
           attempt: 1,
           final: false,
-          result: { status: "failed", summary: "tests red" },
+          result: taskResult("failed", "tests red"),
         },
         { taskId: "t1" },
       ),
@@ -199,7 +259,7 @@ describe("reduceTuiEvent — task rows", () => {
           agent: "coder",
           attempt: 2,
           final: true,
-          result: { status: "failed", summary: "still red" },
+          result: taskResult("failed", "still red"),
         },
         { taskId: "t1" },
       ),
@@ -262,7 +322,7 @@ describe("reduceTuiEvent — task rows", () => {
           agent: "coder",
           attempt: 1,
           final: false,
-          result: { status: "failed", summary: "nope" },
+          result: taskResult("failed", "nope"),
         },
         { taskId: "t1" },
       ),
@@ -382,12 +442,12 @@ describe("reduceTuiEvent — log", () => {
     for (let i = 0; i < MAX_LOG_LINES + 25; i += 1) {
       state = reduceTuiEvent(
         state,
-        event("task.cancelled", { reason: `r${i}` }, { taskId: `t${i}` }),
+        event("task.cancelled", { reason: "aborted" }, { taskId: `t${i}` }),
       );
     }
     expect(state.log).toHaveLength(MAX_LOG_LINES);
-    expect(state.log[0]).toBe("⊘ t25 (r25)");
-    expect(state.log.at(-1)).toBe("⊘ t124 (r124)");
+    expect(state.log[0]).toBe("⊘ t25 (aborted)");
+    expect(state.log.at(-1)).toBe("⊘ t124 (aborted)");
   });
 });
 
@@ -424,7 +484,7 @@ describe("formatEventLine", () => {
       "task.completed retrying",
       event(
         "task.completed",
-        { final: false, result: { status: "failed", summary: "boom" } },
+        { final: false, result: taskResult("failed", "boom") },
         { taskId: "t1" },
       ),
       "✖ t1 — boom (retrying)",
@@ -433,7 +493,7 @@ describe("formatEventLine", () => {
       "task.completed without a summary",
       event(
         "task.completed",
-        { final: true, result: { status: "failed" } },
+        { final: true, result: taskResult("failed", "") },
         { taskId: "t1" },
       ),
       "✖ t1 — (no summary)",
@@ -612,8 +672,8 @@ describe("formatEventLine", () => {
       event("codex.turn.completed", { usage: { inputTokens: 1 } }),
       undefined,
     ],
-    ["unknown type", event("something.else", { a: 1 }), undefined],
-    ["no data at all", event("task.started"), "▶ ? → ? (attempt 1)"],
+    ["unknown type", legacyEvent("something.else", { a: 1 }), undefined],
+    ["a payload-less pass-through event", legacyEvent("codex.x"), undefined],
   ];
 
   for (const [name, input, expected] of lines) {

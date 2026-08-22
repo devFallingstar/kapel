@@ -7,7 +7,7 @@ import {
 } from "@agent/orchestration";
 import type { OrchestrationPolicy, PolicyCompiler } from "@agent/policy";
 import { PolicySchema, validatePolicy } from "@agent/policy";
-import { type EventBus, InMemoryEventBus } from "@agent/protocol";
+import { agentEvent, type EventBus, InMemoryEventBus } from "@agent/protocol";
 import type { SessionStore } from "@agent/session";
 
 export interface Planner {
@@ -67,13 +67,9 @@ export class CodingAgentRuntime {
       createdAt: Date.now(),
       policySnapshot: policy,
     });
-    await this.#events.emit({
-      id: crypto.randomUUID(),
-      runId,
-      timestamp: Date.now(),
-      type: "run.started",
-      data: { objective },
-    });
+    await this.#events.emit(
+      agentEvent({ runId }, { type: "run.started", data: { objective } }),
+    );
 
     const plan = await this.options.planner.plan(objective, policy, signal);
     const graph = new TaskGraph(plan);
@@ -84,13 +80,12 @@ export class CodingAgentRuntime {
     );
     await scheduler.run(runId, graph, policy, signal);
 
-    await this.#events.emit({
-      id: crypto.randomUUID(),
-      runId,
-      timestamp: Date.now(),
-      type: "run.completed",
-      data: { tasks: graph.all() },
-    });
+    await this.#events.emit(
+      agentEvent(
+        { runId },
+        { type: "run.completed", data: { tasks: graph.all() } },
+      ),
+    );
     return runId;
   }
 }

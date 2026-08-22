@@ -7,7 +7,12 @@ import type {
   TaskResult,
 } from "@agent/orchestration";
 import type { OrchestrationPolicy } from "@agent/policy";
-import type { AgentEvent } from "@agent/protocol";
+import type {
+  AgentEvent,
+  AgentEventBody,
+  AgentEventEnvelope,
+} from "@agent/protocol";
+import { parseAgentEvent } from "@agent/protocol";
 
 // Session-provided scratch dir when set (keeps CI and local machines on
 // the OS temp dir).
@@ -106,21 +111,49 @@ export function makeResult(
 
 let seq = 0;
 
-export function makeEvent(
+/** Envelope defaults, so a test only spells out what it is actually asserting on. */
+function nextEnvelope(
   runId: string,
-  type: string,
-  overrides: Partial<Omit<AgentEvent, "runId" | "type">> = {},
-): AgentEvent {
+  overrides: Partial<AgentEventEnvelope>,
+): AgentEventEnvelope {
   seq += 1;
-  const { taskId, workerId, data, ...rest } = overrides;
+  const { id, timestamp, taskId, workerId } = overrides;
   return {
-    id: `e${seq}`,
+    id: id ?? `e${seq}`,
     runId,
-    timestamp: 1000 + seq,
-    type,
-    ...rest,
+    timestamp: timestamp ?? 1000 + seq,
     ...(taskId === undefined ? {} : { taskId }),
     ...(workerId === undefined ? {} : { workerId }),
-    ...(data === undefined ? {} : { data }),
   };
+}
+
+export function makeEvent(
+  runId: string,
+  body: AgentEventBody,
+  overrides: Partial<AgentEventEnvelope> = {},
+): AgentEvent {
+  return { ...nextEnvelope(runId, overrides), ...body };
+}
+
+/**
+ * A row written by a kapel that knew an event type this build does not — the
+ * case `parseAgentEvent` exists for. Built through that function rather than
+ * cast into place, so a test using it is exercising the same lenient path the
+ * store does rather than a shape the runtime could never produce.
+ */
+export function makeLegacyEvent(
+  runId: string,
+  type: string,
+  overrides: Partial<AgentEventEnvelope> & { data?: unknown } = {},
+): AgentEvent {
+  const { data, ...envelopeOverrides } = overrides;
+  const event = parseAgentEvent({
+    ...nextEnvelope(runId, envelopeOverrides),
+    type,
+    ...(data === undefined ? {} : { data }),
+  });
+  if (event === undefined) {
+    throw new Error(`makeLegacyEvent built something unparseable: ${type}`);
+  }
+  return event;
 }

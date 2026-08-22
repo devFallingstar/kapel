@@ -6,7 +6,8 @@ import {
   type WorkerExecutionContext,
   type WorkerExecutor,
 } from "@agent/orchestration";
-import type { EventSink } from "@agent/protocol";
+import type { AgentEventBody, EventSink } from "@agent/protocol";
+import { agentEvent } from "@agent/protocol";
 import type {
   TaskWorktree,
   WorktreeCollectResult,
@@ -150,10 +151,9 @@ export class WorktreeIsolatedExecutor implements WorkerExecutor {
         `Could not create an isolated worktree for ${taskId}: ${errorMessage(error)}`,
       );
     }
-    await this.#emit("worktree.created", taskId, {
-      taskId,
-      branch: worktree.branch,
-      path: worktree.path,
+    await this.#emit(taskId, {
+      type: "worktree.created",
+      data: { taskId, branch: worktree.branch, path: worktree.path },
     });
 
     const inner = await this.#runInner(task, agent, worktree, signal, context);
@@ -235,12 +235,15 @@ export class WorktreeIsolatedExecutor implements WorkerExecutor {
     }
 
     if (integrated.merged) {
-      await this.#emit("worktree.integrated", taskId, {
-        taskId,
-        merged: true,
-        ...(integrated.commit === undefined
-          ? {}
-          : { commit: integrated.commit }),
+      await this.#emit(taskId, {
+        type: "worktree.integrated",
+        data: {
+          taskId,
+          merged: true,
+          ...(integrated.commit === undefined
+            ? {}
+            : { commit: integrated.commit }),
+        },
       });
       await this.#remove(taskId, worktree, false);
       return finalize(inner, {
@@ -249,14 +252,21 @@ export class WorktreeIsolatedExecutor implements WorkerExecutor {
       });
     }
 
-    await this.#emit("worktree.integrated", taskId, {
-      taskId,
-      merged: false,
-      conflictFiles: integrated.conflictFiles,
-      ...(integrated.reason === undefined ? {} : { reason: integrated.reason }),
-      // Without this, a `dirty-base` refusal reaches the user as three words
-      // and no way to tell which file is in the way.
-      ...(integrated.detail === undefined ? {} : { detail: integrated.detail }),
+    await this.#emit(taskId, {
+      type: "worktree.integrated",
+      data: {
+        taskId,
+        merged: false,
+        conflictFiles: integrated.conflictFiles,
+        ...(integrated.reason === undefined
+          ? {}
+          : { reason: integrated.reason }),
+        // Without this, a `dirty-base` refusal reaches the user as three words
+        // and no way to tell which file is in the way.
+        ...(integrated.detail === undefined
+          ? {}
+          : { detail: integrated.detail }),
+      },
     });
     await this.#remove(taskId, worktree, true);
     return finalize(inner, {
@@ -310,29 +320,17 @@ export class WorktreeIsolatedExecutor implements WorkerExecutor {
     } catch {
       // `TaskWorktreeManager.recover()` cleans up whatever this leaves behind.
     }
-    await this.#emit("worktree.removed", taskId, {
-      taskId,
-      keptBranch: keepBranch,
-      branch: worktree.branch,
+    await this.#emit(taskId, {
+      type: "worktree.removed",
+      data: { taskId, keptBranch: keepBranch, branch: worktree.branch },
     });
   }
 
-  async #emit(
-    type: string,
-    taskId: string,
-    data: Record<string, unknown>,
-  ): Promise<void> {
+  async #emit(taskId: string, body: AgentEventBody): Promise<void> {
     const sink = this.#options.events;
     if (sink === undefined) return;
     try {
-      await sink.emit({
-        id: crypto.randomUUID(),
-        runId: this.#options.runId,
-        timestamp: Date.now(),
-        type,
-        taskId,
-        data,
-      });
+      await sink.emit(agentEvent({ runId: this.#options.runId, taskId }, body));
     } catch {
       // Event emission is best-effort and must never fail a task.
     }

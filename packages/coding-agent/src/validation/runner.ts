@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import type { EventSink } from "@agent/protocol";
+import type { AgentEventBody, EventSink } from "@agent/protocol";
+import { agentEvent } from "@agent/protocol";
 import {
   detachedSpawnOptions,
   killProcessTree,
@@ -245,19 +246,22 @@ export async function runValidators(
   for (const validator of validators) {
     if (opts?.signal?.aborted === true) break;
 
-    await emit(opts, "validation.started", {
-      name: validator.name,
-      command: validator.command,
+    await emit(opts, {
+      type: "validation.started",
+      data: { name: validator.name, command: validator.command },
     });
 
     const outcome = await runOne(validator, workspacePath, opts?.signal);
     outcomes.push(outcome);
 
-    await emit(opts, "validation.completed", {
-      name: outcome.name,
-      passed: outcome.passed,
-      exitCode: outcome.exitCode,
-      durationMs: outcome.durationMs,
+    await emit(opts, {
+      type: "validation.completed",
+      data: {
+        name: outcome.name,
+        passed: outcome.passed,
+        exitCode: outcome.exitCode,
+        durationMs: outcome.durationMs,
+      },
     });
   }
 
@@ -274,20 +278,20 @@ export async function runValidators(
 /** Best-effort event emission: telemetry must never fail a validation run. */
 async function emit(
   opts: RunValidatorsOptions | undefined,
-  type: string,
-  data: Record<string, unknown>,
+  body: AgentEventBody,
 ): Promise<void> {
   const sink = opts?.events;
   if (sink === undefined) return;
   try {
-    await sink.emit({
-      id: crypto.randomUUID(),
-      runId: opts?.runId ?? "",
-      timestamp: Date.now(),
-      type,
-      ...(opts?.taskId === undefined ? {} : { taskId: opts.taskId }),
-      data,
-    });
+    await sink.emit(
+      agentEvent(
+        {
+          runId: opts?.runId ?? "",
+          ...(opts?.taskId === undefined ? {} : { taskId: opts.taskId }),
+        },
+        body,
+      ),
+    );
   } catch {
     // Ignored on purpose.
   }

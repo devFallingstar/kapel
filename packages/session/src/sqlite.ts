@@ -6,6 +6,7 @@ import type { ModelMessage } from "@agent/ai";
 import type { ExecutionPlan, TaskResult } from "@agent/orchestration";
 import type { OrchestrationPolicy } from "@agent/policy";
 import type { AgentEvent } from "@agent/protocol";
+import { parseAgentEvent } from "@agent/protocol";
 import Database from "better-sqlite3";
 import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -210,35 +211,13 @@ function stringifyJson(value: unknown): string | null {
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function asAttempts(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.trunc(value)
-    : undefined;
-}
-
-const TASK_RESULT_STATUSES = new Set<string>([
-  "pending",
-  "running",
-  "success",
-  "failed",
-  "partial",
-  "cancelled",
-]);
-
-function toTaskResultStatus(value: unknown): TaskResultStatus | undefined {
-  return typeof value === "string" && TASK_RESULT_STATUSES.has(value)
-    ? (value as TaskResultStatus)
-    : undefined;
+/**
+ * An attempt count fit for the `attempts` column: a whole, non-negative
+ * number. The event's payload types it as a number and nothing more, so a
+ * fractional or negative one is dropped rather than stored.
+ */
+function asAttempts(value: number): number | undefined {
+  return Number.isFinite(value) && value >= 0 ? Math.trunc(value) : undefined;
 }
 
 /** The per-event patch `appendEvent` applies to `task_results`, if any. */
@@ -252,38 +231,36 @@ interface TaskResultPatch {
 
 /**
  * Derives the `task_results` update implied by an event. Returns `undefined`
- * for events that say nothing about task state. Every field is probed
- * defensively: malformed or partial `data` degrades to fewer updates rather
- * than an error, because the event stream is not a validated contract.
+ * for events that say nothing about task state.
+ *
+ * The payloads are read straight off the discriminated union rather than
+ * probed field by field: an event that reaches a sink has been built against
+ * its variant's schema, so `task.started` genuinely has an `agent` and a
+ * numeric `attempt`. Only `attempts` keeps a guard, because it is clamped
+ * rather than merely read.
  */
 function taskResultPatchFor(event: AgentEvent): TaskResultPatch | undefined {
-  const data = asRecord(event.data);
   switch (event.type) {
     case "task.started": {
-      const agent = asString(data?.agent);
-      const attempts = asAttempts(data?.attempts) ?? asAttempts(data?.attempt);
+      const attempts = asAttempts(event.data.attempt);
       return {
         status: "running",
-        ...(agent === undefined ? {} : { agent }),
+        agent: event.data.agent,
         ...(attempts === undefined ? {} : { attempts }),
       };
     }
     case "task.completed": {
-      const agent = asString(data?.agent);
-      const attempts = asAttempts(data?.attempts) ?? asAttempts(data?.attempt);
-      const result = asRecord(data?.result);
-      const status = toTaskResultStatus(result?.status);
+      const { agent, result } = event.data;
+      const attempts = asAttempts(event.data.attempt);
       return {
-        ...(status === undefined ? {} : { status }),
-        ...(agent === undefined ? {} : { agent }),
+        status: result.status,
+        agent,
         ...(attempts === undefined ? {} : { attempts }),
-        ...(result === undefined ? {} : { resultJson: stringifyJson(result) }),
+        resultJson: stringifyJson(result),
       };
     }
-    case "task.escalated": {
-      const agent = asString(data?.to);
-      return agent === undefined ? {} : { agent };
-    }
+    case "task.escalated":
+      return { agent: event.data.to };
     case "task.cancelled":
       return { status: "cancelled" };
     default:
@@ -425,7 +402,7 @@ export class SqliteSessionStore implements SessionStore {
       .where(eq(events.runId, runId))
       .orderBy(asc(events.timestamp), asc(eventRowid))
       .all();
-    return rows.map(toAgentEvent);
+    return toAgentEvents(rows);
   }
 
   // --- Extensions ---------------------------------------------------------
@@ -544,7 +521,7 @@ export class SqliteSessionStore implements SessionStore {
       .where(and(eq(events.runId, runId), eq(events.taskId, taskId)))
       .orderBy(asc(events.timestamp), asc(eventRowid))
       .all();
-    return rows.map(toAgentEvent);
+    return toAgentEvents(rows);
   }
 
   // --- Chat sessions ------------------------------------------------------
@@ -958,17 +935,42 @@ function toChatSessionRecord(
   };
 }
 
-function toAgentEvent(row: typeof events.$inferSelect): AgentEvent {
+/**
+ * Rebuilds one event from its row, or `undefined` when the row does not
+ * describe an event this build can hand to a consumer.
+ *
+ * Lenient on purpose. This table holds rows written by every kapel a user has
+ * ever run against this database, so a `type` with no schema in the current
+ * union is expected rather than exceptional; {@link parseAgentEvent} surfaces
+ * those as pass-through events instead of throwing, and only drops a row whose
+ * envelope is unusable or whose payload contradicts a tag consumers are now
+ * allowed to trust.
+ */
+function toAgentEvent(row: typeof events.$inferSelect): AgentEvent | undefined {
   const data = parseJson<unknown>(row.dataJson);
-  return {
+  return parseAgentEvent({
     id: row.id,
     runId: row.runId,
     timestamp: row.timestamp,
     type: row.type,
     ...(row.taskId === null ? {} : { taskId: row.taskId }),
     ...(row.workerId === null ? {} : { workerId: row.workerId }),
+    // Left off entirely when the blob is absent or unparseable, so an event
+    // that never had a payload round-trips without growing an explicit one.
     ...(data === undefined ? {} : { data }),
-  };
+  });
+}
+
+/** Rows that survived {@link toAgentEvent}, in the order they were read. */
+function toAgentEvents(
+  rows: readonly (typeof events.$inferSelect)[],
+): readonly AgentEvent[] {
+  const parsed: AgentEvent[] = [];
+  for (const row of rows) {
+    const event = toAgentEvent(row);
+    if (event !== undefined) parsed.push(event);
+  }
+  return parsed;
 }
 
 /**

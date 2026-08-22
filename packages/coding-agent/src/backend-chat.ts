@@ -1,5 +1,6 @@
 import type { ModelMessage } from "@agent/ai";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type { AgentEventBody, EventSink } from "@agent/protocol";
+import { agentEvent } from "@agent/protocol";
 
 /**
  * Multi-turn chat served by a *delegating* execution backend — the Claude Code
@@ -262,9 +263,9 @@ export class BackendChatSession {
 
       this.#turn += 1;
       const turn = this.#turn;
-      await this.#emit(taskId, "chat.turn.started", {
-        turn,
-        backend: "delegated",
+      await this.#emit(taskId, {
+        type: "chat.turn.started",
+        data: { turn, backend: "delegated" },
       });
 
       const result = await this.#runTurn(
@@ -275,9 +276,9 @@ export class BackendChatSession {
         imagePaths ?? [],
       );
 
-      await this.#emit(taskId, "chat.turn.completed", {
-        turn,
-        status: result.status,
+      await this.#emit(taskId, {
+        type: "chat.turn.completed",
+        data: { turn, status: result.status },
       });
       return result;
     } finally {
@@ -405,25 +406,20 @@ export class BackendChatSession {
    * `AgentLoopEngine.emit` does so a renderer cannot tell the delegated path
    * from the native one.
    */
-  async #emit(
-    taskId: string | undefined,
-    type: string,
-    data: unknown,
-  ): Promise<void> {
+  async #emit(taskId: string | undefined, body: AgentEventBody): Promise<void> {
     const sink = this.#options.events;
     if (sink === undefined) return;
 
-    const event: AgentEvent = {
-      id: crypto.randomUUID(),
-      runId: this.#options.runId,
-      timestamp: Date.now(),
-      type,
-      ...(taskId === undefined ? {} : { taskId }),
-      data,
-    };
-
     try {
-      await sink.emit(event);
+      await sink.emit(
+        agentEvent(
+          {
+            runId: this.#options.runId,
+            ...(taskId === undefined ? {} : { taskId }),
+          },
+          body,
+        ),
+      );
     } catch {
       // Event emission is best-effort and must never fail a turn.
     }

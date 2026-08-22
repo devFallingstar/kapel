@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AgentEvent } from "@agent/protocol";
+import type { AgentEvent, AgentEventData } from "@agent/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ink detects CI at module load (via is-in-ci) and then skips intermediate
@@ -47,7 +47,28 @@ function asStdout(stdout: FakeStdout): NodeJS.WriteStream {
 
 let seq = 0;
 
-function event(type: string, data?: unknown, taskId?: string): AgentEvent {
+/**
+ * The payload fields a case here actually supplies.
+ *
+ * Deliberately partial: each consumer reads the fields on its own, so a case
+ * about one line has no business carrying the rest of a payload it never
+ * reads. Field *names* are still checked against the tag, which is what
+ * catches a payload rename — the thing this union exists to catch.
+ */
+type Payload<T extends AgentEvent["type"]> =
+  AgentEventData<T> extends object
+    ? Partial<AgentEventData<T>>
+    : AgentEventData<T>;
+
+/**
+ * One event of tag `T`. The assembled object needs an assertion: the signature
+ * ties `data` to `type`, but TypeScript cannot see that through the generic.
+ */
+function event<T extends AgentEvent["type"]>(
+  type: T,
+  data?: Payload<T>,
+  taskId?: string,
+): AgentEvent {
   seq += 1;
   return {
     id: `e${seq}`,
@@ -56,6 +77,23 @@ function event(type: string, data?: unknown, taskId?: string): AgentEvent {
     type,
     ...(taskId === undefined ? {} : { taskId }),
     ...(data === undefined ? {} : { data }),
+  } as AgentEvent;
+}
+
+/** A complete task result; these cases only read `status` and `summary`. */
+function taskResult(
+  status: "success" | "failed",
+  summary: string,
+): AgentEventData<"task.completed">["result"] {
+  return {
+    taskId: "t1",
+    status,
+    summary,
+    decisions: [],
+    changedFiles: [],
+    tests: { passed: 0, failed: 0, commands: [] },
+    unresolvedIssues: [],
+    confidence: status === "success" ? 0.9 : 0.2,
   };
 }
 
@@ -170,7 +208,7 @@ describe("startOrchestrationTui", () => {
         {
           final: true,
           attempt: 1,
-          result: { status: "success", summary: "done" },
+          result: taskResult("success", "done"),
         },
         "t1",
       ),

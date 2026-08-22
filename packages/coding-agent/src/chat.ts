@@ -117,11 +117,14 @@ export class AgentChatSession {
       this.#turn += 1;
       const turn = this.#turn;
 
-      await this.#engine.emit(context, "chat.turn.started", { turn });
+      await this.#engine.emit(context, {
+        type: "chat.turn.started",
+        data: { turn },
+      });
       const result = await this.#engine.drive(this.#messages, context);
-      await this.#engine.emit(context, "chat.turn.completed", {
-        turn,
-        status: result.status,
+      await this.#engine.emit(context, {
+        type: "chat.turn.completed",
+        data: { turn, status: result.status },
       });
 
       return result;

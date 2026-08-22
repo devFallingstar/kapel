@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@agent/protocol";
+import type { AgentEvent, AgentEventData } from "@agent/protocol";
 import { SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { explainRoute, runExplainCommand } from "../src/explain-cmd.js";
@@ -18,10 +18,15 @@ const START = 1_700_000_000_000;
 
 let seq = 0;
 
-function event(
-  type: string,
+/**
+ * One T03 event, with its payload checked against its tag. The assembled
+ * object needs one assertion: the signature ties `data` to `type`, but
+ * TypeScript cannot see that correlation through the generic.
+ */
+function event<T extends AgentEvent["type"]>(
+  type: T,
   taskId: string,
-  data: Record<string, unknown>,
+  data: AgentEventData<T>,
 ): AgentEvent {
   seq += 1;
   return {
@@ -31,6 +36,23 @@ function event(
     type,
     taskId,
     data,
+  } as AgentEvent;
+}
+
+/** A complete task result; the digest only reads `status` and `summary`. */
+function result(
+  status: "success" | "failed",
+  summary: string,
+): AgentEventData<"task.completed">["result"] {
+  return {
+    taskId: "T03",
+    status,
+    summary,
+    decisions: [],
+    changedFiles: [],
+    tests: { passed: 0, failed: 0, commands: [] },
+    unresolvedIssues: [],
+    confidence: status === "success" ? 0.9 : 0.2,
   };
 }
 
@@ -39,9 +61,9 @@ function event(
  * attempt, an escalation, then a clean second attempt that merged.
  */
 const T03_EVENTS: readonly AgentEvent[] = [
-  event("task.held", "T03", { conflictsWith: "T02" }),
+  event("task.held", "T03", { taskId: "T03", conflictsWith: "T02" }),
   event("task.started", "T03", { agent: "reviewer", attempt: 1 }),
-  event("validation.started", "T03", { name: "test" }),
+  event("validation.started", "T03", { name: "test", command: "npm test" }),
   event("validation.completed", "T03", {
     name: "test",
     passed: false,
@@ -52,7 +74,7 @@ const T03_EVENTS: readonly AgentEvent[] = [
     agent: "reviewer",
     attempt: 1,
     final: false,
-    result: { status: "failed", summary: "the suite is red\nmore detail" },
+    result: result("failed", "the suite is red\nmore detail"),
   }),
   event("task.escalated", "T03", {
     from: "reviewer",
@@ -61,6 +83,7 @@ const T03_EVENTS: readonly AgentEvent[] = [
   }),
   event("task.started", "T03", { agent: "lead", attempt: 2 }),
   event("task.low_confidence", "T03", {
+    taskId: "T03",
     agent: "lead",
     confidence: 0.4,
     threshold: 0.7,
@@ -68,6 +91,7 @@ const T03_EVENTS: readonly AgentEvent[] = [
     accepted: true,
   }),
   event("worktree.integrated", "T03", {
+    taskId: "T03",
     merged: true,
     commit: "4b1c9de012345678",
   }),
@@ -75,7 +99,7 @@ const T03_EVENTS: readonly AgentEvent[] = [
     agent: "lead",
     attempt: 2,
     final: true,
-    result: { status: "success", summary: "Covered the endpoint." },
+    result: result("success", "Covered the endpoint."),
   }),
   // Worker chatter the digest must leave out.
   event("tool.execution.started", "T03", { tool: "bash", input: "ls" }),

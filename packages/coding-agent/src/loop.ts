@@ -16,35 +16,24 @@ import type {
   Tool,
   ToolContext,
 } from "@agent/core";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type {
+  AgentEventBody,
+  AgentEventData,
+  EventSink,
+} from "@agent/protocol";
+import { agentEvent, MODEL_TEXT_DELTA_EVENT } from "@agent/protocol";
 import type { PermissionEngine, PermissionResult } from "./permissions.js";
 
 export const DEFAULT_MAX_ITERATIONS = 32;
 
 /**
- * The event type carrying one streamed chunk of assistant text, emitted as the
- * provider produces it — see {@link ModelTextDeltaData}.
- *
- * Named as a constant because it is also the one event type observers filter
- * on by name: it is emitted once per token-ish chunk, so anything that stores
- * or forwards events (the session database, the worker protocol channel) drops
- * it rather than keeping thousands of rows/lines per turn. The turn's full
- * text still arrives once, in `model.turn.completed`.
+ * Re-exported so the loop's own consumers keep importing the delta event's
+ * name and payload from the module that emits them. Both are defined by the
+ * event union in `@agent/protocol`, which is where the payload's field names
+ * are now checked.
  */
-export const MODEL_TEXT_DELTA_EVENT = "model.text.delta";
-
-/**
- * The `data` payload of a {@link MODEL_TEXT_DELTA_EVENT}.
- *
- * `iteration` is the 1-based model turn within the run — the same counter
- * `loop.completed`'s `iterations` reports — so a consumer can tell one turn's
- * deltas from the next one's. The run/task the delta belongs to is on the
- * event envelope, exactly as for every other `model.*` event.
- */
-export interface ModelTextDeltaData {
-  readonly text: string;
-  readonly iteration: number;
-}
+export { MODEL_TEXT_DELTA_EVENT };
+export type ModelTextDeltaData = AgentEventData<typeof MODEL_TEXT_DELTA_EVENT>;
 
 /**
  * Deterministic (non-LLM) context compaction, run at the start of every
@@ -308,10 +297,13 @@ export class AgentLoopEngine {
     let toolCalls = 0;
     let lastNonEmptyText = "";
 
-    await this.emit(context, "loop.started", {
-      agent: agent.name,
-      model: agent.model.id,
-      maxIterations,
+    await this.emit(context, {
+      type: "loop.started",
+      data: {
+        agent: agent.name,
+        model: agent.model.id,
+        maxIterations,
+      },
     });
 
     try {
@@ -341,12 +333,15 @@ export class AgentLoopEngine {
           ...(turn.calls.length === 0 ? {} : { toolCalls: turn.calls }),
         });
 
-        await this.emit(context, "model.turn.completed", {
-          ...(turn.text === "" ? {} : { text: turn.text }),
-          toolCallCount: turn.calls.length,
-          ...(turn.finishReason === undefined
-            ? {}
-            : { finishReason: turn.finishReason }),
+        await this.emit(context, {
+          type: "model.turn.completed",
+          data: {
+            ...(turn.text === "" ? {} : { text: turn.text }),
+            toolCallCount: turn.calls.length,
+            ...(turn.finishReason === undefined
+              ? {}
+              : { finishReason: turn.finishReason }),
+          },
         });
 
         if (turn.calls.length === 0) {
@@ -444,10 +439,10 @@ export class AgentLoopEngine {
           case "text.delta":
             text += event.text;
             if (event.text !== "") {
-              await this.emit(context, MODEL_TEXT_DELTA_EVENT, {
-                text: event.text,
-                iteration,
-              } satisfies ModelTextDeltaData);
+              await this.emit(context, {
+                type: MODEL_TEXT_DELTA_EVENT,
+                data: { text: event.text, iteration },
+              });
             }
             break;
           case "tool.call":
@@ -580,10 +575,9 @@ export class AgentLoopEngine {
     }
 
     if (elided > 0) {
-      await this.emit(context, "context.compacted", {
-        elided,
-        savedChars,
-        messages: messages.length,
+      await this.emit(context, {
+        type: "context.compacted",
+        data: { elided, savedChars, messages: messages.length },
       });
     }
 
@@ -597,16 +591,16 @@ export class AgentLoopEngine {
     context: AgentLoopRunContext,
     signal: AbortSignal,
   ): Promise<ModelMessage> {
-    await this.emit(context, "tool.execution.started", {
-      tool: call.name,
-      input: call.input,
+    await this.emit(context, {
+      type: "tool.execution.started",
+      data: { tool: call.name, input: call.input },
     });
 
     const tool = toolsByName.get(call.name);
     if (tool === undefined) {
-      await this.emit(context, "tool.execution.completed", {
-        tool: call.name,
-        ok: false,
+      await this.emit(context, {
+        type: "tool.execution.completed",
+        data: { tool: call.name, ok: false },
       });
       return {
         role: "tool",
@@ -623,10 +617,9 @@ export class AgentLoopEngine {
     });
 
     if (!verdict.allowed) {
-      await this.emit(context, "tool.execution.completed", {
-        tool: call.name,
-        ok: false,
-        denied: true,
+      await this.emit(context, {
+        type: "tool.execution.completed",
+        data: { tool: call.name, ok: false, denied: true },
       });
       return {
         role: "tool",
@@ -641,9 +634,9 @@ export class AgentLoopEngine {
         Promise.resolve(tool.execute(call.input, toolContext)),
         signal,
       );
-      await this.emit(context, "tool.execution.completed", {
-        tool: call.name,
-        ok: true,
+      await this.emit(context, {
+        type: "tool.execution.completed",
+        data: { tool: call.name, ok: true },
       });
       return {
         role: "tool",
@@ -652,9 +645,9 @@ export class AgentLoopEngine {
       };
     } catch (error) {
       if (error instanceof LoopAbortedError) throw error;
-      await this.emit(context, "tool.execution.completed", {
-        tool: call.name,
-        ok: false,
+      await this.emit(context, {
+        type: "tool.execution.completed",
+        data: { tool: call.name, ok: false },
       });
       return {
         role: "tool",
@@ -669,10 +662,13 @@ export class AgentLoopEngine {
     context: AgentLoopRunContext,
     result: AgentLoopResult,
   ): Promise<AgentLoopResult> {
-    await this.emit(context, "loop.completed", {
-      status: result.status,
-      iterations: result.iterations,
-      toolCalls: result.toolCalls,
+    await this.emit(context, {
+      type: "loop.completed",
+      data: {
+        status: result.status,
+        iterations: result.iterations,
+        toolCalls: result.toolCalls,
+      },
     });
     return result;
   }
@@ -685,23 +681,21 @@ export class AgentLoopEngine {
    */
   async emit(
     context: AgentLoopRunContext,
-    type: string,
-    data: unknown,
+    body: AgentEventBody,
   ): Promise<void> {
     const sink = this.#options.events;
     if (sink === undefined) return;
 
-    const event: AgentEvent = {
-      id: crypto.randomUUID(),
-      runId: context.runId,
-      timestamp: Date.now(),
-      type,
-      ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
-      data,
-    };
-
     try {
-      await sink.emit(event);
+      await sink.emit(
+        agentEvent(
+          {
+            runId: context.runId,
+            ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
+          },
+          body,
+        ),
+      );
     } catch {
       // Event emission is best-effort and must never fail a run.
     }

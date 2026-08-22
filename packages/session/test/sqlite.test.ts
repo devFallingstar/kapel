@@ -11,6 +11,7 @@ import {
 import {
   cleanupDbDirs,
   makeEvent,
+  makeLegacyEvent,
   makePlan,
   makePolicy,
   makeResult,
@@ -130,17 +131,21 @@ describe("SqliteSessionStore events", () => {
     const store = memoryStore();
     await store.createRun(runRecord());
 
+    const started = {
+      type: "run.started",
+      data: { objective: "ship it" },
+    } as const;
     await store.appendEvent(
-      makeEvent("run-1", "run.started", { id: "a", timestamp: 20 }),
+      makeEvent("run-1", started, { id: "a", timestamp: 20 }),
     );
     await store.appendEvent(
-      makeEvent("run-1", "second", { id: "b", timestamp: 10 }),
+      makeEvent("run-1", started, { id: "b", timestamp: 10 }),
     );
     await store.appendEvent(
-      makeEvent("run-1", "third", { id: "c", timestamp: 10 }),
+      makeEvent("run-1", started, { id: "c", timestamp: 10 }),
     );
     await store.appendEvent(
-      makeEvent("run-1", "fourth", { id: "d", timestamp: 10 }),
+      makeEvent("run-1", started, { id: "d", timestamp: 10 }),
     );
 
     const ids = (await store.listEvents("run-1")).map((event) => event.id);
@@ -150,17 +155,22 @@ describe("SqliteSessionStore events", () => {
 
   it("round-trips optional event fields and arbitrary data", async () => {
     const store = memoryStore();
-    const event = makeEvent("run-1", "task.progress", {
-      taskId: "t1",
-      workerId: "w7",
-      data: { nested: { list: [1, 2, 3] }, flag: true },
-    });
+    const event = makeEvent(
+      "run-1",
+      {
+        type: "codex.item.completed",
+        data: { nested: { list: [1, 2, 3] }, flag: true },
+      },
+      { taskId: "t1", workerId: "w7" },
+    );
     await store.appendEvent(event);
 
     const [stored] = await store.listEvents("run-1");
     expect(stored).toEqual(event);
 
-    const bare = makeEvent("run-1", "run.started");
+    // A pass-through event with no payload keeps its absent `data` instead of
+    // coming back with an explicit `undefined` one.
+    const bare = makeEvent("run-1", { type: "codex.turn.started" });
     await store.appendEvent(bare);
     const [, storedBare] = await store.listEvents("run-1");
     expect(storedBare).toEqual(bare);
@@ -171,15 +181,13 @@ describe("SqliteSessionStore events", () => {
 
   it("scopes events to their run and to a task", async () => {
     const store = memoryStore();
-    await store.appendEvent(
-      makeEvent("run-1", "task.started", { taskId: "t1" }),
-    );
-    await store.appendEvent(
-      makeEvent("run-1", "task.started", { taskId: "t2" }),
-    );
-    await store.appendEvent(
-      makeEvent("run-2", "task.started", { taskId: "t1" }),
-    );
+    const started = {
+      type: "task.started",
+      data: { agent: "sonnet", attempt: 1 },
+    } as const;
+    await store.appendEvent(makeEvent("run-1", started, { taskId: "t1" }));
+    await store.appendEvent(makeEvent("run-1", started, { taskId: "t2" }));
+    await store.appendEvent(makeEvent("run-2", started, { taskId: "t1" }));
 
     expect((await store.listEvents("run-1")).length).toBe(2);
     expect((await store.listEvents("run-2")).length).toBe(1);
@@ -190,11 +198,68 @@ describe("SqliteSessionStore events", () => {
 
   it("ignores a replayed event id instead of failing the append", async () => {
     const store = memoryStore();
-    const event = makeEvent("run-1", "run.started", { id: "dup" });
+    const event = makeEvent(
+      "run-1",
+      { type: "run.started", data: { objective: "ship it" } },
+      { id: "dup" },
+    );
     await store.appendEvent(event);
     await store.appendEvent(event);
     expect((await store.listEvents("run-1")).length).toBe(1);
     store.close();
+  });
+
+  it("reads back a row whose event type this build no longer knows", async () => {
+    const store = memoryStore();
+    const legacy = makeLegacyEvent("run-1", "task.progress", {
+      taskId: "t1",
+      data: { percent: 40 },
+    });
+    await store.appendEvent(legacy);
+
+    const [stored] = await store.listEvents("run-1");
+    // Type, envelope and payload all survive: the row is surfaced as a
+    // pass-through event, not rewritten and not dropped.
+    expect(stored).toEqual(legacy);
+    expect(stored?.type).toBe("task.progress");
+    expect(stored?.data).toEqual({ percent: 40 });
+    store.close();
+  });
+
+  it("skips a row whose payload contradicts its own event type", async () => {
+    const path = tempDbPath();
+    const store = new SqliteSessionStore({ path });
+    await store.appendEvent(
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "sonnet", attempt: 1 } },
+        { id: "good", taskId: "t1" },
+      ),
+    );
+    await store.appendEvent(
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "sonnet", attempt: 2 } },
+        { id: "bad", taskId: "t1" },
+      ),
+    );
+    store.close();
+
+    // A `task.started` with no agent could only come from a build whose
+    // payload differed. Handing it back would hand consumers a tag they are
+    // now allowed to trust over a payload that does not honour it, so the row
+    // is skipped — without taking the rest of the run's history with it.
+    const raw = new Database(path);
+    raw
+      .prepare("UPDATE events SET data_json = ? WHERE id = ?")
+      .run('{"attempt":2}', "bad");
+    raw.close();
+
+    const reopened = new SqliteSessionStore({ path });
+    expect((await reopened.listEvents("run-1")).map((e) => e.id)).toEqual([
+      "good",
+    ]);
+    reopened.close();
   });
 });
 
@@ -202,10 +267,11 @@ describe("SqliteSessionStore task_results maintenance", () => {
   it("tracks a task from start to successful completion", async () => {
     const store = memoryStore();
     await store.appendEvent(
-      makeEvent("run-1", "task.started", {
-        taskId: "t1",
-        data: { agent: "sonnet", attempt: 1 },
-      }),
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "sonnet", attempt: 1 } },
+        { taskId: "t1" },
+      ),
     );
 
     let results = await store.taskResults("run-1");
@@ -219,10 +285,14 @@ describe("SqliteSessionStore task_results maintenance", () => {
 
     const result = makeResult("t1");
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { agent: "sonnet", result, attempt: 1, final: true },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: { agent: "sonnet", result, attempt: 1, final: true },
+        },
+        { taskId: "t1" },
+      ),
     );
 
     results = await store.taskResults("run-1");
@@ -246,64 +316,92 @@ describe("SqliteSessionStore task_results maintenance", () => {
 
     // t1: first attempt fails on sonnet, escalates to opus, fails for good.
     await store.appendEvent(
-      makeEvent("run-1", "task.started", {
-        taskId: "t1",
-        data: { agent: "sonnet", attempt: 1 },
-      }),
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "sonnet", attempt: 1 } },
+        { taskId: "t1" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: {
-          agent: "sonnet",
-          result: makeResult("t1", { status: "failed", confidence: 0.2 }),
-          attempt: 1,
-          final: false,
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1", { status: "failed", confidence: 0.2 }),
+            attempt: 1,
+            final: false,
+          },
         },
-      }),
+        { taskId: "t1" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.escalated", {
-        taskId: "t1",
-        data: { from: "sonnet", to: "opus", rule: "retry-to-opus" },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.escalated",
+          data: { from: "sonnet", to: "opus", rule: "retry-to-opus" },
+        },
+        { taskId: "t1" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.started", {
-        taskId: "t1",
-        data: { agent: "opus", attempt: 2 },
-      }),
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "opus", attempt: 2 } },
+        { taskId: "t1" },
+      ),
     );
     const finalFailure = makeResult("t1", {
       status: "failed",
       confidence: 0.3,
     });
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { agent: "opus", result: finalFailure, attempt: 2, final: true },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "opus",
+            result: finalFailure,
+            attempt: 2,
+            final: true,
+          },
+        },
+        { taskId: "t1" },
+      ),
     );
     // t2 depended on t1 and is swept.
     await store.appendEvent(
-      makeEvent("run-1", "task.cancelled", {
-        taskId: "t2",
-        data: { reason: "dependency-failed", dependency: "t1" },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.cancelled",
+          data: { reason: "dependency-failed", dependency: "t1" },
+        },
+        { taskId: "t2" },
+      ),
     );
     // t3 is independent and succeeds.
     await store.appendEvent(
-      makeEvent("run-1", "task.started", {
-        taskId: "t3",
-        data: { agent: "haiku", attempt: 1 },
-      }),
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "haiku", attempt: 1 } },
+        { taskId: "t3" },
+      ),
     );
     const t3Result = makeResult("t3");
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t3",
-        data: { agent: "haiku", result: t3Result, attempt: 1, final: true },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: { agent: "haiku", result: t3Result, attempt: 1, final: true },
+        },
+        { taskId: "t3" },
+      ),
     );
 
     const results = await store.taskResults("run-1");
@@ -326,10 +424,14 @@ describe("SqliteSessionStore task_results maintenance", () => {
   it("creates a placeholder row when an escalation arrives before any start", async () => {
     const store = memoryStore();
     await store.appendEvent(
-      makeEvent("run-1", "task.escalated", {
-        taskId: "t1",
-        data: { from: "sonnet", to: "opus", rule: "r1" },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.escalated",
+          data: { from: "sonnet", to: "opus", rule: "r1" },
+        },
+        { taskId: "t1" },
+      ),
     );
     const results = await store.taskResults("run-1");
     expect([...results.keys()]).toEqual(["t1"]);
@@ -342,41 +444,37 @@ describe("SqliteSessionStore task_results maintenance", () => {
     store.close();
   });
 
-  it("tolerates missing, oddly shaped and untyped event data", async () => {
+  it("leaves task_results alone for events with no task id", async () => {
     const store = memoryStore();
     await store.appendEvent(
-      makeEvent("run-1", "task.started", { taskId: "t1" }),
-    );
-    await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { agent: 42, attempt: "many", result: "not-an-object" },
+      makeEvent("run-1", {
+        type: "task.completed",
+        data: {
+          agent: "sonnet",
+          result: makeResult("t1"),
+          attempt: 1,
+          final: true,
+        },
       }),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.escalated", { taskId: "t1", data: [1, 2, 3] }),
+      makeEvent("run-1", { type: "run.completed", data: { tasks: [] } }),
     );
-    await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t2",
-        data: { result: { status: "bogus" } },
-      }),
-    );
-
-    const results = await store.taskResults("run-1");
-    expect(results.get("t1")).toMatchObject({ attempts: 0, status: "running" });
-    expect(results.get("t1")?.agent).toBeUndefined();
-    // An unrecognised result status leaves the row at its placeholder state.
-    expect(results.get("t2")?.status).toBe("pending");
+    expect((await store.taskResults("run-1")).size).toBe(0);
+    expect((await store.listEvents("run-1")).length).toBe(2);
     store.close();
   });
 
-  it("ignores events that carry no task id", async () => {
+  it("rounds a fractional attempt count down rather than storing it", async () => {
     const store = memoryStore();
-    await store.appendEvent(makeEvent("run-1", "task.completed"));
-    await store.appendEvent(makeEvent("run-1", "run.completed"));
-    expect((await store.taskResults("run-1")).size).toBe(0);
-    expect((await store.listEvents("run-1")).length).toBe(2);
+    await store.appendEvent(
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "sonnet", attempt: 2.7 } },
+        { taskId: "t1" },
+      ),
+    );
+    expect((await store.taskResults("run-1")).get("t1")?.attempts).toBe(2);
     store.close();
   });
 });
@@ -397,28 +495,37 @@ describe("reconstructRun", () => {
 
     const t1Result = makeResult("t1");
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { agent: "sonnet", result: t1Result, attempt: 1, final: true },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: { agent: "sonnet", result: t1Result, attempt: 1, final: true },
+        },
+        { taskId: "t1" },
+      ),
     );
     // t2 failed for good, t3 was cancelled, t4 never started.
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t2",
-        data: {
-          agent: "opus",
-          result: makeResult("t2", { status: "failed" }),
-          attempt: 2,
-          final: true,
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "opus",
+            result: makeResult("t2", { status: "failed" }),
+            attempt: 2,
+            final: true,
+          },
         },
-      }),
+        { taskId: "t2" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.cancelled", {
-        taskId: "t3",
-        data: { reason: "dependency-failed" },
-      }),
+      makeEvent(
+        "run-1",
+        { type: "task.cancelled", data: { reason: "dependency-failed" } },
+        { taskId: "t3" },
+      ),
     );
 
     const reconstruction = await reconstructRun(store, "run-1");
@@ -434,10 +541,19 @@ describe("reconstructRun", () => {
     const store = memoryStore();
     await store.createRun(runRecord());
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { result: makeResult("t1"), final: true },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1"),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t1" },
+      ),
     );
 
     const reconstruction = await reconstructRun(store, "run-1");
@@ -453,10 +569,19 @@ describe("reconstructRun", () => {
     await store.createRun(runRecord());
     await store.savePlan("run-1", makePlan([makeTask("t1")]));
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { result: makeResult("t1"), final: true },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1"),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t1" },
+      ),
     );
     store.close();
 
@@ -484,7 +609,11 @@ describe("SqliteSessionStore corrupt rows", () => {
     await store.createRun(runRecord());
     await store.savePlan("run-1", makePlan([makeTask("t1")]));
     await store.appendEvent(
-      makeEvent("run-1", "run.started", { id: "corrupt-data" }),
+      makeEvent(
+        "run-1",
+        { type: "codex.thread.started", data: { threadId: "th_1" } },
+        { id: "corrupt-data" },
+      ),
     );
     store.close();
 
@@ -526,19 +655,41 @@ describe("SqliteSessionStore listRuns", () => {
       makePlan([makeTask("t1"), makeTask("t2"), makeTask("t3")]),
     );
     await store.appendEvent(
-      makeEvent("mid", "task.completed", {
-        taskId: "t1",
-        data: { result: makeResult("t1"), final: true },
-      }),
+      makeEvent(
+        "mid",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1"),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t1" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("mid", "task.completed", {
-        taskId: "t2",
-        data: { result: makeResult("t2", { status: "failed" }), final: true },
-      }),
+      makeEvent(
+        "mid",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t2", { status: "failed" }),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t2" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("mid", "task.cancelled", { taskId: "t3", data: {} }),
+      makeEvent(
+        "mid",
+        { type: "task.cancelled", data: { reason: "aborted" } },
+        { taskId: "t3" },
+      ),
     );
     await store.setRunStatus("mid", "failed");
 
@@ -572,13 +723,26 @@ describe("SqliteSessionStore listRuns", () => {
     await store.createRun(runRecord({ id: "run", createdAt: 100 }));
     await store.savePlan("run", makePlan([makeTask("t1"), makeTask("t2")]));
     await store.appendEvent(
-      makeEvent("run", "task.completed", {
-        taskId: "t1",
-        data: { result: makeResult("t1", { status: "partial" }), final: true },
-      }),
+      makeEvent(
+        "run",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1", { status: "partial" }),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t1" },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run", "task.cancelled", { taskId: "t2", data: {} }),
+      makeEvent(
+        "run",
+        { type: "task.cancelled", data: { reason: "aborted" } },
+        { taskId: "t2" },
+      ),
     );
 
     const [summary] = await store.listRuns();
@@ -607,10 +771,11 @@ describe("SqliteSessionStore persistence", () => {
     await writer.createRun(runRecord());
     await writer.savePlan("run-1", makePlan([makeTask("t1"), makeTask("t2")]));
     await writer.appendEvent(
-      makeEvent("run-1", "task.started", {
-        taskId: "t1",
-        data: { agent: "sonnet", attempt: 1 },
-      }),
+      makeEvent(
+        "run-1",
+        { type: "task.started", data: { agent: "sonnet", attempt: 1 } },
+        { taskId: "t1" },
+      ),
     );
 
     // Opened while the writer is still live: this is the cross-process case.
@@ -621,10 +786,19 @@ describe("SqliteSessionStore persistence", () => {
     reader.close();
 
     await writer.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        data: { agent: "sonnet", result: makeResult("t1"), attempt: 1 },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1"),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t1" },
+      ),
     );
     await writer.setRunStatus("run-1", "completed");
     writer.close();
@@ -655,12 +829,11 @@ describe("SqliteSessionStore persistence", () => {
     await Promise.all(
       Array.from({ length: 50 }, (_, index) =>
         store.appendEvent(
-          makeEvent("run-1", "task.started", {
-            id: `x${index}`,
-            timestamp: 500,
-            taskId: `t${index % 5}`,
-            data: { agent: "sonnet", attempt: 1 },
-          }),
+          makeEvent(
+            "run-1",
+            { type: "task.started", data: { agent: "sonnet", attempt: 1 } },
+            { id: `x${index}`, timestamp: 500, taskId: `t${index % 5}` },
+          ),
         ),
       ),
     );
@@ -685,8 +858,16 @@ describe("SessionStore parity", () => {
     it(`${name} satisfies create/append/list`, async () => {
       const store = create();
       await store.createRun(runRecord());
-      const first = makeEvent("run-1", "run.started", { timestamp: 1 });
-      const second = makeEvent("run-1", "run.completed", { timestamp: 2 });
+      const first = makeEvent(
+        "run-1",
+        { type: "run.started", data: { objective: "ship it" } },
+        { timestamp: 1 },
+      );
+      const second = makeEvent(
+        "run-1",
+        { type: "run.completed", data: { tasks: [] } },
+        { timestamp: 2 },
+      );
       await store.appendEvent(first);
       await store.appendEvent(second);
 

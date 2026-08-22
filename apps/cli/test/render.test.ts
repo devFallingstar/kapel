@@ -1,7 +1,7 @@
 import type { UsageBreakdown } from "@agent/ai";
 import { UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type { AgentLoopResult, CodexRunResult } from "@agent/coding-agent";
-import type { AgentEvent } from "@agent/protocol";
+import type { AgentEvent, AgentEventData } from "@agent/protocol";
 import { describe, expect, it } from "vitest";
 import {
   formatCostUsd,
@@ -41,14 +41,32 @@ function renderer(): { renderer: TextRenderer; stream: CapturingStream } {
   };
 }
 
-function codexEvent(type: string, data: unknown): AgentEvent {
+/**
+ * The payload fields one of these tests actually supplies.
+ *
+ * Deliberately partial: the renderer reads each field on its own, so a case
+ * about the line for a merged worktree has no business also carrying the
+ * `path` its checkout was created at. Field *names* are still checked against
+ * the tag, which is what catches a payload rename — the thing this union
+ * exists to catch. Nested objects (a task result) come from a builder, since
+ * `Partial` only reaches one level.
+ */
+type Payload<T extends AgentEvent["type"]> =
+  AgentEventData<T> extends object
+    ? Partial<AgentEventData<T>>
+    : AgentEventData<T>;
+
+function codexEvent<T extends AgentEvent["type"]>(
+  type: T,
+  data: Payload<T>,
+): AgentEvent {
   return {
     id: "evt-1",
     runId: "run-1",
     timestamp: 0,
     type,
     data,
-  };
+  } as AgentEvent;
 }
 
 describe("TextRenderer / context.compacted events", () => {
@@ -67,18 +85,13 @@ describe("TextRenderer / context.compacted events", () => {
       "≈ context compacted: 1 tool result elided, 400 chars saved",
     ]);
   });
-
-  it("falls back to zero for a malformed payload rather than throwing", () => {
-    const { renderer: r, stream } = renderer();
-    r.emit(codexEvent("context.compacted", {}));
-    expect(stream.lines).toEqual([
-      "≈ context compacted: 0 tool results elided, 0 chars saved",
-    ]);
-  });
 });
 
 describe("TextRenderer / claude-code.* events", () => {
-  function claudeEvent(type: string, data: unknown): AgentEvent {
+  function claudeEvent(
+    type: `claude-code.${string}`,
+    data: unknown,
+  ): AgentEvent {
     return { id: "evt-1", runId: "run-1", timestamp: 0, type, data };
   }
 
@@ -111,14 +124,18 @@ describe("TextRenderer / claude-code.* events", () => {
 
   it("buffers a delegated task's text to the end of the block", () => {
     const { renderer: r, stream } = renderer();
-    const taskEvent = (type: string, data: unknown): AgentEvent => ({
-      id: "evt-1",
-      runId: "run-1",
-      taskId: "T01",
-      timestamp: 0,
-      type,
-      data,
-    });
+    const taskEvent = <T extends AgentEvent["type"]>(
+      type: T,
+      data: Payload<T>,
+    ): AgentEvent =>
+      ({
+        id: "evt-1",
+        runId: "run-1",
+        taskId: "T01",
+        timestamp: 0,
+        type,
+        data,
+      }) as AgentEvent;
     for (const text of ["Fixed ", "the ", "test."]) {
       r.emit(
         taskEvent("claude-code.content_block_delta", {
@@ -311,8 +328,36 @@ describe("TextRenderer / codex.* events", () => {
 });
 
 describe("TextRenderer / task.* lifecycle events", () => {
-  function taskEvent(type: string, data: unknown, taskId = "T01"): AgentEvent {
-    return { id: "evt-1", runId: "run-1", timestamp: 0, type, taskId, data };
+  function taskEvent<T extends AgentEvent["type"]>(
+    type: T,
+    data: Payload<T>,
+    taskId = "T01",
+  ): AgentEvent {
+    return {
+      id: "evt-1",
+      runId: "run-1",
+      timestamp: 0,
+      type,
+      taskId,
+      data,
+    } as AgentEvent;
+  }
+
+  /** A complete task result; these tests only read `status` and `summary`. */
+  function taskResult(
+    status: "success" | "failed",
+    summary: string,
+  ): AgentEventData<"task.completed">["result"] {
+    return {
+      taskId: "T01",
+      status,
+      summary,
+      decisions: [],
+      changedFiles: [],
+      tests: { passed: 0, failed: 0, commands: [] },
+      unresolvedIssues: [],
+      confidence: status === "success" ? 0.9 : 0.2,
+    };
   }
 
   it("announces a started task with its agent and attempt", () => {
@@ -385,8 +430,9 @@ describe("TextRenderer / task.* lifecycle events", () => {
     r.emit(
       taskEvent("task.completed", {
         agent: "coder",
+        attempt: 1,
         final: true,
-        result: { status: "success", summary: "Added the endpoint.\nDetails." },
+        result: taskResult("success", "Added the endpoint.\nDetails."),
       }),
     );
     expect(stream.lines).toEqual(["✔ T01 — Added the endpoint."]);
@@ -397,8 +443,9 @@ describe("TextRenderer / task.* lifecycle events", () => {
     r.emit(
       taskEvent("task.completed", {
         agent: "coder",
+        attempt: 1,
         final: false,
-        result: { status: "failed", summary: "Build broke" },
+        result: taskResult("failed", "Build broke"),
       }),
     );
     expect(stream.lines).toEqual(["✖ T01 — Build broke (retrying)"]);
@@ -406,7 +453,14 @@ describe("TextRenderer / task.* lifecycle events", () => {
 
   it("renders a summary-less result without inventing text", () => {
     const { renderer: r, stream } = renderer();
-    r.emit(taskEvent("task.completed", { result: { status: "failed" } }));
+    r.emit(
+      taskEvent("task.completed", {
+        agent: "coder",
+        attempt: 1,
+        final: true,
+        result: taskResult("failed", ""),
+      }),
+    );
     expect(stream.lines).toEqual(["✖ T01 — (no summary)"]);
   });
 
@@ -442,12 +496,19 @@ describe("TextRenderer / task.* lifecycle events", () => {
 });
 
 describe("TextRenderer / worktree.* events", () => {
-  function worktreeEvent(
-    type: string,
-    data: unknown,
+  function worktreeEvent<T extends AgentEvent["type"]>(
+    type: T,
+    data: Payload<T>,
     taskId = "T01",
   ): AgentEvent {
-    return { id: "evt-1", runId: "run-1", timestamp: 0, type, taskId, data };
+    return {
+      id: "evt-1",
+      runId: "run-1",
+      timestamp: 0,
+      type,
+      taskId,
+      data,
+    } as AgentEvent;
   }
 
   it("names the branch a task's checkout was created on", () => {
@@ -552,12 +613,19 @@ describe("TextRenderer / worktree.* events", () => {
 });
 
 describe("TextRenderer / validation.* events", () => {
-  function validationEvent(
-    type: string,
-    data: unknown,
+  function validationEvent<T extends AgentEvent["type"]>(
+    type: T,
+    data: Payload<T>,
     taskId = "T01",
   ): AgentEvent {
-    return { id: "evt-1", runId: "run-1", timestamp: 0, type, taskId, data };
+    return {
+      id: "evt-1",
+      runId: "run-1",
+      timestamp: 0,
+      type,
+      taskId,
+      data,
+    } as AgentEvent;
   }
 
   it("announces a validator starting, dimmed", () => {
@@ -612,7 +680,10 @@ describe("TextRenderer / validation.* events", () => {
 });
 
 describe("TextRenderer / task.low_confidence events", () => {
-  function lowConfidenceEvent(data: unknown, taskId = "T01"): AgentEvent {
+  function lowConfidenceEvent(
+    data: Payload<"task.low_confidence">,
+    taskId = "T01",
+  ): AgentEvent {
     return {
       id: "evt-1",
       runId: "run-1",
@@ -620,7 +691,7 @@ describe("TextRenderer / task.low_confidence events", () => {
       type: "task.low_confidence",
       taskId,
       data,
-    };
+    } as AgentEvent;
   }
 
   it("reports a low-confidence result that will be redone", () => {
@@ -772,9 +843,9 @@ class TtyStream extends CapturingStream {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: that is the assertion.
 const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f]/;
 
-function loopEvent(
-  type: string,
-  data: unknown = {},
+function loopEvent<T extends AgentEvent["type"]>(
+  type: T,
+  data: Payload<T>,
   taskId?: string,
 ): AgentEvent {
   return {
@@ -784,7 +855,7 @@ function loopEvent(
     type,
     ...(taskId === undefined ? {} : { taskId }),
     data,
-  };
+  } as AgentEvent;
 }
 
 function delta(text: string, taskId?: string): AgentEvent {

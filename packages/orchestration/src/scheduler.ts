@@ -1,5 +1,10 @@
 import type { EscalationRule, OrchestrationPolicy } from "@agent/policy";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type {
+  AgentEventBody,
+  AgentEventData,
+  EventSink,
+} from "@agent/protocol";
+import { agentEvent } from "@agent/protocol";
 import { tasksConflict } from "./conflicts.js";
 import type { TaskGraph } from "./graph.js";
 import type { AgentRouter, RoutingDecision, RoutingReason } from "./router.js";
@@ -10,15 +15,26 @@ import type {
 } from "./types.js";
 import { isTerminal, type RuntimeTask, type TaskResult } from "./types.js";
 
-/** Why an attempt was dispatched to the agent it was — carried on `task.started`. */
-export type TaskStartedReason = RoutingReason | "escalation";
+/**
+ * The routing rationale attached to a `task.started` event's payload.
+ *
+ * An alias of the protocol's own payload type rather than a second copy of it:
+ * the event schema is the definition, and this name is what the scheduler
+ * calls it. Before the events were typed the two *were* separate declarations,
+ * which is how `routing` came to be emitted with nothing checking it.
+ */
+export type TaskStartedRouting = NonNullable<
+  AgentEventData<"task.started">["routing"]
+>;
 
-/** The routing rationale attached to a `task.started` event's payload. */
-export interface TaskStartedRouting {
-  /** The routing (or escalation) rule that decided it, when one applied. */
-  readonly rule?: string;
-  readonly reason: TaskStartedReason;
-}
+/**
+ * Why an attempt was dispatched to the agent it was — carried on
+ * `task.started`. A superset of {@link RoutingReason}: an escalated attempt
+ * bypasses the router entirely. `#attempt` assigns a router `reason` straight
+ * into a {@link TaskStartedRouting}, so a `RoutingReason` the event schema
+ * does not know about fails to compile there.
+ */
+export type TaskStartedReason = TaskStartedRouting["reason"];
 
 /** Optional knobs; every field has a policy-derived default. */
 export interface SchedulerOptions {
@@ -36,7 +52,13 @@ export interface SchedulerOptions {
 }
 
 /** Why a task was cancelled rather than run to completion. */
-export type TaskCancelReason = "dependency-failed" | "aborted";
+export type TaskCancelReason = AgentEventData<"task.cancelled">["reason"];
+
+/** An escalation rule that disqualifies a success, with the threshold it tripped. */
+interface LowConfidenceMatch {
+  readonly rule: EscalationRule;
+  readonly threshold: number;
+}
 
 /**
  * Runs a task graph with rolling concurrency: a free slot is filled the moment
@@ -166,9 +188,12 @@ export class DeterministicScheduler {
       const pairKey = `${candidate.spec.id}:${blocker.spec.id}`;
       if (!heldPairsEmitted.has(pairKey)) {
         heldPairsEmitted.add(pairKey);
-        await this.#emit(runId, "task.held", candidate.spec.id, {
-          taskId: candidate.spec.id,
-          conflictsWith: blocker.spec.id,
+        await this.#emit(runId, candidate.spec.id, {
+          type: "task.held",
+          data: {
+            taskId: candidate.spec.id,
+            conflictsWith: blocker.spec.id,
+          },
         });
       }
     }
@@ -209,18 +234,20 @@ export class DeterministicScheduler {
       // prior attempt to have set assignedAgent), so this is safe.
       const from = previousAgent as string;
       task.lastEscalation = { rule: escalation.id, from, to: agent };
-      await this.#emit(runId, "task.escalated", task.spec.id, {
-        from,
-        to: agent,
-        rule: escalation.id,
+      await this.#emit(runId, task.spec.id, {
+        type: "task.escalated",
+        data: { from, to: agent, rule: escalation.id },
       });
     }
     const model = this.worker.describeAgent?.(agent)?.model;
-    await this.#emit(runId, "task.started", task.spec.id, {
-      agent,
-      attempt: task.attempts,
-      ...(model === undefined ? {} : { model }),
-      routing,
+    await this.#emit(runId, task.spec.id, {
+      type: "task.started",
+      data: {
+        agent,
+        attempt: task.attempts,
+        ...(model === undefined ? {} : { model }),
+        routing,
+      },
     });
 
     const context = this.#dependencyContext(graph, task);
@@ -238,24 +265,25 @@ export class DeterministicScheduler {
       );
       if (lowConfidenceRule !== undefined) {
         const accepted = !canRetry;
-        await this.#emit(runId, "task.low_confidence", task.spec.id, {
-          taskId: task.spec.id,
-          agent,
-          confidence: result.confidence,
-          threshold: lowConfidenceRule.confidenceBelow,
-          rule: lowConfidenceRule.id,
-          ...(accepted ? { accepted: true } : {}),
+        await this.#emit(runId, task.spec.id, {
+          type: "task.low_confidence",
+          data: {
+            taskId: task.spec.id,
+            agent,
+            confidence: result.confidence,
+            threshold: lowConfidenceRule.threshold,
+            rule: lowConfidenceRule.rule.id,
+            ...(accepted ? { accepted: true } : {}),
+          },
         });
         if (!accepted) {
           // Not accepted: this success is treated as a failed attempt for
           // scheduling purposes so the retry/escalation flow below picks it
           // up and reroutes to the rule's toAgent on the next dispatch.
           task.status = "pending";
-          await this.#emit(runId, "task.completed", task.spec.id, {
-            agent,
-            result,
-            attempt: task.attempts,
-            final: false,
+          await this.#emit(runId, task.spec.id, {
+            type: "task.completed",
+            data: { agent, result, attempt: task.attempts, final: false },
           });
           return;
         }
@@ -264,11 +292,9 @@ export class DeterministicScheduler {
         // through to the normal success-completion path below.
       }
       task.status = "completed";
-      await this.#emit(runId, "task.completed", task.spec.id, {
-        agent,
-        result,
-        attempt: task.attempts,
-        final: true,
+      await this.#emit(runId, task.spec.id, {
+        type: "task.completed",
+        data: { agent, result, attempt: task.attempts, final: true },
       });
       return;
     }
@@ -277,19 +303,18 @@ export class DeterministicScheduler {
     // escalation rule can still buy one more — see the class doc comment.
     const retry = canRetry || this.#grantEscalatedAttempt(task, policy, signal);
     task.status = retry ? "pending" : "failed";
-    await this.#emit(runId, "task.completed", task.spec.id, {
-      agent,
-      result,
-      attempt: task.attempts,
-      final: !retry,
+    await this.#emit(runId, task.spec.id, {
+      type: "task.completed",
+      data: { agent, result, attempt: task.attempts, final: !retry },
     });
     if (retry) return;
 
     if (signal?.aborted === true) {
       // The run is being torn down; the pending sweep reports the rest.
       task.status = "cancelled";
-      await this.#emit(runId, "task.cancelled", task.spec.id, {
-        reason: "aborted" satisfies TaskCancelReason,
+      await this.#emit(runId, task.spec.id, {
+        type: "task.cancelled",
+        data: { reason: "aborted" },
       });
       return;
     }
@@ -424,19 +449,30 @@ export class DeterministicScheduler {
    * `afterFailures` plays no part here — a rule that only sets
    * `afterFailures` has nothing to say about a confident-or-not success. Lowest
    * `id` wins when several rules match, matching `#escalationFor`'s tie-break.
+   *
+   * The threshold is returned alongside the rule rather than re-read from it
+   * at the call site: only a rule with a `confidenceBelow` can match here, but
+   * that is a fact of the filter and not of `EscalationRule`, so the caller
+   * would otherwise be emitting `threshold: number | undefined` into an event
+   * whose payload promises a number.
    */
   #lowConfidenceRuleFor(
     agent: string,
     confidence: number,
     policy: OrchestrationPolicy,
-  ): EscalationRule | undefined {
-    const matches = policy.escalation.filter(
-      (rule) =>
-        rule.fromAgent === agent &&
-        rule.confidenceBelow !== undefined &&
-        confidence < rule.confidenceBelow,
+  ): LowConfidenceMatch | undefined {
+    const matches: LowConfidenceMatch[] = [];
+    for (const rule of policy.escalation) {
+      const threshold = rule.confidenceBelow;
+      if (rule.fromAgent !== agent || threshold === undefined) continue;
+      if (confidence >= threshold) continue;
+      matches.push({ rule, threshold });
+    }
+    return matches.reduce<LowConfidenceMatch | undefined>(
+      (best, match) =>
+        best === undefined || match.rule.id < best.rule.id ? match : best,
+      undefined,
     );
-    return pickLowestId(matches);
   }
 
   /** Cancels everything that (transitively) depended on a dead task. */
@@ -452,9 +488,9 @@ export class DeterministicScheduler {
       for (const dependent of graph.dependentsOf(current)) {
         if (isTerminal(dependent.status)) continue;
         dependent.status = "cancelled";
-        await this.#emit(runId, "task.cancelled", dependent.spec.id, {
-          reason: "dependency-failed" satisfies TaskCancelReason,
-          dependency: current,
+        await this.#emit(runId, dependent.spec.id, {
+          type: "task.cancelled",
+          data: { reason: "dependency-failed", dependency: current },
         });
         queue.push(dependent.spec.id);
       }
@@ -469,17 +505,19 @@ export class DeterministicScheduler {
     for (const task of graph.all()) {
       if (isTerminal(task.status)) continue;
       task.status = "cancelled";
-      await this.#emit(runId, "task.cancelled", task.spec.id, { reason });
+      await this.#emit(runId, task.spec.id, {
+        type: "task.cancelled",
+        data: { reason },
+      });
     }
   }
 
   async #emit(
     runId: string,
-    type: string,
     taskId: string,
-    data: unknown,
+    body: AgentEventBody,
   ): Promise<void> {
-    await this.events?.emit(event(runId, type, taskId, data));
+    await this.events?.emit(agentEvent({ runId, taskId }, body));
   }
 }
 
@@ -491,20 +529,4 @@ function pickLowestId(
     (best, rule) => (best === undefined || rule.id < best.id ? rule : best),
     undefined,
   );
-}
-
-function event(
-  runId: string,
-  type: string,
-  taskId: string,
-  data: unknown,
-): AgentEvent {
-  return {
-    id: crypto.randomUUID(),
-    runId,
-    timestamp: Date.now(),
-    type,
-    taskId,
-    data,
-  };
 }

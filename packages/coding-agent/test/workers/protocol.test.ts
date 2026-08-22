@@ -168,6 +168,7 @@ describe("serveWorkerRequest", () => {
           timestamp: 1,
           type: "loop.started",
           taskId: parsed.task.id,
+          data: { agent: "coder", model: "m", maxIterations: 8 },
         });
         return makeTaskResult({ summary: `handled ${parsed.task.title}` });
       },
@@ -185,6 +186,7 @@ describe("serveWorkerRequest", () => {
           timestamp: 1,
           type: "loop.started",
           taskId: "task-1",
+          data: { agent: "coder", model: "m", maxIterations: 8 },
         },
       },
       {
@@ -247,6 +249,7 @@ describe("serveWorkerRequest", () => {
           runId: parsed.runId,
           timestamp: 1,
           type: "loop.started",
+          data: { agent: "coder", model: "m", maxIterations: 8 },
         });
         return makeTaskResult();
       },

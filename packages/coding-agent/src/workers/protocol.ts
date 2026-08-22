@@ -4,9 +4,8 @@ import type {
   WorkerExecutionContext,
 } from "@agent/orchestration";
 import type { AgentEvent, EventSink } from "@agent/protocol";
-import { AgentEventSchema } from "@agent/protocol";
+import { MODEL_TEXT_DELTA_EVENT, parseAgentEvent } from "@agent/protocol";
 import { z } from "zod";
-import { MODEL_TEXT_DELTA_EVENT } from "../loop.js";
 
 /**
  * The wire protocol between a parent orchestrator and a child worker process.
@@ -71,9 +70,26 @@ export const WorkerRequestSchema = z.object({
   dependencyResults: z.array(TaskResultSchema).optional(),
 });
 
+/**
+ * An event line from the child.
+ *
+ * The event is validated through {@link parseAgentEvent} rather than the union
+ * schema directly: a child process is a *different build* of kapel whenever a
+ * user upgrades mid-run, so an event type this parent has no schema for is a
+ * version skew to forward opaquely, not a protocol violation to drop the line
+ * over. A line whose event is unusable altogether fails the schema and is
+ * ignored with the rest of the child's stdout noise.
+ */
 export const WorkerEventLineSchema = z.object({
   type: z.literal("event"),
-  event: AgentEventSchema,
+  event: z.unknown().transform((value, ctx) => {
+    const event = parseAgentEvent(value);
+    if (event === undefined) {
+      ctx.addIssue({ code: "custom", message: "Not an agent event" });
+      return z.NEVER;
+    }
+    return event;
+  }),
 });
 
 export const WorkerResultLineSchema = z.object({

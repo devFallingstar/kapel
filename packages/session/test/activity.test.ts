@@ -226,25 +226,49 @@ describe("activityTotals", () => {
     const store = memoryStore();
     await store.createRun(runRecord("run-1", 100));
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t1",
-        timestamp: 9_000,
-        data: { result: makeResult("t1") },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t1"),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t1", timestamp: 9_000 },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t2",
-        timestamp: 9_100,
-        data: { result: makeResult("t2", { status: "failed" }) },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t2", { status: "failed" }),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t2", timestamp: 9_100 },
+      ),
     );
     await store.appendEvent(
-      makeEvent("run-1", "task.completed", {
-        taskId: "t3",
-        timestamp: 9_200,
-        data: { result: makeResult("t3", { status: "partial" }) },
-      }),
+      makeEvent(
+        "run-1",
+        {
+          type: "task.completed",
+          data: {
+            agent: "sonnet",
+            result: makeResult("t3", { status: "partial" }),
+            attempt: 1,
+            final: true,
+          },
+        },
+        { taskId: "t3", timestamp: 9_200 },
+      ),
     );
 
     const totals = await store.activityTotals({ since: 1_000 });

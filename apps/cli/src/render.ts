@@ -11,11 +11,39 @@ import type {
   CodexRunResult,
 } from "@agent/coding-agent";
 import { MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type {
+  AgentEvent,
+  AgentEventData,
+  AgentEventOf,
+  EventSink,
+} from "@agent/protocol";
+import { CLAUDE_CODE_EVENT_PREFIX, CODEX_EVENT_PREFIX } from "@agent/protocol";
 import type { BandDecor } from "./band.js";
 import { previewInput } from "./prompter.js";
 import { StatusLine, type StatusLineStream } from "./status-line.js";
 import { type Styles, stylesFor } from "./styles.js";
+
+/**
+ * The event groups {@link TextRenderer} hands to a dedicated method.
+ *
+ * Each is a slice of the event union, not a `string` tag plus a bag of
+ * `unknown`: the sub-renderer re-switches on `type`, and taking the slice by
+ * `Extract` is what keeps that second switch narrowing the payload as tightly
+ * as the first one did.
+ */
+type TaskLifecycleEvent = AgentEventOf<
+  | "task.started"
+  | "task.completed"
+  | "task.escalated"
+  | "task.cancelled"
+  | "task.low_confidence"
+>;
+type WorktreeEvent = AgentEventOf<
+  "worktree.created" | "worktree.integrated" | "worktree.removed"
+>;
+type ValidationEvent = AgentEventOf<
+  "validation.started" | "validation.completed"
+>;
 
 /** How a run can finish: the native loop, or one of the delegating backends. */
 export type CliRunResult =
@@ -122,9 +150,6 @@ function isDelegatedResult(result: CliRunResult): result is DelegatedRunResult {
   return "events" in result;
 }
 
-const CODEX_PREFIX = "codex.";
-const CLAUDE_CODE_PREFIX = "claude-code.";
-
 function firstNonEmptyString(
   ...values: readonly unknown[]
 ): string | undefined {
@@ -202,9 +227,22 @@ function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
 
-/** The task an event belongs to: the envelope field, then the payload, then "?". */
-function taskIdOf(event: AgentEvent, data: Record<string, unknown>): string {
-  return event.taskId ?? stringOrUndefined(data.taskId) ?? "?";
+/**
+ * The task an event belongs to: the envelope field, then the payload copy the
+ * scheduler stamps on the events it can identify without one, then "?".
+ */
+function taskIdOf(event: AgentEvent): string {
+  if (event.taskId !== undefined) return event.taskId;
+  switch (event.type) {
+    case "task.held":
+    case "task.low_confidence":
+    case "worktree.created":
+    case "worktree.integrated":
+    case "worktree.removed":
+      return event.data.taskId;
+    default:
+      return "?";
+  }
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
@@ -213,12 +251,14 @@ function stringOrUndefined(value: unknown): string | undefined {
 
 /**
  * The `task.started` line's routing clause — `rule: <id>`, `escalation:
- * <id>`, `suggested`, or `default` — from the scheduler's `routing` payload.
- * `undefined` when the payload carries no recognizable routing info at all,
- * which happens for events recorded before this field existed.
+ * <id>`, `suggested`, or `default`. `undefined` when the event carries no
+ * routing payload at all, which is the case for runs recorded before that
+ * field existed and which `kapel explain` still has to render.
  */
-function routingLabel(routing: unknown): string | undefined {
-  if (!isRecord(routing)) return undefined;
+function routingLabel(
+  routing: AgentEventData<"task.started">["routing"],
+): string | undefined {
+  if (routing === undefined) return undefined;
   const rule = stringOrUndefined(routing.rule);
   switch (routing.reason) {
     case "rule":
@@ -229,8 +269,6 @@ function routingLabel(routing: unknown): string | undefined {
       return "suggested";
     case "orchestrator":
       return "default";
-    default:
-      return undefined;
   }
 }
 
@@ -425,21 +463,21 @@ export class TextRenderer implements Renderer {
   }
 
   emit(event: AgentEvent): void {
-    const data = isRecord(event.data) ? event.data : {};
     // A run with tasks is many conversations at once: their deltas would
     // interleave into one unreadable line, and one status line cannot speak
     // for several tasks. Those runs keep the turn-level rendering they had.
     const single = event.taskId === undefined;
 
-    if (event.type.startsWith(CODEX_PREFIX)) {
-      this.#emitCodex(data);
+    // The two pass-through namespaces carry a delegating CLI's own JSON, so
+    // they are the one place this renderer still probes `unknown` by hand.
+    if (event.type.startsWith(CODEX_EVENT_PREFIX)) {
+      this.#emitCodex(isRecord(event.data) ? event.data : {});
       return;
     }
-
-    if (event.type.startsWith(CLAUDE_CODE_PREFIX)) {
+    if (event.type.startsWith(CLAUDE_CODE_EVENT_PREFIX)) {
       this.#emitClaudeCode(
-        event.type.slice(CLAUDE_CODE_PREFIX.length),
-        data,
+        event.type.slice(CLAUDE_CODE_EVENT_PREFIX.length),
+        isRecord(event.data) ? event.data : {},
         single,
       );
       return;
@@ -457,12 +495,11 @@ export class TextRenderer implements Renderer {
         break;
       }
       case MODEL_TEXT_DELTA_EVENT: {
-        if (!single) break;
-        if (typeof data.text === "string") this.#stream(data.text);
+        if (single) this.#stream(event.data.text);
         break;
       }
       case "model.turn.completed": {
-        const text = typeof data.text === "string" ? data.text : "";
+        const text = event.data.text ?? "";
         if (this.#streamed) {
           // Already on screen, a delta at a time: printing it again would
           // double every word of the turn.
@@ -475,18 +512,17 @@ export class TextRenderer implements Renderer {
         break;
       }
       case "tool.execution.started": {
-        const tool = typeof data.tool === "string" ? data.tool : "?";
+        const { tool } = event.data;
         this.#write(
-          `${this.#dim("→")} ${tool} ${this.#dim(previewInput(data.input))}`,
+          `${this.#dim("→")} ${tool} ${this.#dim(previewInput(event.data.input))}`,
         );
         this.#waiting(tool);
         break;
       }
       case "tool.execution.completed": {
-        const ok = data.ok === true;
-        const denied = data.denied === true;
+        const denied = event.data.denied === true;
         this.#write(
-          ok
+          event.data.ok
             ? `  ${this.#ok("✓")}`
             : `  ${this.#bad("✗")} ${this.#dim(`(${denied ? "denied" : "error"})`)}`,
         );
@@ -494,9 +530,7 @@ export class TextRenderer implements Renderer {
         break;
       }
       case "context.compacted": {
-        const elided = typeof data.elided === "number" ? data.elided : 0;
-        const savedChars =
-          typeof data.savedChars === "number" ? data.savedChars : 0;
+        const { elided, savedChars } = event.data;
         this.#write(
           this.#dim(
             `≈ context compacted: ${elided} tool result${elided === 1 ? "" : "s"} elided, ${savedChars} chars saved`,
@@ -509,16 +543,16 @@ export class TextRenderer implements Renderer {
       case "task.escalated":
       case "task.cancelled":
       case "task.low_confidence":
-        this.#emitTaskLifecycle(event.type, taskIdOf(event, data), data);
+        this.#emitTaskLifecycle(event, taskIdOf(event));
         break;
       case "worktree.created":
       case "worktree.integrated":
       case "worktree.removed":
-        this.#emitWorktree(event.type, taskIdOf(event, data), data);
+        this.#emitWorktree(event, taskIdOf(event));
         break;
       case "validation.started":
       case "validation.completed":
-        this.#emitValidation(event.type, taskIdOf(event, data), data);
+        this.#emitValidation(event, taskIdOf(event));
         break;
       default:
         break;
@@ -531,18 +565,12 @@ export class TextRenderer implements Renderer {
    * These share the sink with the worker loop's own events, so a task line has
    * to be identifiable on its own: every one of them leads with the task id.
    */
-  #emitTaskLifecycle(
-    type: string,
-    taskId: string,
-    data: Record<string, unknown>,
-  ): void {
-    switch (type) {
+  #emitTaskLifecycle(event: TaskLifecycleEvent, taskId: string): void {
+    switch (event.type) {
       case "task.started": {
-        const agent = stringOrUndefined(data.agent) ?? "?";
-        const attempt = typeof data.attempt === "number" ? data.attempt : 1;
-        const model = stringOrUndefined(data.model);
+        const { agent, attempt, model } = event.data;
         const modelSuffix = model === undefined ? "" : ` [${model}]`;
-        const routing = routingLabel(data.routing);
+        const routing = routingLabel(event.data.routing);
         const parens =
           routing === undefined
             ? `attempt ${attempt}`
@@ -553,42 +581,39 @@ export class TextRenderer implements Renderer {
         break;
       }
       case "task.completed": {
-        const result = isRecord(data.result) ? data.result : {};
+        const { result } = event.data;
         const ok = result.status === "success";
         // `final: false` means the scheduler is going to retry this task, so
         // the failure being reported is not the task's verdict yet.
-        const retrying = data.final === false;
-        const suffix = retrying ? this.#dim(" (retrying)") : "";
+        const suffix = event.data.final ? "" : this.#dim(" (retrying)");
         this.#write(
           `${ok ? this.#ok("✔") : this.#bad("✖")} ${taskId} — ${firstLine(result.summary)}${suffix}`,
         );
         break;
       }
       case "task.escalated": {
-        const from = stringOrUndefined(data.from) ?? "(unassigned)";
-        const to = stringOrUndefined(data.to) ?? "?";
-        this.#write(`${this.#warn("↑")} ${taskId} rerouted ${from} → ${to}`);
+        const from = stringOrUndefined(event.data.from) ?? "(unassigned)";
+        this.#write(
+          `${this.#warn("↑")} ${taskId} rerouted ${from} → ${event.data.to}`,
+        );
         break;
       }
-      case "task.cancelled": {
-        const reason = stringOrUndefined(data.reason) ?? "cancelled";
-        this.#write(`${this.#warn("⊘")} ${taskId} ${this.#dim(`(${reason})`)}`);
+      case "task.cancelled":
+        this.#write(
+          `${this.#warn("⊘")} ${taskId} ${this.#dim(`(${event.data.reason})`)}`,
+        );
         break;
-      }
       case "task.low_confidence": {
-        const confidence =
-          typeof data.confidence === "number" ? data.confidence : 0;
-        const threshold =
-          typeof data.threshold === "number" ? data.threshold : 0;
+        const { confidence, threshold } = event.data;
         const verdict =
-          data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
+          event.data.accepted === true
+            ? "accepted (attempts exhausted)"
+            : "redoing";
         this.#write(
           `${this.#warn("↻")} ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} — ${verdict}`,
         );
         break;
       }
-      default:
-        break;
     }
   }
 
@@ -600,29 +625,21 @@ export class TextRenderer implements Renderer {
    * the run and is waiting for a human. A clean removal is the expected case
    * and stays silent.
    */
-  #emitWorktree(
-    type: string,
-    taskId: string,
-    data: Record<string, unknown>,
-  ): void {
-    switch (type) {
-      case "worktree.created": {
-        const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(this.#dim(`⎇ ${taskId} worktree created (${branch})`));
+  #emitWorktree(event: WorktreeEvent, taskId: string): void {
+    switch (event.type) {
+      case "worktree.created":
+        this.#write(
+          this.#dim(`⎇ ${taskId} worktree created (${event.data.branch})`),
+        );
         break;
-      }
       case "worktree.integrated": {
-        if (data.merged === true) {
-          const commit = stringOrUndefined(data.commit);
+        if (event.data.merged) {
+          const commit = stringOrUndefined(event.data.commit);
           const suffix = commit === undefined ? "" : ` → ${commit.slice(0, 8)}`;
           this.#write(`${this.#ok("⇡")} ${taskId} merged${suffix}`);
           break;
         }
-        const files = Array.isArray(data.conflictFiles)
-          ? data.conflictFiles.filter(
-              (file): file is string => typeof file === "string",
-            )
-          : [];
+        const files = event.data.conflictFiles ?? [];
         if (files.length > 0) {
           this.#write(
             this.#warn(`⚠ ${taskId} merge conflict: ${files.join(", ")}`),
@@ -632,8 +649,8 @@ export class TextRenderer implements Renderer {
         // The reason alone ("dirty-base") does not say what is in the way;
         // the detail names the offending paths, which is the only form of
         // this message a reader can act on.
-        const reason = stringOrUndefined(data.reason) ?? "unknown reason";
-        const detail = stringOrUndefined(data.detail);
+        const reason = stringOrUndefined(event.data.reason) ?? "unknown reason";
+        const detail = stringOrUndefined(event.data.detail);
         this.#write(
           this.#warn(
             detail === undefined
@@ -644,13 +661,10 @@ export class TextRenderer implements Renderer {
         break;
       }
       case "worktree.removed": {
-        if (data.keptBranch !== true) break;
-        const branch = stringOrUndefined(data.branch) ?? "?";
-        this.#write(this.#dim(`⎇ ${taskId} branch kept: ${branch}`));
+        if (!event.data.keptBranch) break;
+        this.#write(this.#dim(`⎇ ${taskId} branch kept: ${event.data.branch}`));
         break;
       }
-      default:
-        break;
     }
   }
 
@@ -662,38 +676,26 @@ export class TextRenderer implements Renderer {
    * noise most of the time — but its result always lands, pass or fail, since
    * that is what decides whether the task's work is going to be kept.
    */
-  #emitValidation(
-    type: string,
-    taskId: string,
-    data: Record<string, unknown>,
-  ): void {
-    switch (type) {
-      case "validation.started": {
-        const name = stringOrUndefined(data.name) ?? "?";
-        this.#write(this.#dim(`⚙ ${taskId} validator ${name}…`));
+  #emitValidation(event: ValidationEvent, taskId: string): void {
+    switch (event.type) {
+      case "validation.started":
+        this.#write(this.#dim(`⚙ ${taskId} validator ${event.data.name}…`));
         break;
-      }
       case "validation.completed": {
-        const name = stringOrUndefined(data.name) ?? "?";
-        const passed = data.passed === true;
-        const seconds =
-          typeof data.durationMs === "number" ? data.durationMs / 1000 : 0;
-        const duration = `${seconds.toFixed(1)}s`;
-        if (passed) {
+        const { name } = event.data;
+        const duration = `${(event.data.durationMs / 1000).toFixed(1)}s`;
+        if (event.data.passed) {
           this.#write(
             `  ${this.#ok("✓")} ${name} ${this.#dim(`(${duration})`)}`,
           );
           break;
         }
-        const exitCode =
-          typeof data.exitCode === "number" ? String(data.exitCode) : "unknown";
+        const exitCode = event.data.exitCode ?? "unknown";
         this.#write(
           `  ${this.#bad("✗")} ${name} ${this.#bad(`(exit ${exitCode}, ${duration})`)}`,
         );
         break;
       }
-      default:
-        break;
     }
   }
 

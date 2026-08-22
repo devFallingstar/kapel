@@ -14,7 +14,7 @@ import type {
 import { UNATTRIBUTED } from "@agent/ai";
 import type { ChatTurnResult } from "@agent/coding-agent";
 import type { AgentImageAttachment } from "@agent/core";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type { AgentEvent, AgentEventData, EventSink } from "@agent/protocol";
 import { defaultSessionDbPath, SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
@@ -2398,13 +2398,19 @@ describe("interactive REPL / streamed turn output", () => {
     async send(instruction: string): Promise<ChatTurnResult> {
       this.#onSend?.();
       const text = this.#chunks.join("");
-      const event = (type: string, data: unknown): AgentEvent => ({
-        id: `evt-${type}`,
-        runId: "run-1",
-        timestamp: 0,
-        type,
-        data,
-      });
+      // The payload is partial on purpose: the renderer under test reads one
+      // field per event, and the assertion says which.
+      const event = <T extends AgentEvent["type"]>(
+        type: T,
+        data: Partial<AgentEventData<T>>,
+      ): AgentEvent =>
+        ({
+          id: `evt-${type}`,
+          runId: "run-1",
+          timestamp: 0,
+          type,
+          data,
+        }) as AgentEvent;
 
       await this.#sink.emit(event("chat.turn.started", { turn: 1 }));
       await this.#sink.emit(event("loop.started", { agent: "agent" }));

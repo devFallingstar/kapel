@@ -1,16 +1,6 @@
-import { z } from "zod";
+import type { AgentEvent } from "./events.js";
 
-export const AgentEventSchema = z.object({
-  id: z.string(),
-  runId: z.string(),
-  timestamp: z.number(),
-  type: z.string(),
-  taskId: z.string().optional(),
-  workerId: z.string().optional(),
-  data: z.unknown().optional(),
-});
-
-export type AgentEvent = z.infer<typeof AgentEventSchema>;
+export * from "./events.js";
 
 export interface EventSink {
   emit(event: AgentEvent): void | Promise<void>;

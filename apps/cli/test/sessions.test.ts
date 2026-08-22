@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { RuntimeTask } from "@agent/coding-agent";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type { AgentEvent, AgentEventData, EventSink } from "@agent/protocol";
 import { SqliteSessionStore } from "@agent/session";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -25,8 +25,49 @@ import {
   task,
 } from "./orchestration-fixtures.js";
 
-function event(type: string, id = "e1"): AgentEvent {
-  return { id, runId: "run-1", timestamp: 1_700_000_000_000, type };
+/**
+ * One event of tag `T`. The assembled object needs an assertion: the signature
+ * ties `data` to `type`, but TypeScript cannot see that through the generic.
+ */
+function event<T extends AgentEvent["type"]>(
+  type: T,
+  data: AgentEventData<T>,
+  id = "e1",
+): AgentEvent {
+  return {
+    id,
+    runId: "run-1",
+    timestamp: 1_700_000_000_000,
+    type,
+    data,
+  } as AgentEvent;
+}
+
+/** The sinks under test only route events, so any well-formed one will do. */
+function started(id = "e1"): AgentEvent {
+  return event("task.started", { agent: "coder", attempt: 1 }, id);
+}
+
+function completed(id = "e2"): AgentEvent {
+  return event(
+    "task.completed",
+    {
+      agent: "coder",
+      attempt: 1,
+      final: true,
+      result: {
+        taskId: "t1",
+        status: "success",
+        summary: "done",
+        decisions: [],
+        changedFiles: [],
+        tests: { passed: 0, failed: 0, commands: [] },
+        unresolvedIssues: [],
+        confidence: 0.9,
+      },
+    },
+    id,
+  );
 }
 
 function recorder(): { sink: EventSink; seen: string[] } {
@@ -51,8 +92,8 @@ describe("fanOutSink", () => {
     const second = recorder();
     const sink = fanOutSink(first.sink, undefined, second.sink);
 
-    await sink.emit(event("task.started"));
-    await sink.emit(event("task.completed", "e2"));
+    await sink.emit(started());
+    await sink.emit(completed());
 
     expect(first.seen).toEqual(["task.started", "task.completed"]);
     expect(second.seen).toEqual(["task.started", "task.completed"]);
@@ -68,7 +109,7 @@ describe("fanOutSink", () => {
     const sink = fanOutSink(renderer.sink, throwing);
 
     // Nothing is pending — a synchronous throw is absorbed on the spot.
-    expect(sink.emit(event("task.started"))).toBeUndefined();
+    expect(sink.emit(started())).toBeUndefined();
     expect(renderer.seen).toEqual(["task.started"]);
   });
 
@@ -82,12 +123,12 @@ describe("fanOutSink", () => {
     // The rejecting sink comes first: a later sink must still be reached.
     const sink = fanOutSink(rejecting, renderer.sink);
 
-    await expect(sink.emit(event("task.started"))).resolves.toBeUndefined();
+    await expect(sink.emit(started())).resolves.toBeUndefined();
     expect(renderer.seen).toEqual(["task.started"]);
   });
 
   it("is a no-op when every sink is absent", () => {
-    expect(fanOutSink(undefined, undefined).emit(event("x"))).toBeUndefined();
+    expect(fanOutSink(undefined, undefined).emit(started())).toBeUndefined();
   });
 });
 
@@ -95,27 +136,29 @@ describe("storeSink", () => {
   it("appends events to the store and reports nothing on failure", async () => {
     const store = new SqliteSessionStore({ path: ":memory:" });
     const sink = storeSink(store);
-    await sink.emit(event("task.started"));
+    await sink.emit(started());
     expect((await store.listEvents("run-1")).map((e) => e.type)).toEqual([
       "task.started",
     ]);
 
     store.close();
     // A closed store rejects every write; the sink must absorb that.
-    await expect(sink.emit(event("task.completed", "e2"))).resolves.toBe(
-      undefined,
-    );
+    await expect(sink.emit(completed())).resolves.toBe(undefined);
   });
 
   it("keeps streamed text deltas out of the database", async () => {
     const store = new SqliteSessionStore({ path: ":memory:" });
     const sink = storeSink(store);
 
-    await sink.emit(event("loop.started"));
+    await sink.emit(
+      event("loop.started", { agent: "coder", model: "m", maxIterations: 8 }),
+    );
     for (let i = 0; i < 5; i += 1) {
-      await sink.emit(event("model.text.delta", `d${i}`));
+      await sink.emit(
+        event("model.text.delta", { text: "tok", iteration: 1 }, `d${i}`),
+      );
     }
-    await sink.emit(event("model.turn.completed", "e2"));
+    await sink.emit(event("model.turn.completed", { toolCallCount: 0 }, "e2"));
 
     // Only the turn-level events are replayable history; the per-token ones
     // would be thousands of rows saying what those two already say.

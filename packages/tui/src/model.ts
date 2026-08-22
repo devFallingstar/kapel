@@ -1,4 +1,5 @@
 import type { AgentEvent } from "@agent/protocol";
+import { CODEX_EVENT_PREFIX } from "@agent/protocol";
 
 /**
  * The TUI's view of one orchestration task.
@@ -84,8 +85,7 @@ export function finishTuiState(state: TuiState, outcome: string): TuiState {
  */
 export function reduceTuiEvent(state: TuiState, event: AgentEvent): TuiState {
   const base = adoptEnvelope(state, event);
-  const data = isRecord(event.data) ? event.data : {};
-  const tasks = reduceTasks(base.tasks, event, data);
+  const tasks = reduceTasks(base.tasks, event);
   const line = formatEventLine(event);
   const log = line === undefined ? base.log : appendLog(base.log, line);
   if (tasks === base.tasks && log === base.log) return base;
@@ -98,80 +98,77 @@ export function reduceTuiEvent(state: TuiState, event: AgentEvent): TuiState {
  * `undefined` means "this event is not worth a log line".
  */
 export function formatEventLine(event: AgentEvent): string | undefined {
-  const data = isRecord(event.data) ? event.data : {};
-  if (event.type.startsWith("codex.")) return formatCodexLine(data);
-  const taskId = taskIdOf(event, data);
+  if (event.type.startsWith(CODEX_EVENT_PREFIX)) {
+    // The one payload the union leaves `unknown`: it is the Codex CLI's own
+    // JSON, not kapel's, so it is still probed field by field.
+    return formatCodexLine(isRecord(event.data) ? event.data : {});
+  }
 
   switch (event.type) {
     case "model.turn.completed": {
-      const text = str(data.text);
+      const text = str(event.data.text);
       return text === undefined
         ? undefined
         : truncate(collapse(text), MAX_LINE);
     }
     case "tool.execution.started": {
-      const tool = str(data.tool) ?? "?";
-      const preview = previewInput(data.input);
+      const preview = previewInput(event.data.input);
       return truncate(
-        `→ ${tool}${preview === "" ? "" : ` ${preview}`}`,
+        `→ ${event.data.tool}${preview === "" ? "" : ` ${preview}`}`,
         MAX_LINE,
       );
     }
     case "tool.execution.completed": {
-      if (data.ok === true) return "  ✓";
-      return `  ✗ (${data.denied === true ? "denied" : "error"})`;
+      if (event.data.ok) return "  ✓";
+      return `  ✗ (${event.data.denied === true ? "denied" : "error"})`;
     }
-    case "task.started": {
-      const agent = str(data.agent) ?? "?";
-      return `▶ ${taskId} → ${agent} (attempt ${num(data.attempt) ?? 1})`;
-    }
+    case "task.started":
+      return `▶ ${taskIdOf(event)} → ${event.data.agent} (attempt ${event.data.attempt})`;
     case "task.completed": {
-      const result = isRecord(data.result) ? data.result : {};
+      const { result } = event.data;
       const glyph = result.status === "success" ? "✔" : "✖";
-      const suffix = data.final === false ? " (retrying)" : "";
-      return `${glyph} ${taskId} — ${firstLine(result.summary)}${suffix}`;
+      const suffix = event.data.final ? "" : " (retrying)";
+      return `${glyph} ${taskIdOf(event)} — ${firstLine(result.summary)}${suffix}`;
     }
     case "task.escalated": {
-      const from = str(data.from) ?? "(unassigned)";
-      return `↑ ${taskId} rerouted ${from} → ${str(data.to) ?? "?"}`;
+      const from = str(event.data.from) ?? "(unassigned)";
+      return `↑ ${taskIdOf(event)} rerouted ${from} → ${event.data.to}`;
     }
     case "task.cancelled":
-      return `⊘ ${taskId} (${str(data.reason) ?? "cancelled"})`;
-    case "task.held": {
-      const blocker = str(data.conflictsWith);
-      return `⏸ ${taskId} held${blocker === undefined ? "" : ` (conflicts with ${blocker})`}`;
-    }
+      return `⊘ ${taskIdOf(event)} (${event.data.reason})`;
+    case "task.held":
+      return `⏸ ${taskIdOf(event)} held (conflicts with ${event.data.conflictsWith})`;
     case "task.low_confidence": {
-      const confidence = num(data.confidence) ?? 0;
-      const threshold = num(data.threshold) ?? 0;
+      const { confidence, threshold } = event.data;
       const verdict =
-        data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
-      return `↻ ${taskId} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} — ${verdict}`;
+        event.data.accepted === true
+          ? "accepted (attempts exhausted)"
+          : "redoing";
+      return `↻ ${taskIdOf(event)} low confidence ${confidence.toFixed(2)} < ${threshold.toFixed(2)} — ${verdict}`;
     }
     case "worktree.created":
-      return `⎇ ${taskId} worktree created (${str(data.branch) ?? "?"})`;
+      return `⎇ ${taskIdOf(event)} worktree created (${event.data.branch})`;
     case "worktree.integrated": {
-      if (data.merged === true) {
-        const commit = str(data.commit);
-        return `⇡ ${taskId} merged${commit === undefined ? "" : ` → ${commit.slice(0, 8)}`}`;
+      if (event.data.merged) {
+        const commit = str(event.data.commit);
+        return `⇡ ${taskIdOf(event)} merged${commit === undefined ? "" : ` → ${commit.slice(0, 8)}`}`;
       }
-      const files = stringList(data.conflictFiles);
+      const files = event.data.conflictFiles ?? [];
       return files.length === 0
-        ? `⚠ ${taskId} not merged (${str(data.reason) ?? "unknown reason"})`
-        : `⚠ ${taskId} merge conflict: ${files.join(", ")}`;
+        ? `⚠ ${taskIdOf(event)} not merged (${str(event.data.reason) ?? "unknown reason"})`
+        : `⚠ ${taskIdOf(event)} merge conflict: ${files.join(", ")}`;
     }
     case "worktree.removed": {
-      if (data.keptBranch !== true) return undefined;
-      return `⎇ ${taskId} branch kept: ${str(data.branch) ?? "?"}`;
+      if (!event.data.keptBranch) return undefined;
+      return `⎇ ${taskIdOf(event)} branch kept: ${event.data.branch}`;
     }
     case "validation.started":
-      return `⚙ ${taskId} validator ${str(data.name) ?? "?"}…`;
+      return `⚙ ${taskIdOf(event)} validator ${event.data.name}…`;
     case "validation.completed": {
-      const name = str(data.name) ?? "?";
-      const duration = `${((num(data.durationMs) ?? 0) / 1000).toFixed(1)}s`;
-      if (data.passed === true) return `  ✓ ${name} (${duration})`;
-      const exitCode = num(data.exitCode);
-      return `  ✗ ${name} (exit ${exitCode === undefined ? "unknown" : exitCode}, ${duration})`;
+      const { name, exitCode } = event.data;
+      const duration = `${(event.data.durationMs / 1000).toFixed(1)}s`;
+      if (event.data.passed) return `  ✓ ${name} (${duration})`;
+      return `  ✗ ${name} (exit ${exitCode === null ? "unknown" : exitCode}, ${duration})`;
     }
     default:
       return undefined;
@@ -195,7 +192,6 @@ interface TaskDraft {
 function reduceTasks(
   tasks: readonly TuiTask[],
   event: AgentEvent,
-  data: Record<string, unknown>,
 ): readonly TuiTask[] {
   switch (event.type) {
     case "task.started":
@@ -210,25 +206,23 @@ function reduceTasks(
       return tasks;
   }
 
-  const id = taskIdOf(event, data);
+  const id = taskIdOf(event);
   if (id === "?") return tasks;
 
   return updateTask(tasks, id, (draft) => {
     switch (event.type) {
       case "task.started": {
         draft.status = "running";
-        const agent = str(data.agent);
-        if (agent !== undefined) draft.agent = agent;
-        draft.attempts = num(data.attempt) ?? draft.attempts + 1;
+        draft.agent = event.data.agent;
+        draft.attempts = event.data.attempt;
         break;
       }
       case "task.completed": {
-        const result = isRecord(data.result) ? data.result : {};
+        const { result } = event.data;
         const summary = str(result.summary);
         if (summary !== undefined) draft.summary = firstLine(summary);
-        const attempt = num(data.attempt);
-        if (attempt !== undefined) draft.attempts = attempt;
-        if (data.final === false) {
+        draft.attempts = event.data.attempt;
+        if (!event.data.final) {
           // The scheduler is going to retry: the row stays live rather than
           // settling on a verdict this attempt does not get to make.
           draft.status = "running";
@@ -243,30 +237,28 @@ function reduceTasks(
         break;
       }
       case "task.escalated":
-        draft.note = `→ ${str(data.to) ?? "?"}`;
+        draft.note = `→ ${event.data.to}`;
         break;
       case "task.cancelled":
         draft.status = "cancelled";
-        draft.note = str(data.reason) ?? "cancelled";
+        draft.note = event.data.reason;
         break;
       case "task.held": {
         // Only a task waiting to be dispatched can be held; a row that already
         // started (or settled) is never walked backwards.
         if (draft.status !== "pending" && draft.status !== "held") break;
         draft.status = "held";
-        const blocker = str(data.conflictsWith);
-        draft.note = blocker === undefined ? "held" : `held by ${blocker}`;
+        draft.note = `held by ${event.data.conflictsWith}`;
         break;
       }
       case "task.low_confidence": {
-        const confidence = num(data.confidence) ?? 0;
-        const verdict = data.accepted === true ? " (accepted)" : "";
-        draft.note = `low confidence ${confidence.toFixed(2)}${verdict}`;
+        const verdict = event.data.accepted === true ? " (accepted)" : "";
+        draft.note = `low confidence ${event.data.confidence.toFixed(2)}${verdict}`;
         break;
       }
       case "validation.completed": {
-        if (data.passed === true) break;
-        const failure = `✗ ${str(data.name) ?? "?"}`;
+        if (event.data.passed) break;
+        const failure = `✗ ${event.data.name}`;
         draft.note =
           draft.note === undefined ? failure : `${draft.note} · ${failure}`;
         break;
@@ -354,20 +346,28 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-function num(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
 function stringList(value: unknown): readonly string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
 }
 
-function taskIdOf(event: AgentEvent, data: Record<string, unknown>): string {
-  return event.taskId ?? str(data.taskId) ?? "?";
+/**
+ * The task an event belongs to: the envelope field, then the payload copy the
+ * scheduler stamps on the events it can identify without one, then "?".
+ */
+function taskIdOf(event: AgentEvent): string {
+  if (event.taskId !== undefined) return event.taskId;
+  switch (event.type) {
+    case "task.held":
+    case "task.low_confidence":
+    case "worktree.created":
+    case "worktree.integrated":
+    case "worktree.removed":
+      return event.data.taskId;
+    default:
+      return "?";
+  }
 }
 
 export function truncate(text: string, limit: number): string {

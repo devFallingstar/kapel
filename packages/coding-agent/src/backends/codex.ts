@@ -4,7 +4,8 @@ import type {
   AgentRunInput,
   AgentRunResult,
 } from "@agent/core";
-import type { AgentEvent, EventSink } from "@agent/protocol";
+import type { EventSink, PassthroughEventType } from "@agent/protocol";
+import { agentEvent } from "@agent/protocol";
 import {
   detachedSpawnOptions,
   executableCandidates,
@@ -243,17 +244,16 @@ export class CodexBackend {
     // Events are enqueued synchronously as lines arrive and drained in order,
     // so the sink observes the same ordering as the Codex stream.
     let queue: Promise<void> = Promise.resolve();
-    const emit = (type: string, data: unknown): void => {
+    const emit = (type: PassthroughEventType, data: unknown): void => {
       const sink = this.#options.events;
       if (sink === undefined) return;
-      const event: AgentEvent = {
-        id: crypto.randomUUID(),
-        runId: context.runId,
-        timestamp: Date.now(),
-        type,
-        ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
-        data,
-      };
+      const event = agentEvent(
+        {
+          runId: context.runId,
+          ...(context.taskId === undefined ? {} : { taskId: context.taskId }),
+        },
+        { type, data },
+      );
       queue = queue.then(async () => {
         try {
           await sink.emit(event);
@@ -429,7 +429,7 @@ export class CodexBackend {
     signal: AbortSignal | undefined,
     timeoutSignal: AbortSignal | undefined,
     state: RunState,
-    emit: (type: string, data: unknown) => void,
+    emit: (type: PassthroughEventType, data: unknown) => void,
   ): Promise<SpawnOutcome> {
     return new Promise<SpawnOutcome>((resolve) => {
       const child = spawn(binary, [...args], {
@@ -599,7 +599,7 @@ function modelAccessHint(model: string | undefined): string {
 function applyEvent(
   event: Record<string, unknown>,
   state: RunState,
-  emit: (type: string, data: unknown) => void,
+  emit: (type: PassthroughEventType, data: unknown) => void,
 ): void {
   // Some Codex versions wrap the payload in `msg`; unwrap it for inspection
   // but always forward the original object as event data.

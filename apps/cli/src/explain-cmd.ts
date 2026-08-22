@@ -43,22 +43,12 @@ export interface ExplainEvent {
   readonly detail: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+/** A string worth printing: present and not empty. */
+function str(value: string | undefined): string | undefined {
+  return value === undefined || value === "" ? undefined : value;
 }
 
-function str(value: unknown): string | undefined {
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function num(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
-function firstLine(text: unknown): string {
-  if (typeof text !== "string") return "(no summary)";
+function firstLine(text: string): string {
   const line = text
     .split("\n")
     .map((part) => part.trim())
@@ -103,56 +93,47 @@ function routeSentence(route: RouteExplanation): string {
  * made *about* the task.
  */
 export function digestEvent(event: AgentEvent): string | undefined {
-  const data = isRecord(event.data) ? event.data : {};
   switch (event.type) {
-    case "task.held": {
-      const blocker = str(data.conflictsWith);
-      return blocker === undefined
-        ? "held — waiting for a free slot"
-        : `held — serialized behind ${blocker} (their affected areas overlap)`;
-    }
+    case "task.held":
+      return `held — serialized behind ${event.data.conflictsWith} (their affected areas overlap)`;
     case "task.started":
-      return `started — agent ${str(data.agent) ?? "?"}, attempt ${num(data.attempt) ?? 1}`;
+      return `started — agent ${event.data.agent}, attempt ${event.data.attempt}`;
     case "task.escalated":
-      return `escalated — ${str(data.from) ?? "(unassigned)"} → ${str(data.to) ?? "?"} by rule ${str(data.rule) ?? "?"}`;
+      return `escalated — ${str(event.data.from) ?? "(unassigned)"} → ${event.data.to} by rule ${event.data.rule}`;
     case "task.low_confidence": {
-      const confidence = num(data.confidence) ?? 0;
-      const threshold = num(data.threshold) ?? 0;
+      const { confidence, threshold } = event.data;
       const verdict =
-        data.accepted === true ? "accepted (attempts exhausted)" : "redoing";
+        event.data.accepted === true
+          ? "accepted (attempts exhausted)"
+          : "redoing";
       return `low confidence — ${confidence.toFixed(2)} < ${threshold.toFixed(2)}, ${verdict}`;
     }
     case "validation.completed": {
-      if (data.passed === true) return undefined;
-      const exitCode = num(data.exitCode);
-      return `validator failed — ${str(data.name) ?? "?"} (exit ${exitCode === undefined ? "unknown" : exitCode})`;
+      if (event.data.passed) return undefined;
+      const exitCode = event.data.exitCode ?? "unknown";
+      return `validator failed — ${event.data.name} (exit ${exitCode})`;
     }
     case "worktree.integrated": {
-      if (data.merged === true) {
-        const commit = str(data.commit);
+      if (event.data.merged) {
+        const commit = str(event.data.commit);
         return `merged${commit === undefined ? "" : ` → ${commit.slice(0, 8)}`}`;
       }
-      const files = Array.isArray(data.conflictFiles)
-        ? data.conflictFiles.filter(
-            (file): file is string => typeof file === "string",
-          )
-        : [];
+      const files = event.data.conflictFiles ?? [];
       if (files.length > 0)
         return `not merged — conflicts in ${files.join(", ")}`;
-      const reason = str(data.reason) ?? "unknown reason";
-      const detail = str(data.detail);
+      const reason = str(event.data.reason) ?? "unknown reason";
+      const detail = str(event.data.detail);
       return detail === undefined
         ? `not merged — ${reason}`
         : `not merged — ${reason}: ${detail}`;
     }
     case "task.completed": {
-      const result = isRecord(data.result) ? data.result : {};
-      const status = str(result.status) ?? "?";
-      const retrying = data.final === false ? " (retrying)" : "";
-      return `completed — ${status}: ${firstLine(result.summary)}${retrying}`;
+      const { result } = event.data;
+      const retrying = event.data.final ? "" : " (retrying)";
+      return `completed — ${result.status}: ${firstLine(result.summary)}${retrying}`;
     }
     case "task.cancelled":
-      return `cancelled — ${str(data.reason) ?? "cancelled"}`;
+      return `cancelled — ${event.data.reason}`;
     default:
       return undefined;
   }
