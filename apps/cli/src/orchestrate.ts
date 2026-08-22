@@ -48,6 +48,7 @@ import {
   codexLoginGuidance,
   delegatedModelIdentity,
 } from "./backend.js";
+import type { BandDecor } from "./band.js";
 import type {
   DelegatedPlannerFactory,
   OrchestrationOutput,
@@ -75,6 +76,9 @@ import {
   runStatusFor,
   storeSink,
 } from "./sessions.js";
+import type { StatusLineStream } from "./status-line.js";
+import type { Styles } from "./styles.js";
+import { createWorkerBand, type WorkerBand } from "./worker-band.js";
 
 /** How a mutating task's writes are kept apart from every other task's. */
 export const ISOLATION_MODES = ["worktree", "none"] as const;
@@ -495,12 +499,45 @@ const defaultTuiFactory: TuiFactory = async (init) => {
   return startOrchestrationTui(init);
 };
 
+/**
+ * What a run's caller has already decided about the screen it is borrowing.
+ *
+ * A run can be started from two places that paint very differently: `kapel
+ * orchestrate` owns a bare terminal, while `/orchestrate` runs inside a REPL
+ * that is already painting an input band with its own palette, and whose
+ * permission prompts take the screen away without warning. Both of those are
+ * *presentation* facts the run has no way to work out for itself, so the
+ * caller states them once here and the run paints through them — which is what
+ * keeps the number of things painting at the foot of the screen at one.
+ *
+ * Everything is optional and the absent form is the standalone one: a fresh
+ * palette for stdout, no band to sit inside, and nothing that can take the
+ * screen away.
+ */
+export interface OrchestratePresentation {
+  /** Where painted output goes. Defaults to `process.stdout`. */
+  readonly output?: StatusLineStream;
+  /** The caller's palette, so a run inside a REPL wears the REPL's colours. */
+  readonly styles?: Styles;
+  /** The band the caller is already painting, for the run's row to sit inside. */
+  readonly frame?: BandDecor;
+  /** While this returns `true` something else owns the screen; the row stays erased. */
+  readonly suspended?: () => boolean;
+  /** Overrides the TTY probe. Only tests should pass this. */
+  readonly tty?: boolean;
+  readonly now?: () => number;
+  /** Injected by tests to keep the painted row's clock deterministic. */
+  readonly ticker?: (tick: () => void) => () => void;
+}
+
 export interface RunOrchestrateDeps extends PreparePlanDeps {
   readonly executorFactory?: ExecutorFactory;
   /** The event sink task/worker events are rendered through. */
   readonly renderer?: Renderer;
   /** Builds the `--tui` dashboard. Overridable in tests. */
   readonly tuiFactory?: TuiFactory;
+  /** How the caller is already painting the screen this run will share. */
+  readonly presentation?: OrchestratePresentation;
 }
 
 function jsonLine(output: OrchestrationOutput, value: unknown): void {
@@ -1025,14 +1062,53 @@ export async function executePreparedPlan(
     }
   }
 
+  const presentation = deps.presentation ?? {};
+
+  // The live per-worker row, on the one path that can carry it: a text run,
+  // painting for itself. The dashboard already shows every task and would
+  // fight this for the cursor; `--json` is a stream something else parses and
+  // must not gain a byte; and a caller that brought its own renderer owns the
+  // erase-and-repaint discipline the row depends on, so the row would have no
+  // way to take the screen back before a line is printed. Off a TTY the block
+  // is inert anyway — see `worker-band.ts`.
+  const workers: WorkerBand | undefined =
+    tui === undefined &&
+    !options.json &&
+    deps.renderer === undefined &&
+    plan.tasks.length > 0
+      ? createWorkerBand({
+          taskIds: plan.tasks.map((task) => task.id),
+          ...presentation,
+        })
+      : undefined;
+
   // With the dashboard up there is no renderer at all: suppressing its writes
   // is the same thing as not having one.
   const renderer =
     tui !== undefined
       ? undefined
       : (deps.renderer ??
-        (options.json ? new JsonRenderer() : new TextRenderer()));
+        (options.json
+          ? new JsonRenderer()
+          : new TextRenderer(presentation.output ?? process.stdout, {
+              ...(presentation.styles === undefined
+                ? {}
+                : { styles: presentation.styles }),
+              ...(presentation.frame === undefined
+                ? {}
+                : { frame: presentation.frame }),
+              ...(presentation.suspended === undefined
+                ? {}
+                : { suspended: presentation.suspended }),
+              // One block, painted by one object: the renderer erases and
+              // repaints the worker row around every line it prints, exactly
+              // as it does the spinner it would otherwise own.
+              ...(workers === undefined ? {} : { status: workers.status }),
+            })));
   const events = fanOutSink(
+    // Before the renderer, so the row the renderer repaints under a freshly
+    // printed line is already true of the event that caused it.
+    workers?.sink,
     renderer,
     tui?.sink,
     store === undefined ? undefined : storeSink(store),
@@ -1045,6 +1121,9 @@ export async function executePreparedPlan(
       : options.timeoutSeconds * 1000;
 
   const fail = async (message: string): Promise<number> => {
+    // Before anything is printed: the row is painted where the next line is
+    // about to go, and an error message is not something to write over.
+    workers?.stop();
     await closeTui(tui, "failed to run");
     if (options.json) jsonLine(output, { ok: false, error: message });
     else output.error(message);
@@ -1098,6 +1177,11 @@ export async function executePreparedPlan(
     }
   }
 
+  // Opened here rather than with the renderer: the lead lines above are
+  // printed straight to the output, around nothing, and a row painted before
+  // them would be left stranded above the run it reports on.
+  workers?.open();
+
   try {
     await new DeterministicScheduler(new PolicyRouter(), executor, events).run(
       runId,
@@ -1109,6 +1193,9 @@ export async function executePreparedPlan(
     return await fail(errorText(error));
   } finally {
     process.off("SIGINT", onSigint);
+    // The run is over, so the row is a claim about the present that is no
+    // longer true. What survives in the scrollback is the summary below.
+    workers?.stop();
   }
 
   const tasks = graph.all();

@@ -107,7 +107,10 @@ import {
   workspaceImageReader,
 } from "./mention.js";
 import { createProjectSetup } from "./onboard.js";
-import type { OrchestrateCommandOptions } from "./orchestrate.js";
+import type {
+  OrchestrateCommandOptions,
+  OrchestratePresentation,
+} from "./orchestrate.js";
 import { DEFAULT_ISOLATION, runOrchestrate } from "./orchestrate.js";
 import {
   DEFAULT_PERMISSIONS,
@@ -2689,6 +2692,25 @@ export async function runInteractive(
       suspended: () => promptState.active,
     });
 
+    /**
+     * The same three facts, for the commands that run a whole orchestration
+     * inside this REPL.
+     *
+     * `/orchestrate` and `/resume-run` paint at the foot of the screen too —
+     * a live row of what every worker is doing — and until they were told
+     * about this one they built a renderer of their own, with a default
+     * palette and no idea the band was there: two objects painting the same
+     * rows, and whichever wrote last won. Handing them the REPL's palette,
+     * band and screen-owner check is what makes the run's row *this* band's
+     * middle row for as long as the run lasts, and hands the screen straight
+     * back afterwards.
+     */
+    const replPresentation = (): OrchestratePresentation => ({
+      styles,
+      ...(band === undefined ? {} : { frame: band }),
+      suspended: () => promptState.active,
+    });
+
     // The turn currently in flight, if any — a persistent `InputManager`
     // never lets go of raw mode long enough for a mid-turn Ctrl-C to reach
     // the process as a real `SIGINT` (see `inputManagerLineSource`), so its
@@ -3002,6 +3024,7 @@ export async function runInteractive(
         runOrchestrate(
           objective,
           orchestrateOptionsFor(options, chatAlias, backend),
+          { presentation: replPresentation() },
         ),
       plan: (objective, output) =>
         runPlan(objective, planOptionsFor(options, chatAlias, backend), {
@@ -3032,7 +3055,10 @@ export async function runInteractive(
           }
         : {}),
       resumeRun: (runId, output) =>
-        runResume(runId, resumeOptionsFor(options, backend), { output }),
+        runResume(runId, resumeOptionsFor(options, backend), {
+          output,
+          presentation: replPresentation(),
+        }),
       login: {
         backends: loginBackends,
         check: (target) => checkBackendAvailability(target),

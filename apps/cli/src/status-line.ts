@@ -37,6 +37,18 @@
  * cursor is walked back up to it, so the next erase starts where this paint
  * did, and the whole band moves down the screen as the transcript grows
  * without a single absolute cursor address being written.
+ *
+ * ## Rows the caller owns
+ *
+ * A spinner speaks for one wait, and an orchestration run is several at once:
+ * four workers in four worktrees have four things to say and no single label
+ * that says them. So the block's *content* is pluggable — see
+ * {@link StatusLineOptions.rows} — and a caller that has something better to
+ * show than `⠹ thinking 4s` (the per-worker row in `worker-band.ts`) supplies
+ * it, while everything below the content rows stays exactly as it is: the same
+ * erase, the same repaint, the same band around it, and therefore the same one
+ * painting authority per screen. Such a block is opened with {@link open}
+ * rather than {@link start}: there is no wait to name.
  */
 
 import type { BandDecor } from "./band.js";
@@ -109,6 +121,18 @@ export interface StatusLineOptions {
    * `kapel run` summary or an orchestration log has no band to be part of.
    */
   readonly frame?: BandDecor;
+  /**
+   * The block's content rows, in place of the spinner — already styled, and
+   * already narrow enough for `columns` (nothing here folds them: a block that
+   * silently grew a row would leave the row above it uneraseable).
+   *
+   * Called on every repaint, so the rows may move on their own between events:
+   * that is how a worker row's elapsed seconds tick. Returning an empty array
+   * means "nothing to show right now" and leaves the screen clean without
+   * ending the block — the next tick puts it back if there is something to say
+   * by then.
+   */
+  readonly rows?: (columns: number) => readonly string[];
 }
 
 function defaultTicker(tick: () => void): () => void {
@@ -152,12 +176,15 @@ export class StatusLine {
   readonly #ticker: (tick: () => void) => () => void;
   readonly #styles: Styles;
   readonly #band: BandDecor | undefined;
+  readonly #rows: ((columns: number) => readonly string[]) | undefined;
 
   #cancel: (() => void) | undefined;
-  #label = "";
+  /** The wait being reported, or `undefined` for a block opened without one. */
+  #label: string | undefined;
   #startedAt = 0;
   #frame = 0;
-  #painted = false;
+  /** How many rows the last paint left on screen; `0` when nothing is up. */
+  #paintedRows = 0;
 
   constructor(options: StatusLineOptions = {}) {
     this.#output = options.output ?? process.stdout;
@@ -168,6 +195,7 @@ export class StatusLine {
     this.#ticker = options.ticker ?? defaultTicker;
     this.#styles = options.styles ?? stylesFor(this.#output);
     this.#band = options.frame;
+    this.#rows = options.rows;
   }
 
   /** Whether this line will ever paint anything — false off a TTY. */
@@ -190,15 +218,35 @@ export class StatusLine {
   start(label: string): void {
     if (!this.#enabled) return;
     this.#label = label;
-    if (this.#cancel === undefined) {
-      this.#startedAt = this.#now();
-      this.#frame = 0;
-      this.#cancel = this.#ticker(() => {
-        this.#frame += 1;
-        this.#paint();
-      });
-    }
+    this.#begin();
     this.#paint();
+  }
+
+  /**
+   * Starts a block with no wait to report: whatever
+   * {@link StatusLineOptions.rows} says is the whole of it.
+   *
+   * The clock still runs and the ticker still repaints, because rows that
+   * report on several tasks at once age between events exactly as a spinner
+   * does — see `worker-band.ts`, whose seconds tick without an event to
+   * prompt them.
+   */
+  open(): void {
+    if (!this.#enabled) return;
+    this.#label = undefined;
+    this.#begin();
+    this.#paint();
+  }
+
+  /** Starts the repaint timer, if it is not already running. */
+  #begin(): void {
+    if (this.#cancel !== undefined) return;
+    this.#startedAt = this.#now();
+    this.#frame = 0;
+    this.#cancel = this.#ticker(() => {
+      this.#frame += 1;
+      this.#paint();
+    });
   }
 
   /**
@@ -207,14 +255,15 @@ export class StatusLine {
    * writing real output.
    */
   erase(): void {
-    if (!this.#painted) return;
-    this.#painted = false;
-    if (this.#band === undefined) {
+    const rows = this.#paintedRows;
+    if (rows === 0) return;
+    this.#paintedRows = 0;
+    if (rows === 1) {
       this.#output.write(ERASE);
       return;
     }
     // The cursor was left on the block's first row by {@link #paint}, so the
-    // whole band comes off with one clear-to-bottom and the cursor stays
+    // whole block comes off with one clear-to-bottom and the cursor stays
     // exactly where the caller's next line of output belongs.
     this.#output.write(ERASE_BLOCK);
   }
@@ -239,34 +288,63 @@ export class StatusLine {
       return;
     }
 
-    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
-    const status = formatStatus(
-      this.#label,
-      this.#now() - this.#startedAt,
-      this.#tokens?.(),
-    );
     const columns = this.#output.columns ?? DEFAULT_COLUMNS;
-    // One column short of the edge: a line that exactly fills the terminal
-    // wraps, and a wrapped line is one `\r` can no longer erase.
-    const text = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
-    const line = this.#styles.tool(text);
-
-    const band = this.#band;
-    if (band === undefined) {
-      this.#output.write(`${ERASE}${line}`);
-      this.#painted = true;
+    const content = this.#contentRows(columns);
+    if (content.length === 0) {
+      // Nothing to say this instant — a block that is running but momentarily
+      // empty leaves a clean screen rather than a stale one.
+      this.erase();
       return;
     }
 
-    // `\r\n` rather than `ESC[B` between the rows: the two rows under the
-    // first one may not exist yet, and a newline is the one thing that makes
-    // the terminal scroll them into being. Whatever that scroll moved, it
-    // moved the whole block with it, which is why the walk back up is
-    // relative and lands where the paint started every time.
-    const rule = band.rule(columns);
-    const rows = [rule, line, rule];
+    const band = this.#band;
+    const rows =
+      band === undefined
+        ? content
+        : [band.rule(columns), ...content, band.rule(columns)];
+
+    if (rows.length === 1) {
+      this.#output.write(`${ERASE}${rows[0]}`);
+      this.#paintedRows = 1;
+      return;
+    }
+
+    // `\r\n` rather than `ESC[B` between the rows: the rows under the first
+    // one may not exist yet, and a newline is the one thing that makes the
+    // terminal scroll them into being. Whatever that scroll moved, it moved
+    // the whole block with it, which is why the walk back up is relative and
+    // lands where the paint started every time.
     const below = rows.length - 1;
     this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
-    this.#painted = true;
+    this.#paintedRows = rows.length;
+  }
+
+  /**
+   * What goes between the rules: the caller's rows when it has any, and
+   * otherwise the spinner for the wait {@link start} named.
+   *
+   * The caller's rows win rather than joining the spinner. A block reports one
+   * thing at a time — during an orchestration run the spinner never starts at
+   * all (every event carries a task id, so no turn-level wait is ever
+   * declared) — and two ideas of "what is happening" stacked on top of each
+   * other would be the screen contradicting itself.
+   */
+  #contentRows(columns: number): readonly string[] {
+    const rows = this.#rows?.(columns);
+    if (rows !== undefined && rows.length > 0) return rows;
+
+    const label = this.#label;
+    if (label === undefined) return [];
+
+    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
+    const status = formatStatus(
+      label,
+      this.#now() - this.#startedAt,
+      this.#tokens?.(),
+    );
+    // One column short of the edge: a line that exactly fills the terminal
+    // wraps, and a wrapped line is one `\r` can no longer erase.
+    const text = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
+    return [this.#styles.tool(text)];
   }
 }

@@ -20,7 +20,7 @@ import {
   WorktreeIsolatedExecutor,
 } from "@agent/coding-agent";
 import type { AgentEvent } from "@agent/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // The argv-recording fake `claude`/`codex` harness the coding-agent package
 // already tests its delegated steps through; reused rather than reinvented so
 // the mixed-backend run below is asserted against the same shell scripts.
@@ -703,6 +703,92 @@ describe("kapel orchestrate", () => {
     expect(summary).toContain("completed  T01  explorer");
     expect(summary).toContain("3/3 tasks completed");
     expect(summary).toContain("tokens —");
+  });
+
+  it("paints a live worker row through the run, and takes it off at the end", async () => {
+    const stream = new CapturingStream();
+    const { output } = capture();
+
+    const code = await runOrchestrate(
+      "add a health endpoint",
+      options(workspace),
+      {
+        output,
+        plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+        executorFactory: () => new ScriptedExecutor(),
+        // No renderer: this is the path a real `kapel orchestrate` takes, and
+        // the row only exists when the run is painting for itself.
+        presentation: { output: stream.asStream(), tty: true },
+      },
+    );
+
+    expect(code).toBe(0);
+    const painted = stream.chunks.filter((chunk) => chunk.includes("[T01"));
+    // The row opens with the whole plan pending, before a task has started.
+    expect(painted[0]).toContain("[T01 ·] [T02 ·] [T03 ·]");
+    // It follows the run: every task ends up settled in it.
+    expect(painted.at(-1)).toContain("[T01 ✔]");
+    expect(painted.at(-1)).toContain("[T03 ✔]");
+    // And it is gone by the time the summary is printed — what is left in the
+    // scrollback is the per-event lines, exactly as before.
+    expect(stream.chunks.at(-1)).not.toContain("[T01");
+    expect(stream.lines.join("\n")).toContain("▶ T01 → explorer");
+  });
+
+  it("paints no row, and no escape, when the output is not a terminal", async () => {
+    const stream = new CapturingStream();
+    const { output } = capture();
+
+    await runOrchestrate("add a health endpoint", options(workspace), {
+      output,
+      plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+      executorFactory: () => new ScriptedExecutor(),
+      // `tty` unset: the stream answers for itself, and it is a pipe.
+      presentation: { output: stream.asStream() },
+    });
+
+    const written = stream.chunks.join("");
+    expect(written).not.toContain("[T01 ·]");
+    expect(written).not.toContain("");
+    expect(written).not.toContain("\r");
+  });
+
+  it("adds nothing to a --json stream", async () => {
+    const stream = new CapturingStream();
+    const { output, lines } = capture();
+    const events: string[] = [];
+    const stdout = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        events.push(String(chunk));
+        return true;
+      });
+
+    let code: number;
+    try {
+      code = await runOrchestrate(
+        "add a health endpoint",
+        options(workspace, { json: true }),
+        {
+          output,
+          plannerFactory: fixedPlannerFactory(SAMPLE_PLAN),
+          executorFactory: () => new ScriptedExecutor(),
+          // A terminal, even: `--json` is a stream something else parses, and
+          // the row is not offered to it under any circumstances.
+          presentation: { output: stream.asStream(), tty: true },
+        },
+      );
+    } finally {
+      stdout.mockRestore();
+    }
+
+    expect(code).toBe(0);
+    expect(stream.chunks).toEqual([]);
+    // Every line of the event stream is still a bare JSON object.
+    for (const line of events.join("").split("\n").filter(Boolean)) {
+      expect(JSON.parse(line).runId).toBeTypeOf("string");
+    }
+    expect(JSON.parse(lines.at(-1) ?? "{}").type).toBe("run.summary");
   });
 
   it("hands the project's handoff guidance to the executor factory", async () => {
