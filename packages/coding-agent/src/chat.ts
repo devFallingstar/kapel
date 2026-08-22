@@ -40,12 +40,33 @@ function copyMessage(message: ModelMessage): ModelMessage {
  *
  * Sends are single-flight: overlapping sends would interleave writes into one
  * message array and produce a history no provider would accept.
+ *
+ * ## Steering
+ *
+ * {@link injectUserMessage} is the one deliberate exception to that rule, and
+ * the reason the exception is safe is worth stating: it is an *append*, not a
+ * second send. The engine re-snapshots the message array at the top of every
+ * iteration, so a user message pushed onto it while a turn is in flight is
+ * simply part of the next request that turn makes — which is what lets someone
+ * type a correction into a run that is three tool calls deep and have it
+ * answered without waiting for the run to finish. It writes one message and
+ * drives nothing, so there is no interleaving for the single-flight guard to
+ * protect against.
  */
 export class AgentChatSession {
   readonly #engine: AgentLoopEngine;
   readonly #messages: ModelMessage[] = [];
   #turn = 0;
   #sending = false;
+  /**
+   * The index of the most recent {@link injectUserMessage} that no model
+   * request is known to have carried yet, or `undefined` when nothing is
+   * outstanding.
+   *
+   * The newest index is enough for all of them: injections only ever append,
+   * so a request that reached the last one reached every earlier one too.
+   */
+  #unanswered: number | undefined;
 
   constructor(options: AgentLoopOptions) {
     this.#engine = new AgentLoopEngine(options);
@@ -114,20 +135,104 @@ export class AgentChatSession {
         });
       }
 
-      this.#turn += 1;
-      const turn = this.#turn;
-
-      await this.#engine.emit(context, "chat.turn.started", { turn });
-      const result = await this.#engine.drive(this.#messages, context);
-      await this.#engine.emit(context, "chat.turn.completed", {
-        turn,
-        status: result.status,
-      });
-
-      return result;
+      return await this.#driveTurn(context);
     } finally {
       this.#sending = false;
     }
+  }
+
+  /**
+   * Appends a user message to the history of the turn already running, so the
+   * model reads it on that turn's next request.
+   *
+   * This is steering: the user typed something while the agent was working and
+   * meant it for the work in progress, not for a turn afterwards. Deliberately
+   * *not* guarded by the single-flight check — see the class comment — because
+   * an append is not a send: nothing here drives the engine, emits an event or
+   * races another writer. The whole mechanism is that
+   * {@link AgentLoopEngine.drive} copies the array afresh every iteration.
+   *
+   * Refused when no send is in flight, and that is the honest answer rather
+   * than a convenience: with nothing running there is no turn to steer, the
+   * caller's line belongs in an ordinary {@link send}, and appending it here
+   * would leave a user message in history that nobody ever answers.
+   *
+   * @returns whether the message was appended.
+   */
+  injectUserMessage(text: string): boolean {
+    if (!this.#sending) return false;
+    if (text === "") return false;
+    this.#messages.push({ role: "user", content: text });
+    this.#unanswered = this.#messages.length - 1;
+    return true;
+  }
+
+  /**
+   * Whether an injected message is still waiting for its first model request.
+   *
+   * True only in the narrow case the caller has to handle: the turn ended
+   * before it built another request — the model answered in one shot — so the
+   * words are sitting in history unread. Everything else (the turn ran another
+   * iteration, or the injection arrived before the first request) reads as
+   * answered, because the model did in fact see them.
+   */
+  hasUnansweredInjection(): boolean {
+    return this.#unanswered !== undefined;
+  }
+
+  /**
+   * Runs another turn over the retained history *without* appending anything.
+   *
+   * The counterpart to {@link hasUnansweredInjection}: the user's steering
+   * message is already in the history, so the way to get it answered is to ask
+   * the model again — and appending it a second time would show the user their
+   * own words twice in every request from here on. A turn in its own right
+   * otherwise: same events, same numbering, same single-flight guard.
+   *
+   * @throws if a send is in flight, or if there is no history to continue.
+   */
+  async continueTurn(context: AgentLoopRunContext): Promise<ChatTurnResult> {
+    if (this.#sending) {
+      throw new Error(
+        "AgentChatSession.continueTurn: a send is already in flight; turns must be serialized.",
+      );
+    }
+    if (this.#messages.length === 0) {
+      throw new Error(
+        "AgentChatSession.continueTurn: there is no conversation to continue.",
+      );
+    }
+    this.#sending = true;
+    try {
+      return await this.#driveTurn(context);
+    } finally {
+      this.#sending = false;
+    }
+  }
+
+  /** One turn over the retained history: the shared half of send/continue. */
+  async #driveTurn(context: AgentLoopRunContext): Promise<ChatTurnResult> {
+    this.#turn += 1;
+    const turn = this.#turn;
+
+    await this.#engine.emit(context, "chat.turn.started", { turn });
+    const result = await this.#engine.drive(this.#messages, context);
+    await this.#engine.emit(context, "chat.turn.completed", {
+      turn,
+      status: result.status,
+    });
+
+    // Every iteration snapshots the array, so the last request's length is
+    // exactly how far into the history the model read — see
+    // `AgentLoopResult.requestedMessages`.
+    const unanswered = this.#unanswered;
+    if (
+      unanswered !== undefined &&
+      (result.requestedMessages ?? 0) > unanswered
+    )
+      this.#unanswered = undefined;
+
+    return result;
   }
 
   /** A snapshot of the full history, system message included. */

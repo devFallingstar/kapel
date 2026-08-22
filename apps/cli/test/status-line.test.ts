@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createBandDecor } from "../src/band.js";
 import {
+  clipToEnd,
   formatStatus,
   formatTokenCount,
   StatusLine,
@@ -44,6 +45,8 @@ function harness(
     suspended?: () => boolean;
     columns?: number;
     band?: boolean;
+    pending?: () => string | undefined;
+    queued?: () => number;
   } = {},
 ): Harness {
   const stream = new CapturingStream();
@@ -67,6 +70,8 @@ function harness(
       : { suspended: options.suspended }),
     ...(options.band === undefined ? {} : { styles: PLAIN_STYLES }),
     ...(options.band === true ? { frame: createBandDecor(PLAIN_STYLES) } : {}),
+    ...(options.pending === undefined ? {} : { pending: options.pending }),
+    ...(options.queued === undefined ? {} : { queued: options.queued }),
   });
 
   return {
@@ -96,6 +101,32 @@ describe("formatStatus", () => {
   it("drops the token clause rather than claiming zero", () => {
     expect(formatStatus("thinking", 0, 0)).toBe("thinking 0s");
     expect(formatStatus("thinking", 0, undefined)).toBe("thinking 0s");
+  });
+
+  it("counts the lines waiting for the turn to end, last", () => {
+    expect(formatStatus("thinking", 1000, 2500, 2)).toBe(
+      "thinking 1s · 2.5k tokens · 2 queued",
+    );
+    expect(formatStatus("thinking", 0, undefined, 1)).toBe(
+      "thinking 0s · 1 queued",
+    );
+  });
+
+  it("drops the queue clause when nothing is waiting", () => {
+    expect(formatStatus("thinking", 0, undefined, 0)).toBe("thinking 0s");
+    expect(formatStatus("thinking", 0, undefined, undefined)).toBe(
+      "thinking 0s",
+    );
+  });
+});
+
+describe("clipToEnd", () => {
+  it("leaves a row that fits alone", () => {
+    expect(clipToEnd("> hello", 20)).toBe("> hello");
+  });
+
+  it("keeps the end of a row that has outgrown the terminal", () => {
+    expect(clipToEnd("> abcdefgh", 5)).toBe("…efgh");
   });
 });
 
@@ -265,5 +296,73 @@ describe("StatusLine as the turn's band", () => {
     status.refresh();
     status.stop();
     expect(stream.chunks).toEqual([]);
+  });
+});
+
+describe("StatusLine — typing into the running turn", () => {
+  it("paints the line being typed as a fourth row inside the band", () => {
+    const { status, stream } = harness({
+      columns: 40,
+      band: true,
+      pending: () => "> and the docs▏",
+    });
+
+    status.start("thinking");
+
+    expect(stream.text).toContain("> and the docs▏");
+    // Between the spinner and the lower rule, so the band still reads as one
+    // block with the input at the bottom of it.
+    const text = stream.text;
+    expect(text.indexOf("> and the docs▏")).toBeGreaterThan(
+      text.indexOf("⠋ thinking"),
+    );
+  });
+
+  it("leaves the three-row band alone when nobody is typing", () => {
+    const { status, stream } = harness({
+      columns: 40,
+      band: true,
+      pending: () => undefined,
+    });
+
+    status.start("thinking");
+
+    expect(stream.text.split("\r\n")).toHaveLength(3);
+  });
+
+  it("counts the queue on the status row", () => {
+    const { status, stream } = harness({
+      columns: 40,
+      band: true,
+      queued: () => 3,
+    });
+
+    status.start("thinking");
+
+    expect(stream.text).toContain("⠋ thinking 0s · 3 queued");
+  });
+
+  it("clips a typed line that has outgrown the terminal, keeping its end", () => {
+    const { status, stream } = harness({
+      columns: 12,
+      band: true,
+      pending: () => "> a very long sentence indeed▏",
+    });
+
+    status.start("thinking");
+
+    expect(stream.text).toContain("…ce indeed▏");
+  });
+
+  it("shows no typed row without a frame to put it in", () => {
+    const { status, stream } = harness({
+      columns: 40,
+      band: false,
+      pending: () => "> not here",
+    });
+
+    status.start("thinking");
+
+    expect(stream.text).not.toContain("not here");
   });
 });

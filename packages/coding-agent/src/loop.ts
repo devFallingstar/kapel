@@ -83,6 +83,23 @@ export interface AgentLoopRunContext {
 export interface AgentLoopResult extends AgentRunResult {
   readonly iterations: number;
   readonly toolCalls: number;
+  /**
+   * How many messages the *last* model request carried, or `0` for a run that
+   * never got as far as one.
+   *
+   * Additive, and only one caller has any use for it: a chat session that
+   * appended a message to the live history while this run was in flight (see
+   * `AgentChatSession.injectUserMessage`) needs to know whether the model ever
+   * saw it. Every iteration snapshots the array afresh, so the answer is
+   * arithmetic rather than bookkeeping — a message at index `i` was in the
+   * request if and only if this number is greater than `i`.
+   *
+   * Not on any event payload: `loop.completed` says what it always said, and
+   * optional here so every stand-in that already builds a result literal (the
+   * CLI's fakes, a delegated backend's turn) keeps compiling — absent reads as
+   * "no request is known to have carried anything", which is the safe answer.
+   */
+  readonly requestedMessages?: number;
 }
 
 /** Internal sentinel used to unwind the loop when the combined signal aborts. */
@@ -307,6 +324,13 @@ export class AgentLoopEngine {
     let iterations = 0;
     let toolCalls = 0;
     let lastNonEmptyText = "";
+    /**
+     * How long the message array was when the last request was built. Recorded
+     * here rather than derived at the end because the array keeps growing
+     * afterwards — and because a caller may have appended to it mid-run; see
+     * {@link AgentLoopResult.requestedMessages}.
+     */
+    let requestedMessages = 0;
 
     await this.emit(context, "loop.started", {
       agent: agent.name,
@@ -331,6 +355,7 @@ export class AgentLoopEngine {
             ? {}
             : { maxOutputTokens: this.#options.maxOutputTokens }),
         };
+        requestedMessages = request.messages.length;
 
         const turn = await this.#runTurn(request, signal, context, iterations);
         if (turn.text.trim() !== "") lastNonEmptyText = turn.text;
@@ -357,6 +382,7 @@ export class AgentLoopEngine {
             output,
             iterations,
             toolCalls,
+            requestedMessages,
           });
         }
 
@@ -380,6 +406,7 @@ export class AgentLoopEngine {
         ...(lastNonEmptyText === "" ? {} : { output: lastNonEmptyText }),
         iterations,
         toolCalls,
+        requestedMessages,
       });
     } catch (error) {
       // Whatever we abandoned mid-batch must not stay unanswered in history.
@@ -399,6 +426,7 @@ export class AgentLoopEngine {
           ...(lastNonEmptyText === "" ? {} : { output: lastNonEmptyText }),
           iterations,
           toolCalls,
+          requestedMessages,
         });
       }
 
@@ -408,6 +436,7 @@ export class AgentLoopEngine {
         ...(lastNonEmptyText === "" ? {} : { output: lastNonEmptyText }),
         iterations,
         toolCalls,
+        requestedMessages,
       });
     }
   }

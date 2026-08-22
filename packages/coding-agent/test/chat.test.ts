@@ -166,6 +166,9 @@ describe("AgentChatSession — conversation continuity", () => {
       output: "Hi there.",
       iterations: 1,
       toolCalls: 0,
+      // The seeded system prompt and the instruction: how far into the
+      // history the model read. See `AgentLoopResult.requestedMessages`.
+      requestedMessages: 2,
     });
 
     // First request: system prompt + the instruction, nothing else.
@@ -181,6 +184,7 @@ describe("AgentChatSession — conversation continuity", () => {
       output: "Bye now.",
       iterations: 1,
       toolCalls: 0,
+      requestedMessages: 4,
     });
 
     // Second request replays the whole first exchange before the new turn.
@@ -645,5 +649,166 @@ describe("AgentChatSession — events", () => {
       expect(event.runId).toBe("run-1");
       expect(event.taskId).toBe("task-1");
     }
+  });
+});
+
+// --- steering ---------------------------------------------------------------
+
+/**
+ * A provider that runs a callback the moment a request reaches it — i.e. from
+ * *inside* the turn, which is the only place a mid-turn injection can happen.
+ */
+class InterruptedProvider implements ModelProvider {
+  readonly id = "interrupted";
+  readonly requests: ModelRequest[] = [];
+  readonly #turns: ModelEvent[][];
+  readonly #onRequest: (index: number) => void;
+
+  constructor(turns: ModelEvent[][], onRequest: (index: number) => void) {
+    this.#turns = turns.map((turn) => [...turn]);
+    this.#onRequest = onRequest;
+  }
+
+  supports(): boolean {
+    return true;
+  }
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
+    const index = this.requests.length;
+    this.requests.push(request);
+    this.#onRequest(index);
+    const turn = this.#turns.shift();
+    if (turn === undefined) throw new Error("scripted provider exhausted");
+    for (const event of turn) yield event;
+  }
+}
+
+describe("AgentChatSession — steering", () => {
+  it("refuses to inject when no turn is in flight", async () => {
+    const session = new AgentChatSession(options(new ScriptedProvider([])));
+
+    expect(session.injectUserMessage("too early")).toBe(false);
+    expect(session.messages()).toEqual([]);
+    expect(session.hasUnansweredInjection()).toBe(false);
+  });
+
+  it("appends an injected message into the live history mid-turn", async () => {
+    let session: AgentChatSession | undefined;
+    const provider = new InterruptedProvider(
+      [toolTurn("call-1", "echo", { value: 1 }), text("done")],
+      (index) => {
+        // While the first model turn is streaming: the loop has already
+        // snapshotted the array for this request, so the append lands in the
+        // *next* one.
+        if (index === 0) session?.injectUserMessage("and update the docs");
+      },
+    );
+    session = new AgentChatSession(
+      options(provider, {
+        tools: [makeTool("echo", async (input) => input)],
+      }),
+    );
+
+    await session.send("start", RUN_CONTEXT);
+
+    expect(provider.requests[0]?.messages.map((m) => m.content)).toEqual([
+      "You are a coding agent.",
+      "start",
+    ]);
+    // Injected while the first turn was still streaming, so it sits ahead of
+    // the assistant turn it interrupted — two things the user said, then the
+    // reply to both. Order the loop never has to care about: it replays the
+    // array as it finds it.
+    expect(provider.requests[1]?.messages.map((m) => m.content)).toEqual([
+      "You are a coding agent.",
+      "start",
+      "and update the docs",
+      "",
+      '{"value":1}',
+    ]);
+    // The turn read it, so nothing is left over for the caller to chase.
+    expect(session.hasUnansweredInjection()).toBe(false);
+  });
+
+  it("reports an injection the turn ended before reading", async () => {
+    let session: AgentChatSession | undefined;
+    const provider = new InterruptedProvider([text("all done")], (index) => {
+      if (index === 0) session?.injectUserMessage("wait, one more thing");
+    });
+    session = new AgentChatSession(options(provider));
+
+    const result = await session.send("start", RUN_CONTEXT);
+
+    // One model turn, no tools: the loop returned without ever building the
+    // request that would have carried the injected line.
+    expect(result.requestedMessages).toBe(2);
+    expect(session.hasUnansweredInjection()).toBe(true);
+  });
+
+  it("answers an unread injection with continueTurn, appending nothing", async () => {
+    let session: AgentChatSession | undefined;
+    const provider = new InterruptedProvider(
+      [text("all done"), text("about that other thing…")],
+      (index) => {
+        if (index === 0) session?.injectUserMessage("wait, one more thing");
+      },
+    );
+    session = new AgentChatSession(options(provider));
+
+    await session.send("start", RUN_CONTEXT);
+    const continued = await session.continueTurn(RUN_CONTEXT);
+
+    expect(continued.status).toBe("success");
+    expect(session.hasUnansweredInjection()).toBe(false);
+    // The user's words are in the history exactly once, and the second
+    // request is the first one plus the answer to them.
+    expect(
+      session.messages().filter((m) => m.content === "wait, one more thing"),
+    ).toHaveLength(1);
+    expect(provider.requests[1]?.messages.map((m) => m.content)).toEqual([
+      "You are a coding agent.",
+      "start",
+      "wait, one more thing",
+      "all done",
+    ]);
+  });
+
+  it("numbers a continuation as a turn of its own", async () => {
+    const sink = new RecordingSink();
+    let session: AgentChatSession | undefined;
+    const provider = new InterruptedProvider(
+      [text("one"), text("two")],
+      (index) => {
+        if (index === 0) session?.injectUserMessage("and this");
+      },
+    );
+    session = new AgentChatSession(options(provider, { events: sink }));
+
+    await session.send("start", RUN_CONTEXT);
+    await session.continueTurn(RUN_CONTEXT);
+
+    expect(sink.ofType("chat.turn.started").map((event) => event.data)).toEqual(
+      [{ turn: 1 }, { turn: 2 }],
+    );
+  });
+
+  it("refuses to continue a conversation that has not started", async () => {
+    const session = new AgentChatSession(options(new ScriptedProvider([])));
+
+    await expect(session.continueTurn(RUN_CONTEXT)).rejects.toThrow(
+      "no conversation to continue",
+    );
+  });
+
+  it("refuses to continue while a send is in flight", async () => {
+    let continued: Promise<unknown> | undefined;
+    let session: AgentChatSession | undefined;
+    const provider = new InterruptedProvider([text("hi")], (index) => {
+      if (index === 0) continued = session?.continueTurn(RUN_CONTEXT);
+    });
+    session = new AgentChatSession(options(provider));
+
+    await session.send("start", RUN_CONTEXT);
+    await expect(continued).rejects.toThrow("already in flight");
   });
 });

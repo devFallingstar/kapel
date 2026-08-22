@@ -285,7 +285,27 @@ export interface TextRendererOptions {
    * its progress to be part of.
    */
   readonly frame?: BandDecor;
+  /**
+   * The line the user is typing into the running turn, if any — see
+   * {@link StatusLineOptions.pending}. The renderer reads it as well as
+   * forwarding it: streamed text and a line being typed are the two things
+   * that cannot be on screen at the same moment, and this is how it knows.
+   */
+  readonly pending?: () => string | undefined;
+  /** How many typed lines are waiting for this turn to end. */
+  readonly queued?: () => number;
 }
+
+/**
+ * How much streamed text is held back while the user types, before it is let
+ * through anyway.
+ *
+ * There has to be a bound: the hold ends when the line is sent, and a user who
+ * types half a sentence and then goes to lunch must not take the answer with
+ * them. Generous enough that an ordinary interruption — a few seconds of
+ * typing — is covered whole.
+ */
+const MAX_HELD_CHARS = 4000;
 
 /**
  * Plain-text human renderer. Styled only when `output` is a TTY and the
@@ -315,6 +335,10 @@ export class TextRenderer implements Renderer {
    * orchestration run, whose output shares the terminal with other tasks.
    */
   #claudeText = "";
+  /** What the user is typing into this turn, when anything. */
+  readonly #pending: (() => string | undefined) | undefined;
+  /** Streamed text kept back while they type it — see {@link #hold}. */
+  #held = "";
 
   constructor(
     output: NodeJS.WritableStream = process.stdout,
@@ -322,6 +346,7 @@ export class TextRenderer implements Renderer {
   ) {
     this.#output = output;
     this.#styles = options.styles ?? stylesFor(output as { isTTY?: boolean });
+    this.#pending = options.pending;
     this.#status =
       options.status ??
       new StatusLine({
@@ -331,6 +356,8 @@ export class TextRenderer implements Renderer {
           ? {}
           : { suspended: options.suspended }),
         ...(options.frame === undefined ? {} : { frame: options.frame }),
+        ...(options.pending === undefined ? {} : { pending: options.pending }),
+        ...(options.queued === undefined ? {} : { queued: options.queued }),
       });
   }
 
@@ -343,6 +370,70 @@ export class TextRenderer implements Renderer {
     this.#status.erase();
     this.#output.write(`${line}\n`);
     this.#status.refresh();
+  }
+
+  /**
+   * Writes one line *without* ending the turn it lands in the middle of.
+   *
+   * {@link line}'s mid-turn counterpart, and the difference is the whole
+   * point: the REPL's own notices normally arrive between turns, so `line`
+   * takes the status block down before writing. A notice about the turn that
+   * is still running ("queued — runs after this turn") must leave the block
+   * exactly where it is, spinner and all, and this writes through the same
+   * erase/print/repaint discipline to put it back.
+   */
+  interject(text: string): void {
+    this.#write(text);
+  }
+
+  /**
+   * The line the user is typing into this turn changed: repaint the block
+   * that is carrying it.
+   *
+   * Called on every mid-turn keystroke. Three cases, all of them here rather
+   * than at the call site because they are about what is on screen: the block
+   * is up and simply needs redrawing; the block was stopped by streamed text
+   * and has to be started again so the typed line has a row to live on; or the
+   * line has just been sent, and whatever was held back while they typed can
+   * finally be printed.
+   */
+  pendingChanged(): void {
+    if (!this.#inTurn) return;
+    if (this.#pending?.() === undefined) {
+      this.#release();
+      return;
+    }
+    if (this.#status.running) {
+      this.#status.refresh();
+      return;
+    }
+    // A streamed line is open: end its row first, or the block would be
+    // painted straight over the text the model just produced.
+    this.#endStream();
+    this.#status.start(THINKING_LABEL);
+  }
+
+  /**
+   * Whether streamed text should wait rather than be printed.
+   *
+   * It waits while the user is mid-sentence, because the two want the same
+   * row: text arriving without a newline leaves the cursor inside a line the
+   * status block would otherwise erase from underneath it. Holding it is the
+   * one arrangement in which the answer and the line being typed both stay
+   * legible — the answer simply arrives in a burst when the line is sent.
+   */
+  #hold(): boolean {
+    if (this.#pending === undefined) return false;
+    if (this.#held.length >= MAX_HELD_CHARS) return false;
+    return this.#pending() !== undefined;
+  }
+
+  /** Prints whatever {@link #hold} kept back, if anything. */
+  #release(): void {
+    if (this.#held === "") return;
+    const text = this.#held;
+    this.#held = "";
+    this.#emitStream(text);
   }
 
   /**
@@ -361,6 +452,20 @@ export class TextRenderer implements Renderer {
   /** Appends streamed assistant text, with no line terminator of its own. */
   #stream(text: string): void {
     if (text === "") return;
+    if (this.#hold()) {
+      this.#held += text;
+      // Still counts as streamed: the turn's whole text must not be printed a
+      // second time when it completes just because this chunk is waiting.
+      this.#streamed = true;
+      return;
+    }
+    this.#emitStream(`${this.#held}${text}`);
+    this.#held = "";
+  }
+
+  /** The write half of {@link #stream}, shared with {@link #release}. */
+  #emitStream(text: string): void {
+    if (text === "") return;
     // Text on screen *is* the progress report; a spinner next to it is noise.
     this.#status.stop();
     this.#output.write(text);
@@ -370,6 +475,9 @@ export class TextRenderer implements Renderer {
 
   /** Terminates an open streamed line, if there is one. */
   #endStream(): void {
+    // Anything held back for a line being typed goes out first: it belongs
+    // *inside* the row about to be closed, not after it.
+    this.#release();
     if (!this.#streaming) return;
     this.#streaming = false;
     this.#output.write("\n");

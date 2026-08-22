@@ -7,6 +7,7 @@ import {
   COMMAND_MENU_MAX_ROWS,
   CONTINUATION_PROMPT,
   commandMenuToken,
+  composePendingRow,
   createInputManager,
   filterCommandMenu,
   flushAssembly,
@@ -1331,5 +1332,227 @@ describe("InputManager band", () => {
       expect(io.output.text).not.toContain("> hello");
       manager.close();
     }
+  });
+});
+
+// --- typing while a turn runs ------------------------------------------------
+
+describe("composePendingRow", () => {
+  it("marks the cursor's position inside the line", () => {
+    expect(composePendingRow("abcd", 2)).toBe("> ab▏cd");
+  });
+
+  it("puts the caret at the end when the cursor is past it", () => {
+    expect(composePendingRow("abcd", 99)).toBe("> abcd▏");
+  });
+
+  it("wears the same marker a sent message wears in the transcript", () => {
+    expect(composePendingRow("hi", 0).startsWith("> ")).toBe(true);
+  });
+});
+
+describe("InputManager.captureWhileBusy", () => {
+  it("catches a line typed mid-turn instead of dropping it", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+    const caught: string[] = [];
+
+    const end = manager.captureWhileBusy((line) => caught.push(line));
+    input.write("check the tests too\n");
+    await tick(10);
+
+    expect(caught).toEqual(["check the tests too"]);
+    end();
+    manager.close();
+  });
+
+  it("drops the line as before when no capture is open", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+    const caught: string[] = [];
+    manager.captureWhileBusy((line) => caught.push(line))();
+
+    input.write("nobody is listening\n");
+    await tick(10);
+
+    expect(caught).toEqual([]);
+    manager.close();
+  });
+
+  it("catches every line of a burst, in order", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+    const caught: string[] = [];
+
+    manager.captureWhileBusy((line) => caught.push(line));
+    input.write("first\nsecond\n");
+    await tick(10);
+
+    expect(caught).toEqual(["first", "second"]);
+    manager.close();
+  });
+
+  it("skips a bare Enter", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+    const caught: string[] = [];
+
+    manager.captureWhileBusy((line) => caught.push(line));
+    input.write("\n   \n");
+    await tick(10);
+
+    expect(caught).toEqual([]);
+    manager.close();
+  });
+
+  it("records a captured line in the session's history", async () => {
+    const { input, output } = makeIo();
+    const appended: string[] = [];
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      onHistoryAppend: (entry) => appended.push(entry),
+    });
+
+    manager.captureWhileBusy(() => undefined);
+    input.write("and the docs\n");
+    await tick(10);
+
+    expect(appended).toEqual(["and the docs"]);
+    manager.close();
+  });
+
+  it("echoes nothing while the capture is open", async () => {
+    const io = makeTtyIo();
+    const manager = createInputManager({
+      input: io.input,
+      output: io.output,
+      pasteWindowMs: 5,
+      band: createBandDecor(createStyles(true)),
+    });
+
+    manager.captureWhileBusy(() => undefined);
+    io.output.chunks.length = 0;
+    io.input.write("secret");
+    await tick(10);
+
+    expect(io.output.text).toBe("");
+    manager.close();
+  });
+
+  it("offers the line being typed as a row to paint, and takes it back on Enter", async () => {
+    const { input, output } = makeIo();
+    const changes: string[] = [];
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      onPendingChange: () => {
+        changes.push(manager.pendingRow() ?? "(none)");
+      },
+    });
+
+    manager.captureWhileBusy(() => undefined);
+    expect(manager.pendingRow()).toBeUndefined();
+    input.write("ab");
+    await tick(10);
+    expect(manager.pendingRow()).toBe("> ab▏");
+
+    input.write("\n");
+    await tick(10);
+    expect(manager.pendingRow()).toBeUndefined();
+    expect(changes.at(-1)).toBe("(none)");
+
+    manager.close();
+  });
+
+  it("shows no pending row once the capture is closed", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    const end = manager.captureWhileBusy(() => undefined);
+    input.write("half a thought");
+    await tick(10);
+    expect(manager.pendingRow()).toBe("> half a thought▏");
+
+    end();
+    expect(manager.pendingRow()).toBeUndefined();
+    manager.close();
+  });
+
+  it("leaves a half-typed line in the editor for the next prompt", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    const end = manager.captureWhileBusy(() => undefined);
+    input.write("half a thought");
+    await tick(10);
+    end();
+
+    const result = manager.readMessage("> ");
+    input.write(", finished\n");
+    await expect(result).resolves.toBe("half a thought, finished");
+
+    manager.close();
+  });
+
+  it("throws to open a second capture over the first", () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    manager.captureWhileBusy(() => undefined);
+    expect(() => manager.captureWhileBusy(() => undefined)).toThrow(
+      /already open/,
+    );
+
+    manager.close();
+  });
+
+  it("abandons the half-typed line on Ctrl-C, and still cancels the turn", async () => {
+    const { input, output } = makeIo();
+    let idleCalls = 0;
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      onIdleSigint: () => {
+        idleCalls += 1;
+      },
+    });
+
+    manager.captureWhileBusy(() => undefined);
+    input.write("never mind");
+    await tick(10);
+    input.write(CTRL_C);
+    await tick(10);
+
+    expect(idleCalls).toBe(1);
+    expect(manager.pendingRow()).toBeUndefined();
+    manager.close();
+  });
+
+  it("hands the editor to a permission question opened during the same turn", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+    const caught: string[] = [];
+
+    manager.captureWhileBusy((line) => caught.push(line));
+    input.write("steering this");
+    await tick(10);
+
+    const answer = manager.question("allow? [y/n] ");
+    // The fragment goes with the question: one editor, and the question is
+    // the thing with a turn waiting on it.
+    expect(manager.pendingRow()).toBeUndefined();
+    output.chunks.length = 0;
+    input.write("y\n");
+    await expect(answer).resolves.toBe("y");
+    // Echo is back on for the answer — a question nobody can see is worse
+    // than no question at all.
+    expect(output.text).toContain("y");
+    expect(caught).toEqual([]);
+
+    manager.close();
   });
 });

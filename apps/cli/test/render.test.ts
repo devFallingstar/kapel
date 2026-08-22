@@ -1143,3 +1143,103 @@ describe("cost attribution formatting", () => {
     ]);
   });
 });
+
+// --- typing into the running turn -------------------------------------------
+
+/**
+ * A renderer over a fake TTY whose status block can be told what the user is
+ * typing, the way `runInteractive` wires the `InputManager` into it.
+ */
+function steerableRenderer(pending: { row: string | undefined }): {
+  renderer: TextRenderer;
+  stream: TtyStream;
+} {
+  const stream = new TtyStream();
+  const status = new StatusLine({
+    output: stream as unknown as NodeJS.WritableStream & { isTTY?: boolean },
+    tty: true,
+    now: () => 0,
+    ticker: () => () => undefined,
+    pending: () => pending.row,
+  });
+  return {
+    renderer: new TextRenderer(stream as unknown as NodeJS.WritableStream, {
+      status,
+      pending: () => pending.row,
+    }),
+    stream,
+  };
+}
+
+describe("TextRenderer — typing into the running turn", () => {
+  it("interjects a notice without taking the turn's status down", () => {
+    const pending = { row: undefined as string | undefined };
+    const { renderer: r, stream } = steerableRenderer(pending);
+    r.emit(loopEvent("chat.turn.started", { turn: 1 }));
+
+    stream.chunks.length = 0;
+    r.interject("→ queued — runs after this turn");
+
+    const text = stream.chunks.join("");
+    expect(text).toContain("→ queued — runs after this turn");
+    // Repainted afterwards: the turn is still running, and the spinner is
+    // still the thing showing that it is.
+    expect(text.indexOf("thinking")).toBeGreaterThan(text.indexOf("→ queued"));
+  });
+
+  it("holds streamed text while a line is being typed, and releases it when the line is sent", () => {
+    const pending = { row: "> wait" as string | undefined };
+    const { renderer: r, stream } = steerableRenderer(pending);
+    r.emit(loopEvent("chat.turn.started", { turn: 1 }));
+
+    stream.chunks.length = 0;
+    r.emit(delta("Hello, "));
+    r.emit(delta("world."));
+    expect(stream.chunks.join("")).not.toContain("Hello");
+
+    pending.row = undefined;
+    r.pendingChanged();
+    expect(stream.chunks.join("")).toContain("Hello, world.");
+  });
+
+  it("lets held text through once it has grown past the bound", () => {
+    const pending = { row: "> wait" as string | undefined };
+    const { renderer: r, stream } = steerableRenderer(pending);
+    r.emit(loopEvent("chat.turn.started", { turn: 1 }));
+
+    stream.chunks.length = 0;
+    r.emit(delta("x".repeat(4001)));
+    expect(stream.chunks.join("")).not.toContain("x");
+    r.emit(delta("y"));
+    expect(stream.chunks.join("")).toContain(`${"x".repeat(4001)}y`);
+  });
+
+  it("does not hold anything for a turn nobody is typing into", () => {
+    const pending = { row: undefined as string | undefined };
+    const { renderer: r, stream } = steerableRenderer(pending);
+    r.emit(loopEvent("chat.turn.started", { turn: 1 }));
+
+    stream.chunks.length = 0;
+    r.emit(delta("Hello."));
+    expect(stream.chunks.join("")).toContain("Hello.");
+  });
+
+  it("prints whatever was held when the turn ends", () => {
+    const pending = { row: "> wait" as string | undefined };
+    const { renderer: r, stream } = steerableRenderer(pending);
+    r.emit(loopEvent("chat.turn.started", { turn: 1 }));
+    r.emit(delta("Hello."));
+
+    stream.chunks.length = 0;
+    r.emit(loopEvent("chat.turn.completed", { turn: 1, status: "success" }));
+    expect(stream.chunks.join("")).toContain("Hello.");
+  });
+
+  it("ignores a keystroke outside a turn", () => {
+    const pending = { row: "> typing" as string | undefined };
+    const { renderer: r, stream } = steerableRenderer(pending);
+
+    r.pendingChanged();
+    expect(stream.chunks).toEqual([]);
+  });
+});

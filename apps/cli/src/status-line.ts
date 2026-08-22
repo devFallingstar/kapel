@@ -37,6 +37,20 @@
  * cursor is walked back up to it, so the next erase starts where this paint
  * did, and the whole band moves down the screen as the transcript grows
  * without a single absolute cursor address being written.
+ *
+ * A fourth row joins them while the user types into the running turn:
+ *
+ * ```
+ *   ───────────────────────────
+ *   ⠹ thinking 4s · 1 queued
+ *   > and check the tests too▏
+ *   ───────────────────────────
+ * ```
+ *
+ * That row is drawn here rather than echoed by `readline` for the same reason
+ * everything else in the block is: these rows have exactly one painter, and a
+ * second one writing into them a few times a second is how a status line and a
+ * line being typed turn into a smear. See {@link StatusLineOptions.pending}.
  */
 
 import type { BandDecor } from "./band.js";
@@ -109,6 +123,27 @@ export interface StatusLineOptions {
    * `kapel run` summary or an orchestration log has no band to be part of.
    */
   readonly frame?: BandDecor;
+  /**
+   * The line the user is typing *into* the running turn, as a row of text
+   * (see `composePendingRow` in `input.ts`), or `undefined` when they are not
+   * typing one.
+   *
+   * Mid-turn keystrokes are not echoed by `readline` — they would land on
+   * whichever row this block happens to be repainting — so the block shows
+   * them itself, as a fourth row inside the band. That keeps one painter in
+   * charge of these rows, which is the only arrangement in which a spinner
+   * and a line being typed can share them without fighting.
+   *
+   * Only ever drawn inside a {@link frame}: without one there is a single
+   * `\r`-erased row, and a second row would be one this line could not take
+   * back.
+   */
+  readonly pending?: () => string | undefined;
+  /**
+   * How many lines are waiting to run after this turn — the count `N queued`
+   * reports. Zero, or absent, drops the clause entirely.
+   */
+  readonly queued?: () => number;
 }
 
 function defaultTicker(tick: () => void): () => void {
@@ -134,13 +169,35 @@ export function formatStatus(
   label: string,
   elapsedMs: number,
   tokens?: number,
+  queued?: number,
 ): string {
   const seconds = Math.max(0, Math.floor(elapsedMs / 1000));
   const parts = [`${label} ${seconds}s`];
   if (tokens !== undefined && tokens > 0) {
     parts.push(`${formatTokenCount(tokens)} tokens`);
   }
+  // Last, because it is the only clause that is about the user rather than
+  // about the run: it is there to answer "did it take my line?", and it
+  // disappears the moment the answer stops mattering.
+  if (queued !== undefined && queued > 0) {
+    parts.push(`${queued} queued`);
+  }
   return parts.join(" · ");
+}
+
+/**
+ * Clips a row to the width the block may write, keeping its *end*.
+ *
+ * The status text is clipped from the front like every other line on screen,
+ * but the line being typed is not a line being read — the interesting end of
+ * it is the one under the caret, and a user whose sentence has outgrown the
+ * terminal needs to see what they are typing now, not how it started. The
+ * ellipsis says the rest is still there.
+ */
+export function clipToEnd(text: string, width: number): string {
+  const limit = Math.max(1, width);
+  if (text.length <= limit) return text;
+  return `…${text.slice(text.length - limit + 1)}`;
 }
 
 export class StatusLine {
@@ -152,6 +209,8 @@ export class StatusLine {
   readonly #ticker: (tick: () => void) => () => void;
   readonly #styles: Styles;
   readonly #band: BandDecor | undefined;
+  readonly #pending: (() => string | undefined) | undefined;
+  readonly #queued: (() => number) | undefined;
 
   #cancel: (() => void) | undefined;
   #label = "";
@@ -168,6 +227,8 @@ export class StatusLine {
     this.#ticker = options.ticker ?? defaultTicker;
     this.#styles = options.styles ?? stylesFor(this.#output);
     this.#band = options.frame;
+    this.#pending = options.pending;
+    this.#queued = options.queued;
   }
 
   /** Whether this line will ever paint anything — false off a TTY. */
@@ -244,11 +305,13 @@ export class StatusLine {
       this.#label,
       this.#now() - this.#startedAt,
       this.#tokens?.(),
+      this.#queued?.(),
     );
     const columns = this.#output.columns ?? DEFAULT_COLUMNS;
     // One column short of the edge: a line that exactly fills the terminal
     // wraps, and a wrapped line is one `\r` can no longer erase.
-    const text = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
+    const width = Math.max(1, columns - 1);
+    const text = `${frame} ${status}`.slice(0, width);
     const line = this.#styles.tool(text);
 
     const band = this.#band;
@@ -258,13 +321,18 @@ export class StatusLine {
       return;
     }
 
+    const pending = this.#pending?.();
+
     // `\r\n` rather than `ESC[B` between the rows: the two rows under the
     // first one may not exist yet, and a newline is the one thing that makes
     // the terminal scroll them into being. Whatever that scroll moved, it
     // moved the whole block with it, which is why the walk back up is
     // relative and lands where the paint started every time.
     const rule = band.rule(columns);
-    const rows = [rule, line, rule];
+    const rows =
+      pending === undefined
+        ? [rule, line, rule]
+        : [rule, line, this.#styles.user(clipToEnd(pending, width)), rule];
     const below = rows.length - 1;
     this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
     this.#painted = true;

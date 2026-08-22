@@ -3,6 +3,7 @@ import {
   type BandDecor,
   charWidth,
   DEFAULT_BAND_COLUMNS,
+  ECHO_MARKER,
   stripEscapes,
 } from "./band.js";
 import { PLAIN_STYLES, type Styles } from "./styles.js";
@@ -22,6 +23,14 @@ import { PLAIN_STYLES, type Styles } from "./styles.js";
  * unit-testable, no I/O) and a thin `InputManager` shell that drives one
  * `readline.Interface` with that reducer. The wiring task (a separate step)
  * adapts `InputManager` to `interactive.ts`'s `LineSource` shape.
+ *
+ * The interface is live between prompts as well as during them, which is what
+ * `captureWhileBusy` is for: the REPL is inside a turn for most of the time
+ * anyone is at the keyboard, and a line typed then used to reach a `line`
+ * event with nobody waiting for it and be dropped without a trace. It is now
+ * caught, unechoed, and painted by whoever owns the screen during a turn —
+ * see {@link gatedOutput} for why that is the arrangement rather than letting
+ * `readline` draw it where it stands.
  */
 
 // --- Pure line assembly ------------------------------------------------------
@@ -89,6 +98,85 @@ export function flushAssembly(state: AssemblyState): string | undefined {
 /** A recall-safe single-line form of a (possibly multiline) message. */
 export function historyEntryFor(message: string): string {
   return message.replace(/\n/g, " ").trim();
+}
+
+// --- Typing while a turn runs ------------------------------------------------
+
+/**
+ * The caret drawn into a mid-turn line, because the terminal's own one is not
+ * there to do it.
+ *
+ * A line typed while a turn is running is not echoed by `readline` at all (see
+ * {@link gatedOutput}) — it is painted, once per keystroke, as a row of the
+ * status band, and the real cursor stays parked where the band's painter left
+ * it. So the mark that says "your text goes in here" has to be a character
+ * like any other.
+ */
+const PENDING_CARET = "▏";
+
+/**
+ * The mid-turn line as one row of text: the same `> ` marker a sent message
+ * wears in the transcript, the buffer, and a caret where the cursor is.
+ *
+ * Pure, and separate from the painting, because everything worth asserting
+ * about the row is here: that the caret follows the cursor through an edit in
+ * the middle of the line, and that the marker matches the bar the line will
+ * become when it is finally sent.
+ */
+export function composePendingRow(text: string, cursor: number): string {
+  const at = Math.max(0, Math.min(cursor, text.length));
+  return `${ECHO_MARKER}${text.slice(0, at)}${PENDING_CARET}${text.slice(at)}`;
+}
+
+/**
+ * A view of `output` whose `write` can be switched off, for handing to
+ * `readline` instead of the real stream.
+ *
+ * This is how a line typed mid-turn stays out of the way of everything else on
+ * screen. `readline` echoes every keystroke straight to its output, at
+ * whatever row the cursor happens to be on — and mid-turn that row belongs to
+ * the status band, which is being repainted several times a second by an
+ * entirely different painter. The two cannot share it, and the fix that keeps
+ * one painter in charge is to take `readline`'s pen away: it still receives
+ * the keys, still maintains the buffer, the cursor and the history, and simply
+ * draws nothing while the band is up. The band draws the buffer instead.
+ *
+ * Muting is safe precisely because it is total. `readline`'s redraws are
+ * relative moves computed from its own model of where it last drew; letting
+ * half of them through would leave that model describing a screen that never
+ * happened. Muted, every one of them is discarded together, and the model is
+ * reconciled on the way out (see `resetLineModel`).
+ *
+ * Only `write` is intercepted. Every other property — `columns`, `rows`,
+ * `isTTY`, the `resize` listener `readline` attaches — is read from and
+ * applied to the real stream, so nothing about the terminal is faked; methods
+ * are bound to it rather than called through this view, so no code ever runs
+ * with a `this` that isn't the stream it was written for.
+ */
+export function gatedOutput<T extends object>(
+  output: T,
+  muted: () => boolean,
+): T {
+  return new Proxy(output, {
+    get(target, property) {
+      if (property === "write") {
+        return (...args: unknown[]): boolean => {
+          if (!muted()) {
+            return (
+              target as unknown as { write: (...a: unknown[]) => boolean }
+            ).write(...args);
+          }
+          // The callback is part of the contract even for a write that never
+          // happens: a caller waiting on it would otherwise wait forever.
+          const callback = args.find((arg) => typeof arg === "function");
+          if (typeof callback === "function") callback();
+          return true;
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 // --- The live slash-command menu ---------------------------------------------
@@ -367,6 +455,15 @@ export interface InputManagerOptions {
    * a fake TTY assert.
    */
   readonly band?: BandDecor;
+  /**
+   * Called on every keystroke that changes the line being typed *while a turn
+   * is running* — see {@link InputManager.captureWhileBusy}. That line is not
+   * echoed by `readline`; whoever owns the screen during a turn paints it, and
+   * this is how they learn it is time to repaint. Absent means the line is
+   * captured but never shown, which is what a caller with nothing to paint on
+   * (a test, a non-terminal stream) wants.
+   */
+  readonly onPendingChange?: () => void;
 }
 
 export interface InputManager {
@@ -374,6 +471,33 @@ export interface InputManager {
   readMessage(promptText: string): Promise<InputReadResult>;
   /** One-line sub-question (e.g. a permission y/N). Not coalesced or stored. */
   question(query: string): Promise<string | typeof INPUT_SIGINT | undefined>;
+  /**
+   * Catches lines typed while a turn is running, instead of dropping them.
+   *
+   * The prompt's read is not open during a turn — the REPL is inside
+   * `handleLine` and will not call {@link readMessage} again until it returns
+   * — so a line Entered mid-turn used to reach a `line` event with nobody
+   * waiting for it and simply vanish. This is the seam that catches it: while
+   * a capture is open every completed line goes to `onLine` (trimmed, empties
+   * skipped), the keystrokes that composed it are not echoed, and the buffer
+   * is offered to a painter through {@link pendingRow}.
+   *
+   * Deliberately *not* a second {@link readMessage}: there is no promise to
+   * resolve, no band to open, no multiline assembly and no paste window. A
+   * turn may produce any number of lines or none, and each one is handed over
+   * the moment it lands.
+   *
+   * @returns the closer for this capture. Idempotent; a buffer half-typed when
+   * it runs is left in the editor, so the next prompt opens on it rather than
+   * throwing the user's words away.
+   */
+  captureWhileBusy(onLine: (line: string) => void): () => void;
+  /**
+   * The mid-turn line as a row of text to paint, or `undefined` when there is
+   * no capture open or nothing has been typed into it. See
+   * {@link composePendingRow}.
+   */
+  pendingRow(): string | undefined;
   /** Pause the interface and hand raw stdin to another consumer, then restore. */
   withSuspended<T>(fn: () => Promise<T>): Promise<T>;
   close(): void;
@@ -396,9 +520,27 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   const pasteWindowMs = options.pasteWindowMs ?? DEFAULT_PASTE_WINDOW_MS;
   const continuationPrompt = options.continuationPrompt ?? CONTINUATION_PROMPT;
 
+  /**
+   * The mid-turn capture, when one is open. Its presence is also what mutes
+   * `readline`'s echo — the two are the same condition, so they cannot drift.
+   */
+  let capture: { readonly onLine: (line: string) => void } | undefined;
+
+  /**
+   * Whether `readline` currently draws nothing.
+   *
+   * A capture mutes it — but a permission question opened *during* that same
+   * turn (the prompter shares this interface; see `createPrompter`) is
+   * `readline` being asked to run a real prompt, and a prompt nobody can see
+   * is worse than no prompt at all. So the question wins for as long as it is
+   * open, and the capture goes back to owning the editor afterwards.
+   */
+  const echoMuted = (): boolean =>
+    capture !== undefined && questionPending === undefined;
+
   const rl = readline.createInterface({
     input: options.input,
-    output: options.output,
+    output: gatedOutput(options.output, echoMuted),
     terminal: true,
     history: options.history ? [...options.history] : [],
     historySize: 200,
@@ -812,6 +954,12 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   };
 
   const onKeypress = (): void => {
+    // Mid-turn nothing under the input is ours to draw: the status band owns
+    // that part of the screen, and the line being typed is one of its rows.
+    if (capture !== undefined) {
+      options.onPendingChange?.();
+      return;
+    }
     renderBelow();
   };
   /**
@@ -822,16 +970,20 @@ export function createInputManager(options: InputManagerOptions): InputManager {
    * writes are measured against the width the terminal has *now*.
    */
   const onResize = (): void => {
+    if (capture !== undefined) {
+      options.onPendingChange?.();
+      return;
+    }
     renderBelow();
   };
 
-  if (menuEnabled || bandEnabled) {
-    // `readline` already turned this stream into a keypress emitter; our
-    // listener is simply the second one, so it sees the buffer *after*
-    // readline has applied the key.
-    options.input.on("keypress", onKeypress);
-    options.output.on("resize", onResize);
-  }
+  // `readline` already turned this stream into a keypress emitter; our
+  // listener is simply the second one, so it sees the buffer *after* readline
+  // has applied the key. Registered unconditionally — the band and the menu
+  // are terminal-only, but the mid-turn capture repaints on any stream, and
+  // everything downstream of here is a no-op when neither is switched on.
+  options.input.on("keypress", onKeypress);
+  options.output.on("resize", onResize);
 
   function clearCoalesceTimer(): void {
     if (readPending?.coalesceTimer !== undefined) {
@@ -857,6 +1009,46 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     if (history[0] !== entry) {
       history.unshift(entry);
     }
+  }
+
+  /**
+   * Hands a line typed during a turn to whoever opened the capture.
+   *
+   * Trimmed and non-empty only: a bare Enter while waiting is a nervous tic,
+   * not a message, and dispatching it would cost the user a turn. The line is
+   * recorded in the session's history like any other — it is something they
+   * typed and sent, and ↑ on the next prompt has to find it — while
+   * `readline`'s own history already holds it, put there by the same Enter.
+   */
+  function deliverCaptured(line: string): void {
+    const current = capture;
+    if (current === undefined) return;
+    const text = line.trim();
+    // The buffer is empty either way: tell the painter before anything else,
+    // so the row the line was on comes off screen with the line.
+    options.onPendingChange?.();
+    if (text === "") return;
+    const entry = historyEntryFor(text);
+    if (entry !== "") options.onHistoryAppend?.(entry);
+    current.onLine(text);
+  }
+
+  /**
+   * Puts `readline`'s idea of what it last drew back to "nothing", without
+   * touching the buffer.
+   *
+   * Needed exactly once: on the way out of a mid-turn capture. Every redraw
+   * `readline` performs starts by climbing back over the rows it believes it
+   * drew last time (`prevRows`) and clearing from there down — and while the
+   * capture was open it drew none of them, because they were all muted. Left
+   * as it is, the first real redraw afterwards would climb over rows of
+   * somebody else's transcript and erase them. Private-but-stable in the same
+   * way `.history` and `.clearLine` above are; a runtime without it is no
+   * worse off than before this existed.
+   */
+  function resetLineModel(): void {
+    const state = rl as unknown as { prevRows?: number };
+    if (typeof state.prevRows === "number") state.prevRows = 0;
   }
 
   function resolveRead(value: InputReadResult): void {
@@ -924,7 +1116,13 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       // pending, not to this listener — nothing to do here in that case.
       return;
     }
-    if (readPending === undefined) return;
+    if (readPending === undefined) {
+      // No read is open. Either a turn is running and something asked to
+      // catch what gets typed into it, or the line has nowhere to go and is
+      // dropped exactly as it always was.
+      deliverCaptured(line);
+      return;
+    }
 
     const action = reduceAssemblyLine(readPending.assembly, line);
     if (action.type === "continue") {
@@ -987,6 +1185,19 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       resolveRead(INPUT_SIGINT);
       return;
     }
+    if (capture !== undefined) {
+      // A turn is running and the user was part-way through a line for it.
+      // The Ctrl-C still means the turn — that is the one thing it has always
+      // meant here — but the half-typed line goes with it: they are changing
+      // course, and a fragment aimed at the run they just cancelled is not
+      // something to carry into the next prompt. Nothing is written: the
+      // buffer was never echoed, so there is no row to end.
+      abandonLine();
+      resetLineModel();
+      options.onPendingChange?.();
+      options.onIdleSigint?.();
+      return;
+    }
     // Nothing was being typed (a turn is running, and this Ctrl-C is meant for
     // it): no buffer to throw away, and no row to end — a newline here would
     // be a blank line in the middle of the assistant's output.
@@ -1000,10 +1211,8 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     // is the one close that climbs from where it stands rather than from the
     // row under it.
     closeBand(false);
-    if (menuEnabled || bandEnabled) {
-      options.input.removeListener("keypress", onKeypress);
-      options.output.removeListener("resize", onResize);
-    }
+    options.input.removeListener("keypress", onKeypress);
+    options.output.removeListener("resize", onResize);
     if (questionPending !== undefined) {
       const { resolve } = questionPending;
       questionPending = undefined;
@@ -1032,7 +1241,13 @@ export function createInputManager(options: InputManagerOptions): InputManager {
         // band opens around the read rather than being drawn into by it.
         openBand();
         rl.setPrompt(promptText);
-        rl.prompt();
+        // `preserveCursor`, because the buffer is not always empty: a line the
+        // user was still typing when the turn ended is still in the editor
+        // (see `captureWhileBusy`), and a prompt that reset the cursor to 0
+        // would leave them typing into the middle of their own sentence. On
+        // the ordinary path the buffer is empty and the cursor is 0 either
+        // way, so this changes nothing.
+        rl.prompt(true);
         // A fresh prompt starts on an empty buffer, but `/help` may have just
         // grown the command list: render so the state on screen is this
         // read's, not the last one's — and so the lower rule is there before
@@ -1041,10 +1256,50 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       });
     },
 
+    captureWhileBusy(onLine: (line: string) => void): () => void {
+      if (closed) return () => undefined;
+      if (capture !== undefined) {
+        throw new Error(
+          "InputManager.captureWhileBusy: a capture is already open",
+        );
+      }
+      const opened = { onLine };
+      capture = opened;
+      return () => {
+        if (capture !== opened) return;
+        capture = undefined;
+        // Whatever is still in the buffer was never drawn, and `readline`
+        // spent the capture redrawing into a muted stream: hand it back a
+        // clean slate to draw the next prompt onto. The text itself stays —
+        // the next `readMessage` opens on it, so a line the user was still
+        // composing when the turn ended survives into the prompt.
+        resetLineModel();
+        options.onPendingChange?.();
+      };
+    },
+
+    pendingRow(): string | undefined {
+      if (capture === undefined) return undefined;
+      // Whatever is in the buffer belongs to the question, not to the turn.
+      if (questionPending !== undefined) return undefined;
+      if (rl.line === "") return undefined;
+      return composePendingRow(rl.line, rl.cursor);
+    },
+
     question(query: string): Promise<string | typeof INPUT_SIGINT | undefined> {
       if (closed) return Promise.resolve(undefined);
       if (readPending !== undefined || questionPending !== undefined) {
         throw new Error("InputManager.question: a read is already in progress");
+      }
+      if (capture !== undefined) {
+        // A mid-turn line and a permission question are two things wanting the
+        // same one-line editor, and the question is the one with a turn
+        // waiting on its answer. The fragment goes — while the stream is still
+        // muted, so its abandoning writes nothing — and the question opens on
+        // an empty buffer instead of on somebody's half-typed sentence.
+        abandonLine();
+        resetLineModel();
+        options.onPendingChange?.();
       }
       return new Promise<string | typeof INPUT_SIGINT | undefined>(
         (resolve) => {
@@ -1092,7 +1347,7 @@ export function createInputManager(options: InputManagerOptions): InputManager {
           // is where the band goes now, and it is drawn from scratch there.
           openBand();
           rl.setPrompt(readPending.promptText);
-          rl.prompt();
+          rl.prompt(true);
           renderBelow();
         }
       }

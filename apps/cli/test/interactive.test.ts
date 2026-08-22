@@ -24,23 +24,30 @@ import type {
 import type { InputManager } from "../src/input.js";
 import { filterCommandMenu, INPUT_SIGINT } from "../src/input.js";
 import type {
+  DispatchResult,
   InteractiveController,
   InteractiveControllerDeps,
   InteractiveSession,
   InteractiveStart,
   LineSource,
+  ReadLineResult,
   SessionFactoryArgs,
 } from "../src/interactive.js";
 import {
   chatUsageBreakdown,
   createInteractiveController,
+  createLineQueue,
   createReplCompleter,
+  droppedQueueNotice,
   inputManagerLineSource,
   instructionsBannerLine,
   invalidSessionName,
+  midTurnNotice,
   openChatStore,
   replCommandMenuEntries,
+  replLoop,
   resolveStartSession,
+  routeMidTurnLine,
   SIGINT_LINE,
   shortId,
   slashCompleter,
@@ -51,9 +58,11 @@ import {
 import type { FileLister, MentionImageReader } from "../src/mention.js";
 import type { ProjectSetupState, SetupOutput } from "../src/onboard.js";
 import { createProjectSetup, setupAnnounceLine } from "../src/onboard.js";
+import { createPromptState } from "../src/prompter.js";
 import { TextRenderer } from "../src/render.js";
 import type { ResolvedModel } from "../src/run.js";
 import { runSessionsListCommand } from "../src/sessions.js";
+import { PLAIN_STYLES } from "../src/styles.js";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -108,6 +117,19 @@ class FakeSession implements InteractiveSession {
     this.#messages.push(...seed);
   }
 
+  /** Lines steered into a turn, in order. */
+  readonly injected: string[] = [];
+  /** The run ids `continueTurn` was called with, in order. */
+  readonly continued: string[] = [];
+  /**
+   * Whether a turn is treated as having ended before reading what was steered
+   * into it — the case that needs a follow-up turn. See
+   * `AgentChatSession.hasUnansweredInjection`.
+   */
+  injectionUnread = false;
+  #unanswered = false;
+  #sending = false;
+
   async send(
     instruction: string,
     context: { runId: string },
@@ -115,7 +137,12 @@ class FakeSession implements InteractiveSession {
   ): Promise<ChatTurnResult> {
     this.sends.push({ instruction, runId: context.runId });
     this.attachments.push(images ?? []);
-    this.onSend?.();
+    this.#sending = true;
+    try {
+      this.onSend?.();
+    } finally {
+      this.#sending = false;
+    }
     if (this.#messages.length === 0) {
       this.#messages.push({ role: "system", content: "system prompt" });
     }
@@ -125,6 +152,30 @@ class FakeSession implements InteractiveSession {
     return {
       status: this.status,
       summary: `handled ${instruction}`,
+      iterations: 1,
+      toolCalls: 0,
+    };
+  }
+
+  injectUserMessage(text: string): boolean {
+    if (!this.#sending) return false;
+    this.injected.push(text);
+    this.#messages.push({ role: "user", content: text });
+    this.#unanswered = this.injectionUnread;
+    return true;
+  }
+
+  hasUnansweredInjection(): boolean {
+    return this.#unanswered;
+  }
+
+  async continueTurn(context: { runId: string }): Promise<ChatTurnResult> {
+    this.continued.push(context.runId);
+    this.#unanswered = false;
+    this.#messages.push({ role: "assistant", content: "ok: continued" });
+    return {
+      status: this.status,
+      summary: "handled the steered line",
       iterations: 1,
       toolCalls: 0,
     };
@@ -2025,6 +2076,22 @@ class FakeInputManager implements InputManager {
     return undefined;
   }
 
+  /** The capture `replLoop` opens around every dispatch, if any. */
+  capture: ((line: string) => void) | undefined;
+  captures = 0;
+
+  captureWhileBusy(onLine: (line: string) => void): () => void {
+    this.capture = onLine;
+    this.captures += 1;
+    return () => {
+      this.capture = undefined;
+    };
+  }
+
+  pendingRow(): string | undefined {
+    return undefined;
+  }
+
   async withSuspended<T>(fn: () => Promise<T>): Promise<T> {
     return await fn();
   }
@@ -2534,5 +2601,405 @@ describe("chatUsageBreakdown", () => {
     const merged = chatUsageBreakdown(native, []);
     expect([...merged.keys()]).toEqual(["claude-sonnet-5"]);
     expect(native.size).toBe(1);
+  });
+});
+
+// --- typing while a turn runs ------------------------------------------------
+
+describe("routeMidTurnLine", () => {
+  it("offers prose to the running turn", () => {
+    expect(routeMidTurnLine("and the docs too", () => true)).toBe("steered");
+  });
+
+  it("never steers a slash command, however willing the session is", () => {
+    let asked = false;
+    const routing = routeMidTurnLine("/model gpt-mini", () => {
+      asked = true;
+      return true;
+    });
+    expect(routing).toBe("queued");
+    expect(asked).toBe(false);
+  });
+
+  it("queues prose the conversation will not take", () => {
+    expect(routeMidTurnLine("and the docs too", () => false)).toBe("queued");
+  });
+});
+
+describe("midTurnNotice / droppedQueueNotice", () => {
+  it("says which of the two things happened", () => {
+    expect(midTurnNotice("steered")).toBe(
+      "→ queued — will steer the running turn",
+    );
+    expect(midTurnNotice("queued")).toBe("→ queued — runs after this turn");
+  });
+
+  it("counts dropped lines, singular and plural", () => {
+    expect(droppedQueueNotice(1)).toBe("(1 queued line dropped)");
+    expect(droppedQueueNotice(3)).toBe("(3 queued lines dropped)");
+  });
+});
+
+describe("createLineQueue", () => {
+  it("is a FIFO that can say how deep it is and be emptied in one go", () => {
+    const queue = createLineQueue();
+    expect(queue.depth()).toBe(0);
+    expect(queue.shift()).toBeUndefined();
+
+    queue.push("one");
+    queue.push("two");
+    expect(queue.depth()).toBe(2);
+    expect(queue.shift()).toBe("one");
+    expect(queue.clear()).toBe(1);
+    expect(queue.depth()).toBe(0);
+  });
+});
+
+/** A line source replaying a script, exposing the capture `replLoop` opens. */
+class ScriptedLines implements LineSource {
+  readonly reads: ReadLineResult[];
+  capture: ((line: string) => void) | undefined;
+  captures = 0;
+  closed = false;
+
+  constructor(reads: readonly ReadLineResult[]) {
+    this.reads = [...reads];
+  }
+
+  async next(): Promise<ReadLineResult> {
+    if (this.reads.length === 0) return undefined;
+    return this.reads.shift();
+  }
+
+  captureWhileBusy(onLine: (line: string) => void): () => void {
+    this.capture = onLine;
+    this.captures += 1;
+    return () => {
+      this.capture = undefined;
+    };
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+interface ReplHarness {
+  readonly dispatched: string[];
+  readonly notes: string[];
+  readonly run: () => Promise<number>;
+  readonly lines: ScriptedLines;
+}
+
+/**
+ * `replLoop` over a stub controller: `handle` runs inside the turn, which is
+ * where a mid-turn line has to arrive from.
+ */
+function replHarness(options: {
+  reads: readonly ReadLineResult[];
+  handle?: (
+    line: string,
+    context: {
+      readonly signal: AbortSignal | undefined;
+      readonly type: (typed: string) => void;
+      readonly abort: () => void;
+    },
+  ) => void;
+  steer?: (text: string) => boolean;
+  source?: LineSource;
+}): ReplHarness {
+  const dispatched: string[] = [];
+  const notes: string[] = [];
+  const lines = new ScriptedLines(options.reads);
+  const source = options.source ?? lines;
+  const activeTurn: { current: AbortController | undefined } = {
+    current: undefined,
+  };
+
+  const controller = {
+    sessionId: () => "session-1",
+    title: () => "",
+    name: () => undefined,
+    modelAlias: () => "claude-sonnet-5",
+    backend: () => "native" as const,
+    session: () => ({}) as never,
+    banner: () => [],
+    handleLine: async (line: string, signal?: AbortSignal) => {
+      dispatched.push(line);
+      options.handle?.(line, {
+        signal,
+        type: (typed) => lines.capture?.(typed),
+        abort: () => activeTurn.current?.abort(),
+      });
+      return { output: [] } as DispatchResult;
+    },
+    steer: (text: string) => options.steer?.(text) ?? false,
+  } satisfies InteractiveController;
+
+  return {
+    dispatched,
+    notes,
+    lines,
+    run: () =>
+      replLoop({
+        controller,
+        lines: source,
+        promptState: createPromptState(),
+        promptText: "> ",
+        styles: PLAIN_STYLES,
+        activeTurn,
+        write: (line) => notes.push(line),
+      }),
+  };
+}
+
+describe("replLoop — lines typed while a turn runs", () => {
+  it("steers a plain line into the turn instead of queueing it", async () => {
+    const steered: string[] = [];
+    const harness = replHarness({
+      reads: ["fix the tests"],
+      handle: (_line, turn) => turn.type("and the docs too"),
+      steer: (text) => {
+        steered.push(text);
+        return true;
+      },
+    });
+
+    await harness.run();
+
+    expect(steered).toEqual(["and the docs too"]);
+    // Steered, so it is answered inside the turn it was typed into — nothing
+    // is dispatched a second time.
+    expect(harness.dispatched).toEqual(["fix the tests"]);
+    expect(harness.notes).toEqual(["→ queued — will steer the running turn"]);
+  });
+
+  it("queues a slash command typed mid-turn and runs it after", async () => {
+    const harness = replHarness({
+      reads: ["fix the tests"],
+      handle: (line, turn) => {
+        if (line === "fix the tests") turn.type("/model gpt-mini");
+      },
+      steer: () => true,
+    });
+
+    await harness.run();
+
+    expect(harness.dispatched).toEqual(["fix the tests", "/model gpt-mini"]);
+    expect(harness.notes).toEqual(["→ queued — runs after this turn"]);
+  });
+
+  it("queues a line the conversation cannot steer", async () => {
+    const harness = replHarness({
+      reads: ["run the build"],
+      handle: (line, turn) => {
+        if (line === "run the build") turn.type("actually, stop");
+      },
+      steer: () => false,
+    });
+
+    await harness.run();
+
+    expect(harness.dispatched).toEqual(["run the build", "actually, stop"]);
+  });
+
+  it("dispatches queued lines in the order they were typed", async () => {
+    const harness = replHarness({
+      reads: ["start"],
+      handle: (line, turn) => {
+        if (line !== "start") return;
+        turn.type("/undo");
+        turn.type("/usage");
+      },
+      steer: () => false,
+    });
+
+    await harness.run();
+
+    expect(harness.dispatched).toEqual(["start", "/undo", "/usage"]);
+  });
+
+  it("gives every dispatch, queued ones included, a capture of its own", async () => {
+    const harness = replHarness({
+      reads: ["start"],
+      handle: (line, turn) => {
+        if (line === "start") turn.type("/usage");
+      },
+      steer: () => false,
+    });
+
+    await harness.run();
+
+    expect(harness.lines.captures).toBe(2);
+    expect(harness.lines.capture).toBeUndefined();
+  });
+
+  it("drops the queue when the turn is cancelled", async () => {
+    const harness = replHarness({
+      reads: ["start"],
+      handle: (line, turn) => {
+        if (line !== "start") return;
+        turn.type("/usage");
+        turn.type("/undo");
+        turn.abort();
+      },
+      steer: () => false,
+    });
+
+    await harness.run();
+
+    expect(harness.dispatched).toEqual(["start"]);
+    expect(harness.notes.at(-1)).toBe("(2 queued lines dropped)");
+  });
+
+  it("stops draining the queue once a line asks to exit", async () => {
+    const dispatched: string[] = [];
+    const lines = new ScriptedLines(["start"]);
+    const controller = {
+      sessionId: () => "session-1",
+      title: () => "",
+      name: () => undefined,
+      modelAlias: () => "claude-sonnet-5",
+      backend: () => "native" as const,
+      session: () => ({}) as never,
+      banner: () => [],
+      handleLine: async (line: string) => {
+        dispatched.push(line);
+        if (line === "start") {
+          lines.capture?.("/exit");
+          lines.capture?.("/usage");
+        }
+        return {
+          output: [],
+          ...(line === "/exit" ? { effect: "exit" as const } : {}),
+        };
+      },
+      steer: () => false,
+    } satisfies InteractiveController;
+
+    await replLoop({
+      controller,
+      lines,
+      promptState: createPromptState(),
+      promptText: "> ",
+      styles: PLAIN_STYLES,
+      write: () => undefined,
+    });
+
+    expect(dispatched).toEqual(["start", "/exit"]);
+  });
+
+  it("leaves a source that cannot capture exactly as it was", async () => {
+    const dispatched: string[] = [];
+    const reads: ReadLineResult[] = ["one", "two"];
+    const source: LineSource = {
+      next: async () => (reads.length === 0 ? undefined : reads.shift()),
+      close: () => undefined,
+    };
+    const controller = {
+      sessionId: () => "session-1",
+      title: () => "",
+      name: () => undefined,
+      modelAlias: () => "claude-sonnet-5",
+      backend: () => "native" as const,
+      session: () => ({}) as never,
+      banner: () => [],
+      handleLine: async (line: string) => {
+        dispatched.push(line);
+        return { output: [] };
+      },
+      steer: () => false,
+    } satisfies InteractiveController;
+
+    await replLoop({
+      controller,
+      lines: source,
+      promptState: createPromptState(),
+      promptText: "> ",
+      styles: PLAIN_STYLES,
+      write: () => undefined,
+    });
+
+    expect(dispatched).toEqual(["one", "two"]);
+  });
+});
+
+describe("interactive controller — steering", () => {
+  it("refuses a steer when no turn is running", async () => {
+    const h = await harness();
+    expect(h.controller.steer("too early")).toBe(false);
+  });
+
+  it("hands a mid-turn line to the session running the turn", async () => {
+    const h = await harness();
+    h.session().onSend = () => {
+      h.controller.steer("and the docs too");
+    };
+
+    await h.controller.handleLine("fix the tests");
+
+    expect(h.session().injected).toEqual(["and the docs too"]);
+  });
+
+  it("runs a follow-up turn for a steered line the turn never read", async () => {
+    const h = await harness();
+    const session = h.session();
+    session.injectionUnread = true;
+    session.onSend = () => {
+      h.controller.steer("and the docs too");
+    };
+
+    await h.controller.handleLine("fix the tests");
+
+    // One continuation, and no second copy of the user's own words.
+    expect(session.continued).toEqual([h.controller.sessionId()]);
+    expect(session.sends.map((send) => send.instruction)).toEqual([
+      "fix the tests",
+    ]);
+    expect(
+      session.messages().filter((m) => m.content === "and the docs too"),
+    ).toHaveLength(1);
+  });
+
+  it("does not follow up when the turn read the steered line", async () => {
+    const h = await harness();
+    const session = h.session();
+    session.injectionUnread = false;
+    session.onSend = () => {
+      h.controller.steer("and the docs too");
+    };
+
+    await h.controller.handleLine("fix the tests");
+
+    expect(session.continued).toEqual([]);
+  });
+
+  it("does not follow up on a turn that was cancelled", async () => {
+    const h = await harness();
+    const session = h.session();
+    session.injectionUnread = true;
+    const turn = new AbortController();
+    session.onSend = () => {
+      h.controller.steer("and the docs too");
+      turn.abort();
+    };
+
+    await h.controller.handleLine("fix the tests", turn.signal);
+
+    expect(session.continued).toEqual([]);
+  });
+
+  it("does not follow up on a turn that failed", async () => {
+    const h = await harness();
+    const session = h.session();
+    session.status = "failed";
+    session.injectionUnread = true;
+    session.onSend = () => {
+      h.controller.steer("and the docs too");
+    };
+
+    await h.controller.handleLine("fix the tests");
+
+    expect(session.continued).toEqual([]);
   });
 });

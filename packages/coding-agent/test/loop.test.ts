@@ -197,6 +197,7 @@ describe("AgentLoop — plain text turns", () => {
       output: "Hello, world.",
       iterations: 1,
       toolCalls: 0,
+      requestedMessages: 2,
     });
   });
 

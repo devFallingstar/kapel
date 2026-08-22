@@ -186,6 +186,12 @@ export interface InteractiveSession {
   compactNow?(
     context: AgentLoopRunContext,
   ): Promise<{ elided: number; savedChars: number }>;
+  /** See {@link ChatLike.injectUserMessage}. */
+  injectUserMessage?(text: string): boolean;
+  /** See {@link ChatLike.hasUnansweredInjection}. */
+  hasUnansweredInjection?(): boolean;
+  /** See {@link ChatLike.continueTurn}. */
+  continueTurn?(context: AgentLoopRunContext): Promise<ChatTurnResult>;
 }
 
 /** What one turn reports back, for either kind of conversation. */
@@ -236,6 +242,29 @@ export interface ChatLike {
   compactNow?(
     context: AgentLoopRunContext,
   ): Promise<{ elided: number; savedChars: number }>;
+  /**
+   * Hands a line typed mid-turn to the turn already running, so the model
+   * reads it on that turn's next request. See
+   * `AgentChatSession.injectUserMessage`.
+   *
+   * The optionality is the feature detection: a delegated backend has none,
+   * because the external CLI owns the turn once it has been handed one and
+   * there is no live message array to append to. The REPL asks and queues the
+   * line instead when the answer is no — which is also the answer while no
+   * turn is running at all.
+   */
+  injectUserMessage?(text: string): boolean;
+  /**
+   * Whether an injected line is still waiting for a model request to carry it
+   * — see `AgentChatSession.hasUnansweredInjection`.
+   */
+  hasUnansweredInjection?(): boolean;
+  /**
+   * Runs one more turn over the history as it stands, appending no new user
+   * message — see `AgentChatSession.continueTurn`. What answers an injected
+   * line the turn ended without reading.
+   */
+  continueTurn?(context: AgentLoopRunContext): Promise<ChatTurnLike>;
 }
 
 /** Either shape a session factory may return. */
@@ -254,6 +283,30 @@ export function toChatLike(session: InteractiveSessionLike): ChatLike {
           compactNow: (context: AgentLoopRunContext) =>
             // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
             session.compactNow!(context),
+        }),
+    // Forwarded one by one rather than spread, so a session that cannot steer
+    // stays a session that cannot steer: the REPL feature-detects on the
+    // property being *there*, and an `undefined` under the key would answer
+    // the question wrongly.
+    ...(session.injectUserMessage === undefined
+      ? {}
+      : {
+          injectUserMessage: (text: string) =>
+            // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+            session.injectUserMessage!(text),
+        }),
+    ...(session.hasUnansweredInjection === undefined
+      ? {}
+      : {
+          // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+          hasUnansweredInjection: () => session.hasUnansweredInjection!(),
+        }),
+    ...(session.continueTurn === undefined
+      ? {}
+      : {
+          continueTurn: (context: AgentLoopRunContext) =>
+            // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+            session.continueTurn!(context),
         }),
   };
 }
@@ -759,6 +812,16 @@ export interface InteractiveController {
   /** The banner the shell prints before the first prompt. */
   banner(cwd: string): readonly string[];
   handleLine(line: string, signal?: AbortSignal): Promise<DispatchResult>;
+  /**
+   * Offers a line to the turn already running, rather than to the next one.
+   *
+   * Answers `false` — and does nothing — whenever the conversation cannot take
+   * one: no turn is in flight (a slash command is running, or the REPL is
+   * simply idle), or this conversation is delegated to an external CLI that
+   * owns the turn itself. The caller queues the line instead. See
+   * {@link ChatLike.injectUserMessage}.
+   */
+  steer(text: string): boolean;
 }
 
 interface SlashCommand {
@@ -1324,18 +1387,47 @@ export async function createInteractiveController(
     for (const notice of prepared.notices) emitNotice(notice);
 
     const before = deps.usage.totals();
+    const turnContext: AgentLoopRunContext = {
+      runId: sessionId,
+      workspacePath: deps.workspacePath,
+      ...(signal === undefined ? {} : { signal }),
+    };
     let result: ChatTurnLike | undefined;
     try {
       result = await chat.send(
         prepared.instruction,
-        {
-          runId: sessionId,
-          workspacePath: deps.workspacePath,
-          ...(signal === undefined ? {} : { signal }),
-        },
+        turnContext,
         prepared.images,
         prepared.imagePaths,
       );
+
+      // A line typed while this turn was running was appended straight into
+      // the live history, and the loop picks it up on its next request without
+      // being asked to (see `AgentChatSession.injectUserMessage`). The one
+      // case that needs anything from us is the turn that ended *before* its
+      // next request — the model answered in one shot — leaving the user's
+      // words in the history unread. Another pass over the same history is
+      // what answers them, and it appends nothing: their message is already
+      // in there, and sending it twice would show them their own words twice
+      // in every request from here on.
+      //
+      // Only after a successful turn, and only while nobody has cancelled:
+      // a failed or aborted turn is not a turn to press on from, and the
+      // injected line simply stays in history as context for whatever the
+      // user says next.
+      //
+      // A loop rather than one pass, because the continuation is a turn like
+      // any other and can be steered in its turn. It ends because a
+      // continuation that succeeds has by definition made a request carrying
+      // the whole history up to the line it is answering.
+      while (
+        signal?.aborted !== true &&
+        result.status === "success" &&
+        chat.hasUnansweredInjection?.() === true &&
+        chat.continueTurn !== undefined
+      ) {
+        result = await chat.continueTurn(turnContext);
+      }
     } catch (error) {
       emitError(`error: ${errorText(error)}`);
     }
@@ -2146,6 +2238,10 @@ export async function createInteractiveController(
       if (trimmed.startsWith("/")) return await handleSlash(trimmed, signal);
       return await handleMessage(trimmed, signal);
     },
+    // Read through `chat` at call time, not captured: `/new`, `/model` and
+    // `/config` all replace the conversation under this controller, and a
+    // line meant for the turn running now must reach the session running it.
+    steer: (text) => chat.injectUserMessage?.(text) === true,
   };
 }
 
@@ -2222,7 +2318,97 @@ export type ReadLineResult = string | undefined | typeof SIGINT_LINE;
 /** Where the REPL's lines come from: a terminal, or whatever was piped in. */
 export interface LineSource {
   next(promptText: string): Promise<ReadLineResult>;
+  /**
+   * Catches lines typed while a turn is running — see
+   * {@link InputManager.captureWhileBusy}, which is the whole of the terminal
+   * implementation. Returns the closer for the capture.
+   *
+   * Optional because the piped source has nothing to add: a pipe delivers its
+   * whole script at once and already queues what it has not been asked for
+   * yet, so `kapel < script.txt` behaves exactly as it always did.
+   */
+  captureWhileBusy?(onLine: (line: string) => void): () => void;
   close(): void;
+}
+
+// --- Typing while a turn runs -----------------------------------------------
+
+/**
+ * What became of a line typed mid-turn.
+ *
+ * Two outcomes, and the difference is whether the model gets to read it during
+ * the turn that is already running or after it: `steered` means it went into
+ * the live conversation and the loop will pick it up on its next request;
+ * `queued` means it is waiting its turn in the REPL.
+ */
+export type MidTurnRouting = "steered" | "queued";
+
+/**
+ * Decides where a line typed during a turn goes.
+ *
+ * A slash command is never steered, whatever the conversation can do. `/model`
+ * and `/new` act on the REPL rather than on the conversation, `/undo` acts on
+ * the working tree the turn is still editing, and every one of them is written
+ * as something that happens *between* turns — so they queue, and run in the
+ * order they were typed once the turn is over. Only prose is offered to the
+ * model, because only prose is something the model can act on.
+ *
+ * Pure: `steer` is asked, and its answer (no session, a delegated backend, a
+ * slash command already running) decides the rest.
+ */
+export function routeMidTurnLine(
+  text: string,
+  steer: (text: string) => boolean,
+): MidTurnRouting {
+  if (text.startsWith("/")) return "queued";
+  return steer(text) ? "steered" : "queued";
+}
+
+/** The one-line acknowledgement a mid-turn line gets, so it never looks lost. */
+export function midTurnNotice(routing: MidTurnRouting): string {
+  return routing === "steered"
+    ? "→ queued — will steer the running turn"
+    : "→ queued — runs after this turn";
+}
+
+/** What the REPL says about lines it is throwing away after a Ctrl-C. */
+export function droppedQueueNotice(count: number): string {
+  return `(${count} queued line${count === 1 ? "" : "s"} dropped)`;
+}
+
+/**
+ * The lines typed during a turn that are still waiting to run.
+ *
+ * An object rather than a bare array because two very different things read
+ * it: the REPL drains it, and the status line counts it (`3 queued`) several
+ * times a second from inside the renderer, which was built long before the
+ * loop that owns the queue exists. One object handed to both is what keeps the
+ * number on screen and the number about to be dispatched the same number.
+ */
+export interface LineQueue {
+  /** How many lines are waiting. */
+  depth(): number;
+  push(line: string): void;
+  /** The oldest waiting line, or `undefined` when there are none. */
+  shift(): string | undefined;
+  /** Throws the queue away, answering how many lines went with it. */
+  clear(): number;
+}
+
+export function createLineQueue(): LineQueue {
+  const lines: string[] = [];
+  return {
+    depth: () => lines.length,
+    push: (line) => {
+      lines.push(line);
+    },
+    shift: () => lines.shift(),
+    clear: () => {
+      const dropped = lines.length;
+      lines.length = 0;
+      return dropped;
+    },
+  };
 }
 
 /**
@@ -2243,6 +2429,7 @@ export function inputManagerLineSource(manager: InputManager): LineSource {
       const result = await manager.readMessage(promptText);
       return result === INPUT_SIGINT ? SIGINT_LINE : result;
     },
+    captureWhileBusy: (onLine) => manager.captureWhileBusy(onLine),
     close: () => manager.close(),
   };
 }
@@ -2676,6 +2863,13 @@ export async function runInteractive(
       ? createBandDecor(styles)
       : undefined;
 
+    /**
+     * The lines typed during a turn that have not run yet — read by the
+     * status line (`3 queued`) and drained by `replLoop`, which is why it is
+     * built here, above both of them.
+     */
+    const queue = createLineQueue();
+
     // The renderer owns everything the turn puts on screen: streamed assistant
     // text, tool lines, and the band that fills the silence in between.
     const renderer = new TextRenderer(process.stdout, {
@@ -2687,6 +2881,12 @@ export async function runInteractive(
       },
       // A permission question owns the screen while it waits for an answer.
       suspended: () => promptState.active,
+      // The line being typed into the running turn. Read off the manager
+      // rather than handed to it, because the manager cannot exist yet: it is
+      // built below, out of a completer and a prompter this renderer is
+      // already part of.
+      pending: () => inputManager?.pendingRow(),
+      queued: () => queue.depth(),
     });
 
     // The turn currently in flight, if any — a persistent `InputManager`
@@ -2740,6 +2940,12 @@ export async function runInteractive(
           // keystroke so a command file added mid-session shows up as soon as
           // the next `/help` has seen it.
           commandMenu: () => commandMenu.current,
+          // A mid-turn keystroke is not echoed by `readline` (see
+          // `gatedOutput`): the status band paints that line, and this is how
+          // it hears that there is something new to paint.
+          onPendingChange: () => {
+            renderer.pendingChanged();
+          },
           styles,
           ...(band === undefined ? {} : { band }),
         })
@@ -3164,6 +3370,14 @@ export async function runInteractive(
         promptText: band === undefined ? promptMarker(styles) : BAND_PROMPT,
         styles,
         activeTurn,
+        queue,
+        // Mid-turn notices go through the renderer, not the console: the
+        // status band is on screen while they are written, and only the
+        // renderer knows how to take those rows back and put them straight
+        // back afterwards.
+        write: (line) => {
+          renderer.interject(line);
+        },
       });
     } finally {
       lineSource.close();
@@ -3185,7 +3399,7 @@ export async function runInteractive(
   }
 }
 
-interface ReplLoopArgs {
+export interface ReplLoopArgs {
   readonly controller: InteractiveController;
   readonly lines: LineSource;
   readonly promptState: PromptState;
@@ -3199,6 +3413,18 @@ interface ReplLoopArgs {
    * which has no `InputManager` and relies on the real `SIGINT` below.
    */
   readonly activeTurn?: { current: AbortController | undefined };
+  /**
+   * Where the loop's own mid-turn notices go. `console.log` by default; the
+   * terminal shell passes the renderer's `interject`, which is the only thing
+   * that knows how to take the screen back from a running status band and
+   * hand it straight back afterwards.
+   */
+  readonly write?: (line: string) => void;
+  /**
+   * The mid-turn queue, shared with whatever is showing its depth. A private
+   * one is made when nobody is watching. See {@link createLineQueue}.
+   */
+  readonly queue?: LineQueue;
 }
 
 /**
@@ -3215,11 +3441,66 @@ interface ReplLoopArgs {
  * below handles it directly; a TTY `InputManager` never releases raw mode
  * mid-turn, so no real signal arrives and `activeTurn` is how its
  * `onIdleSigint` reaches this same abort instead.
+ *
+ * ## Lines typed during a turn
+ *
+ * The prompt's read is closed for as long as `handleLine` is running, so a
+ * line Entered mid-turn is caught by a capture on the line source instead (see
+ * {@link LineSource.captureWhileBusy}) and routed by
+ * {@link routeMidTurnLine}: prose is offered to the running turn, and anything
+ * the conversation will not take — a slash command, a delegated backend, a
+ * turn that is not a model turn at all — waits in the queue and is dispatched
+ * here, in the order it was typed, before the prompt comes back.
+ *
+ * A queued line is dispatched exactly like a typed one: its own abort
+ * controller, its own capture, so a run of them can be interrupted one at a
+ * time. And a Ctrl-C throws the rest of the queue away, which is the one
+ * choice here worth defending — someone who cancels a turn is changing course,
+ * and having three lines they typed a minute ago run anyway, against a
+ * workspace that is no longer in the state they typed them for, is the
+ * opposite of what cancelling means. (A line already *steered* into the turn
+ * is a different thing and stays: it is in the conversation's history, where
+ * it reads as context for whatever they say next.)
  */
-async function replLoop(args: ReplLoopArgs): Promise<number> {
+export async function replLoop(args: ReplLoopArgs): Promise<number> {
   const { controller, lines, promptState, promptText, styles, activeTurn } =
     args;
+  const queue = args.queue ?? createLineQueue();
+  const note =
+    args.write ??
+    ((line: string): void => {
+      console.log(line);
+    });
   let armed = false;
+
+  /** Where a line typed while `dispatch` is running goes. */
+  const onMidTurnLine = (text: string): void => {
+    const routing = routeMidTurnLine(text, (line) => controller.steer(line));
+    if (routing === "queued") queue.push(text);
+    note(styles.notice(midTurnNotice(routing)));
+  };
+
+  /** Runs one line to completion, under an abort controller of its own. */
+  const dispatch = async (line: string): Promise<DispatchResult> => {
+    const turn = new AbortController();
+    if (activeTurn !== undefined) activeTurn.current = turn;
+    const onSigint = (): void => {
+      if (promptState.active) return;
+      turn.abort();
+    };
+    process.on("SIGINT", onSigint);
+    const endCapture = lines.captureWhileBusy?.(onMidTurnLine);
+    try {
+      return await controller.handleLine(line, turn.signal);
+    } finally {
+      endCapture?.();
+      process.off("SIGINT", onSigint);
+      if (activeTurn !== undefined) activeTurn.current = undefined;
+      if (turn.signal.aborted && queue.depth() > 0) {
+        note(styles.notice(droppedQueueNotice(queue.clear())));
+      }
+    }
+  };
 
   for (;;) {
     // Nothing is drawn here: the band opens and closes around each read inside
@@ -3242,22 +3523,15 @@ async function replLoop(args: ReplLoopArgs): Promise<number> {
     }
     armed = false;
 
-    const turn = new AbortController();
-    if (activeTurn !== undefined) activeTurn.current = turn;
-    const onSigint = (): void => {
-      if (promptState.active) return;
-      turn.abort();
-    };
-    process.on("SIGINT", onSigint);
-    let result: DispatchResult;
-    try {
-      result = await controller.handleLine(line, turn.signal);
-    } finally {
-      process.off("SIGINT", onSigint);
-      if (activeTurn !== undefined) activeTurn.current = undefined;
+    // The line just read, then everything typed while it was running, then
+    // everything typed while *those* were running — the prompt comes back only
+    // once nobody is waiting.
+    let next: string | undefined = line;
+    while (next !== undefined) {
+      const result = await dispatch(next);
+      if (result.effect === "exit") return 0;
+      next = queue.shift();
     }
-
-    if (result.effect === "exit") return 0;
   }
 }
 
