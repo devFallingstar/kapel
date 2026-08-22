@@ -49,6 +49,7 @@ import {
   delegatedModelIdentity,
 } from "./backend.js";
 import type { BandDecor } from "./band.js";
+import type { Notifier } from "./notify.js";
 import type {
   DelegatedPlannerFactory,
   OrchestrationOutput,
@@ -552,6 +553,14 @@ export interface RunOrchestrateDeps extends PreparePlanDeps {
   readonly tuiFactory?: TuiFactory;
   /** How the caller is already painting the screen this run will share. */
   readonly presentation?: OrchestratePresentation;
+  /**
+   * Rung once the run's final summary has been printed — success or failure,
+   * always (never conditioned on how long the run took: see `notify.ts`).
+   * Shared by `/orchestrate` and `/resume-run`, in the REPL and standalone,
+   * because both funnel through {@link executePreparedPlan}'s one completion
+   * seam. Absent means no attention signal.
+   */
+  readonly notify?: Notifier;
 }
 
 function jsonLine(output: OrchestrationOutput, value: unknown): void {
@@ -1241,7 +1250,7 @@ export async function executePreparedPlan(
   // what survives in the scrollback, so it must not land inside a live frame.
   await closeTui(tui, outcomeLine(tasks));
 
-  return renderRunSummary(runId, tasks, usage, output, options.json, {
+  const exitCode = renderRunSummary(runId, tasks, usage, output, options.json, {
     objective: request.objective,
     policy,
     project: request.project,
@@ -1249,6 +1258,14 @@ export async function executePreparedPlan(
       ? {}
       : { injectedReviews: request.injectedReviews }),
   });
+  // After the summary is printed, not before: the notification is a comment
+  // on output that already exists, never a race with it. Unconditional on
+  // outcome and on how long the run took — see `RunOrchestrateDeps.notify`.
+  // Never under `--json`, TTY or not: that stream is something else's parser,
+  // and a raw BEL/OSC 9 pair has no business inside a line it has to read as
+  // JSON.
+  if (!options.json) deps.notify?.runFinished(outcomeLine(tasks));
+  return exitCode;
 }
 
 /**

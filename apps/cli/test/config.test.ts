@@ -539,6 +539,78 @@ describe("saveKapelConfig - permission preservation", () => {
   });
 });
 
+// --- the machine-level `notify` setting --------------------------------------
+
+describe("loadKapelConfig - notify setting", () => {
+  it("round-trips each valid value", async () => {
+    for (const notify of ["off", "bell", "osc9", "auto"] as const) {
+      await writeRawConfig(kapelConfigPath(env), { notify });
+      expect((await loadKapelConfig(env))?.notify).toBe(notify);
+    }
+  });
+
+  it("omits the key entirely when there is no notify setting", async () => {
+    await writeRawConfig(kapelConfigPath(env), {});
+    const loaded = await loadKapelConfig(env);
+    expect(loaded).not.toHaveProperty("notify");
+  });
+
+  it("drops an unrecognised value, warns, but keeps the rest of the config", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await writeRawConfig(kapelConfigPath(env), { notify: "loud" });
+      const loaded = await loadKapelConfig(env);
+      expect(loaded?.backends).toEqual(["codex"]);
+      expect(loaded).not.toHaveProperty("notify");
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("keeps a migrated version-2 file's notify setting", async () => {
+    await writeFile(
+      kapelConfigPath(env),
+      JSON.stringify({
+        version: 2,
+        backend: "codex",
+        models: {
+          orchestrator: "gpt-5.1",
+          complex: "gpt-5.1",
+          middle: "gpt-5-mini",
+          low: "gpt-5-mini",
+        },
+        updatedAt: 1,
+        notify: "bell",
+      }),
+      "utf8",
+    );
+    expect((await loadKapelConfig(env))?.notify).toBe("bell");
+  });
+});
+
+describe("saveKapelConfig - notify preservation", () => {
+  it("writes a notify key when one is passed", async () => {
+    await saveKapelConfig(
+      {
+        backends: ["codex"],
+        models: CODEX_MODELS,
+        updatedAt: 1,
+        notify: "osc9",
+      },
+      env,
+    );
+    const loaded = await loadKapelConfig(env);
+    expect(loaded?.notify).toBe("osc9");
+  });
+
+  it("writes no notify key when none is passed", async () => {
+    await saveKapelConfig({ backends: ["codex"], models: CODEX_MODELS }, env);
+    const loaded = await loadKapelConfig(env);
+    expect(loaded).not.toHaveProperty("notify");
+  });
+});
+
 // --- role-model encoding -----------------------------------------------------
 
 describe("encodeRoleModel / decodeRoleModel", () => {

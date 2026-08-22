@@ -461,6 +461,36 @@ answering "a" at the prompt; it never reaches the prompt at all. There is no
 `/config` UI for this yet — edit the file, restart the run. Neither file needs
 a `permission` block; both work exactly as before without one.
 
+### Notifications
+
+A turn or a run can take minutes, and the worst case is tabbing away right
+before a permission prompt opens and blocks the whole thing. kapel rings the
+terminal — `BEL` and the `OSC 9` desktop-notification sequence (iTerm2,
+WezTerm, Windows Terminal, Ghostty, kitty; silently ignored elsewhere) — on
+three events: a permission prompt starting to wait (always, unconditionally —
+a blocked run is the worst case), a chat turn finishing that took 10 seconds
+or longer (success or failure, never one you Ctrl-C'd yourself), and an
+`/orchestrate`/`/resume-run` finishing (always, in the REPL or standalone).
+Both sequences are written only to a real terminal — a pipe, a redirect, or
+`TERM=dumb` gets exactly the bytes it always got, not one escape more.
+
+A `notify` key, hand-edited into either config file like `permission`, picks
+which sequence(s):
+
+```jsonc
+// ~/.kapel/config.json
+{ "notify": "auto" }   // "off" | "bell" | "osc9" | "auto" (default: both — this is it)
+```
+
+```jsonc
+// .agent/config.local.json — same key, applies to this checkout only
+{ "notify": "bell" }
+```
+
+Precedence: `KAPEL_NO_NOTIFY=1` (a hard, per-shell off — for CI, a
+screen-reader session, or anyone who never wants the bell), then
+`.agent/config.local.json`, then `~/.kapel/config.json`, then `"auto"`.
+
 ### Project instructions (AGENTS.md)
 
 Drop an `AGENTS.md` in your repo and kapel follows it from the first turn — the same file Codex and opencode already read, and that Claude Code picks up via `@AGENTS.md` imports, so a repository only has to write its rules once. Up to three are merged into the system prompt, machine-level first so a project's rules add to (never silently lose to) your personal ones:

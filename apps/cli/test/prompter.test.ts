@@ -215,6 +215,77 @@ describe("createPrompter", () => {
     expect(state.active).toBe(false);
   });
 
+  // --- notify wiring -------------------------------------------------------
+
+  it("rings waitingForApproval once, before the question is asked", async () => {
+    const calls: string[] = [];
+    const state = createPromptState();
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state,
+      ask: async () => {
+        calls.push("asked");
+        return "y";
+      },
+      notify: {
+        turnFinished: () => calls.push("turnFinished"),
+        runFinished: () => calls.push("runFinished"),
+        waitingForApproval: () => calls.push("waitingForApproval"),
+      },
+    });
+    await prompter?.ask(request());
+    expect(calls).toEqual(["waitingForApproval", "asked"]);
+  });
+
+  it("rings once per ask, on every answer including a denial", async () => {
+    let count = 0;
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state: createPromptState(),
+      ask: async () => "n",
+      notify: {
+        turnFinished: () => {},
+        runFinished: () => {},
+        waitingForApproval: () => {
+          count += 1;
+        },
+      },
+    });
+    await prompter?.ask(request());
+    await prompter?.ask(request());
+    expect(count).toBe(2);
+  });
+
+  it("never rings under --yes — there is no waiting to signal", async () => {
+    let rang = false;
+    const prompter = createPrompter({
+      yes: true,
+      interactive: true,
+      state: createPromptState(),
+      notify: {
+        turnFinished: () => {},
+        runFinished: () => {},
+        waitingForApproval: () => {
+          rang = true;
+        },
+      },
+    });
+    await prompter?.ask(request());
+    expect(rang).toBe(false);
+  });
+
+  it("works with no notify at all — the default for every test above", async () => {
+    const prompter = createPrompter({
+      yes: false,
+      interactive: true,
+      state: createPromptState(),
+      ask: async () => "y",
+    });
+    await expect(prompter?.ask(request())).resolves.toBe(true);
+  });
+
   it("passes the injected ask the same query text askOnce would show", async () => {
     let received: string | undefined;
     const prompter = createPrompter({

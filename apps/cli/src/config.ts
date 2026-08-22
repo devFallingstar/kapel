@@ -4,6 +4,7 @@ import path from "node:path";
 import { defaultModelCatalog } from "@agent/ai";
 import type { PermissionRuleSet } from "@agent/coding-agent";
 import type { PermissionDecision } from "@agent/core";
+import type { NotifySetting } from "./notify.js";
 import type { SelectChoice } from "./select-prompt.js";
 
 /**
@@ -77,6 +78,15 @@ export interface KapelConfig {
    * but preserves it across a save (see `saveKapelConfig`).
    */
   readonly permission?: PermissionRuleSet;
+  /**
+   * Terminal attention signals (BEL / OSC 9) on a finished turn, a finished
+   * orchestration run, or a permission prompt that has started waiting — see
+   * `notify.ts`. `"auto"` (both sequences) is the default when this key is
+   * absent, exactly like `permission`'s absence meaning "the built-in
+   * defaults"; hand-edited only — the `/config` wizard never writes this key,
+   * but preserves it across a save (see `saveKapelConfig`).
+   */
+  readonly notify?: NotifySetting;
 }
 
 // --- Location ---------------------------------------------------------------
@@ -117,6 +127,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isPermissionDecision(value: unknown): value is PermissionDecision {
   return value === "allow" || value === "ask" || value === "deny";
+}
+
+/** Every value `notify` may hold, in the order the docs list them. */
+export const NOTIFY_SETTINGS: readonly NotifySetting[] = [
+  "off",
+  "bell",
+  "osc9",
+  "auto",
+];
+
+function isNotifySetting(value: unknown): value is NotifySetting {
+  return (
+    typeof value === "string" &&
+    (NOTIFY_SETTINGS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Parses a `notify` key as leniently as `permission`: an unrecognised value is
+ * dropped and reported, never enough to invalidate the rest of the file it
+ * came from. `undefined` (the key was absent) is the normal case and warns
+ * about nothing. Shared by the machine config here and the project override
+ * in `config-project.ts` — both keys mean the same thing and must reject the
+ * same things.
+ */
+export function parseNotifySetting(raw: unknown): {
+  readonly value: NotifySetting | undefined;
+  readonly warning: string | undefined;
+} {
+  if (raw === undefined) return { value: undefined, warning: undefined };
+  if (isNotifySetting(raw)) return { value: raw, warning: undefined };
+  return {
+    value: undefined,
+    warning: `"notify" must be one of ${NOTIFY_SETTINGS.map((s) => `"${s}"`).join(" | ")}, got ${JSON.stringify(raw)} — ignoring it.`,
+  };
 }
 
 interface ParsedPermission {
@@ -317,9 +362,18 @@ function parseConfig(raw: unknown): ParsedConfig {
 
   // The permission block is version-independent: it was never part of the
   // models schema, so a migrated version-1 file keeps whatever it had.
-  const { rules: permission, warnings } = parsePermissionBlock(
-    record.permission,
+  const { rules: permission, warnings: permissionWarnings } =
+    parsePermissionBlock(record.permission);
+  // Same story for `notify`: it postdates every version this file could be
+  // written in, so it is read the same way regardless of which `models`
+  // migration ran above.
+  const { value: notify, warning: notifyWarning } = parseNotifySetting(
+    record.notify,
   );
+  const warnings =
+    notifyWarning === undefined
+      ? permissionWarnings
+      : [...permissionWarnings, notifyWarning];
 
   const updatedAt = record.updatedAt;
   return {
@@ -329,6 +383,7 @@ function parseConfig(raw: unknown): ParsedConfig {
       models: parsed,
       updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
       ...(Object.keys(permission).length > 0 ? { permission } : {}),
+      ...(notify === undefined ? {} : { notify }),
     },
     warnings,
   };
@@ -364,7 +419,7 @@ export async function loadKapelConfig(
   }
   if (parsed.warnings.length > 0) {
     console.error(
-      `warning: ignoring invalid entries in ${kapelConfigPath(env)}'s "permission" block:`,
+      `warning: ignoring invalid entries in ${kapelConfigPath(env)}:`,
     );
     for (const warning of parsed.warnings) console.error(`  - ${warning}`);
   }
@@ -401,6 +456,8 @@ export async function saveKapelConfig(
     ...(config.permission === undefined
       ? {}
       : { permission: config.permission }),
+    // Same story as `permission` — see `KapelConfig.notify`.
+    ...(config.notify === undefined ? {} : { notify: config.notify }),
   };
 
   await writeFile(filePath, `${JSON.stringify(full, null, 2)}\n`, "utf8");

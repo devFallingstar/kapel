@@ -16,6 +16,7 @@ import {
   FIRST_RUN_INTRO,
   resetBackendDetection,
   resolveBackendSetting,
+  resolveNotifySetting,
   resolveOrchestratorModel,
   resolveRoleModel,
   ttyWizardPrompt,
@@ -145,6 +146,48 @@ describe("resolveBackendSetting", () => {
     expect(() =>
       resolveBackendSetting(undefined, { AGENT_BACKEND: "bogus" }, undefined),
     ).toThrow(/claude-code/);
+  });
+});
+
+describe("resolveNotifySetting", () => {
+  it('falls back to "auto" with no config at all', () => {
+    expect(resolveNotifySetting({}, undefined)).toEqual({
+      value: "auto",
+      source: "default",
+    });
+  });
+
+  it("reads the machine config when there is one", () => {
+    expect(resolveNotifySetting({}, config({ notify: "bell" }))).toEqual({
+      value: "bell",
+      source: "config",
+    });
+  });
+
+  it("lets a project override outrank the machine config", () => {
+    expect(
+      resolveNotifySetting({}, config({ notify: "bell" }), { notify: "osc9" }),
+    ).toEqual({ value: "osc9", source: "project" });
+  });
+
+  it("KAPEL_NO_NOTIFY=1 outranks every config layer", () => {
+    expect(
+      resolveNotifySetting(
+        { KAPEL_NO_NOTIFY: "1" },
+        config({ notify: "auto" }),
+        {
+          notify: "bell",
+        },
+      ),
+    ).toEqual({ value: "off", source: "env" });
+  });
+
+  it('treats anything other than the literal "1" as absent', () => {
+    for (const value of ["", "0", "true", "yes"]) {
+      expect(
+        resolveNotifySetting({ KAPEL_NO_NOTIFY: value }, undefined),
+      ).toEqual({ value: "auto", source: "default" });
+    }
   });
 });
 
