@@ -38,7 +38,7 @@ function finishTuiState(state, outcome) {
 }
 function reduceTuiEvent(state, event2) {
   const base = adoptEnvelope(state, event2);
-  const data = isRecord11(event2.data) ? event2.data : {};
+  const data = isRecord12(event2.data) ? event2.data : {};
   const tasks = reduceTasks(base.tasks, event2, data);
   const line = formatEventLine(event2);
   const log = line === void 0 ? base.log : appendLog(base.log, line);
@@ -47,7 +47,7 @@ function reduceTuiEvent(state, event2) {
   return { ...base, tasks, log };
 }
 function formatEventLine(event2) {
-  const data = isRecord11(event2.data) ? event2.data : {};
+  const data = isRecord12(event2.data) ? event2.data : {};
   if (event2.type.startsWith("codex."))
     return formatCodexLine(data);
   const taskId = taskIdOf2(event2, data);
@@ -71,7 +71,7 @@ function formatEventLine(event2) {
       return `\u25B6 ${taskId} \u2192 ${agent} (attempt ${num2(data.attempt) ?? 1})`;
     }
     case "task.completed": {
-      const result = isRecord11(data.result) ? data.result : {};
+      const result = isRecord12(data.result) ? data.result : {};
       const glyph2 = result.status === "success" ? "\u2714" : "\u2716";
       const suffix = data.final === false ? " (retrying)" : "";
       return `${glyph2} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
@@ -148,7 +148,7 @@ function reduceTasks(tasks, event2, data) {
         break;
       }
       case "task.completed": {
-        const result = isRecord11(data.result) ? data.result : {};
+        const result = isRecord12(data.result) ? data.result : {};
         const summary = str2(result.summary);
         if (summary !== void 0)
           draft.summary = firstLine3(summary);
@@ -240,7 +240,7 @@ function appendLog(log, line) {
   const next = [...log, line];
   return next.length <= MAX_LOG_LINES ? next : next.slice(next.length - MAX_LOG_LINES);
 }
-function isRecord11(value) {
+function isRecord12(value) {
   return typeof value === "object" && value !== null;
 }
 function str2(value) {
@@ -300,9 +300,9 @@ function formatCodexLine(data) {
   }
 }
 function codexItem(data) {
-  if (isRecord11(data.item))
+  if (isRecord12(data.item))
     return data.item;
-  if (isRecord11(data.msg) && isRecord11(data.msg.item))
+  if (isRecord12(data.msg) && isRecord12(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -315,7 +315,7 @@ function codexMessageText2(item) {
     return str2(content);
   if (!Array.isArray(content))
     return void 0;
-  const joined = content.map((part) => typeof part === "string" ? part : isRecord11(part) ? str2(part.text) ?? "" : "").join("");
+  const joined = content.map((part) => typeof part === "string" ? part : isRecord12(part) ? str2(part.text) ?? "" : "").join("");
   return str2(joined);
 }
 function codexCommandText2(item) {
@@ -336,7 +336,7 @@ function codexFileText(item) {
   for (const change of changes) {
     if (typeof change === "string")
       paths.push(change);
-    else if (isRecord11(change)) {
+    else if (isRecord12(change)) {
       const path18 = str2(change.path) ?? str2(change.file);
       if (path18 !== void 0)
         paths.push(path18);
@@ -3896,6 +3896,7 @@ var AgentLoopEngine = class {
     let iterations = 0;
     let toolCalls = 0;
     let lastNonEmptyText = "";
+    let requestedMessages = 0;
     await this.emit(context, "loop.started", {
       agent: agent.name,
       model: agent.model.id,
@@ -3912,6 +3913,7 @@ var AgentLoopEngine = class {
           ...this.#options.temperature === void 0 ? {} : { temperature: this.#options.temperature },
           ...this.#options.maxOutputTokens === void 0 ? {} : { maxOutputTokens: this.#options.maxOutputTokens }
         };
+        requestedMessages = request.messages.length;
         const turn = await this.#runTurn(request, signal, context, iterations);
         if (turn.text.trim() !== "")
           lastNonEmptyText = turn.text;
@@ -3932,7 +3934,8 @@ var AgentLoopEngine = class {
             summary: output,
             output,
             iterations,
-            toolCalls
+            toolCalls,
+            requestedMessages
           });
         }
         for (const call of turn.calls) {
@@ -3945,7 +3948,8 @@ var AgentLoopEngine = class {
         summary: `Stopped after the iteration budget of ${maxIterations} was exhausted while the model was still requesting tool calls.`,
         ...lastNonEmptyText === "" ? {} : { output: lastNonEmptyText },
         iterations,
-        toolCalls
+        toolCalls,
+        requestedMessages
       });
     } catch (error) {
       sealUnansweredToolCalls(messages);
@@ -3957,7 +3961,8 @@ var AgentLoopEngine = class {
           summary,
           ...lastNonEmptyText === "" ? {} : { output: lastNonEmptyText },
           iterations,
-          toolCalls
+          toolCalls,
+          requestedMessages
         });
       }
       return await this.#complete(context, {
@@ -3965,7 +3970,8 @@ var AgentLoopEngine = class {
         summary: `Model request failed: ${errorMessage2(error)}`,
         ...lastNonEmptyText === "" ? {} : { output: lastNonEmptyText },
         iterations,
-        toolCalls
+        toolCalls,
+        requestedMessages
       });
     }
   }
@@ -4229,6 +4235,15 @@ var AgentChatSession = class _AgentChatSession {
   #messages = [];
   #turn = 0;
   #sending = false;
+  /**
+   * The index of the most recent {@link injectUserMessage} that no model
+   * request is known to have carried yet, or `undefined` when nothing is
+   * outstanding.
+   *
+   * The newest index is enough for all of them: injections only ever append,
+   * so a request that reached the last one reached every earlier one too.
+   */
+  #unanswered;
   constructor(options) {
     this.#engine = new AgentLoopEngine(options);
   }
@@ -4280,18 +4295,89 @@ var AgentChatSession = class _AgentChatSession {
           ...withImages
         });
       }
-      this.#turn += 1;
-      const turn = this.#turn;
-      await this.#engine.emit(context, "chat.turn.started", { turn });
-      const result = await this.#engine.drive(this.#messages, context);
-      await this.#engine.emit(context, "chat.turn.completed", {
-        turn,
-        status: result.status
-      });
-      return result;
+      return await this.#driveTurn(context);
     } finally {
       this.#sending = false;
     }
+  }
+  /**
+   * Appends a user message to the history of the turn already running, so the
+   * model reads it on that turn's next request.
+   *
+   * This is steering: the user typed something while the agent was working and
+   * meant it for the work in progress, not for a turn afterwards. Deliberately
+   * *not* guarded by the single-flight check — see the class comment — because
+   * an append is not a send: nothing here drives the engine, emits an event or
+   * races another writer. The whole mechanism is that
+   * {@link AgentLoopEngine.drive} copies the array afresh every iteration.
+   *
+   * Refused when no send is in flight, and that is the honest answer rather
+   * than a convenience: with nothing running there is no turn to steer, the
+   * caller's line belongs in an ordinary {@link send}, and appending it here
+   * would leave a user message in history that nobody ever answers.
+   *
+   * @returns whether the message was appended.
+   */
+  injectUserMessage(text2) {
+    if (!this.#sending)
+      return false;
+    if (text2 === "")
+      return false;
+    this.#messages.push({ role: "user", content: text2 });
+    this.#unanswered = this.#messages.length - 1;
+    return true;
+  }
+  /**
+   * Whether an injected message is still waiting for its first model request.
+   *
+   * True only in the narrow case the caller has to handle: the turn ended
+   * before it built another request — the model answered in one shot — so the
+   * words are sitting in history unread. Everything else (the turn ran another
+   * iteration, or the injection arrived before the first request) reads as
+   * answered, because the model did in fact see them.
+   */
+  hasUnansweredInjection() {
+    return this.#unanswered !== void 0;
+  }
+  /**
+   * Runs another turn over the retained history *without* appending anything.
+   *
+   * The counterpart to {@link hasUnansweredInjection}: the user's steering
+   * message is already in the history, so the way to get it answered is to ask
+   * the model again — and appending it a second time would show the user their
+   * own words twice in every request from here on. A turn in its own right
+   * otherwise: same events, same numbering, same single-flight guard.
+   *
+   * @throws if a send is in flight, or if there is no history to continue.
+   */
+  async continueTurn(context) {
+    if (this.#sending) {
+      throw new Error("AgentChatSession.continueTurn: a send is already in flight; turns must be serialized.");
+    }
+    if (this.#messages.length === 0) {
+      throw new Error("AgentChatSession.continueTurn: there is no conversation to continue.");
+    }
+    this.#sending = true;
+    try {
+      return await this.#driveTurn(context);
+    } finally {
+      this.#sending = false;
+    }
+  }
+  /** One turn over the retained history: the shared half of send/continue. */
+  async #driveTurn(context) {
+    this.#turn += 1;
+    const turn = this.#turn;
+    await this.#engine.emit(context, "chat.turn.started", { turn });
+    const result = await this.#engine.drive(this.#messages, context);
+    await this.#engine.emit(context, "chat.turn.completed", {
+      turn,
+      status: result.status
+    });
+    const unanswered = this.#unanswered;
+    if (unanswered !== void 0 && (result.requestedMessages ?? 0) > unanswered)
+      this.#unanswered = void 0;
+    return result;
   }
   /** A snapshot of the full history, system message included. */
   messages() {
@@ -8645,6 +8731,25 @@ function isRecord6(value) {
 function isPermissionDecision(value) {
   return value === "allow" || value === "ask" || value === "deny";
 }
+var NOTIFY_SETTINGS = [
+  "off",
+  "bell",
+  "osc9",
+  "auto"
+];
+function isNotifySetting(value) {
+  return typeof value === "string" && NOTIFY_SETTINGS.includes(value);
+}
+function parseNotifySetting(raw) {
+  if (raw === void 0)
+    return { value: void 0, warning: void 0 };
+  if (isNotifySetting(raw))
+    return { value: raw, warning: void 0 };
+  return {
+    value: void 0,
+    warning: `"notify" must be one of ${NOTIFY_SETTINGS.map((s) => `"${s}"`).join(" | ")}, got ${JSON.stringify(raw)} \u2014 ignoring it.`
+  };
+}
 function parsePermissionBlock(raw) {
   if (raw === void 0)
     return { rules: {}, warnings: [] };
@@ -8748,7 +8853,9 @@ function parseConfig(raw) {
   const parsed = legacy && firstBackend !== void 0 ? migrateLegacyModels(version, modelRecord, firstBackend) : parseV3Models(modelRecord, backends);
   if (parsed === void 0)
     return none;
-  const { rules: permission, warnings } = parsePermissionBlock(record.permission);
+  const { rules: permission, warnings: permissionWarnings } = parsePermissionBlock(record.permission);
+  const { value: notify, warning: notifyWarning } = parseNotifySetting(record.notify);
+  const warnings = notifyWarning === void 0 ? permissionWarnings : [...permissionWarnings, notifyWarning];
   const updatedAt = record.updatedAt;
   return {
     config: {
@@ -8756,7 +8863,8 @@ function parseConfig(raw) {
       backends,
       models: parsed,
       updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
-      ...Object.keys(permission).length > 0 ? { permission } : {}
+      ...Object.keys(permission).length > 0 ? { permission } : {},
+      ...notify === void 0 ? {} : { notify }
     },
     warnings
   };
@@ -8775,7 +8883,7 @@ async function loadKapelConfig(env) {
     return void 0;
   }
   if (parsed.warnings.length > 0) {
-    console.error(`warning: ignoring invalid entries in ${kapelConfigPath(env)}'s "permission" block:`);
+    console.error(`warning: ignoring invalid entries in ${kapelConfigPath(env)}:`);
     for (const warning of parsed.warnings)
       console.error(`  - ${warning}`);
   }
@@ -8796,7 +8904,9 @@ async function saveKapelConfig(config, env) {
     updatedAt: config.updatedAt ?? Date.now(),
     // Hand-edited only (see `KapelConfig.permission`) — carried through
     // verbatim so a `/config` re-save never silently drops it.
-    ...config.permission === void 0 ? {} : { permission: config.permission }
+    ...config.permission === void 0 ? {} : { permission: config.permission },
+    // Same story as `permission` — see `KapelConfig.notify`.
+    ...config.notify === void 0 ? {} : { notify: config.notify }
   };
   await writeFile3(filePath, `${JSON.stringify(full, null, 2)}
 `, "utf8");
@@ -9085,9 +9195,17 @@ function parseProjectConfig(raw) {
     }
     models = parsed;
   }
+  let notify;
+  if (raw.notify !== void 0) {
+    const parsedNotify = parseNotifySetting(raw.notify);
+    if (parsedNotify.value === void 0)
+      return void 0;
+    notify = parsedNotify.value;
+  }
   return {
     ...backends === void 0 ? {} : { backends },
-    ...models === void 0 ? {} : { models }
+    ...models === void 0 ? {} : { models },
+    ...notify === void 0 ? {} : { notify }
   };
 }
 var consoleWarn = (line) => {
@@ -9123,6 +9241,8 @@ async function saveProjectConfig(workspacePath, config) {
     body.backends = [...config.backends];
   if (config.models !== void 0)
     body.models = config.models;
+  if (config.notify !== void 0)
+    body.notify = config.notify;
   await writeFile4(filePath, `${JSON.stringify(body, null, 2)}
 `, "utf8");
   return filePath;
@@ -9138,7 +9258,7 @@ var MissingAgentDirError = class extends Error {
 function mergeKapelConfigs(machine, project) {
   const projectModels = project?.models ?? {};
   const hasProjectModels = KAPEL_ROLES.some((role) => projectModels[role] !== void 0);
-  if (machine === void 0 && project?.backends === void 0 && !hasProjectModels) {
+  if (machine === void 0 && project?.backends === void 0 && !hasProjectModels && project?.notify === void 0) {
     return void 0;
   }
   const backends = project?.backends ?? machine?.backends ?? derivedBackends(projectModels) ?? ["native"];
@@ -9159,17 +9279,21 @@ function mergeKapelConfigs(machine, project) {
       sources[role] = "default";
     }
   }
+  const notify = project?.notify ?? machine?.notify ?? "auto";
+  const notifySource = project?.notify !== void 0 ? "project" : machine?.notify !== void 0 ? "machine" : "default";
   return {
     config: {
       version: KAPEL_CONFIG_VERSION,
       backends,
       models,
       updatedAt: machine?.updatedAt ?? 0,
-      ...machine?.permission === void 0 ? {} : { permission: machine.permission }
+      ...machine?.permission === void 0 ? {} : { permission: machine.permission },
+      notify
     },
     sources: {
       backends: backendsSource,
-      models: sources
+      models: sources,
+      notify: notifySource
     }
   };
 }
@@ -9195,6 +9319,7 @@ function describeEffectiveConfig(effective, paths) {
   return [
     `backends: ${describeBackends(config.backends)}${from(sources.backends)}`,
     ...KAPEL_ROLES.map((role) => `${ROLE_DESCRIPTIONS[role]}: ${describeRoleModel(config.models[role])}${from(sources.models[role])}`),
+    `notify: ${config.notify ?? "auto"}${from(sources.notify)}`,
     `updated: ${new Date(config.updatedAt).toISOString()}`
   ];
 }
@@ -9840,6 +9965,19 @@ function resolveBackendSetting(flag, env, config, project) {
     };
   }
   return { value: DEFAULT_BACKEND, source: "default" };
+}
+function resolveNotifySetting(env, config, project) {
+  if (env.KAPEL_NO_NOTIFY === "1") {
+    return { value: "off", source: "env" };
+  }
+  const effective = mergeKapelConfigs(config, project);
+  if (effective !== void 0) {
+    return {
+      value: effective.config.notify ?? "auto",
+      source: effective.sources.notify === "project" ? "project" : "config"
+    };
+  }
+  return { value: "auto", source: "default" };
 }
 var defaultBackendDetectionProbe = {
   claudeCode: async () => {
@@ -12046,6 +12184,40 @@ function undoLines(outcome) {
     "  every edit since then is gone, including ones made by shell commands or other programs \u2014 undo is one-way"
   ];
 }
+function diffHeaderLine(label, ageMs) {
+  const quoted = label === "" ? "the last prompt" : `"${label}"`;
+  return `diff since ${quoted} (${formatAge(ageMs)}):`;
+}
+function parseShortStat(raw) {
+  const zero = { filesChanged: 0, insertions: 0, deletions: 0 };
+  const trimmed = raw.trim();
+  if (trimmed === "")
+    return zero;
+  const match = /^(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?$/.exec(trimmed);
+  if (match === null)
+    return zero;
+  return {
+    filesChanged: Number(match[1]),
+    insertions: match[2] === void 0 ? 0 : Number(match[2]),
+    deletions: match[3] === void 0 ? 0 : Number(match[3])
+  };
+}
+function formatChangeSummary(stat9) {
+  if (stat9.filesChanged === 0)
+    return void 0;
+  const files = `${stat9.filesChanged} file${stat9.filesChanged === 1 ? "" : "s"}`;
+  return `\u0394 ${files} +${stat9.insertions} \u2212${stat9.deletions}`;
+}
+function capturedTreeFor(before, after) {
+  const newTop = after[after.length - 1];
+  if (newTop === void 0)
+    return void 0;
+  const previousTop = before[before.length - 1];
+  if (previousTop !== void 0 && previousTop.commit === newTop.commit) {
+    return void 0;
+  }
+  return newTop.tree;
+}
 async function git(args, cwd, env) {
   try {
     const result = await execFileAsync5("git", [...args], {
@@ -12197,8 +12369,20 @@ async function inProgressOperation(gitDir) {
   }
   return void 0;
 }
-function notARepositoryReason(workspacePath) {
-  return `/undo needs a git repository \u2014 ${workspacePath} is not inside one, so nothing was checkpointed. Run \`git init\` to get undo.`;
+async function shortStatAgainst(repo, tree) {
+  const result = await git(["diff", "--shortstat", tree], repo.root);
+  if (result.exitCode !== 0)
+    return void 0;
+  return parseShortStat(result.stdout);
+}
+async function diffAgainst(repo, tree, color) {
+  const result = await git(["diff", color ? "--color=always" : "--color=never", tree], repo.root);
+  if (result.exitCode !== 0)
+    return void 0;
+  return result.stdout;
+}
+function notARepositoryReason(workspacePath, feature) {
+  return `${feature} needs a git repository \u2014 ${workspacePath} is not inside one, so nothing was checkpointed. Run \`git init\` to get ${feature}.`;
 }
 function createCheckpointStore(options) {
   const now = options.now ?? (() => Date.now());
@@ -12235,7 +12419,10 @@ function createCheckpointStore(options) {
   const undo = async () => {
     const info = await resolveRepo();
     if (info === void 0) {
-      return { ok: false, reason: notARepositoryReason(options.workspacePath) };
+      return {
+        ok: false,
+        reason: notARepositoryReason(options.workspacePath, "/undo")
+      };
     }
     const entry = stack[stack.length - 1];
     if (entry === void 0) {
@@ -12276,10 +12463,61 @@ function createCheckpointStore(options) {
       };
     }
   };
+  const changeStat = async (tree) => {
+    const info = await resolveRepo();
+    if (info === void 0)
+      return void 0;
+    return await shortStatAgainst(info, tree);
+  };
+  const diff = async (stepsBack, diffOptions) => {
+    const info = await resolveRepo();
+    if (info === void 0) {
+      return {
+        ok: false,
+        reason: notARepositoryReason(options.workspacePath, "/diff")
+      };
+    }
+    if (!Number.isInteger(stepsBack) || stepsBack < 1) {
+      return {
+        ok: false,
+        reason: `/diff wants a checkpoint count of 1 or more.`
+      };
+    }
+    const entry = stack[stack.length - stepsBack];
+    if (entry === void 0) {
+      if (stack.length === 0) {
+        return {
+          ok: false,
+          reason: "nothing to diff \u2014 no checkpoint has been taken in this session yet."
+        };
+      }
+      const plural = stack.length === 1 ? "" : "s";
+      const verb = stack.length === 1 ? "has" : "have";
+      return {
+        ok: false,
+        reason: `only ${stack.length} checkpoint${plural} ${verb} been taken this session \u2014 /diff ${stepsBack} is out of range.`
+      };
+    }
+    const text2 = await diffAgainst(info, entry.tree, diffOptions?.color === true);
+    if (text2 === void 0) {
+      return {
+        ok: false,
+        reason: "/diff could not read the working tree."
+      };
+    }
+    return {
+      ok: true,
+      label: entry.label,
+      ageMs: Math.max(0, now() - entry.createdAt),
+      diff: text2
+    };
+  };
   return {
     capture,
     undo,
-    entries: () => stack.slice()
+    entries: () => stack.slice(),
+    changeStat,
+    diff
   };
 }
 
@@ -12799,6 +13037,30 @@ function reduceAssemblyLine(state, line) {
 function historyEntryFor(message) {
   return message.replace(/\n/g, " ").trim();
 }
+var PENDING_CARET = "\u258F";
+function composePendingRow(text2, cursor) {
+  const at = Math.max(0, Math.min(cursor, text2.length));
+  return `${ECHO_MARKER}${text2.slice(0, at)}${PENDING_CARET}${text2.slice(at)}`;
+}
+function gatedOutput(output, muted) {
+  return new Proxy(output, {
+    get(target, property) {
+      if (property === "write") {
+        return (...args) => {
+          if (!muted()) {
+            return target.write(...args);
+          }
+          const callback = args.find((arg) => typeof arg === "function");
+          if (typeof callback === "function")
+            callback();
+          return true;
+        };
+      }
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
 var COMMAND_MENU_MAX_ROWS = 8;
 function commandMenuToken(line, cursor) {
   if (!line.startsWith("/"))
@@ -12848,6 +13110,60 @@ function renderCommandMenu(matches2, token, options) {
   }
   return rows;
 }
+function initialReverseSearch() {
+  return { query: "", offset: 0 };
+}
+function reduceReverseSearch(state, action) {
+  switch (action.type) {
+    case "type":
+      return { query: state.query + action.char, offset: 0 };
+    case "backspace":
+      return state.query === "" ? state : { query: state.query.slice(0, -1), offset: 0 };
+    case "cycle":
+      return { query: state.query, offset: state.offset + 1 };
+  }
+}
+function reverseSearchMatches(history, query) {
+  const needle = query.toLowerCase();
+  return history.filter((entry) => entry.toLowerCase().includes(needle));
+}
+function reverseSearchSelection(state, matches2) {
+  return matches2.length === 0 ? void 0 : matches2[state.offset % matches2.length];
+}
+var REVERSE_SEARCH_MAX_ROWS = 4;
+var SEARCH_MARK = "\u276F ";
+var SEARCH_INDENT = "  ";
+function renderReverseSearch(state, history, options) {
+  const matches2 = reverseSearchMatches(history, state.query);
+  const styles = options.styles;
+  const limit = Math.max(1, options.columns - 1);
+  const noMatch = matches2.length === 0;
+  const prefix = "(reverse-i-search) ";
+  const suffix = noMatch ? " \u2014 no match" : "";
+  const plainIndicator = `${prefix}${state.query}${suffix}`;
+  const chars = [...truncateTo(plainIndicator, limit)];
+  const prefixEnd = Math.min(prefix.length, chars.length);
+  const queryEnd = Math.min(prefixEnd + state.query.length, chars.length);
+  const head = chars.slice(0, prefixEnd).join("");
+  const body = chars.slice(prefixEnd, queryEnd).join("");
+  const rest = chars.slice(queryEnd).join("");
+  const indicator = noMatch ? styles.menu(`${head}${body}${rest}`) : `${styles.menu(head)}${styles.user(body)}${styles.menu(rest)}`;
+  if (noMatch)
+    return [indicator];
+  const maxRows = Math.max(1, options.maxRows ?? REVERSE_SEARCH_MAX_ROWS);
+  const selected = state.offset % matches2.length;
+  const visible = matches2.slice(selected, selected + maxRows);
+  const hidden = matches2.length - selected - visible.length;
+  const rows = visible.map((entry, index2) => {
+    const marker = index2 === 0 ? SEARCH_MARK : SEARCH_INDENT;
+    const plain = truncateTo(`${marker}${historyEntryFor(entry)}`, limit);
+    return index2 === 0 ? styles.user(plain) : styles.menu(plain);
+  });
+  if (hidden > 0) {
+    rows.push(styles.menu(truncateTo(`${SEARCH_INDENT}\u2026 and ${hidden} more`, limit)));
+  }
+  return [indicator, ...rows];
+}
 function localDisplayPos(text2, columns) {
   const width = Math.max(1, columns);
   let offset = 0;
@@ -12869,6 +13185,9 @@ function localDisplayPos(text2, columns) {
 var INPUT_SIGINT = /* @__PURE__ */ Symbol("input-sigint");
 function isPromise(value) {
   return typeof value?.then === "function";
+}
+function isCtrlKey(key, name) {
+  return key !== void 0 && key.ctrl === true && key.name === name;
 }
 function toReadlineCompleter(completer) {
   return (line, callback) => {
@@ -12893,14 +13212,17 @@ function rlHistory(rl) {
 function createInputManager(options) {
   const pasteWindowMs = options.pasteWindowMs ?? DEFAULT_PASTE_WINDOW_MS;
   const continuationPrompt = options.continuationPrompt ?? CONTINUATION_PROMPT;
+  let capture;
+  const echoMuted = () => capture !== void 0 && questionPending === void 0;
   const rl = readline2.createInterface({
     input: options.input,
-    output: options.output,
+    output: gatedOutput(options.output, echoMuted),
     terminal: true,
     history: options.history ? [...options.history] : [],
     historySize: 200,
     ...options.completer ? { completer: toReadlineCompleter(options.completer) } : {}
   });
+  const readlineKeypressListeners = options.input.listeners("keypress").slice();
   let closed = false;
   let readPending;
   let questionPending;
@@ -12912,6 +13234,8 @@ function createInputManager(options) {
   const onTerminal = options.input.isTTY === true && options.output.isTTY === true;
   const menuEnabled = menuEntries !== void 0 && onTerminal;
   const bandEnabled = decor !== void 0 && onTerminal;
+  const searchEnabled = onTerminal;
+  let search;
   let belowRows = 0;
   let suspended = false;
   let bandOpen = false;
@@ -13003,12 +13327,20 @@ ${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
       maxRows: menuMaxRows
     });
   };
+  const searchLines = () => {
+    if (search === void 0)
+      return [];
+    return renderReverseSearch(search, rlHistory(rl) ?? [], {
+      columns: columns(),
+      styles: menuStyles
+    });
+  };
   const renderBelow = () => {
     if (suspended || submitting)
       return;
     const rows = [
       ...bandOpen && decor !== void 0 ? [decor.rule(columns())] : [],
-      ...menuLines()
+      ...search !== void 0 ? searchLines() : menuLines()
     ];
     if (rows.length === 0) {
       eraseBelow();
@@ -13061,16 +13393,87 @@ ${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
     state.line = "";
     state.cursor = 0;
   };
-  const onKeypress = () => {
+  const suspendReadlineKeypress = () => {
+    for (const listener of readlineKeypressListeners) {
+      options.input.removeListener("keypress", listener);
+    }
+  };
+  const resumeReadlineKeypress = () => {
+    for (const listener of readlineKeypressListeners) {
+      options.input.on("keypress", listener);
+    }
+  };
+  const setEditorLine = (text2) => {
+    const state = rl;
+    state.line = text2;
+    state.cursor = text2.length;
+  };
+  const enterSearch = () => {
+    search = initialReverseSearch();
+    suspendReadlineKeypress();
+    options.input.on("keypress", onSearchKeypress);
+    renderBelow();
+  };
+  const leaveSearch = (entry) => {
+    if (search === void 0)
+      return;
+    search = void 0;
+    options.input.removeListener("keypress", onSearchKeypress);
+    resumeReadlineKeypress();
+    if (entry !== void 0)
+      setEditorLine(entry);
+    rl.prompt(true);
+    renderBelow();
+  };
+  const onSearchKeypress = (str3, key) => {
+    if (search === void 0)
+      return;
+    if (key?.name === "escape" || isCtrlKey(key, "c")) {
+      leaveSearch(void 0);
+      return;
+    }
+    if (isCtrlKey(key, "r")) {
+      search = reduceReverseSearch(search, { type: "cycle" });
+      renderBelow();
+      return;
+    }
+    if (key?.name === "return" || key?.name === "enter" || key?.name === "tab") {
+      const matches2 = reverseSearchMatches(rlHistory(rl) ?? [], search.query);
+      leaveSearch(reverseSearchSelection(search, matches2));
+      return;
+    }
+    if (key?.name === "backspace") {
+      search = reduceReverseSearch(search, { type: "backspace" });
+      renderBelow();
+      return;
+    }
+    if (str3 !== void 0 && str3.length > 0 && !key?.ctrl && !key?.meta) {
+      search = reduceReverseSearch(search, { type: "type", char: str3 });
+      renderBelow();
+    }
+  };
+  const onKeypress = (_str, key) => {
+    if (capture !== void 0) {
+      options.onPendingChange?.();
+      return;
+    }
+    if (search !== void 0)
+      return;
+    if (searchEnabled && readPending !== void 0 && questionPending === void 0 && isCtrlKey(key, "r")) {
+      enterSearch();
+      return;
+    }
     renderBelow();
   };
   const onResize = () => {
+    if (capture !== void 0) {
+      options.onPendingChange?.();
+      return;
+    }
     renderBelow();
   };
-  if (menuEnabled || bandEnabled) {
-    options.input.on("keypress", onKeypress);
-    options.output.on("resize", onResize);
-  }
+  options.input.on("keypress", onKeypress);
+  options.output.on("resize", onResize);
   function clearCoalesceTimer() {
     if (readPending?.coalesceTimer !== void 0) {
       clearTimeout(readPending.coalesceTimer);
@@ -13090,6 +13493,24 @@ ${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
     if (history[0] !== entry) {
       history.unshift(entry);
     }
+  }
+  function deliverCaptured(line) {
+    const current = capture;
+    if (current === void 0)
+      return;
+    const text2 = line.trim();
+    options.onPendingChange?.();
+    if (text2 === "")
+      return;
+    const entry = historyEntryFor(text2);
+    if (entry !== "")
+      options.onHistoryAppend?.(entry);
+    current.onLine(text2);
+  }
+  function resetLineModel() {
+    const state = rl;
+    if (typeof state.prevRows === "number")
+      state.prevRows = 0;
   }
   function resolveRead(value) {
     if (readPending === void 0)
@@ -13126,8 +13547,10 @@ ${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
     if (questionPending !== void 0) {
       return;
     }
-    if (readPending === void 0)
+    if (readPending === void 0) {
+      deliverCaptured(line);
       return;
+    }
     const action = reduceAssemblyLine(readPending.assembly, line);
     if (action.type === "continue") {
       rowsAboveBlock += consumed;
@@ -13163,16 +13586,26 @@ ${action.text}`;
       resolveRead(INPUT_SIGINT);
       return;
     }
+    if (capture !== void 0) {
+      abandonLine();
+      resetLineModel();
+      options.onPendingChange?.();
+      options.onIdleSigint?.();
+      return;
+    }
     options.onIdleSigint?.();
   });
   rl.on("close", () => {
     closed = true;
+    if (search !== void 0) {
+      search = void 0;
+      options.input.removeListener("keypress", onSearchKeypress);
+      resumeReadlineKeypress();
+    }
     eraseBelow();
     closeBand(false);
-    if (menuEnabled || bandEnabled) {
-      options.input.removeListener("keypress", onKeypress);
-      options.output.removeListener("resize", onResize);
-    }
+    options.input.removeListener("keypress", onKeypress);
+    options.output.removeListener("resize", onResize);
     if (questionPending !== void 0) {
       const { resolve: resolve5 } = questionPending;
       questionPending = void 0;
@@ -13197,15 +13630,45 @@ ${action.text}`;
         };
         openBand();
         rl.setPrompt(promptText2);
-        rl.prompt();
+        rl.prompt(true);
         renderBelow();
       });
+    },
+    captureWhileBusy(onLine) {
+      if (closed)
+        return () => void 0;
+      if (capture !== void 0) {
+        throw new Error("InputManager.captureWhileBusy: a capture is already open");
+      }
+      const opened = { onLine };
+      capture = opened;
+      return () => {
+        if (capture !== opened)
+          return;
+        capture = void 0;
+        resetLineModel();
+        options.onPendingChange?.();
+      };
+    },
+    pendingRow() {
+      if (capture === void 0)
+        return void 0;
+      if (questionPending !== void 0)
+        return void 0;
+      if (rl.line === "")
+        return void 0;
+      return composePendingRow(rl.line, rl.cursor);
     },
     question(query) {
       if (closed)
         return Promise.resolve(void 0);
       if (readPending !== void 0 || questionPending !== void 0) {
         throw new Error("InputManager.question: a read is already in progress");
+      }
+      if (capture !== void 0) {
+        abandonLine();
+        resetLineModel();
+        options.onPendingChange?.();
       }
       return new Promise((resolve5) => {
         const aborter = new AbortController();
@@ -13240,7 +13703,7 @@ ${action.text}`;
         if (readPending !== void 0) {
           openBand();
           rl.setPrompt(readPending.promptText);
-          rl.prompt();
+          rl.prompt(true);
           renderBelow();
         }
       }
@@ -13651,6 +14114,69 @@ ${blocks.join("\n")}`,
   };
 }
 
+// apps/cli/dist/notify.js
+var BEL2 = "\x07";
+var TURN_NOTIFY_THRESHOLD_MS = 1e4;
+function shouldNotifyTurnFinished(elapsedMs2) {
+  return elapsedMs2 >= TURN_NOTIFY_THRESHOLD_MS;
+}
+function sanitizeNotifyMessage(message) {
+  return message.replace(/[\x00-\x1f\x7f]/g, "");
+}
+function osc9Sequence(message) {
+  return `\x1B]9;${sanitizeNotifyMessage(message)}${BEL2}`;
+}
+function notifySequenceFor(setting, message) {
+  if (setting === "off")
+    return "";
+  const bell = setting === "osc9" ? "" : BEL2;
+  const osc9 = setting === "bell" ? "" : osc9Sequence(message);
+  return `${bell}${osc9}`;
+}
+function notifySupported(options = {}) {
+  if (options.stream?.isTTY !== true)
+    return false;
+  const term = (options.env ?? process.env).TERM;
+  if (term !== void 0 && (term === "" || term.toLowerCase() === "dumb")) {
+    return false;
+  }
+  return true;
+}
+function createNotifier(options) {
+  const setting = options.setting ?? "auto";
+  const send = (message) => {
+    if (setting === "off")
+      return;
+    if (!notifySupported({
+      stream: options.stream,
+      ...options.env === void 0 ? {} : { env: options.env }
+    })) {
+      return;
+    }
+    const sequence = notifySequenceFor(setting, message);
+    if (sequence === "")
+      return;
+    try {
+      options.stream.write(sequence);
+    } catch {
+    }
+  };
+  return {
+    turnFinished(elapsedMs2) {
+      if (!shouldNotifyTurnFinished(elapsedMs2))
+        return;
+      const seconds = Math.round(elapsedMs2 / 1e3);
+      send(`kapel: turn finished (${seconds}s)`);
+    },
+    runFinished(summary) {
+      send(`kapel: run finished \u2014 ${summary}`);
+    },
+    waitingForApproval() {
+      send("kapel: waiting for approval");
+    }
+  };
+}
+
 // apps/cli/dist/onboard.js
 import { readFile as readFile16, stat as stat8 } from "node:fs/promises";
 import path13 from "node:path";
@@ -13973,10 +14499,12 @@ function createPrompter(options) {
   const state = options.state;
   const ask3 = options.ask;
   const allowlist = options.allowlist;
+  const notify = options.notify;
   const color = options.color ?? output.isTTY === true;
   return {
     ask: async (request) => {
       state.active = true;
+      notify?.waitingForApproval();
       try {
         const prompt = formatPermissionPrompt(request, { color });
         const lines = previewBlockLines(request, prompt, {
@@ -14065,13 +14593,25 @@ function formatTokenCount(tokens) {
     return String(Math.round(tokens));
   return `${(tokens / 1e3).toFixed(1)}k`;
 }
-function formatStatus(label, elapsedMs2, tokens) {
+function formatStatus(label, elapsedMs2, tokens, queued) {
   const seconds = Math.max(0, Math.floor(elapsedMs2 / 1e3));
   const parts = [`${label} ${seconds}s`];
   if (tokens !== void 0 && tokens > 0) {
     parts.push(`${formatTokenCount(tokens)} tokens`);
   }
+  if (queued !== void 0 && queued > 0) {
+    parts.push(`${queued} queued`);
+  }
   return parts.join(" \xB7 ");
+}
+function rowWidth(columns) {
+  return Math.max(1, columns - 1);
+}
+function clipToEnd(text2, width) {
+  const limit = Math.max(1, width);
+  if (text2.length <= limit)
+    return text2;
+  return `\u2026${text2.slice(text2.length - limit + 1)}`;
 }
 var StatusLine = class {
   #output;
@@ -14082,11 +14622,16 @@ var StatusLine = class {
   #ticker;
   #styles;
   #band;
+  #rows;
+  #pending;
+  #queued;
   #cancel;
-  #label = "";
+  /** The wait being reported, or `undefined` for a block opened without one. */
+  #label;
   #startedAt = 0;
   #frame = 0;
-  #painted = false;
+  /** How many rows the last paint left on screen; `0` when nothing is up. */
+  #paintedRows = 0;
   constructor(options = {}) {
     this.#output = options.output ?? process.stdout;
     this.#enabled = options.tty ?? this.#output.isTTY === true;
@@ -14096,6 +14641,9 @@ var StatusLine = class {
     this.#ticker = options.ticker ?? defaultTicker;
     this.#styles = options.styles ?? stylesFor(this.#output);
     this.#band = options.frame;
+    this.#rows = options.rows;
+    this.#pending = options.pending;
+    this.#queued = options.queued;
   }
   /** Whether this line will ever paint anything — false off a TTY. */
   get enabled() {
@@ -14116,15 +14664,35 @@ var StatusLine = class {
     if (!this.#enabled)
       return;
     this.#label = label;
-    if (this.#cancel === void 0) {
-      this.#startedAt = this.#now();
-      this.#frame = 0;
-      this.#cancel = this.#ticker(() => {
-        this.#frame += 1;
-        this.#paint();
-      });
-    }
+    this.#begin();
     this.#paint();
+  }
+  /**
+   * Starts a block with no wait to report: whatever
+   * {@link StatusLineOptions.rows} says is the whole of it.
+   *
+   * The clock still runs and the ticker still repaints, because rows that
+   * report on several tasks at once age between events exactly as a spinner
+   * does — see `worker-band.ts`, whose seconds tick without an event to
+   * prompt them.
+   */
+  open() {
+    if (!this.#enabled)
+      return;
+    this.#label = void 0;
+    this.#begin();
+    this.#paint();
+  }
+  /** Starts the repaint timer, if it is not already running. */
+  #begin() {
+    if (this.#cancel !== void 0)
+      return;
+    this.#startedAt = this.#now();
+    this.#frame = 0;
+    this.#cancel = this.#ticker(() => {
+      this.#frame += 1;
+      this.#paint();
+    });
   }
   /**
    * Erases the painted line but keeps the status running: the next tick (or
@@ -14132,10 +14700,11 @@ var StatusLine = class {
    * writing real output.
    */
   erase() {
-    if (!this.#painted)
+    const rows = this.#paintedRows;
+    if (rows === 0)
       return;
-    this.#painted = false;
-    if (this.#band === void 0) {
+    this.#paintedRows = 0;
+    if (rows === 1) {
       this.#output.write(ERASE);
       return;
     }
@@ -14159,22 +14728,68 @@ var StatusLine = class {
       this.erase();
       return;
     }
-    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
-    const status = formatStatus(this.#label, this.#now() - this.#startedAt, this.#tokens?.());
     const columns = this.#output.columns ?? DEFAULT_COLUMNS2;
-    const text2 = `${frame} ${status}`.slice(0, Math.max(1, columns - 1));
-    const line = this.#styles.tool(text2);
-    const band = this.#band;
-    if (band === void 0) {
-      this.#output.write(`${ERASE}${line}`);
-      this.#painted = true;
+    const content = this.#contentRows(columns);
+    if (content.length === 0) {
+      this.erase();
       return;
     }
-    const rule = band.rule(columns);
-    const rows = [rule, line, rule];
+    const band = this.#band;
+    const rows = band === void 0 ? content : [
+      band.rule(columns),
+      ...content,
+      ...this.#typedRow(columns),
+      band.rule(columns)
+    ];
+    if (rows.length === 1) {
+      this.#output.write(`${ERASE}${rows[0]}`);
+      this.#paintedRows = 1;
+      return;
+    }
     const below = rows.length - 1;
     this.#output.write(`${ERASE_BLOCK}${rows.join("\r\n")}${CSI}${below}A\r`);
-    this.#painted = true;
+    this.#paintedRows = rows.length;
+  }
+  /**
+   * What the block is reporting: the caller's rows when it has any, and
+   * otherwise the spinner for the wait {@link start} named.
+   *
+   * The caller's rows win rather than joining the spinner. A block reports one
+   * thing at a time — during an orchestration run the spinner never starts at
+   * all (every event carries a task id, so no turn-level wait is ever
+   * declared) — and two ideas of "what is happening" stacked on top of each
+   * other would be the screen contradicting itself.
+   */
+  #contentRows(columns) {
+    const rows = this.#rows?.(columns);
+    if (rows !== void 0 && rows.length > 0)
+      return rows;
+    const label = this.#label;
+    if (label === void 0)
+      return [];
+    const frame = FRAMES[this.#frame % FRAMES.length] ?? FRAMES[0];
+    const status = formatStatus(label, this.#now() - this.#startedAt, this.#tokens?.(), this.#queued?.());
+    const text2 = `${frame} ${status}`.slice(0, rowWidth(columns));
+    return [this.#styles.tool(text2)];
+  }
+  /**
+   * The line the user is typing, as the band's last row before the closing
+   * rule — or nothing at all, which is every case but a REPL mid-turn.
+   *
+   * A row rather than part of {@link #contentRows} because it is not content:
+   * it says nothing about what the block is reporting on, it only shows the
+   * user their own keystrokes, and it sits *under* whatever the block has to
+   * say so the band still reads with the input at the bottom of it — where the
+   * prompt would be if the turn were over. Which also means a block with
+   * nothing to report is still off screen: {@link #paint} erases on empty
+   * content before it gets here, and a lone typed row hanging between two
+   * rules would be a band around no status at all.
+   */
+  #typedRow(columns) {
+    const pending = this.#pending?.();
+    if (pending === void 0)
+      return [];
+    return [this.#styles.user(clipToEnd(pending, rowWidth(columns)))];
   }
 };
 
@@ -14325,6 +14940,7 @@ var EXIT_LABEL = {
   failed: "failed"
 };
 var THINKING_LABEL = "thinking";
+var MAX_HELD_CHARS = 4e3;
 var TextRenderer = class {
   #output;
   #styles;
@@ -14341,14 +14957,21 @@ var TextRenderer = class {
    * orchestration run, whose output shares the terminal with other tasks.
    */
   #claudeText = "";
+  /** What the user is typing into this turn, when anything. */
+  #pending;
+  /** Streamed text kept back while they type it — see {@link #hold}. */
+  #held = "";
   constructor(output = process.stdout, options = {}) {
     this.#output = output;
     this.#styles = options.styles ?? stylesFor(output);
+    this.#pending = options.pending;
     this.#status = options.status ?? new StatusLine({
       output,
       ...options.tokens === void 0 ? {} : { tokens: options.tokens },
       ...options.suspended === void 0 ? {} : { suspended: options.suspended },
-      ...options.frame === void 0 ? {} : { frame: options.frame }
+      ...options.frame === void 0 ? {} : { frame: options.frame },
+      ...options.pending === void 0 ? {} : { pending: options.pending },
+      ...options.queued === void 0 ? {} : { queued: options.queued }
     });
   }
   /**
@@ -14361,6 +14984,68 @@ var TextRenderer = class {
     this.#output.write(`${line}
 `);
     this.#status.refresh();
+  }
+  /**
+   * Writes one line *without* ending the turn it lands in the middle of.
+   *
+   * {@link line}'s mid-turn counterpart, and the difference is the whole
+   * point: the REPL's own notices normally arrive between turns, so `line`
+   * takes the status block down before writing. A notice about the turn that
+   * is still running ("queued — runs after this turn") must leave the block
+   * exactly where it is, spinner and all, and this writes through the same
+   * erase/print/repaint discipline to put it back.
+   */
+  interject(text2) {
+    this.#write(text2);
+  }
+  /**
+   * The line the user is typing into this turn changed: repaint the block
+   * that is carrying it.
+   *
+   * Called on every mid-turn keystroke. Three cases, all of them here rather
+   * than at the call site because they are about what is on screen: the block
+   * is up and simply needs redrawing; the block was stopped by streamed text
+   * and has to be started again so the typed line has a row to live on; or the
+   * line has just been sent, and whatever was held back while they typed can
+   * finally be printed.
+   */
+  pendingChanged() {
+    if (!this.#inTurn)
+      return;
+    if (this.#pending?.() === void 0) {
+      this.#release();
+      return;
+    }
+    if (this.#status.running) {
+      this.#status.refresh();
+      return;
+    }
+    this.#endStream();
+    this.#status.start(THINKING_LABEL);
+  }
+  /**
+   * Whether streamed text should wait rather than be printed.
+   *
+   * It waits while the user is mid-sentence, because the two want the same
+   * row: text arriving without a newline leaves the cursor inside a line the
+   * status block would otherwise erase from underneath it. Holding it is the
+   * one arrangement in which the answer and the line being typed both stay
+   * legible — the answer simply arrives in a burst when the line is sent.
+   */
+  #hold() {
+    if (this.#pending === void 0)
+      return false;
+    if (this.#held.length >= MAX_HELD_CHARS)
+      return false;
+    return this.#pending() !== void 0;
+  }
+  /** Prints whatever {@link #hold} kept back, if anything. */
+  #release() {
+    if (this.#held === "")
+      return;
+    const text2 = this.#held;
+    this.#held = "";
+    this.#emitStream(text2);
   }
   /**
    * Writes one line of caller-owned output (the REPL's own notices) through
@@ -14378,6 +15063,18 @@ var TextRenderer = class {
   #stream(text2) {
     if (text2 === "")
       return;
+    if (this.#hold()) {
+      this.#held += text2;
+      this.#streamed = true;
+      return;
+    }
+    this.#emitStream(`${this.#held}${text2}`);
+    this.#held = "";
+  }
+  /** The write half of {@link #stream}, shared with {@link #release}. */
+  #emitStream(text2) {
+    if (text2 === "")
+      return;
     this.#status.stop();
     this.#output.write(text2);
     this.#streaming = true;
@@ -14385,6 +15082,7 @@ var TextRenderer = class {
   }
   /** Terminates an open streamed line, if there is one. */
   #endStream() {
+    this.#release();
     if (!this.#streaming)
       return;
     this.#streaming = false;
@@ -14774,6 +15472,197 @@ var JsonRenderer = class {
 `);
   }
 };
+
+// apps/cli/dist/worker-band.js
+var FACES = {
+  pending: { glyph: "\xB7", role: "tool" },
+  running: { glyph: "\u25B6", role: "tool" },
+  held: { glyph: "\u23F8", role: "warn" },
+  retrying: { glyph: "\u21BB", role: "warn" },
+  escalated: { glyph: "\u2191", role: "warn" },
+  succeeded: { glyph: "\u2714", role: "ok" },
+  failed: { glyph: "\u2716", role: "error" },
+  cancelled: { glyph: "\u2298", role: "warn" }
+};
+var RANK = {
+  running: 0,
+  held: 1,
+  failed: 2,
+  retrying: 3,
+  escalated: 3,
+  cancelled: 4,
+  pending: 5,
+  succeeded: 6
+};
+function isRecord11(value) {
+  return typeof value === "object" && value !== null;
+}
+function stringOrUndefined2(value) {
+  return typeof value === "string" ? value : void 0;
+}
+function seedWorkerSummaries(taskIds) {
+  const summaries = /* @__PURE__ */ new Map();
+  for (const id of taskIds) {
+    if (!summaries.has(id))
+      summaries.set(id, { id, state: "pending" });
+  }
+  return summaries;
+}
+function applyWorkerEvent(summaries, event2) {
+  const data = isRecord11(event2.data) ? event2.data : {};
+  const taskId = event2.taskId ?? stringOrUndefined2(data.taskId);
+  if (taskId === void 0)
+    return summaries;
+  const previous = summaries.get(taskId) ?? {
+    id: taskId,
+    state: "pending"
+  };
+  const next = nextSummary(previous, event2.type, data, event2.timestamp);
+  if (next === void 0)
+    return summaries;
+  const out = new Map(summaries);
+  out.set(taskId, next);
+  return out;
+}
+function nextSummary(previous, type, data, timestamp) {
+  const attempt = typeof data.attempt === "number" ? data.attempt : void 0;
+  const agent = stringOrUndefined2(data.agent) ?? previous.agent;
+  switch (type) {
+    case "task.started":
+      return {
+        id: previous.id,
+        state: "running",
+        startedAt: timestamp,
+        ...agent === void 0 ? {} : { agent },
+        ...attempt === void 0 ? {} : { attempt }
+      };
+    case "task.held":
+      return { ...previous, state: "held" };
+    case "task.completed": {
+      const result = isRecord11(data.result) ? data.result : {};
+      if (data.final === false) {
+        return {
+          id: previous.id,
+          state: "retrying",
+          ...agent === void 0 ? {} : { agent },
+          ...attempt === void 0 ? {} : { attempt }
+        };
+      }
+      return {
+        id: previous.id,
+        state: result.status === "success" ? "succeeded" : "failed",
+        ...agent === void 0 ? {} : { agent },
+        ...attempt === void 0 ? {} : { attempt }
+      };
+    }
+    case "task.escalated": {
+      const to = stringOrUndefined2(data.to);
+      return {
+        ...previous,
+        state: "escalated",
+        ...to === void 0 ? {} : { agent: to }
+      };
+    }
+    case "task.cancelled":
+      return { ...previous, state: "cancelled" };
+    default:
+      return void 0;
+  }
+}
+function workerCell(summary, now, styles) {
+  const face = FACES[summary.state];
+  const detail = detailFor(summary, now);
+  return {
+    plain: `[${summary.id} ${face.glyph}${detail}]`,
+    styled: `${styles.tool(`[${summary.id} `)}${styles.role(face.role, face.glyph)}${styles.tool(`${detail}]`)}`,
+    rank: RANK[summary.state]
+  };
+}
+function detailFor(summary, now) {
+  const attempt = summary.attempt !== void 0 && summary.attempt > 1 ? ` #${summary.attempt}` : "";
+  switch (summary.state) {
+    case "running": {
+      const agent = summary.agent === void 0 ? "" : ` ${summary.agent}`;
+      const started = summary.startedAt;
+      const elapsed = started === void 0 ? "" : ` ${Math.max(0, Math.floor((now - started) / 1e3))}s`;
+      return `${agent}${elapsed}${attempt}`;
+    }
+    case "held":
+      return " held";
+    case "retrying":
+      return attempt;
+    default:
+      return "";
+  }
+}
+function formatWorkerRow(summaries, options) {
+  if (summaries.length === 0)
+    return "";
+  const { styles } = options;
+  const width = Math.max(1, options.columns - 1);
+  const cells = summaries.map((summary) => workerCell(summary, options.now, styles));
+  const all = cells.map((cell) => cell.plain).join(" ");
+  if (displayWidth(all) <= width) {
+    return cells.map((cell) => cell.styled).join(" ");
+  }
+  const order = cells.map((cell, index2) => ({ cell, index: index2 })).sort((a, b) => a.cell.rank - b.cell.rank || a.index - b.index);
+  const kept = /* @__PURE__ */ new Set();
+  let used = 0;
+  for (const { cell, index: index2 } of order) {
+    const separator = kept.size === 0 ? 0 : 1;
+    const dropped2 = cells.length - kept.size - 1;
+    const tally2 = dropped2 === 0 ? 0 : displayWidth(` +${dropped2}`);
+    if (used + separator + displayWidth(cell.plain) + tally2 > width)
+      break;
+    kept.add(index2);
+    used += separator + displayWidth(cell.plain);
+  }
+  const dropped = cells.length - kept.size;
+  const tally = dropped === 0 ? "" : ` +${dropped}`;
+  if (kept.size === 0) {
+    return styles.tool(`+${cells.length}`.slice(0, width));
+  }
+  const shown = cells.filter((_, index2) => kept.has(index2)).map((cell) => cell.styled).join(" ");
+  return `${shown}${tally === "" ? "" : styles.tool(tally)}`;
+}
+function createWorkerBand(options) {
+  const output = options.output ?? process.stdout;
+  const styles = options.styles ?? stylesFor(output);
+  const now = options.now ?? (() => Date.now());
+  let summaries = seedWorkerSummaries(options.taskIds);
+  const statusOptions = {
+    output,
+    styles,
+    now,
+    rows: (columns) => {
+      const row = formatWorkerRow([...summaries.values()], {
+        columns,
+        now: now(),
+        styles
+      });
+      return row === "" ? [] : [row];
+    },
+    ...options.tty === void 0 ? {} : { tty: options.tty },
+    ...options.frame === void 0 ? {} : { frame: options.frame },
+    ...options.suspended === void 0 ? {} : { suspended: options.suspended },
+    ...options.ticker === void 0 ? {} : { ticker: options.ticker }
+  };
+  const status = new StatusLine(statusOptions);
+  return {
+    status,
+    sink: {
+      emit(event2) {
+        const next = applyWorkerEvent(summaries, event2);
+        if (next === summaries)
+          return;
+        summaries = next;
+        status.refresh();
+      }
+    },
+    open: () => status.open(),
+    stop: () => status.stop()
+  };
+}
 
 // apps/cli/dist/orchestrate.js
 var DEFAULT_ISOLATION = "worktree";
@@ -15167,11 +16056,44 @@ async function executePreparedPlan(request, deps = {}) {
       output.error(`Note: showing plain output \u2014 the dashboard could not start (${errorText2(error)})`);
     }
   }
-  const renderer = tui !== void 0 ? void 0 : deps.renderer ?? (options.json ? new JsonRenderer() : new TextRenderer());
-  const events2 = fanOutSink(renderer, tui?.sink, store === void 0 ? void 0 : storeSink(store));
+  const presentation = deps.presentation ?? {};
+  const workers = tui === void 0 && !options.json && deps.renderer === void 0 && plan.tasks.length > 0 ? createWorkerBand({
+    taskIds: plan.tasks.map((task) => task.id),
+    ...presentation
+  }) : void 0;
+  const openWorkerRow = () => {
+    if (workers === void 0)
+      return;
+    workers.open();
+    presentation.onBand?.(workers.status);
+  };
+  const closeWorkerRow = () => {
+    if (workers === void 0)
+      return;
+    workers.stop();
+    presentation.onBand?.(void 0);
+  };
+  const renderer = tui !== void 0 ? void 0 : deps.renderer ?? (options.json ? new JsonRenderer() : new TextRenderer(presentation.output ?? process.stdout, {
+    ...presentation.styles === void 0 ? {} : { styles: presentation.styles },
+    ...presentation.frame === void 0 ? {} : { frame: presentation.frame },
+    ...presentation.suspended === void 0 ? {} : { suspended: presentation.suspended },
+    // One block, painted by one object: the renderer erases and
+    // repaints the worker row around every line it prints, exactly
+    // as it does the spinner it would otherwise own.
+    ...workers === void 0 ? {} : { status: workers.status }
+  }));
+  const events2 = fanOutSink(
+    // Before the renderer, so the row the renderer repaints under a freshly
+    // printed line is already true of the event that caused it.
+    workers?.sink,
+    renderer,
+    tui?.sink,
+    store === void 0 ? void 0 : storeSink(store)
+  );
   const usage = request.usage ?? new UsageTracker();
   const taskTimeoutMs = options.timeoutSeconds === void 0 ? void 0 : options.timeoutSeconds * 1e3;
   const fail2 = async (message) => {
+    closeWorkerRow();
     await closeTui(tui, "failed to run");
     if (options.json)
       jsonLine2(output, { ok: false, error: message });
@@ -15210,23 +16132,28 @@ async function executePreparedPlan(request, deps = {}) {
       output.log(`validators: ${names}`);
     }
   }
+  openWorkerRow();
   try {
     await new DeterministicScheduler(new PolicyRouter(), executor, events2).run(runId, graph, policy, controller.signal);
   } catch (error) {
     return await fail2(errorText2(error));
   } finally {
     process.off("SIGINT", onSigint);
+    closeWorkerRow();
   }
   const tasks = graph.all();
   await recordRunStatus(store, runId, runStatusFor(tasks, controller.signal.aborted));
   await recordRunUsage(store, runId, usage.totals(), options.backend);
   await closeTui(tui, outcomeLine(tasks));
-  return renderRunSummary(runId, tasks, usage, output, options.json, {
+  const exitCode = renderRunSummary(runId, tasks, usage, output, options.json, {
     objective: request.objective,
     policy,
     project: request.project,
     ...request.injectedReviews === void 0 ? {} : { injectedReviews: request.injectedReviews }
   });
+  if (!options.json)
+    deps.notify?.runFinished(outcomeLine(tasks));
+  return exitCode;
 }
 function planningThrough(usage, inner) {
   const factory = inner ?? ((args) => new LlmPlanner(args));
@@ -16675,8 +17602,148 @@ function enterAltScreen(options = {}) {
   };
 }
 
+// apps/cli/dist/shell-mode.js
+import { spawn as spawn6 } from "node:child_process";
+function parseBangLine(trimmedLine) {
+  if (!trimmedLine.startsWith("!"))
+    return void 0;
+  const kind = trimmedLine.startsWith("!!") ? "!!" : "!";
+  return { kind, command: trimmedLine.slice(kind.length).trim() };
+}
+function shellUsageNotice(kind) {
+  return kind === "!!" ? "usage: !!<command>  \u2014 runs a command and attaches its output to your next message" : "usage: !<command>  \u2014 runs a command in your shell";
+}
+function exitCodeNotice(code) {
+  if (code === 0)
+    return void 0;
+  return `exit ${code ?? -1}`;
+}
+function splitOutputLines(output) {
+  if (output === "")
+    return [];
+  const lines = output.split("\n");
+  if (lines.at(-1) === "")
+    lines.pop();
+  return lines;
+}
+var MAX_CAPTURED_OUTPUT_CHARS = 1e5;
+function capOutput(text2, maxChars) {
+  if (text2.length <= maxChars)
+    return { text: text2, truncated: false };
+  const more = text2.length - maxChars;
+  return {
+    text: `${text2.slice(0, maxChars)}
+...[truncated, ${more} more characters]`,
+    truncated: true
+  };
+}
+var KILL_GRACE_MS5 = 2e3;
+function runShellCaptured(command, options) {
+  const spawnFn = options.spawn ?? spawn6;
+  const maxChars = options.maxChars ?? MAX_CAPTURED_OUTPUT_CHARS;
+  const invocation = shellInvocationFor(command);
+  return new Promise((resolve5) => {
+    const child = spawnFn(invocation.command, [...invocation.args], {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      ...detachedSpawnOptions()
+    });
+    let output = "";
+    let settled = false;
+    const killGroup = (signal) => {
+      killProcessTree(child, signal);
+    };
+    const onAbort = () => {
+      killGroup("SIGTERM");
+      setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS5).unref();
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    const cleanup = () => {
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+    child.stdout?.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      if (settled)
+        return;
+      settled = true;
+      cleanup();
+      const capped = capOutput(`${output}${output === "" ? "" : "\n"}[error: ${error.message}]`, maxChars);
+      resolve5({ output: capped.text, code: -1, truncated: capped.truncated });
+    });
+    child.on("close", (code) => {
+      if (settled)
+        return;
+      settled = true;
+      cleanup();
+      const capped = capOutput(output, maxChars);
+      resolve5({ output: capped.text, code, truncated: capped.truncated });
+    });
+  });
+}
+function runShellInteractive(command, options) {
+  const spawnFn = options.spawn ?? spawn6;
+  const invocation = shellInvocationFor(command);
+  return new Promise((resolve5) => {
+    const child = spawnFn(invocation.command, [...invocation.args], {
+      cwd: options.cwd,
+      stdio: "inherit"
+    });
+    child.once("error", () => resolve5({ code: -1 }));
+    child.once("exit", (code) => resolve5({ code }));
+  });
+}
+var MAX_PENDING_SHELL_CHARS = MAX_CAPTURED_OUTPUT_CHARS;
+function createPendingShellQueue(maxChars = MAX_PENDING_SHELL_CHARS) {
+  const captures = [];
+  let totalChars = 0;
+  return {
+    push(capture) {
+      captures.push(capture);
+      totalChars += capture.output.length;
+      while (totalChars > maxChars && captures.length > 1) {
+        const dropped = captures.shift();
+        if (dropped !== void 0)
+          totalChars -= dropped.output.length;
+      }
+    },
+    takeAll() {
+      const taken = captures.slice();
+      captures.length = 0;
+      totalChars = 0;
+      return taken;
+    },
+    clear() {
+      const dropped = captures.length;
+      captures.length = 0;
+      totalChars = 0;
+      return dropped;
+    },
+    count: () => captures.length
+  };
+}
+function pendingAttachedNotice(command) {
+  return `\u2192 output of !!${command} will ride along with your next message`;
+}
+function attachShellContext(instruction, captures) {
+  if (captures.length === 0)
+    return instruction;
+  const blocks = captures.map((capture, index2) => `<shell-output index="${index2 + 1}" command=${JSON.stringify(`!!${capture.command}`)}>
+${capture.output}
+</shell-output>`);
+  return `${instruction}
+
+<additional-context>
+${blocks.join("\n")}
+</additional-context>`;
+}
+
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.15.0";
+var CLI_VERSION = "0.16.0";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -16693,6 +17760,26 @@ function toChatLike(session) {
       compactNow: (context) => (
         // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
         session.compactNow(context)
+      )
+    },
+    // Forwarded one by one rather than spread, so a session that cannot steer
+    // stays a session that cannot steer: the REPL feature-detects on the
+    // property being *there*, and an `undefined` under the key would answer
+    // the question wrongly.
+    ...session.injectUserMessage === void 0 ? {} : {
+      injectUserMessage: (text2) => (
+        // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+        session.injectUserMessage(text2)
+      )
+    },
+    ...session.hasUnansweredInjection === void 0 ? {} : {
+      // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+      hasUnansweredInjection: () => session.hasUnansweredInjection()
+    },
+    ...session.continueTurn === void 0 ? {} : {
+      continueTurn: (context) => (
+        // biome-ignore lint/style/noNonNullAssertion: narrowed by the check above.
+        session.continueTurn(context)
       )
     }
   };
@@ -16873,6 +17960,11 @@ var SLASH_COMMANDS = [
     help: "restore the files to before the last prompt"
   },
   {
+    name: "diff",
+    usage: "/diff [n]",
+    help: "show what changed since a checkpoint (default: the last one)"
+  },
+  {
     name: "policy",
     usage: "/policy",
     help: "edit this project's orchestration policy \u2014 no model call"
@@ -16984,6 +18076,7 @@ async function createInteractiveController(deps) {
   let sessionName = deps.start.name;
   let persisted = deps.start.persisted;
   let titleDirty = false;
+  const pendingShell = createPendingShellQueue();
   const factoryArgs = (messages, sessionRef) => ({
     sessionId,
     backend,
@@ -17106,6 +18199,7 @@ async function createInteractiveController(deps) {
     }
   };
   const handleMessage = async (text2, signal) => {
+    const checkpointsBefore = deps.checkpoints?.entries() ?? [];
     const checkpointWarning = await deps.checkpoints?.capture(text2);
     if (checkpointWarning !== void 0)
       emitWarn(checkpointWarning);
@@ -17119,14 +18213,20 @@ async function createInteractiveController(deps) {
     });
     for (const notice of prepared.notices)
       emitNotice(notice);
+    const instruction = attachShellContext(prepared.instruction, pendingShell.takeAll());
     const before = deps.usage.totals();
+    const turnStartedAt = now();
+    const turnContext = {
+      runId: sessionId,
+      workspacePath: deps.workspacePath,
+      ...signal === void 0 ? {} : { signal }
+    };
     let result;
     try {
-      result = await chat.send(prepared.instruction, {
-        runId: sessionId,
-        workspacePath: deps.workspacePath,
-        ...signal === void 0 ? {} : { signal }
-      }, prepared.images, prepared.imagePaths);
+      result = await chat.send(instruction, turnContext, prepared.images, prepared.imagePaths);
+      while (signal?.aborted !== true && result.status === "success" && chat.hasUnansweredInjection?.() === true && chat.continueTurn !== void 0) {
+        result = await chat.continueTurn(turnContext);
+      }
     } catch (error) {
       emitError(`error: ${errorText3(error)}`);
     }
@@ -17138,9 +18238,19 @@ async function createInteractiveController(deps) {
       else
         emitWarn(line);
     }
+    if (result?.status === "success" && signal?.aborted !== true) {
+      const baselineTree = capturedTreeFor(checkpointsBefore, deps.checkpoints?.entries() ?? []);
+      const stat9 = baselineTree === void 0 ? void 0 : await deps.checkpoints?.changeStat(baselineTree);
+      const summary = stat9 === void 0 ? void 0 : formatChangeSummary(stat9);
+      if (summary !== void 0)
+        emit2(styles.tool(summary));
+    }
     const after = deps.usage.totals();
     await recordTurnUsage(before, after);
     emit2(styles.tool(usageDeltaLine(before, after)));
+    if (signal?.aborted !== true) {
+      deps.notify?.turnFinished(now() - turnStartedAt);
+    }
     return drain();
   };
   const listRecords = async () => {
@@ -17159,6 +18269,7 @@ async function createInteractiveController(deps) {
       emit2(`  ${command.usage.padEnd(width)}  ${command.help}`);
     }
     emitNotice("anything else is sent to the agent.");
+    emitNotice("!<command> runs a shell command; !!<command> captures its output for your next message.");
     if (customCommands.length > 0) {
       emit2("");
       emitHeading("custom commands (.agent/commands/):");
@@ -17179,6 +18290,7 @@ async function createInteractiveController(deps) {
     title = "";
     persisted = false;
     titleDirty = false;
+    pendingShell.clear();
     await build([]);
     emitNotice(`started a new session ${shortId2(sessionId)}`);
     return drain("new-session");
@@ -17460,6 +18572,32 @@ async function createInteractiveController(deps) {
     }
     return drain();
   };
+  const slashDiff = async (argument) => {
+    if (deps.checkpoints === void 0) {
+      emitWarn("/diff is not available here.");
+      return drain();
+    }
+    const trimmed = argument.trim();
+    const stepsBack = trimmed === "" ? 1 : Number(trimmed);
+    if (!Number.isInteger(stepsBack) || stepsBack < 1) {
+      emitNotice("usage: /diff [n]  \u2014 n counts back from the last checkpoint");
+      return drain();
+    }
+    const result = await deps.checkpoints.diff(stepsBack, {
+      color: styles.enabled
+    });
+    if (!result.ok) {
+      emitNotice(result.reason);
+      return drain();
+    }
+    emitNotice(diffHeaderLine(result.label, result.ageMs));
+    const diffLines2 = result.diff.split("\n");
+    if (diffLines2[diffLines2.length - 1] === "")
+      diffLines2.pop();
+    for (const line of diffLines2)
+      emit2(line);
+    return drain();
+  };
   const replOutput = { log: emit2, error: emitError };
   const registerForRun = async (label) => {
     await registerSession(label);
@@ -17572,6 +18710,34 @@ async function createInteractiveController(deps) {
       await rebuildSession(true);
     }
   };
+  const handleShell = async (parsed, signal) => {
+    if (parsed.command === "") {
+      emitNotice(shellUsageNotice(parsed.kind));
+      return drain();
+    }
+    if (deps.shell === void 0) {
+      emitWarn("shell commands are not available here.");
+      return drain();
+    }
+    if (parsed.kind === "!" && deps.shell.runInteractive !== void 0) {
+      const { code } = await deps.shell.runInteractive(parsed.command);
+      const notice2 = exitCodeNotice(code);
+      if (notice2 !== void 0)
+        emit2(styles.tool(notice2));
+      return drain();
+    }
+    const result = await deps.shell.runCaptured(parsed.command, signal);
+    for (const line of splitOutputLines(result.output))
+      emit2(line);
+    const notice = exitCodeNotice(result.code);
+    if (notice !== void 0)
+      emit2(styles.tool(notice));
+    if (parsed.kind === "!!") {
+      pendingShell.push({ command: parsed.command, output: result.output });
+      emitNotice(pendingAttachedNotice(parsed.command));
+    }
+    return drain();
+  };
   const handleSlash = async (line, signal) => {
     const space = line.indexOf(" ");
     const name = (space === -1 ? line : line.slice(0, space)).slice(1).toLowerCase();
@@ -17611,6 +18777,8 @@ async function createInteractiveController(deps) {
         return await slashCompact();
       case "undo":
         return await slashUndo();
+      case "diff":
+        return await slashDiff(argument);
       case "policy":
         return await slashPolicy();
       case "plan":
@@ -17650,8 +18818,15 @@ async function createInteractiveController(deps) {
         return { output: [] };
       if (trimmed.startsWith("/"))
         return await handleSlash(trimmed, signal);
+      const bang = parseBangLine(trimmed);
+      if (bang !== void 0)
+        return await handleShell(bang, signal);
       return await handleMessage(trimmed, signal);
-    }
+    },
+    // Read through `chat` at call time, not captured: `/new`, `/model` and
+    // `/config` all replace the conversation under this controller, and a
+    // line meant for the turn running now must reach the session running it.
+    steer: (text2) => chat.injectUserMessage?.(text2) === true
   };
 }
 async function openChatStore(workspacePath) {
@@ -17664,12 +18839,39 @@ async function openChatStore(workspacePath) {
   }
 }
 var SIGINT_LINE = /* @__PURE__ */ Symbol("sigint");
+function routeMidTurnLine(text2, steer) {
+  if (text2.startsWith("/") || text2.startsWith("!"))
+    return "queued";
+  return steer(text2) ? "steered" : "queued";
+}
+function midTurnNotice(routing) {
+  return routing === "steered" ? "\u2192 queued \u2014 will steer the running turn" : "\u2192 queued \u2014 runs after this turn";
+}
+function droppedQueueNotice(count) {
+  return `(${count} queued line${count === 1 ? "" : "s"} dropped)`;
+}
+function createLineQueue() {
+  const lines = [];
+  return {
+    depth: () => lines.length,
+    push: (line) => {
+      lines.push(line);
+    },
+    shift: () => lines.shift(),
+    clear: () => {
+      const dropped = lines.length;
+      lines.length = 0;
+      return dropped;
+    }
+  };
+}
 function inputManagerLineSource(manager) {
   return {
     next: async (promptText) => {
       const result = await manager.readMessage(promptText);
       return result === INPUT_SIGINT ? SIGINT_LINE : result;
     },
+    captureWhileBusy: (onLine) => manager.captureWhileBusy(onLine),
     close: () => manager.close()
   };
 }
@@ -17791,6 +18993,11 @@ async function runInteractive(options) {
   const promptTty = interactiveTty && process.stdout.isTTY === true;
   const onboardingTty = promptTty && options.setup !== false;
   const effectiveConfig = mergeKapelConfigs(options.config, options.projectConfig)?.config;
+  const notifier = createNotifier({
+    stream: process.stdout,
+    env: process.env,
+    setting: resolveNotifySetting(process.env, options.config, options.projectConfig).value
+  });
   let inputManager;
   const withSuspended = (fn) => inputManager === void 0 ? fn() : inputManager.withSuspended(fn);
   let altScreen;
@@ -17888,6 +19095,7 @@ async function runInteractive(options) {
       })))
     };
     const band = promptTty ? createBandDecor(styles) : void 0;
+    const queue = createLineQueue();
     const renderer = new TextRenderer(process.stdout, {
       styles,
       ...band === void 0 ? {} : { frame: band },
@@ -17896,7 +19104,22 @@ async function runInteractive(options) {
         return totals.inputTokens + totals.outputTokens;
       },
       // A permission question owns the screen while it waits for an answer.
-      suspended: () => promptState.active
+      suspended: () => promptState.active,
+      // The line being typed into the running turn. Read off the manager
+      // rather than handed to it, because the manager cannot exist yet: it is
+      // built below, out of a completer and a prompter this renderer is
+      // already part of.
+      pending: () => inputManager?.pendingRow(),
+      queued: () => queue.depth()
+    });
+    const runBand = { current: void 0 };
+    const replPresentation = () => ({
+      styles,
+      ...band === void 0 ? {} : { frame: band },
+      suspended: () => promptState.active,
+      onBand: (block) => {
+        runBand.current = block;
+      }
     });
     const activeTurn = {
       current: void 0
@@ -17922,6 +19145,12 @@ async function runInteractive(options) {
       // keystroke so a command file added mid-session shows up as soon as
       // the next `/help` has seen it.
       commandMenu: () => commandMenu.current,
+      // A mid-turn keystroke is not echoed by `readline` (see
+      // `gatedOutput`): the status band paints that line, and this is how
+      // it hears that there is something new to paint.
+      onPendingChange: () => {
+        renderer.pendingChanged();
+      },
       styles,
       ...band === void 0 ? {} : { band }
     }) : void 0;
@@ -17933,6 +19162,7 @@ async function runInteractive(options) {
       interactive: interactiveTty,
       state: promptState,
       allowlist: sessionAllowlist,
+      notify: notifier,
       ...manager === void 0 ? {} : { ask: (query) => manager.question(query) }
     });
     const delegatedModelFor = (aliasForBuild) => aliasForBuild === chatAlias ? delegatedModel : delegatedModelOverride({ value: aliasForBuild, source: "flag" });
@@ -18028,6 +19258,7 @@ async function runInteractive(options) {
       workspacePath,
       ...store === void 0 ? {} : { store },
       createSession,
+      notify: notifier,
       // Through the renderer rather than straight to the console: the REPL's
       // own lines land while a turn's status line may still be on screen, and
       // only the renderer knows how to take the cursor back from it.
@@ -18045,6 +19276,22 @@ async function runInteractive(options) {
       // One store for the whole REPL: the checkpoints outlive `/new`,
       // `/resume` and `/model`, because the working tree does too.
       checkpoints: createCheckpointStore({ workspacePath }),
+      // `!`/`!!` — see `shell-mode.ts`. `runInteractive` only exists where
+      // there is a terminal to hand over (`manager`, the same condition
+      // `/login`'s spawns above are gated on), and — exactly like those —
+      // goes through `withSuspendedFullScreen` so the REPL's own
+      // `InputManager` lets go of raw mode for the run and takes the
+      // alternate screen back afterwards. `runCaptured` needs no terminal at
+      // all, so it is wired unconditionally.
+      shell: {
+        ...manager === void 0 ? {} : {
+          runInteractive: (command) => withSuspendedFullScreen(() => runShellInteractive(command, { cwd: workspacePath }))
+        },
+        runCaptured: (command, signal) => runShellCaptured(command, {
+          cwd: workspacePath,
+          ...signal === void 0 ? {} : { signal }
+        })
+      },
       onCustomCommandsChanged: (commands) => {
         customCommandNames.current = commands.map((command) => command.name);
         commandMenu.current = replCommandMenuEntries(commands);
@@ -18057,7 +19304,7 @@ async function runInteractive(options) {
       // `default` when nobody chose one — and `/plan` and `/orchestrate` must
       // report and forward the same thing the chat does. On the native path
       // the two are the same value.
-      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, chatAlias, backend)),
+      orchestrate: (objective) => runOrchestrate(objective, orchestrateOptionsFor(options, chatAlias, backend), { presentation: replPresentation(), notify: notifier }),
       plan: (objective, output) => runPlan(objective, planOptionsFor(options, chatAlias, backend), {
         output
       }),
@@ -18077,7 +19324,11 @@ async function runInteractive(options) {
           prompt: ttyPolicyEditPrompt(void 0, withSuspended)
         })
       } : {},
-      resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), { output }),
+      resumeRun: (runId, output) => runResume(runId, resumeOptionsFor(options, backend), {
+        output,
+        presentation: replPresentation(),
+        notify: notifier
+      }),
       login: {
         backends: loginBackends,
         check: (target) => checkBackendAvailability(target),
@@ -18161,7 +19412,24 @@ async function runInteractive(options) {
         // one, because its transcript is the only place a marker still helps.
         promptText: band === void 0 ? promptMarker(styles) : BAND_PROMPT,
         styles,
-        activeTurn
+        activeTurn,
+        queue,
+        // Mid-turn notices go through the renderer, not the console: the
+        // status band is on screen while they are written, and only the
+        // renderer knows how to take those rows back and put them straight
+        // back afterwards.
+        //
+        // Unless the band on screen is not the renderer's at all: a run
+        // started from `/orchestrate` paints its own (see `replPresentation`),
+        // and it is taken down and put back around the notice by the same
+        // erase-print-repaint, from out here, because it is the one block the
+        // renderer cannot see.
+        write: (line) => {
+          const run = runBand.current;
+          run?.erase();
+          renderer.interject(line);
+          run?.refresh();
+        }
       });
     } finally {
       lineSource.close();
@@ -18178,7 +19446,40 @@ async function runInteractive(options) {
 }
 async function replLoop(args) {
   const { controller, lines, promptState, promptText, styles, activeTurn } = args;
+  const queue = args.queue ?? createLineQueue();
+  const note = args.write ?? ((line) => {
+    console.log(line);
+  });
   let armed = false;
+  const onMidTurnLine = (text2) => {
+    const routing = routeMidTurnLine(text2, (line) => controller.steer(line));
+    if (routing === "queued")
+      queue.push(text2);
+    note(styles.notice(midTurnNotice(routing)));
+  };
+  const dispatch = async (line) => {
+    const turn = new AbortController();
+    if (activeTurn !== void 0)
+      activeTurn.current = turn;
+    const onSigint = () => {
+      if (promptState.active)
+        return;
+      turn.abort();
+    };
+    process.on("SIGINT", onSigint);
+    const endCapture = lines.captureWhileBusy?.(onMidTurnLine);
+    try {
+      return await controller.handleLine(line, turn.signal);
+    } finally {
+      endCapture?.();
+      process.off("SIGINT", onSigint);
+      if (activeTurn !== void 0)
+        activeTurn.current = void 0;
+      if (turn.signal.aborted && queue.depth() > 0) {
+        note(styles.notice(droppedQueueNotice(queue.clear())));
+      }
+    }
+  };
   for (; ; ) {
     const line = await lines.next(promptText);
     if (line === void 0) {
@@ -18195,25 +19496,13 @@ async function replLoop(args) {
       continue;
     }
     armed = false;
-    const turn = new AbortController();
-    if (activeTurn !== void 0)
-      activeTurn.current = turn;
-    const onSigint = () => {
-      if (promptState.active)
-        return;
-      turn.abort();
-    };
-    process.on("SIGINT", onSigint);
-    let result;
-    try {
-      result = await controller.handleLine(line, turn.signal);
-    } finally {
-      process.off("SIGINT", onSigint);
-      if (activeTurn !== void 0)
-        activeTurn.current = void 0;
+    let next = line;
+    while (next !== void 0) {
+      const result = await dispatch(next);
+      if (result.effect === "exit")
+        return 0;
+      next = queue.shift();
     }
-    if (result.effect === "exit")
-      return 0;
   }
 }
 function planOptionsFor(options, alias, backend) {
