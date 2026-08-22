@@ -31,7 +31,11 @@ export {
   createDelegatedToolsResolver,
 } from "./claude-code-executor.js";
 export type { CodexWorkerExecutorOptions } from "./codex-executor.js";
-export { CodexWorkerExecutor } from "./codex-executor.js";
+export {
+  CodexWorkerExecutor,
+  codexToolScopingFor,
+  createCodexToolsResolver,
+} from "./codex-executor.js";
 export { createDelegatedModelResolver } from "./delegated-model.js";
 export type { MixedBackendWorkerExecutorOptions } from "./mixed-executor.js";
 export {

@@ -278,6 +278,42 @@ export const ToolExecutionCompletedEventSchema = variant(
 );
 
 /* -------------------------------------------------------------------------- */
+/* MCP servers                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An MCP server finished its handshake and its tools joined the native loop.
+ *
+ * Two events cover the whole lifecycle on purpose. A started/failed pair is
+ * what a user can act on — "did my server come up, and if not, why" — while
+ * the calls themselves are already `tool.execution.*` like every other tool's,
+ * and a `stopped` event would only ever say "the session ended", which the
+ * session's own events already say.
+ */
+export const McpServerStartedEventSchema = variant(
+  "mcp.server.started",
+  z.object({
+    /** The name the server is configured under, and the one in its tool names. */
+    server: z.string(),
+    /** How many of its tools were bridged into the loop. */
+    tools: z.number(),
+    /**
+     * Tools the server offered that kapel could not expose — a descriptor that
+     * did not validate, or a bridged name past the providers' 64-character
+     * cap. Absent when none were dropped.
+     */
+    skippedTools: z.number().optional(),
+    /** The `serverInfo.name` the server reported, when it reported one. */
+    implementation: z.string().optional(),
+  }),
+);
+
+export const McpServerFailedEventSchema = variant(
+  "mcp.server.failed",
+  z.object({ server: z.string(), reason: z.string() }),
+);
+
+/* -------------------------------------------------------------------------- */
 /* chat sessions                                                               */
 /* -------------------------------------------------------------------------- */
 
@@ -314,6 +350,29 @@ export const ValidationCompletedEventSchema = variant(
     exitCode: z.number().nullable(),
     durationMs: z.number(),
   }),
+);
+
+/* -------------------------------------------------------------------------- */
+/* backend capability gaps                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A routed agent's `tools:` restriction could not be enforced by the backend
+ * that ran it.
+ *
+ * Exists because a delegating backend can own a coarser permission model than
+ * kapel's own (Codex's `--sandbox` gates the whole process, not a tool at a
+ * time — see `codexToolScopingFor` in `@agent/coding-agent`), and silently
+ * running such an agent unrestricted is the failure mode this event is for:
+ * `docs/FUTURE_WORK.md` used to call that gap out only in prose, which is
+ * exactly the kind of degradation nothing downstream could ever notice.
+ * `backend` names which one hit the limit, so the same event type covers
+ * whatever backend runs into it next rather than being named after Codex
+ * specifically.
+ */
+export const ToolScopingUnsupportedEventSchema = variant(
+  "backend.tool_scoping_unsupported",
+  z.object({ backend: z.string(), agent: z.string() }),
 );
 
 /* -------------------------------------------------------------------------- */
@@ -376,10 +435,13 @@ export const KnownAgentEventSchema = z.discriminatedUnion("type", [
   ContextCompactedEventSchema,
   ToolExecutionStartedEventSchema,
   ToolExecutionCompletedEventSchema,
+  McpServerStartedEventSchema,
+  McpServerFailedEventSchema,
   ChatTurnStartedEventSchema,
   ChatTurnCompletedEventSchema,
   ValidationStartedEventSchema,
   ValidationCompletedEventSchema,
+  ToolScopingUnsupportedEventSchema,
   WorktreeCreatedEventSchema,
   WorktreeIntegratedEventSchema,
   WorktreeRemovedEventSchema,

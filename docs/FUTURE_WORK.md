@@ -15,14 +15,31 @@ contract for one of two backends. The seam is documented on
 `BackendTurnRequest` in `packages/coding-agent/src/backend-chat.ts`; until
 then the REPL says so in one line and sends the path.
 
-### 2. Codex parity limits
-Codex owns its sandbox, so per-agent `tools:` scoping is ignored and project
-validators are skipped under `--backend codex` (both documented). Revisit
-when the Codex CLI grows the hooks; until then the asymmetry with
-claude-code (which scopes tools and runs validators) stays loudly
-documented.
+### 2. Codex tools-scoping fidelity
+Codex's only access-control knob is `--sandbox` (`read-only` /
+`workspace-write` / `danger-full-access`), which gates the whole subprocess
+rather than one named tool the way the native loop's `tools:` matching or
+Claude Code's `--allowedTools` can. `codexToolScopingFor` in
+`packages/coding-agent/src/workers/codex-executor.ts` maps what it can: an
+agent whose `tools:` grants none of `write_file`/`edit_file`/`bash` runs
+under `--sandbox read-only`, a faithful (if coarse) match for "look, don't
+touch". Anything else — a restriction that keeps some but not all of those —
+has no sandbox equivalent at all, so the task runs under the run's normal
+sandbox and the run emits a `backend.tool_scoping_unsupported` warning
+(once per agent, not once per task) naming the agent whose scoping is not
+enforced. That is the parity gap that remains: not silent, as it was before,
+but still approximate rather than exact. Revisit if the Codex CLI ever grows
+a per-tool allowlist.
 
 ## Shipped since the original list (post-v0.8.2 batch)
+
+- **Validators under `--backend codex`** — the codex carve-out in
+  `shouldRunValidators` (`apps/cli/src/orchestrate.ts`) is gone: a codex task
+  is gated on the project's configured validators exactly like a native or
+  claude-code one, since `ValidatingExecutor` never needed a hook inside the
+  worker loop to begin with — it runs the commands against the task's own
+  checkout after the worker returns, which for a delegated backend is simply
+  after the CLI subprocess has exited.
 
 - **Image attachments in the REPL** — `@` mentions of image files attach the
   bytes (4 per turn, 5 MiB each), with graceful degradation to path mentions.

@@ -344,7 +344,7 @@ describe("defaultExecutorFactory / validation", () => {
     expect(executor).toBe(inner);
   });
 
-  it("does not wrap the base executor under --backend codex, even with validators configured", async () => {
+  it("wraps the base executor under --backend codex too, gating it on the same validators", async () => {
     const inner = new CountingExecutor();
     const validators: ProjectValidator[] = [
       { name: "typecheck", command: "true" },
@@ -360,13 +360,13 @@ describe("defaultExecutorFactory / validation", () => {
       }),
     );
 
-    expect(executor).toBe(inner);
+    expect(executor).toBeInstanceOf(ValidatingExecutor);
 
     const result = await executor.execute(mutatingTask("T01"), "coder");
     expect(inner.calls).toBe(1);
-    // Confirms validators genuinely never ran: a passing result carries no
-    // validator-shaped `tests.commands`.
-    expect(result.tests.commands).toEqual([]);
+    // Confirms validators genuinely ran: a passing result carries the
+    // validator-shaped `tests.commands`, exactly as on every other backend.
+    expect(result.tests.commands).toEqual(["true"]);
   });
 
   it("still wraps the base executor under --backend claude-code", async () => {
@@ -1019,7 +1019,7 @@ describe("kapel orchestrate", () => {
       expect(lines.some((line) => line.startsWith("validators:"))).toBe(false);
     });
 
-    it("omits the note under --backend codex even when validators are configured", async () => {
+    it("prints the note under --backend codex too, now that codex tasks are gated as well", async () => {
       await appendValidatorsConfig(workspace, [
         { name: "typecheck", command: "true" },
       ]);
@@ -1041,7 +1041,7 @@ describe("kapel orchestrate", () => {
       );
 
       expect(code).toBe(0);
-      expect(lines.some((line) => line.startsWith("validators:"))).toBe(false);
+      expect(lines).toContain("validators: typecheck");
     });
 
     it("omits the note when the project has no validators configured", async () => {

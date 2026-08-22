@@ -554,6 +554,15 @@ export class TextRenderer implements Renderer {
       case "validation.completed":
         this.#emitValidation(event, taskIdOf(event));
         break;
+      case "backend.tool_scoping_unsupported": {
+        const { agent, backend } = event.data;
+        this.#write(
+          this.#warn(
+            `⚠ ${agent}'s tools scoping is not enforceable under the ${backend} backend — it runs unrestricted`,
+          ),
+        );
+        break;
+      }
       default:
         break;
     }

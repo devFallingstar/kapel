@@ -3,12 +3,18 @@ import { join } from "node:path";
 import { UsageTracker } from "@agent/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DelegatedWorkerUsageSink } from "../../src/planning/delegated-cli.js";
-import { CodexWorkerExecutor } from "../../src/workers/codex-executor.js";
+import {
+  CodexWorkerExecutor,
+  codexToolScopingFor,
+  createCodexToolsResolver,
+} from "../../src/workers/codex-executor.js";
 import { NO_VERDICT_SUMMARY } from "../../src/workers/review.js";
 import { writeFakeCodex } from "../backends/test-helpers.js";
 import {
   cleanup,
   initGitRepo,
+  makeProject,
+  makeProjectAgent,
   makeRuntimeTask,
   makeTaskResult,
   makeTempDir,
@@ -22,6 +28,73 @@ async function readArgv(path: string): Promise<string[]> {
   const raw = await readFile(path, "utf8");
   return raw.split("\0").slice(0, -1);
 }
+
+/** The value following a flag in an argv array, or `undefined` if absent. */
+function flagValue(argv: readonly string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  return index === -1 ? undefined : argv[index + 1];
+}
+
+describe("codexToolScopingFor", () => {
+  it("returns unscoped for an agent with no tools: restriction", () => {
+    expect(codexToolScopingFor([])).toBe("unscoped");
+  });
+
+  it("returns unscoped when every builtin tool is granted anyway", () => {
+    // The same vocabulary `makeProjectAgent`'s default `tools:` uses, which
+    // resolves to all seven builtin tools — a restriction in name only.
+    expect(
+      codexToolScopingFor([
+        "read",
+        "grep",
+        "glob",
+        "edit",
+        "write",
+        "bash",
+        "git.*",
+      ]),
+    ).toBe("unscoped");
+  });
+
+  it("maps a restriction that grants no mutating tool onto read-only", () => {
+    expect(codexToolScopingFor(["read", "grep", "glob", "git.diff"])).toBe(
+      "read-only",
+    );
+  });
+
+  it("maps a restriction matching nothing at all onto read-only too", () => {
+    // No builtin tool answers to `task.*` (the orchestrator's own pattern),
+    // so the selected set is empty — no mutating tool in an empty set either,
+    // and the safety property `read-only` guarantees (no writes) still holds.
+    expect(codexToolScopingFor(["task.*"])).toBe("read-only");
+  });
+
+  it("calls a restriction that keeps some but not all mutating tools unsupported", () => {
+    expect(codexToolScopingFor(["read", "bash"])).toBe("unsupported");
+    expect(codexToolScopingFor(["write"])).toBe("unsupported");
+    expect(codexToolScopingFor(["read", "grep", "edit"])).toBe("unsupported");
+  });
+});
+
+describe("createCodexToolsResolver", () => {
+  const project = makeProject([
+    makeProjectAgent({ name: "coder" }),
+    makeProjectAgent({
+      name: "reviewer",
+      tools: ["read", "grep", "glob", "git.diff"],
+    }),
+  ]);
+
+  it("returns a project agent's raw tools patterns, untranslated", () => {
+    const resolve = createCodexToolsResolver(project);
+    expect(resolve("reviewer")).toEqual(["read", "grep", "glob", "git.diff"]);
+  });
+
+  it("returns undefined for an agent the project does not know", () => {
+    const resolve = createCodexToolsResolver(project);
+    expect(resolve("nobody")).toBeUndefined();
+  });
+});
 
 describe("CodexWorkerExecutor", () => {
   let dir: string;
@@ -204,6 +277,162 @@ describe("CodexWorkerExecutor", () => {
     const modelIndex = argv.indexOf("-m");
     expect(modelIndex).toBeGreaterThanOrEqual(0);
     expect(argv[modelIndex + 1]).toBe("run-wide-default");
+  });
+
+  describe("tool scoping", () => {
+    it("maps a read-only-scoped agent onto --sandbox read-only", async () => {
+      const argvFile = join(dir, "argv.txt");
+      const binaryPath = await writeFakeCodex(dir, { argvFile });
+      const project = makeProject([
+        makeProjectAgent({
+          name: "reviewer",
+          tools: ["read", "grep", "glob", "git.diff"],
+        }),
+      ]);
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+        resolveAgentTools: createCodexToolsResolver(project),
+      });
+
+      await executor.execute(makeRuntimeTask(), "reviewer");
+
+      const argv = await readArgv(argvFile);
+      expect(flagValue(argv, "--sandbox")).toBe("read-only");
+      expect(argv).not.toContain("--full-auto");
+    });
+
+    it("leaves the sandbox on --full-auto when the agent's tools list is not a meaningful restriction", async () => {
+      const argvFile = join(dir, "argv.txt");
+      const binaryPath = await writeFakeCodex(dir, { argvFile });
+      // The default `makeProjectAgent` tools list resolves to every builtin
+      // tool, so this is `"unscoped"`, not a restriction.
+      const project = makeProject([makeProjectAgent({ name: "coder" })]);
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath },
+        resolveAgentTools: createCodexToolsResolver(project),
+      });
+
+      await executor.execute(makeRuntimeTask(), "coder");
+
+      const argv = await readArgv(argvFile);
+      expect(argv).toContain("--full-auto");
+      expect(argv).not.toContain("--sandbox");
+    });
+
+    it("does not touch the sandbox at all when no resolver is configured", async () => {
+      const argvFile = join(dir, "argv.txt");
+      const binaryPath = await writeFakeCodex(dir, { argvFile });
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        backendOptions: { binaryPath, sandbox: "danger-full-access" },
+      });
+
+      await executor.execute(makeRuntimeTask(), "coder");
+
+      // `backendOptions.sandbox` is honoured as-is: with no `resolveAgentTools`
+      // there is nothing to override it with.
+      expect(flagValue(await readArgv(argvFile), "--sandbox")).toBe(
+        "danger-full-access",
+      );
+    });
+
+    it("warns once per run when an agent's tools list cannot be mapped onto a sandbox", async () => {
+      const binaryPath = await writeFakeCodex(dir);
+      const project = makeProject([
+        makeProjectAgent({ name: "coder", tools: ["read", "bash"] }),
+      ]);
+      const resolveAgentTools = createCodexToolsResolver(project);
+      const events = new RecordingSink();
+      // Mirrors `codexWorkspaceFactory`: one `toolScopingWarned` set shared
+      // across every executor built for the run, since a fresh executor is
+      // constructed per task worktree in production.
+      const toolScopingWarned = new Set<string>();
+
+      const first = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        events,
+        backendOptions: { binaryPath },
+        resolveAgentTools,
+        toolScopingWarned,
+      });
+      const second = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        events,
+        backendOptions: { binaryPath },
+        resolveAgentTools,
+        toolScopingWarned,
+      });
+
+      await first.execute(makeRuntimeTask({ id: "T01" }), "coder");
+      await second.execute(makeRuntimeTask({ id: "T02" }), "coder");
+
+      const warnings = events.events.filter(
+        (event) => event.type === "backend.tool_scoping_unsupported",
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        taskId: "T01",
+        data: { backend: "codex", agent: "coder" },
+      });
+    });
+
+    it("warns independently for two different unmappable agents", async () => {
+      const binaryPath = await writeFakeCodex(dir);
+      const project = makeProject([
+        makeProjectAgent({ name: "coder", tools: ["read", "bash"] }),
+        makeProjectAgent({ name: "fixer", tools: ["write"] }),
+      ]);
+      const events = new RecordingSink();
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        events,
+        backendOptions: { binaryPath },
+        resolveAgentTools: createCodexToolsResolver(project),
+        toolScopingWarned: new Set<string>(),
+      });
+
+      await executor.execute(makeRuntimeTask({ id: "T01" }), "coder");
+      await executor.execute(makeRuntimeTask({ id: "T02" }), "fixer");
+
+      const agents = events.events
+        .filter((event) => event.type === "backend.tool_scoping_unsupported")
+        .map((event) =>
+          event.type === "backend.tool_scoping_unsupported"
+            ? event.data.agent
+            : undefined,
+        );
+      expect(agents).toEqual(["coder", "fixer"]);
+    });
+
+    it("does not warn for a read-only mapping or an unscoped agent", async () => {
+      const binaryPath = await writeFakeCodex(dir);
+      const project = makeProject([
+        makeProjectAgent({ name: "reviewer", tools: ["read", "grep"] }),
+        makeProjectAgent({ name: "coder" }),
+      ]);
+      const events = new RecordingSink();
+      const executor = new CodexWorkerExecutor({
+        workspacePath: workspace,
+        runId: "run-7",
+        events,
+        backendOptions: { binaryPath },
+        resolveAgentTools: createCodexToolsResolver(project),
+        toolScopingWarned: new Set<string>(),
+      });
+
+      await executor.execute(makeRuntimeTask({ id: "T01" }), "reviewer");
+      await executor.execute(makeRuntimeTask({ id: "T02" }), "coder");
+
+      expect(events.types()).not.toContain("backend.tool_scoping_unsupported");
+    });
   });
 
   describe("review tasks", () => {

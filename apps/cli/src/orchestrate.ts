@@ -24,6 +24,7 @@ import {
   CodexBackend,
   CodexWorkerExecutor,
   createAgentBackendResolver,
+  createCodexToolsResolver,
   createDelegatedModelResolver,
   createDelegatedToolsResolver,
   DelegatedPlanner,
@@ -132,10 +133,9 @@ export interface OrchestrateCommandOptions extends PlanCommandOptions {
   readonly maxIterations?: number;
   /**
    * Run the project's `.agent/config.yaml` `validation:` commands inside each
-   * mutating task's workspace before it counts as done. Defaults to `true`;
-   * `--no-validate` sets this to `false`. Has no effect when the project
-   * declares no validators, or under `--backend codex` — see
-   * {@link shouldRunValidators}.
+   * mutating task's workspace before it counts as done, on every backend.
+   * Defaults to `true`; `--no-validate` sets this to `false`. Has no effect
+   * when the project declares no validators — see {@link shouldRunValidators}.
    */
   readonly validate?: boolean;
   /**
@@ -235,7 +235,18 @@ async function claudeCodeWorkspaceFactory(
     });
 }
 
-/** {@link claudeCodeWorkspaceFactory} for Codex; no tool list, Codex owns that. */
+/**
+ * {@link claudeCodeWorkspaceFactory} for Codex.
+ *
+ * Unlike Claude Code, Codex has no per-tool allowlist to hand a `tools:`
+ * restriction to — only the coarser `--sandbox` (see
+ * `codexToolScopingFor`) — so `resolveAgentTools` is wired through for that
+ * approximate mapping rather than dropped on the floor. `toolScopingWarned`
+ * is created once here, not inside the returned factory, so every executor
+ * built for this run (one per task worktree) shares the same set and the
+ * `backend.tool_scoping_unsupported` warning fires once per agent per run
+ * rather than once per task attempt.
+ */
 async function codexWorkspaceFactory(
   args: ExecutorFactoryArgs,
 ): Promise<WorkspaceExecutorFactory> {
@@ -250,13 +261,17 @@ async function codexWorkspaceFactory(
     throw new Error(codexLoginGuidance(availability));
   }
   const resolveAgentModel = createDelegatedModelResolver(args.project);
+  const resolveAgentTools = createCodexToolsResolver(args.project);
   const usage = delegatedWorkerUsageSink("codex", args.usage);
+  const toolScopingWarned = new Set<string>();
   return (workspacePath) =>
     new CodexWorkerExecutor({
       workspacePath,
       runId,
       events,
       resolveAgentModel,
+      resolveAgentTools,
+      toolScopingWarned,
       usage,
       handoff,
       ...(taskTimeoutMs === undefined ? {} : { taskTimeoutMs }),
@@ -387,39 +402,27 @@ async function workspaceExecutorFactory(
  * Whether a run should gate its mutating tasks on the project's configured
  * validators.
  *
- * `--backend codex` runs its own agentic loop end-to-end and reports one
- * result per task with no hook to run a separate command suite against; Codex
- * tasks skip our validators for now, regardless of `--no-validate` or what
- * `.agent/config.yaml` declares.
+ * Every backend gets the same answer, including `--backend codex`. Validation
+ * never needed a hook inside whatever loop produced the change:
+ * {@link ValidatingExecutor} spawns the project's commands in the task's own
+ * workspace *after* the worker returns, which for a delegated backend is
+ * simply after the CLI subprocess has exited and left its edits on disk — the
+ * same moment, and the same checkout, as on the native loop. A Codex task is
+ * therefore gated on `npm test` exactly like a Claude Code or native one; this
+ * function used to carve Codex out on the theory that it had "no hook to run
+ * a separate command suite against", but `ValidatingExecutor` never needed a
+ * hook in the first place, so the carve-out was just Codex silently skipping
+ * the safety net every other backend gets (see `docs/FUTURE_WORK.md`'s
+ * history for the bug this was).
  *
- * `--backend claude-code` is deliberately *not* given the same carve-out,
- * delegated though it equally is. A validator never needed a hook inside the
- * agent loop to begin with: {@link ValidatingExecutor} spawns the project's
- * commands in the task's own workspace after the worker returns, which for a
- * delegated backend is simply after the CLI subprocess has exited and left
- * its edits on disk — the same moment, and the same checkout, as on the
- * native loop. So a Claude Code task is gated on `npm test` exactly like a
- * native one, and the Codex exclusion above stays scoped to Codex rather
- * than growing into a rule about external CLIs.
- *
- * Otherwise validators run whenever the project declares at least one and
- * the caller didn't opt out with `--no-validate`.
- *
- * The question is asked once per run, of the run's own backend, even when the
- * project mixes backends per agent (see {@link mixedWorkspaceExecutorFactory}):
- * `ValidatingExecutor` wraps the dispatcher rather than sitting inside it, so
- * "does this run gate its tasks" stays one answer a run header can print,
- * rather than something a reader has to work out per task. The Codex
- * carve-out above therefore follows the run's backend, not each agent's.
+ * So the only real question: validators run whenever the project declares at
+ * least one and the caller didn't opt out with `--no-validate`.
  */
 export function shouldRunValidators(
   project: AgentProject,
-  backend: BackendName,
   validate: boolean,
 ): boolean {
-  return (
-    backend !== "codex" && validate && project.config.validators.length > 0
-  );
+  return validate && project.config.validators.length > 0;
 }
 
 /**
@@ -437,7 +440,7 @@ function withValidation(
   base: WorkspaceExecutorFactory,
   args: ExecutorFactoryArgs,
 ): WorkspaceExecutorFactory {
-  if (!shouldRunValidators(args.project, args.backend, args.validate)) {
+  if (!shouldRunValidators(args.project, args.validate)) {
     return base;
   }
   const validators = args.project.config.validators;
@@ -1088,9 +1091,7 @@ export async function executePreparedPlan(
       request.leadLine ??
         `Run ${runId} — ${plan.tasks.length} tasks, up to ${policy.maxConcurrency} at a time`,
     );
-    if (
-      shouldRunValidators(request.project, options.backend, options.validate)
-    ) {
+    if (shouldRunValidators(request.project, options.validate)) {
       const names = request.project.config.validators
         .map((validator) => validator.name)
         .join(", ");

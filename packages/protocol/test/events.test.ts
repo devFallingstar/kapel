@@ -72,6 +72,13 @@ const PAYLOADS: {
   "context.compacted": { elided: 2, savedChars: 900, messages: 40 },
   "tool.execution.started": { tool: "bash", input: { command: "ls" } },
   "tool.execution.completed": { tool: "bash", ok: false, denied: true },
+  "mcp.server.started": {
+    server: "github",
+    tools: 3,
+    skippedTools: 1,
+    implementation: "github-mcp-server",
+  },
+  "mcp.server.failed": { server: "github", reason: 'could not start "npx"' },
   "chat.turn.started": { turn: 1, backend: "delegated" },
   "chat.turn.completed": { turn: 1, status: "success" },
   "validation.started": { name: "test", command: "npm test" },
@@ -81,6 +88,7 @@ const PAYLOADS: {
     exitCode: 1,
     durationMs: 2_400,
   },
+  "backend.tool_scoping_unsupported": { backend: "codex", agent: "reviewer" },
   "worktree.created": { taskId: "t1", branch: "b", path: "/tmp/w" },
   "worktree.integrated": {
     taskId: "t1",
