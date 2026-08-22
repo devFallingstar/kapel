@@ -49,7 +49,13 @@ import {
 import type { BandDecor } from "./band.js";
 import { createBandDecor } from "./band.js";
 import type { CheckpointStore } from "./checkpoint.js";
-import { createCheckpointStore, undoLines } from "./checkpoint.js";
+import {
+  capturedTreeFor,
+  createCheckpointStore,
+  diffHeaderLine,
+  formatChangeSummary,
+  undoLines,
+} from "./checkpoint.js";
 import type { CustomCommand, LoadCustomCommandsResult } from "./commands.js";
 import { expandCustomCommand, loadCustomCommands } from "./commands.js";
 import type { KapelBackend, KapelConfig } from "./config.js";
@@ -914,6 +920,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
     help: "restore the files to before the last prompt",
   },
   {
+    name: "diff",
+    usage: "/diff [n]",
+    help: "show what changed since a checkpoint (default: the last one)",
+  },
+  {
     name: "policy",
     usage: "/policy",
     help: "edit this project's orchestration policy — no model call",
@@ -1368,6 +1379,13 @@ export async function createInteractiveController(
     // command changes no files and would only push the real work off the end
     // of a 20-deep stack. It covers the delegated backends too — an external
     // CLI edits the same working tree kapel is standing in.
+    //
+    // `checkpointsBefore` is what makes the turn-end summary below trustworthy
+    // rather than approximate: `capture()`'s own return value cannot tell "it
+    // captured, quietly" apart from "there is no repository, also quietly" —
+    // both are `undefined` — so the baseline for the summary is judged instead
+    // by comparing the stack before and after (see `capturedTreeFor`).
+    const checkpointsBefore = deps.checkpoints?.entries() ?? [];
     const checkpointWarning = await deps.checkpoints?.capture(text);
     if (checkpointWarning !== undefined) emitWarn(checkpointWarning);
 
@@ -1443,6 +1461,25 @@ export async function createInteractiveController(
       if (result.status === "failed") emitError(line);
       else emitWarn(line);
     }
+    // One dim line naming what the turn changed on disk — printed only when
+    // there is something to say. Silent by default: no repository, no
+    // checkpoint (this turn's `capture()` failed or never ran), and "nothing
+    // changed" all take the same "say nothing" path, same as an aborted turn,
+    // which has nothing settled to report in the first place.
+    if (result?.status === "success" && signal?.aborted !== true) {
+      const baselineTree = capturedTreeFor(
+        checkpointsBefore,
+        deps.checkpoints?.entries() ?? [],
+      );
+      const stat =
+        baselineTree === undefined
+          ? undefined
+          : await deps.checkpoints?.changeStat(baselineTree);
+      const summary =
+        stat === undefined ? undefined : formatChangeSummary(stat);
+      if (summary !== undefined) emit(styles.tool(summary));
+    }
+
     const after = deps.usage.totals();
     await recordTurnUsage(before, after);
     emit(styles.tool(usageDeltaLine(before, after)));
@@ -1939,6 +1976,48 @@ export async function createInteractiveController(
   };
 
   /**
+   * `/diff [n]` — the working tree against a checkpoint, in git's own diff
+   * format. `n` counts back from the most recent checkpoint the same way
+   * `/undo` always acts on it: `1` (the default, when `n` is omitted) is the
+   * last one taken, `2` the one before that, and so on through
+   * `entries()` — oldest first on the stack, so counting back from the top is
+   * counting back from the end.
+   *
+   * Unlike `/undo`, nothing here changes the working tree or the checkpoint
+   * stack: `/diff` can be run as many times as wanted, on any checkpoint
+   * still on the stack, without spending it.
+   */
+  const slashDiff = async (argument: string): Promise<DispatchResult> => {
+    if (deps.checkpoints === undefined) {
+      emitWarn("/diff is not available here.");
+      return drain();
+    }
+    const trimmed = argument.trim();
+    const stepsBack = trimmed === "" ? 1 : Number(trimmed);
+    if (!Number.isInteger(stepsBack) || stepsBack < 1) {
+      emitNotice("usage: /diff [n]  — n counts back from the last checkpoint");
+      return drain();
+    }
+
+    const result = await deps.checkpoints.diff(stepsBack, {
+      color: styles.enabled,
+    });
+    if (!result.ok) {
+      emitNotice(result.reason);
+      return drain();
+    }
+    emitNotice(diffHeaderLine(result.label, result.ageMs));
+    // git's diff text carries its own line breaks (and, when `color` was on,
+    // its own escapes) — split and emitted one line at a time like every
+    // other multi-line block this controller prints, rather than as one
+    // `emit` call with embedded newlines.
+    const diffLines = result.diff.split("\n");
+    if (diffLines[diffLines.length - 1] === "") diffLines.pop();
+    for (const line of diffLines) emit(line);
+    return drain();
+  };
+
+  /**
    * The sink `/plan`, `/runs` and `/resume-run` write through.
    *
    * Everything they produce — tables, notes, and the "run `kapel policy
@@ -2195,6 +2274,8 @@ export async function createInteractiveController(
         return await slashCompact();
       case "undo":
         return await slashUndo();
+      case "diff":
+        return await slashDiff(argument);
       case "policy":
         return await slashPolicy();
       case "plan":

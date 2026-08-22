@@ -5,12 +5,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import type { CheckpointStore } from "../src/checkpoint.js";
+import type { CheckpointEntry, CheckpointStore } from "../src/checkpoint.js";
 import {
+  capturedTreeFor,
   checkpointLabel,
   createCheckpointStore,
+  diffHeaderLine,
   formatAge,
+  formatChangeSummary,
   MAX_CHECKPOINTS,
+  parseShortStat,
   undoLines,
 } from "../src/checkpoint.js";
 
@@ -409,6 +413,139 @@ describe("checkpoint undo", () => {
   });
 });
 
+// --- changeStat ---------------------------------------------------------------
+
+describe("checkpoint changeStat", () => {
+  it("counts a tracked edit against the checkpoint's tree", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("rewrite the module");
+    const tree = store.entries()[0]?.tree;
+    if (tree === undefined) throw new Error("no checkpoint was recorded");
+
+    await write(
+      repo,
+      "src/app.ts",
+      "export const value = 1;\nexport const two = 2;\n",
+    );
+
+    expect(await store.changeStat(tree)).toEqual({
+      filesChanged: 1,
+      insertions: 1,
+      deletions: 0,
+    });
+  });
+
+  it("is undefined when nothing on disk changed", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("just a question");
+    const tree = store.entries()[0]?.tree;
+    if (tree === undefined) throw new Error("no checkpoint was recorded");
+
+    const stat = await store.changeStat(tree);
+    expect(stat === undefined || stat.filesChanged === 0).toBe(true);
+  });
+
+  it("is undefined outside a git repository", async () => {
+    const plain = await tempDir("kapel-checkpoint-changestat-plain");
+    const store = storeFor(plain);
+    expect(await store.changeStat("deadbeef")).toBeUndefined();
+  });
+
+  it("does not see a brand-new untracked file — the documented tradeoff of a one-argument diff", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("add a feature");
+    const tree = store.entries()[0]?.tree;
+    if (tree === undefined) throw new Error("no checkpoint was recorded");
+
+    await write(repo, "src/new/feature.ts", "export const added = true;\n");
+
+    const stat = await store.changeStat(tree);
+    expect(stat === undefined || stat.filesChanged === 0).toBe(true);
+  });
+});
+
+// --- diff ---------------------------------------------------------------------
+
+describe("checkpoint diff", () => {
+  it("diffs the working tree against the most recent checkpoint by default", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("rewrite the module");
+
+    await write(repo, "src/app.ts", "export const value = 2;\n");
+
+    const result = await store.diff(1);
+    if (!result.ok) throw new Error(`expected a diff, got: ${result.reason}`);
+    expect(result.label).toBe("rewrite the module");
+    expect(result.diff).toContain("-export const value = 1;");
+    expect(result.diff).toContain("+export const value = 2;");
+  });
+
+  it("counts back further with a larger step", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("first");
+    await write(repo, "src/app.ts", "export const value = 2;\n");
+    await store.capture("second");
+    await write(repo, "src/app.ts", "export const value = 3;\n");
+
+    const result = await store.diff(2);
+    if (!result.ok) throw new Error(`expected a diff, got: ${result.reason}`);
+    expect(result.label).toBe("first");
+    expect(result.diff).toContain("-export const value = 1;");
+  });
+
+  it("forces color on request and leaves it off by default", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("rewrite the module");
+    await write(repo, "src/app.ts", "export const value = 2;\n");
+
+    const plain = await store.diff(1);
+    if (!plain.ok) throw new Error(`expected a diff, got: ${plain.reason}`);
+    expect(plain.diff).not.toContain("[");
+
+    const colored = await store.diff(1, { color: true });
+    if (!colored.ok) throw new Error(`expected a diff, got: ${colored.reason}`);
+    expect(colored.diff).toContain("[");
+  });
+
+  it("says so, without error, when there is no checkpoint yet", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+
+    const result = await store.diff(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("nothing to diff");
+  });
+
+  it("says so, without error, when n is out of range", async () => {
+    const repo = await makeRepo();
+    const store = storeFor(repo);
+    await store.capture("only one");
+
+    const result = await store.diff(3);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("out of range");
+  });
+
+  it("says so, without error, outside a git repository", async () => {
+    const plain = await tempDir("kapel-checkpoint-diff-plain");
+    const store = storeFor(plain);
+
+    const result = await store.diff(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("needs a git repository");
+    expect(result.reason).toContain("/diff");
+  });
+});
+
 // --- formatting -------------------------------------------------------------
 
 describe("checkpoint formatting", () => {
@@ -451,5 +588,104 @@ describe("checkpoint formatting", () => {
     expect(undoLines({ ok: false, reason: "nothing to undo" })).toEqual([
       "nothing to undo",
     ]);
+  });
+
+  it("headers a /diff the same way /undo names a checkpoint", () => {
+    expect(diffHeaderLine("fix the tests", 120_000)).toBe(
+      'diff since "fix the tests" (2 min ago):',
+    );
+    expect(diffHeaderLine("", 0)).toBe(
+      "diff since the last prompt (just now):",
+    );
+  });
+});
+
+// --- shortstat parsing and the turn-end summary ------------------------------
+
+describe("shortstat parsing", () => {
+  it("parses every shape git's --shortstat prints", () => {
+    expect(
+      parseShortStat(" 4 files changed, 52 insertions(+), 11 deletions(-)"),
+    ).toEqual({ filesChanged: 4, insertions: 52, deletions: 11 });
+    expect(parseShortStat(" 1 file changed, 3 insertions(+)")).toEqual({
+      filesChanged: 1,
+      insertions: 3,
+      deletions: 0,
+    });
+    expect(parseShortStat(" 1 file changed, 1 deletion(-)")).toEqual({
+      filesChanged: 1,
+      insertions: 0,
+      deletions: 1,
+    });
+    expect(parseShortStat(" 2 files changed")).toEqual({
+      filesChanged: 2,
+      insertions: 0,
+      deletions: 0,
+    });
+  });
+
+  it("treats empty or unrecognized input as no change at all", () => {
+    expect(parseShortStat("")).toEqual({
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+    });
+    expect(parseShortStat("   \n")).toEqual({
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+    });
+    expect(parseShortStat("garbage git will never print")).toEqual({
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+    });
+  });
+});
+
+describe("turn-end change summary formatting", () => {
+  it("renders kapel's terse Δ line, not git's sentence", () => {
+    expect(
+      formatChangeSummary({ filesChanged: 4, insertions: 52, deletions: 11 }),
+    ).toBe("Δ 4 files +52 −11");
+    expect(
+      formatChangeSummary({ filesChanged: 1, insertions: 3, deletions: 0 }),
+    ).toBe("Δ 1 file +3 −0");
+  });
+
+  it("is undefined when nothing changed, keeping the summary silent by default", () => {
+    expect(
+      formatChangeSummary({ filesChanged: 0, insertions: 0, deletions: 0 }),
+    ).toBeUndefined();
+  });
+});
+
+describe("capturedTreeFor", () => {
+  const entryAt = (commit: string, tree: string): CheckpointEntry => ({
+    commit,
+    tree,
+    createdAt: 0,
+    label: "",
+  });
+
+  it("names the tree a fresh push added to the top of the stack", () => {
+    const before = [entryAt("a", "tree-a")];
+    const after = [entryAt("a", "tree-a"), entryAt("b", "tree-b")];
+    expect(capturedTreeFor(before, after)).toBe("tree-b");
+  });
+
+  it("is undefined when the stack is unchanged — a failed or skipped capture", () => {
+    const stack = [entryAt("a", "tree-a")];
+    expect(capturedTreeFor(stack, stack)).toBeUndefined();
+    expect(capturedTreeFor([], [])).toBeUndefined();
+  });
+
+  it("still recognizes a fresh push once the stack is at its cap", () => {
+    // The length is identical on both sides — the oldest entry fell off the
+    // bottom the same turn a new one was pushed to the top — which is why
+    // this compares the top entry's identity rather than the stack's length.
+    const before = [entryAt("a", "tree-a"), entryAt("b", "tree-b")];
+    const after = [entryAt("b", "tree-b"), entryAt("c", "tree-c")];
+    expect(capturedTreeFor(before, after)).toBe("tree-c");
   });
 });

@@ -2207,6 +2207,7 @@ describe("slashCompleter", () => {
       "/stats",
       "/compact",
       "/undo",
+      "/diff",
       "/policy",
       "/plan",
       "/orchestrate",
