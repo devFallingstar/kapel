@@ -107,7 +107,7 @@ have, and kapel isn't showing it off yet either.
 | User global instruction file | — | ✅ `~/.claude/CLAUDE.md` | ✅ `~/.codex/AGENTS.md` | ✅ `~/.config/opencode/AGENTS.md` |
 | Custom slash commands | — | ✅ `.claude/commands/` = skills | `(unverified)` | ✅ `command` key |
 | Subagents | `~` orchestrate-only, not user-invokable | ✅ `--agents`, `/agents` | `(unverified)` | ✅ `mode: subagent`, `@`-invoked |
-| MCP | — | ✅ `claude mcp`, `--mcp-config` | ✅ `mcp_servers` TOML | ✅ `opencode mcp add` |
+| MCP | `~` `mcp:` in `.agent/config.yaml`, stdio only, native loop only | ✅ `claude mcp`, `--mcp-config` | ✅ `mcp_servers` TOML | ✅ `opencode mcp add` |
 | Hooks / plugin loader | `~` `@agent/plugin` types only, no loader | ✅ hooks + plugins | `(unverified)` (lifecycle hooks are mentioned) | ✅ `plugin`, `opencode plug` |
 | LSP integration | — | — | — | ✅ `lsp` |
 | Config layering | `~` `~/.kapel/config.json` + `.agent/` | ✅ managed>CLI>local>project>user ([settings](https://code.claude.com/docs/en/settings)) | ✅ `~/.codex/config.toml` + `--profile` | ✅ 8-tier merge ([config.mdx](https://github.com/sst/opencode/blob/dev/packages/web/src/content/docs/config.mdx)) |
@@ -359,11 +359,16 @@ Image attachments** — **M** — ✅ shipped (v0.6.0)
 
 ### P2 / Exploratory
 
-- **MCP client** — **L**. `@agent/plugin` already has `registerTool`, so
-  there's a place to attach it. However it's not kapel's differentiator,
-  and the cost of managing an MCP server's lifetime per worker is high.
-  All three peers have it, so it only matters as "ecosystem entry
-  ticket."
+- **MCP client** — **L** — ✅ shipped for the native loop. Stdio
+  transport, hand-rolled JSON-RPC with every inbound frame zod-validated;
+  `mcp:` in `.agent/config.yaml` with a `.agent/config.local.json`
+  override; tools bridged as `mcp__<server>__<tool>` and gated by the
+  same permission rules as `bash`. Servers start with the first native
+  session that could use them and stop with it, which is the answer to
+  the per-worker lifetime cost this entry used to worry about: workers
+  on the delegated backends read those CLIs' own MCP config instead.
+  Still open: HTTP/SSE transport, and MCP tools for orchestration
+  workers.
 - **Hooks** — **M**. Something like `PreToolUse`/`PostTask` via
   `.agent/hooks.yaml`. But kapel already has a strong hook in
   `validation:`, so there's overlap risk. Only after an integrated design

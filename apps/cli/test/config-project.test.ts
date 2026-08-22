@@ -117,6 +117,32 @@ describe("parseProjectConfig", () => {
       parseProjectConfig({ models: { middle: { backend: "codex" } } }),
     ).toBeUndefined();
   });
+
+  it("accepts an mcp-only override, including a bare disable", () => {
+    expect(
+      parseProjectConfig({
+        mcp: {
+          github: { env: { GITHUB_TOKEN: "t" } },
+          docs: { enabled: false },
+        },
+      }),
+    ).toEqual({
+      mcp: {
+        github: { env: { GITHUB_TOKEN: "t" } },
+        docs: { enabled: false },
+      },
+    });
+  });
+
+  it("refuses a malformed mcp block rather than dropping it silently", () => {
+    expect(parseProjectConfig({ mcp: "npx" })).toBeUndefined();
+    expect(
+      parseProjectConfig({ mcp: { a: { commnd: "npx" } } }),
+    ).toBeUndefined();
+    expect(
+      parseProjectConfig({ mcp: { a: { args: "one two" } } }),
+    ).toBeUndefined();
+  });
 });
 
 // --- loading ----------------------------------------------------------------
@@ -180,6 +206,16 @@ describe("saveProjectConfig", () => {
     const config: KapelProjectConfig = {
       backends: ["codex", "claude-code"],
       models: { orchestrator: cc("opus"), low: gpt("gpt-5-mini") },
+    };
+    await saveProjectConfig(workspace, config);
+    expect(await loadProjectConfig(workspace)).toEqual(config);
+  });
+
+  it("carries a hand-edited mcp block through a save", async () => {
+    await mkdir(path.join(workspace, ".agent"));
+    const config: KapelProjectConfig = {
+      backends: ["codex"],
+      mcp: { docs: { command: "./docs-mcp", args: ["--fast"] } },
     };
     await saveProjectConfig(workspace, config);
     expect(await loadProjectConfig(workspace)).toEqual(config);

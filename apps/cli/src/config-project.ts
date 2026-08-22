@@ -1,5 +1,7 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { McpServersInput } from "@agent/coding-agent";
+import { McpServersInputSchema } from "@agent/coding-agent";
 import type {
   KapelBackend,
   KapelConfig,
@@ -67,6 +69,15 @@ export async function hasProjectAgentDir(
 export interface KapelProjectConfig {
   readonly backends?: readonly KapelBackend[];
   readonly models?: Readonly<Partial<Record<KapelRole, KapelRoleModel>>>;
+  /**
+   * This checkout's MCP servers, layered over `.agent/config.yaml`'s `mcp:`
+   * block by `mergeMcpServers`. Field by field, so `{"github": {"env":
+   * {"GITHUB_TOKEN": "…"}}}` adds a token to a server the project committed
+   * without restating its command — which is the reason a machine-local
+   * override exists at all: a token belongs next to the machine, not in the
+   * repository.
+   */
+  readonly mcp?: McpServersInput;
 }
 
 // --- Reading and writing ----------------------------------------------------
@@ -116,9 +127,17 @@ export function parseProjectConfig(
     models = parsed;
   }
 
+  let mcp: McpServersInput | undefined;
+  if (raw.mcp !== undefined) {
+    const parsed = McpServersInputSchema.safeParse(raw.mcp);
+    if (!parsed.success) return undefined;
+    mcp = parsed.data;
+  }
+
   return {
     ...(backends === undefined ? {} : { backends }),
     ...(models === undefined ? {} : { models }),
+    ...(mcp === undefined ? {} : { mcp }),
   };
 }
 
@@ -158,7 +177,8 @@ export async function loadProjectConfig(
   if (parsed === undefined) {
     warn(
       `warning: ignoring ${filePath} — it is not a readable kapel project config ` +
-        '(expected {"backends": [...], "models": {"<role>": {"backend": "...", "model": "..."}}}).',
+        '(expected {"backends": [...], "models": {"<role>": {"backend": "...", "model": "..."}}, ' +
+        '"mcp": {"<server>": {"command": "...", "args": [...], "env": {...}, "enabled": true}}}).',
     );
     return undefined;
   }
@@ -185,6 +205,7 @@ export async function saveProjectConfig(
   const body: Record<string, unknown> = {};
   if (config.backends !== undefined) body.backends = [...config.backends];
   if (config.models !== undefined) body.models = config.models;
+  if (config.mcp !== undefined) body.mcp = config.mcp;
   await writeFile(filePath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
   return filePath;
 }

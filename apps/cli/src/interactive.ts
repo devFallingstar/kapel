@@ -13,13 +13,14 @@ import { defaultModelCatalog, UNATTRIBUTED, UsageTracker } from "@agent/ai";
 import type { AgentLoopRunContext, ChatTurnResult } from "@agent/coding-agent";
 import {
   AgentChatSession,
-  builtinTools,
   ClaudeCodeBackend,
   CodexBackend,
+  describeMcpStatuses,
+  McpSession,
   PermissionEngine,
   SessionAllowlist,
 } from "@agent/coding-agent";
-import type { AgentDefinition, AgentImageAttachment } from "@agent/core";
+import type { AgentDefinition, AgentImageAttachment, Tool } from "@agent/core";
 import type {
   ChatSessionRecord,
   ChatSessionTranscript,
@@ -96,6 +97,7 @@ import {
   type InputManager,
 } from "./input.js";
 import { composeSystemPrompt, loadInstructions } from "./instructions.js";
+import { loadWorkspaceMcpServers } from "./mcp.js";
 import type { FileLister, MentionImageReader } from "./mention.js";
 import {
   completeMention,
@@ -129,6 +131,7 @@ import {
   agentLoopOptions,
   DEFAULT_MAX_ITERATIONS,
   defaultSystemPrompt,
+  nativeTools,
   resolveModelAndProvider,
 } from "./run.js";
 import { runRunsCommand } from "./runs-cmd.js";
@@ -2593,6 +2596,21 @@ export async function runInteractive(
   const store =
     options.save === false ? undefined : await openChatStore(workspacePath);
 
+  // Read after `projectSetup.ensure`, which is what may have created `.agent`
+  // in the first place. Nothing is spawned here — this is only the merge of
+  // `config.yaml`'s `mcp:` block with this checkout's override.
+  const mcpServers = await loadWorkspaceMcpServers(workspacePath);
+  for (const problem of mcpServers.problems) {
+    console.error(errorStyles.warn(`warning: ${problem}`));
+  }
+
+  /**
+   * The MCP servers this conversation has running, once something has needed
+   * them. Declared out here so the one teardown seam below reaches it however
+   * the REPL ends.
+   */
+  let mcpSession: McpSession | undefined;
+
   try {
     const started = await resolveStartSession(store, workspacePath, {
       ...(options.continue === undefined ? {} : { continue: options.continue }),
@@ -2811,12 +2829,44 @@ export async function runInteractive(
       };
     };
 
-    const nativeSession = (args: SessionFactoryArgs): InteractiveSession => {
+    /**
+     * Connects the workspace's MCP servers, once, on the first native session
+     * that could use them.
+     *
+     * Lazy rather than at REPL startup because a conversation on `--backend
+     * codex` or `--backend claude-code` delegates the whole agent loop to that
+     * CLI, which reads its *own* MCP configuration — spawning kapel's servers
+     * for it would cost a process each and buy nothing. `/config` can switch a
+     * conversation onto the native backend later, and this is the seam that
+     * catches that too: every rebuild goes through here, and only the first
+     * one pays.
+     */
+    const ensureMcpTools = async (runId: string): Promise<readonly Tool[]> => {
+      const existing = mcpSession;
+      if (existing !== undefined) return existing.tools();
+      if (mcpServers.servers.length === 0) return [];
+
+      const session = await McpSession.start({
+        servers: mcpServers.servers,
+        workspacePath,
+        events: renderer,
+        context: { runId },
+      });
+      mcpSession = session;
+      const line = describeMcpStatuses(session.statuses());
+      if (line !== undefined) console.log(styles.notice(line));
+      return session.tools();
+    };
+
+    const nativeSession = async (
+      args: SessionFactoryArgs,
+    ): Promise<InteractiveSession> => {
       if (args.model === undefined || args.provider === undefined) {
         throw new Error(
           "the native backend needs a resolved model and provider.",
         );
       }
+      const tools = nativeTools(await ensureMcpTools(args.sessionId));
       const agent: AgentDefinition = {
         name: "agent",
         role: "worker",
@@ -2825,12 +2875,13 @@ export async function runInteractive(
           defaultSystemPrompt(workspacePath),
           instructions,
         ),
-        tools: builtinTools().map((tool) => tool.name),
+        tools: tools.map((tool) => tool.name),
         permissions: DEFAULT_PERMISSIONS,
       };
       return AgentChatSession.restore(
         agentLoopOptions({
           agent,
+          tools,
           provider: args.provider,
           permissions: new PermissionEngine(permissionRules, {
             defaultDecision: "ask",
@@ -3175,6 +3226,17 @@ export async function runInteractive(
     // is printed onto it. The handlers inside `enterAltScreen` cover the ways
     // out that never run a `finally` at all.
     altScreen?.leave();
+    // Every MCP server this conversation started dies with it — stdin closed
+    // first, then the process group signalled if that was not enough (see
+    // `McpStdioClient.close`). Awaited rather than fired and forgotten: a
+    // process kapel spawned must not outlive the process that spawned it.
+    if (mcpSession !== undefined) {
+      try {
+        await mcpSession.close();
+      } catch {
+        // best-effort
+      }
+    }
     if (store !== undefined) {
       try {
         store.close();

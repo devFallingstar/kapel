@@ -1,7 +1,7 @@
 import type { ModelDefinition, ModelEvent, ModelProvider } from "@agent/ai";
 import { UsageTracker } from "@agent/ai";
-import { PermissionEngine } from "@agent/coding-agent";
-import type { AgentDefinition } from "@agent/core";
+import { builtinTools, PermissionEngine } from "@agent/coding-agent";
+import type { AgentDefinition, Tool } from "@agent/core";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PERMISSIONS } from "../src/permissions.js";
 import { TextRenderer } from "../src/render.js";
@@ -9,6 +9,7 @@ import {
   agentLoopOptions,
   DEFAULT_COMPACTION,
   DEFAULT_MAX_ITERATIONS,
+  nativeTools,
 } from "../src/run.js";
 
 // --- fixtures ----------------------------------------------------------------
@@ -99,6 +100,44 @@ describe("agentLoopOptions", () => {
       maxIterations: 4,
     });
     expect("timeoutMs" in withoutTimeout).toBe(false);
+  });
+
+  it("uses the tool set it is handed, so MCP tools reach the loop", () => {
+    const mcpTool: Tool = {
+      name: "mcp__docs__lookup",
+      description: "Looks things up",
+      inputSchema: { type: "object" },
+      definition: () => ({
+        name: "mcp__docs__lookup",
+        description: "Looks things up",
+        inputSchema: { type: "object" },
+      }),
+      execute: () => Promise.resolve(""),
+    };
+
+    const built = agentLoopOptions({
+      agent: AGENT,
+      provider: provider(),
+      permissions: permissions(),
+      usage: new UsageTracker(),
+      events: new TextRenderer(),
+      maxIterations: 4,
+      tools: nativeTools([mcpTool]),
+    });
+
+    const names = built.tools.map((tool) => tool.name);
+    expect(names).toContain("read_file");
+    expect(names).toContain("mcp__docs__lookup");
+    // The built-ins come first, since they are what the system prompt names.
+    expect(names.indexOf("mcp__docs__lookup")).toBe(names.length - 1);
+  });
+});
+
+describe("nativeTools", () => {
+  it("is the built-in set when nothing is bridged", () => {
+    expect(nativeTools().map((tool) => tool.name)).toEqual(
+      builtinTools().map((tool) => tool.name),
+    );
   });
 });
 

@@ -32,3 +32,32 @@ agents:
 #     timeoutSeconds: 300   # optional, defaults to 600
 #   - name: test
 #     command: npm test
+
+# MCP servers whose tools kapel's own agent loop may call, exposed to the model
+# as `mcp__<server>__<tool>`. Each one is started with the chat session that
+# needs it and stopped with it. Stdio transport only: `command` is run in the
+# workspace, with `env` overlaid on kapel's own environment.
+#
+# Every MCP tool call goes through the same permission system as `bash` and
+# `write_file`, and asks by default; a `permission:` entry above can name a
+# whole server (`"mcp__github__*": allow`) or one tool exactly.
+#
+# Keep secrets out of this file — it is committed. Put them in this checkout's
+# `.agent/config.local.json`, which merges over this block field by field:
+#
+#   { "mcp": { "github": { "env": { "GITHUB_TOKEN": "…" } } } }
+#
+# …and can turn a server off here with `{"github": {"enabled": false}}`.
+#
+# Workers running on the `codex` or `claude-code` backends do NOT see these:
+# those CLIs run their own agent loop and read their own MCP configuration.
+#
+# mcp:
+#   github:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_TOKEN: ""     # better set in .agent/config.local.json
+#   docs:
+#     command: ./scripts/docs-mcp
+#     enabled: false         # configured, but not started

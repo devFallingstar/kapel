@@ -669,3 +669,82 @@ describe("PermissionEngine with a bash pattern map", () => {
     expect(engine.decisionFor("bash")).toBe("deny");
   });
 });
+
+describe("PermissionEngine with wildcard tool-name rules", () => {
+  const mcpRequest = (tool: string): PermissionRequest => request(tool);
+
+  it("matches a tool by a rule key ending in '*'", async () => {
+    const engine = new PermissionEngine({ "mcp__github__*": "allow" });
+    await expect(
+      engine.authorize(mcpRequest("mcp__github__search_code")),
+    ).resolves.toEqual({ allowed: true, decision: "allow" });
+  });
+
+  it("does not let a wildcard reach past its prefix", async () => {
+    const engine = new PermissionEngine(
+      { "mcp__github__*": "allow" },
+      { defaultDecision: "deny" },
+    );
+    await expect(
+      engine.authorize(mcpRequest("mcp__docs__lookup")),
+    ).resolves.toMatchObject({ allowed: false, reason: DENIED_BY_POLICY });
+  });
+
+  it("prefers an exact tool name over any wildcard that also matches", () => {
+    const engine = new PermissionEngine({
+      "mcp__*": "deny",
+      mcp__github__search_code: "allow",
+    });
+    expect(engine.decisionFor("mcp__github__search_code")).toBe("allow");
+    expect(engine.decisionFor("mcp__github__create_issue")).toBe("deny");
+  });
+
+  it("prefers the longest matching wildcard", () => {
+    const engine = new PermissionEngine({
+      "*": "deny",
+      "mcp__*": "ask",
+      "mcp__github__*": "allow",
+    });
+    expect(engine.decisionFor("mcp__github__search_code")).toBe("allow");
+    expect(engine.decisionFor("mcp__docs__lookup")).toBe("ask");
+    expect(engine.decisionFor("read_file")).toBe("deny");
+  });
+
+  it("keeps a wildcard deny un-overridable by a session 'always' answer", async () => {
+    const prompter = new RecordingPrompter(true);
+    const allowlist = new SessionAllowlist();
+    allowlist.remember(mcpRequest("mcp__github__delete_repo"));
+
+    const engine = new PermissionEngine(
+      { "mcp__github__*": "deny" },
+      { prompter, overlay: allowlist },
+    );
+    await expect(
+      engine.authorize(mcpRequest("mcp__github__delete_repo")),
+    ).resolves.toMatchObject({ allowed: false, reason: DENIED_BY_POLICY });
+    expect(prompter.seen).toEqual([]);
+  });
+
+  it("prompts for an MCP tool that only the 'ask' default covers", async () => {
+    const prompter = new RecordingPrompter(true);
+    const engine = new PermissionEngine({ "mcp__*": "ask" }, { prompter });
+    await expect(
+      engine.authorize(mcpRequest("mcp__github__search_code")),
+    ).resolves.toEqual({ allowed: true, decision: "ask" });
+    expect(prompter.seen.map((seen) => seen.tool)).toEqual([
+      "mcp__github__search_code",
+    ]);
+  });
+
+  it("remembers one MCP tool for the session without widening to the server", () => {
+    const allowlist = new SessionAllowlist();
+    expect(allowlist.remember(mcpRequest("mcp__github__search_code"))).toEqual({
+      kind: "tool",
+      tool: "mcp__github__search_code",
+    });
+    expect(allowlist.allows(mcpRequest("mcp__github__search_code"))).toBe(true);
+    expect(allowlist.allows(mcpRequest("mcp__github__delete_repo"))).toBe(
+      false,
+    );
+  });
+});

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { McpServersInputSchema } from "../mcp/config.js";
 import { formatZodIssues, isNotFound } from "./internal.js";
 import type {
   AgentProjectConfig,
@@ -55,6 +56,11 @@ const ConfigFileSchema = z
       .optional(),
     validation: z.array(ValidatorSchema).optional(),
     permission: PermissionSchema.optional(),
+    // The project's MCP servers, in the shape Claude Code and opencode
+    // already taught users. Strict per entry (see `McpServerInputSchema`): a
+    // misspelled key here is a server that silently does not do what the file
+    // says, which is worse than a load error naming the key.
+    mcp: McpServersInputSchema.optional(),
   })
   .strict();
 
@@ -63,11 +69,12 @@ const EMPTY_CONFIG: AgentProjectConfig = {
   agentSlots: {},
   validators: [],
   permission: {},
+  mcp: {},
 };
 
 /**
  * Loads `<agentDir>/config.yaml`. A missing file yields the empty config
- * (`{ models: {}, agentSlots: {}, validators: [], permission: {} }`);
+ * (`{ models: {}, agentSlots: {}, validators: [], permission: {}, mcp: {} }`);
  * malformed YAML or a shape mismatch throws {@link ProjectConfigError} with
  * every problem found.
  */
@@ -127,5 +134,6 @@ export async function loadProjectConfig(
     agentSlots: { ...(result.data.agents ?? {}) },
     validators,
     permission: { ...(result.data.permission ?? {}) },
+    mcp: { ...(result.data.mcp ?? {}) },
   };
 }

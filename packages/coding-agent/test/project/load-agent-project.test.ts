@@ -83,6 +83,7 @@ describe("loadAgentProject - structural cases", () => {
         agentSlots: {},
         validators: [],
         permission: {},
+        mcp: {},
       });
       expect(project?.agents).toEqual([]);
       expect(project?.orchestrationMarkdown).toBeUndefined();

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PermissionRuleSet } from "@agent/coding-agent";
+import { PermissionEngine } from "@agent/coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PERMISSION_DECISION,
@@ -26,7 +27,11 @@ describe("DEFAULT_PERMISSIONS", () => {
     expect(DEFAULT_PERMISSIONS.bash).toBe("ask");
   });
 
-  it("covers exactly the seven built-in tools", () => {
+  it("treats every MCP tool like the side-effecting built-ins", () => {
+    expect(DEFAULT_PERMISSIONS["mcp__*"]).toBe("ask");
+  });
+
+  it("covers exactly the seven built-in tools plus the MCP wildcard", () => {
     expect(Object.keys(DEFAULT_PERMISSIONS).sort()).toEqual(
       [
         "bash",
@@ -34,6 +39,7 @@ describe("DEFAULT_PERMISSIONS", () => {
         "git_diff",
         "glob",
         "grep",
+        "mcp__*",
         "read_file",
         "write_file",
       ].sort(),
@@ -190,5 +196,40 @@ describe("loadRepoPermissionRules", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+// --- MCP tools through the same rule set ------------------------------------
+
+describe("MCP tools in the merged rule set", () => {
+  it("keeps the wildcard 'ask' default when no layer mentions MCP", () => {
+    const merged = resolvePermissionRules(DEFAULT_PERMISSIONS, undefined, {
+      edit_file: "allow",
+    });
+    expect(
+      new PermissionEngine(merged).decisionFor("mcp__github__search_code"),
+    ).toBe("ask");
+  });
+
+  it("lets a repo layer allow one server and deny another", () => {
+    const merged = resolvePermissionRules(DEFAULT_PERMISSIONS, undefined, {
+      "mcp__github__*": "allow",
+      "mcp__deploy__*": "deny",
+    });
+    const engine = new PermissionEngine(merged);
+    expect(engine.decisionFor("mcp__github__search_code")).toBe("allow");
+    expect(engine.decisionFor("mcp__deploy__ship")).toBe("deny");
+    expect(engine.decisionFor("mcp__other__thing")).toBe("ask");
+  });
+
+  it("lets the repo layer's rule beat the machine layer's for the same pattern", () => {
+    const merged = resolvePermissionRules(
+      DEFAULT_PERMISSIONS,
+      { "mcp__github__*": "allow" },
+      { "mcp__github__*": "deny" },
+    );
+    expect(
+      new PermissionEngine(merged).decisionFor("mcp__github__search_code"),
+    ).toBe("deny");
   });
 });

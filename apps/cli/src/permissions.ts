@@ -5,6 +5,15 @@ import type { PermissionDecision } from "@agent/core";
 /**
  * Default per-tool permission decisions for the CLI: read-only tools are
  * pre-approved, anything that mutates the workspace or shells out asks first.
+ *
+ * `mcp__*` is in the second group. What an MCP tool does is decided by
+ * somebody else's server — it may open a pull request, post a message or
+ * delete a row — and kapel cannot tell which from the outside, so the honest
+ * default is the one `bash` and `write_file` get: ask. The rule is written as
+ * a wildcard because the tool names are the servers' to choose (see
+ * `ruleFor` in `packages/coding-agent/src/permissions.ts`); a specific
+ * `mcp__github__search_code: allow` in either config file is an exact key and
+ * outranks it.
  */
 export const DEFAULT_PERMISSIONS: Readonly<Record<string, PermissionDecision>> =
   {
@@ -15,6 +24,7 @@ export const DEFAULT_PERMISSIONS: Readonly<Record<string, PermissionDecision>> =
     write_file: "ask",
     edit_file: "ask",
     bash: "ask",
+    "mcp__*": "ask",
   };
 
 export const DEFAULT_PERMISSION_DECISION: PermissionDecision = "ask";

@@ -461,6 +461,62 @@ answering "a" at the prompt; it never reaches the prompt at all. There is no
 `/config` UI for this yet — edit the file, restart the run. Neither file needs
 a `permission` block; both work exactly as before without one.
 
+A rule key ending in `*` matches tool names by prefix — `"mcp__github__*"` —
+which is how you write a rule for tools kapel does not name itself. The most
+specific key wins: an exact tool name beats `"mcp__github__*"`, which beats
+`"mcp__*"`, which beats `"*"`.
+
+### MCP servers
+
+kapel's own agent loop speaks [MCP](https://modelcontextprotocol.io) over
+stdio. Declare servers under `mcp:` in `.agent/config.yaml` — the shape Claude
+Code and opencode already taught you:
+
+```yaml
+# .agent/config.yaml — committed, shared with everyone on the repo
+mcp:
+  github:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+  docs:
+    command: ./scripts/docs-mcp
+    enabled: false        # configured, not started
+```
+
+```jsonc
+// .agent/config.local.json — this checkout only, gitignored
+{ "mcp": { "github": { "env": { "GITHUB_TOKEN": "…" } } } }
+```
+
+Two layers, the same two everything else uses: the committed block, then this
+checkout's override on top of it — field by field, so a local file adds a
+token to `env` (merged key by key) or turns a server off with a bare
+`{"enabled": false}` without restating the command. Secrets belong in the
+local file; it is the one `kapel init` gitignores.
+
+Each server's tools reach the model as `mcp__<server>__<tool>`, with the
+server's own JSON Schema passed through untouched. Text results come back as
+text; an image, an audio blob or a binary resource comes back as a line saying
+what it was and how big — a tool result is a string, and base64 in the
+transcript would spend your context on bytes the model cannot read.
+
+**They ask before they run.** An MCP tool is classified with `bash` and
+`write_file`, not with `read_file`: what it does is somebody else's server's
+business, and kapel cannot tell a search from a deploy from the outside. Widen
+it per server or per tool in either config file — `"mcp__github__*": "allow"`.
+
+Servers start with the first turn that could use them and are stopped when the
+session ends — stdin closed first, then the process group signalled. A server
+that will not start costs you its own tools and a line saying why; a server
+that crashes mid-call costs one failed tool call, which the model reads and
+works around. Nothing about MCP can end a turn.
+
+Two limits worth knowing. Stdio only — no HTTP/SSE servers yet. And this is
+kapel's *native* loop: a run on `--backend codex` or `--backend claude-code`
+delegates to that CLI's own agent loop, which reads that CLI's own MCP
+configuration, so this block is neither forwarded to them nor honoured by
+them. Orchestration workers do not get these tools either.
+
 ### Project instructions (AGENTS.md)
 
 Drop an `AGENTS.md` in your repo and kapel follows it from the first turn — the same file Codex and opencode already read, and that Claude Code picks up via `@AGENTS.md` imports, so a repository only has to write its rules once. Up to three are merged into the system prompt, machine-level first so a project's rules add to (never silently lose to) your personal ones:

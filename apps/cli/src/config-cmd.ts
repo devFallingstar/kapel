@@ -136,6 +136,10 @@ export async function runConfigCommand(
             saveProjectConfig(workspacePath, {
               backends: saved.backends,
               models: saved.models,
+              // Hand-edited only — the wizard never asks about MCP servers, so
+              // it is carried through verbatim rather than dropped by a save
+              // that was only ever about backends and models.
+              ...(project?.mcp === undefined ? {} : { mcp: project.mcp }),
             }),
         }
       : {}),

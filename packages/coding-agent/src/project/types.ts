@@ -1,4 +1,5 @@
 import type { AgentRole } from "@agent/core";
+import type { McpServersInput } from "../mcp/config.js";
 import type { ToolPermissionRule } from "../permissions.js";
 
 /**
@@ -81,6 +82,14 @@ export interface AgentProjectConfig {
    * layer wins over that one.
    */
   readonly permission: Readonly<Record<string, ToolPermissionRule>>;
+  /**
+   * The `mcp` block: server name -> `{command, args, env, enabled}`. Empty
+   * when the key is absent. Kept as written rather than resolved here, because
+   * the entry a session actually spawns is this one merged with the
+   * checkout's `.agent/config.local.json` override — see `mergeMcpServers` in
+   * `packages/coding-agent/src/mcp/config.ts`.
+   */
+  readonly mcp: McpServersInput;
 }
 
 /**

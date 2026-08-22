@@ -341,17 +341,54 @@ export class SessionAllowlist implements PermissionOverlay {
   }
 }
 
+/**
+ * The prefix a rule key wildcards over, or `undefined` when the key is an
+ * ordinary exact tool name.
+ *
+ * Only a trailing `*` is a wildcard, which is the same shape the `bash`
+ * pattern maps already use. It exists for tools whose names are not kapel's to
+ * enumerate: an MCP server contributes `mcp__<server>__<tool>` for every tool
+ * it happens to offer, and a rule set that could only name them one at a time
+ * would have to be rewritten every time a server shipped a new tool.
+ */
+function toolPatternPrefix(key: string): string | undefined {
+  return key.endsWith("*") ? key.slice(0, -1) : undefined;
+}
+
+/**
+ * The rule governing `tool`: an exact key if the rule set has one, else the
+ * longest matching wildcard key (`"mcp__github__*"` beats `"mcp__*"` beats
+ * `"*"`).
+ *
+ * No tie-break is needed between wildcards. Two distinct keys that both match
+ * the same tool name as prefixes cannot be the same length — same length plus
+ * same prefix means the same key — so "longest wins" is already total.
+ */
 function ruleFor(
   rules: Readonly<Record<string, ToolPermissionRule>>,
   tool: string,
 ): ToolPermissionRule | undefined {
-  return Object.hasOwn(rules, tool) ? rules[tool] : undefined;
+  if (Object.hasOwn(rules, tool)) return rules[tool];
+
+  let best: ToolPermissionRule | undefined;
+  let bestLength = -1;
+  for (const [key, rule] of Object.entries(rules)) {
+    const prefix = toolPatternPrefix(key);
+    if (prefix === undefined) continue;
+    if (!tool.startsWith(prefix)) continue;
+    if (prefix.length <= bestLength) continue;
+    best = rule;
+    bestLength = prefix.length;
+  }
+  return best;
 }
 
 /**
  * Resolves `allow | ask | deny` decisions for tool invocations.
  *
- * Rules are matched by exact tool name; anything unmatched falls back to
+ * Rules are matched by exact tool name first, then by the longest rule key
+ * ending in `*` whose prefix the tool name starts with — `"mcp__github__*"`,
+ * `"mcp__*"`, `"*"` — and anything still unmatched falls back to
  * `options.defaultDecision` (itself defaulting to `"ask"`). `bash` is the one
  * tool whose rule may be a {@link BashPermissionRules} pattern map instead of
  * a flat verdict — see {@link matchBashPermission} for how a request's

@@ -1,7 +1,7 @@
 import type { ModelDefinition, ModelProvider, UsageRecorder } from "@agent/ai";
 import type { AgentLoopOptions, CompactionOptions } from "@agent/coding-agent";
 import { builtinTools, type PermissionEngine } from "@agent/coding-agent";
-import type { AgentDefinition } from "@agent/core";
+import type { AgentDefinition, Tool } from "@agent/core";
 import type { EventSink } from "@agent/protocol";
 import { buildRegistry, credentialHintForProvider } from "./models.js";
 
@@ -29,7 +29,19 @@ export const DEFAULT_MAX_ITERATIONS = 32;
  */
 export const DEFAULT_COMPACTION: CompactionOptions = {};
 
-/** What {@link agentLoopOptions} needs beyond the fixed tool set and compaction default. */
+/**
+ * Everything the native loop can call: the built-ins, plus whatever the
+ * workspace's MCP servers contributed for this session (empty when none are
+ * configured, or when nothing came up).
+ *
+ * The order matters only for how the tool list reads to the model — built-ins
+ * first, since they are the ones the system prompt talks about.
+ */
+export function nativeTools(mcpTools: readonly Tool[] = []): readonly Tool[] {
+  return [...builtinTools(), ...mcpTools];
+}
+
+/** What {@link agentLoopOptions} needs beyond the tool set and compaction default. */
 export interface AgentLoopOptionsArgs {
   readonly agent: AgentDefinition;
   readonly provider: ModelProvider;
@@ -38,6 +50,12 @@ export interface AgentLoopOptionsArgs {
   readonly events: EventSink;
   readonly maxIterations: number;
   readonly timeoutMs?: number;
+  /**
+   * The loop's tools. Defaults to the built-ins alone; a caller that has MCP
+   * servers connected passes {@link nativeTools} with their bridged tools, so
+   * the same list reaches both the loop and the agent definition's `tools`.
+   */
+  readonly tools?: readonly Tool[];
 }
 
 /**
@@ -50,7 +68,7 @@ export function agentLoopOptions(args: AgentLoopOptionsArgs): AgentLoopOptions {
   return {
     agent: args.agent,
     provider: args.provider,
-    tools: builtinTools(),
+    tools: args.tools ?? nativeTools(),
     permissions: args.permissions,
     usage: args.usage,
     events: args.events,
