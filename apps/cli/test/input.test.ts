@@ -2,7 +2,11 @@ import * as readline from "node:readline";
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createBandDecor } from "../src/band.js";
-import type { CommandMenuEntry, CompleterResult } from "../src/input.js";
+import type {
+  CommandMenuEntry,
+  CompleterResult,
+  ReverseSearchState,
+} from "../src/input.js";
 import {
   COMMAND_MENU_MAX_ROWS,
   CONTINUATION_PROMPT,
@@ -14,9 +18,15 @@ import {
   historyEntryFor,
   INPUT_SIGINT,
   initialAssembly,
+  initialReverseSearch,
   localDisplayPos,
+  REVERSE_SEARCH_MAX_ROWS,
   reduceAssemblyLine,
+  reduceReverseSearch,
   renderCommandMenu,
+  renderReverseSearch,
+  reverseSearchMatches,
+  reverseSearchSelection,
   toReadlineCompleter,
 } from "../src/input.js";
 import { createStyles, PLAIN_STYLES, ROLE_SGR } from "../src/styles.js";
@@ -24,6 +34,7 @@ import { createStyles, PLAIN_STYLES, ROLE_SGR } from "../src/styles.js";
 const ESC = "\u001b";
 const CTRL_C = "\x03";
 const CTRL_D = "\x04";
+const CTRL_R = "\x12";
 
 // --- fixtures ----------------------------------------------------------------
 
@@ -640,6 +651,184 @@ describe("renderCommandMenu", () => {
       expect(row).not.toContain("❯");
       expect(row.startsWith("  /")).toBe(true);
     }
+  });
+});
+
+// --- Ctrl+R reverse-i-search --------------------------------------------------
+
+/** Newest first, the same convention `rlHistory` reads readline's own history in. */
+const HISTORY: readonly string[] = [
+  "look at render.ts",
+  "git status",
+  "npm test",
+];
+
+describe("reduceReverseSearch", () => {
+  it("appends a typed character and resets the offset", () => {
+    const state: ReverseSearchState = { query: "g", offset: 3 };
+    expect(reduceReverseSearch(state, { type: "type", char: "i" })).toEqual({
+      query: "gi",
+      offset: 0,
+    });
+  });
+
+  it("drops the last character on backspace and resets the offset", () => {
+    const state: ReverseSearchState = { query: "git", offset: 2 };
+    expect(reduceReverseSearch(state, { type: "backspace" })).toEqual({
+      query: "gi",
+      offset: 0,
+    });
+  });
+
+  it("is a no-op backspacing an empty query", () => {
+    const state = initialReverseSearch();
+    expect(reduceReverseSearch(state, { type: "backspace" })).toBe(state);
+  });
+
+  it("cycle advances the offset and leaves the query alone", () => {
+    const state: ReverseSearchState = { query: "git", offset: 0 };
+    expect(reduceReverseSearch(state, { type: "cycle" })).toEqual({
+      query: "git",
+      offset: 1,
+    });
+  });
+});
+
+describe("reverseSearchMatches", () => {
+  it("keeps only entries containing the query, newest first", () => {
+    expect(reverseSearchMatches(HISTORY, "git")).toEqual(["git status"]);
+  });
+
+  it("matches case-insensitively", () => {
+    expect(reverseSearchMatches(HISTORY, "GIT")).toEqual(["git status"]);
+  });
+
+  it("matches anywhere in the entry, not just a prefix", () => {
+    expect(reverseSearchMatches(HISTORY, "render")).toEqual([
+      "look at render.ts",
+    ]);
+  });
+
+  it("an empty query matches everything, in history order", () => {
+    expect(reverseSearchMatches(HISTORY, "")).toEqual(HISTORY);
+  });
+
+  it("matches nothing that isn't there", () => {
+    expect(reverseSearchMatches(HISTORY, "zzz")).toEqual([]);
+  });
+});
+
+describe("reverseSearchSelection", () => {
+  const matches = ["fix bug", "fix typo"];
+
+  it("is undefined with no matches", () => {
+    expect(reverseSearchSelection(initialReverseSearch(), [])).toBeUndefined();
+  });
+
+  it("picks the match at the offset", () => {
+    expect(reverseSearchSelection({ query: "fix", offset: 0 }, matches)).toBe(
+      "fix bug",
+    );
+    expect(reverseSearchSelection({ query: "fix", offset: 1 }, matches)).toBe(
+      "fix typo",
+    );
+  });
+
+  it("wraps back around to the newest once every match has been seen", () => {
+    expect(reverseSearchSelection({ query: "fix", offset: 2 }, matches)).toBe(
+      "fix bug",
+    );
+  });
+});
+
+describe("renderReverseSearch", () => {
+  const plain = { columns: 80, styles: PLAIN_STYLES };
+
+  it("draws the indicator and the matches, newest first, best one marked", () => {
+    const rows = renderReverseSearch(
+      { query: "git", offset: 0 },
+      HISTORY,
+      plain,
+    );
+    expect(rows).toEqual(["(reverse-i-search) git", "❯ git status"]);
+  });
+
+  it("renders a dim failed indicator and nothing else when nothing matches", () => {
+    const rows = renderReverseSearch(
+      { query: "zzz", offset: 0 },
+      HISTORY,
+      plain,
+    );
+    expect(rows).toEqual(["(reverse-i-search) zzz — no match"]);
+  });
+
+  it("the window starts at the current selection, not at the newest match", () => {
+    const history = ["fix bug", "chore", "fix typo"];
+    const rows = renderReverseSearch({ query: "fix", offset: 1 }, history, {
+      ...plain,
+      maxRows: 4,
+    });
+    // "chore" doesn't match "fix" and is filtered out before the window is
+    // even considered; "fix bug" is newer than the selection and scrolled
+    // past rather than shown above it.
+    expect(rows).toEqual(["(reverse-i-search) fix", "❯ fix typo"]);
+  });
+
+  it("caps match rows and counts the rest", () => {
+    const many = Array.from({ length: 5 }, (_, i) => `cmd ${i}`);
+    const rows = renderReverseSearch({ query: "cmd", offset: 0 }, many, {
+      ...plain,
+      maxRows: 2,
+    });
+    expect(rows).toEqual([
+      "(reverse-i-search) cmd",
+      "❯ cmd 0",
+      "  cmd 1",
+      "  … and 3 more",
+    ]);
+  });
+
+  it("defaults the cap to REVERSE_SEARCH_MAX_ROWS", () => {
+    const many = Array.from(
+      { length: REVERSE_SEARCH_MAX_ROWS + 2 },
+      (_, i) => `cmd ${i}`,
+    );
+    const rows = renderReverseSearch({ query: "cmd", offset: 0 }, many, plain);
+    expect(rows).toHaveLength(REVERSE_SEARCH_MAX_ROWS + 2);
+    expect(rows.at(-1)).toBe("  … and 2 more");
+  });
+
+  it("flattens a multiline history entry to one row", () => {
+    const rows = renderReverseSearch(
+      { query: "foo", offset: 0 },
+      ["foo\nbar\nbaz"],
+      plain,
+    );
+    expect(rows).toEqual(["(reverse-i-search) foo", "❯ foo bar baz"]);
+  });
+
+  it("truncates a row to one cell short of the terminal's width", () => {
+    const rows = renderReverseSearch(
+      { query: "git", offset: 0 },
+      ["git commit -m a much longer message than fits"],
+      { columns: 20, styles: PLAIN_STYLES },
+    );
+    expect([...(rows[1] ?? "")].length).toBeLessThanOrEqual(19);
+    expect(rows[1]).toBe("❯ git commit -m a …");
+  });
+
+  it("styles the indicator's query and the marked match in the user's colour", () => {
+    const styles = createStyles(true);
+    const rows = renderReverseSearch(
+      { query: "git", offset: 0 },
+      ["git status"],
+      { columns: 80, styles },
+    );
+    const reset = "\x1b[0m";
+    expect(rows[0]).toBe(
+      `\x1b[${ROLE_SGR.menu}m(reverse-i-search) ${reset}\x1b[${ROLE_SGR.user}mgit${reset}`,
+    );
+    expect(rows[1]).toBe(`\x1b[${ROLE_SGR.user}m❯ git status${reset}`);
   });
 });
 
@@ -1553,6 +1742,262 @@ describe("InputManager.captureWhileBusy", () => {
     expect(output.text).toContain("y");
     expect(caught).toEqual([]);
 
+    manager.close();
+  });
+});
+
+// --- Ctrl+R reverse-i-search, end to end --------------------------------------
+
+describe("InputManager reverse-i-search", () => {
+  it("opens on Ctrl+R and narrows the match as the query is typed", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["look at render.ts", "git status", "npm test"],
+    });
+
+    manager.readMessage("> ");
+    output.chunks = [];
+    input.write(CTRL_R);
+    await tick(10);
+    // Nothing typed yet: the newest entry, whatever it is.
+    expect(output.text).toContain("(reverse-i-search)");
+    expect(output.text).toContain("❯ look at render.ts");
+
+    output.chunks = [];
+    input.write("git");
+    await tick(10);
+    expect(output.text).toContain("(reverse-i-search) git");
+    expect(output.text).toContain("❯ git status");
+    expect(output.text).not.toContain("look at render.ts");
+    expect(output.text).not.toContain("npm test");
+
+    manager.close();
+  });
+
+  it("cycles to the next older match on repeated Ctrl+R, wrapping back around", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["fix bug", "list files", "fix typo"],
+    });
+
+    manager.readMessage("> ");
+    input.write(CTRL_R);
+    await tick(10);
+    input.write("fix");
+    await tick(10);
+    expect(output.text).toContain("❯ fix bug");
+    expect(output.text).toContain("fix typo");
+
+    output.chunks = [];
+    input.write(CTRL_R);
+    await tick(10);
+    expect(output.text).toContain("❯ fix typo");
+    expect(output.text).not.toContain("fix bug");
+
+    // A third Ctrl+R has cycled past every match there is; it wraps back to
+    // the newest one instead of running off the end.
+    output.chunks = [];
+    input.write(CTRL_R);
+    await tick(10);
+    expect(output.text).toContain("❯ fix bug");
+
+    manager.close();
+  });
+
+  it("accepts into the buffer on Enter, caret at the end, without sending it", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["run the deploy script"],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write(CTRL_R);
+    await tick(10);
+    input.write("deploy");
+    await tick(10);
+    expect(output.text).toContain("run the deploy script");
+
+    output.chunks = [];
+    input.write("\n"); // Enter: accept the match, not submit the line.
+    await tick(10);
+    // The search UI came down; the line was not sent.
+    expect(output.text).toContain(HIDE);
+
+    // Editing continues from the end of the accepted entry, and only the
+    // *real* Enter that follows actually sends it.
+    input.write(" for prod\n");
+    await expect(result).resolves.toBe("run the deploy script for prod");
+    manager.close();
+  });
+
+  it("accepts on Tab as well as Enter", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["git status"],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write(CTRL_R);
+    await tick(10);
+    input.write("git");
+    await tick(10);
+    input.write("\t");
+    await tick(10);
+
+    input.write("\n");
+    await expect(result).resolves.toBe("git status");
+    manager.close();
+  });
+
+  it("cancels on Escape and restores exactly what was typed before Ctrl+R", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["git status"],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("hello wo");
+    await tick(10);
+    input.write(CTRL_R);
+    await tick(10);
+    input.write("git");
+    await tick(10);
+    expect(output.text).toContain("git status");
+
+    output.chunks = [];
+    input.write(ESC);
+    // A bare Escape is ambiguous with the start of an Alt-combo or a CSI
+    // sequence until `readline`'s own escape-code timeout (~500ms) lapses
+    // with nothing following it — the keypress itself does not fire, and
+    // search does not close, until this elapses.
+    await tick(600);
+    expect(output.text).toContain(HIDE);
+    expect(output.text).not.toContain("git status");
+
+    input.write("\n");
+    await expect(result).resolves.toBe("hello wo");
+    manager.close();
+  });
+
+  it("Ctrl-C in search mode cancels the search, not the line being typed", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["deploy prod"],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write("keep this");
+    await tick(10);
+    input.write(CTRL_R);
+    await tick(10);
+    input.write("deploy");
+    await tick(10);
+    expect(output.text).toContain("(reverse-i-search) deploy");
+
+    input.write(CTRL_C);
+    await tick(10);
+    // Still open: the abort-the-line Ctrl-C never ran, because `readline`
+    // never saw this keystroke at all while search had its listener off.
+    input.write(", finished\n");
+    await expect(result).resolves.toBe("keep this, finished");
+    manager.close();
+  });
+
+  it("shows a failed indicator with no match; backspace recovers it", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["alpha"],
+    });
+
+    manager.readMessage("> ");
+    input.write(CTRL_R);
+    await tick(10);
+    input.write("alpha");
+    await tick(10);
+    expect(output.text).toContain("❯ alpha");
+
+    output.chunks = [];
+    input.write("z");
+    await tick(10);
+    expect(output.text).toContain("(reverse-i-search) alphaz — no match");
+    expect(output.text).not.toContain("❯");
+
+    output.chunks = [];
+    input.write("\x7f");
+    await tick(10);
+    expect(output.text).toContain("❯ alpha");
+    expect(output.text).not.toContain("no match");
+
+    manager.close();
+  });
+
+  it("does not activate during a mid-turn capture", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+    const caught: string[] = [];
+
+    manager.captureWhileBusy((line) => caught.push(line));
+    output.chunks = [];
+    input.write(CTRL_R);
+    await tick(10);
+    expect(output.text).not.toContain("(reverse-i-search)");
+
+    input.write("abc\n");
+    await tick(10);
+    expect(caught).toEqual(["abc"]);
+    manager.close();
+  });
+
+  it("does not activate while a permission question is open", async () => {
+    const { input, output } = makeTtyIo();
+    const manager = createInputManager({ input, output, pasteWindowMs: 5 });
+
+    const answer = manager.question("allow? [y/N] ");
+    output.chunks = [];
+    input.write(CTRL_R);
+    await tick(10);
+    expect(output.text).not.toContain("(reverse-i-search)");
+
+    input.write("y\n");
+    await expect(answer).resolves.toBe("y");
+    manager.close();
+  });
+
+  it("is inert on a non-TTY session", async () => {
+    const { input, output } = makeTtyIo();
+    input.isTTY = false;
+    const manager = createInputManager({
+      input,
+      output,
+      pasteWindowMs: 5,
+      history: ["git status"],
+    });
+
+    const result = manager.readMessage("> ");
+    input.write(`${CTRL_R}git\n`);
+    await expect(result).resolves.toBe("git");
+    expect(output.text).not.toContain("(reverse-i-search)");
     manager.close();
   });
 });

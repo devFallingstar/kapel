@@ -312,6 +312,177 @@ export function renderCommandMenu(
   return rows;
 }
 
+// --- Ctrl+R reverse-i-search --------------------------------------------------
+
+/**
+ * The state of an in-progress reverse-history search: the query typed since
+ * Ctrl+R was pressed, and how many times Ctrl+R has been pressed again since
+ * the query last changed.
+ *
+ * `offset` rather than "the match itself" is what this holds on to, on
+ * purpose — the match list is never stored; it is recomputed from
+ * `readline`'s history and this query every time it is needed (by
+ * {@link reverseSearchMatches}), in exactly the spirit of the slash menu
+ * above never storing its own filtered list either. An offset is a stable
+ * pointer into a list that can be rebuilt at will; a match string copied out
+ * of last keystroke's list would not be.
+ */
+export interface ReverseSearchState {
+  readonly query: string;
+  readonly offset: number;
+}
+
+/** The state Ctrl+R opens into: no query yet, pointing at the newest match. */
+export function initialReverseSearch(): ReverseSearchState {
+  return { query: "", offset: 0 };
+}
+
+export type ReverseSearchAction =
+  | { readonly type: "type"; readonly char: string }
+  | { readonly type: "backspace" }
+  | { readonly type: "cycle" };
+
+/**
+ * Advances the search by one keystroke.
+ *
+ * Typing or backspacing resets `offset` back to 0 — a query that just changed
+ * ought to show its *best* match first, not wherever cycling had wandered
+ * under the query it replaced. `cycle` (a second Ctrl+R) is the only action
+ * that touches the offset, and only ever moves it further from the newest
+ * match; wrapping it back around once every match has been seen is
+ * {@link reverseSearchSelection}'s job; this function does not know how many
+ * matches there are, on purpose, and could not wrap correctly if it tried.
+ */
+export function reduceReverseSearch(
+  state: ReverseSearchState,
+  action: ReverseSearchAction,
+): ReverseSearchState {
+  switch (action.type) {
+    case "type":
+      return { query: state.query + action.char, offset: 0 };
+    case "backspace":
+      return state.query === ""
+        ? state
+        : { query: state.query.slice(0, -1), offset: 0 };
+    case "cycle":
+      return { query: state.query, offset: state.offset + 1 };
+  }
+}
+
+/**
+ * The history entries `query` matches, in whatever order `history` hands them
+ * back — `rlHistory`'s, which is newest-first, same as everywhere else this
+ * module reads it. Matching is a plain case-insensitive substring test, and
+ * an empty query matches everything: Ctrl+R with nothing typed yet is "start
+ * stepping through history", the same thing ↑ does one entry at a time.
+ */
+export function reverseSearchMatches(
+  history: readonly string[],
+  query: string,
+): readonly string[] {
+  const needle = query.toLowerCase();
+  return history.filter((entry) => entry.toLowerCase().includes(needle));
+}
+
+/**
+ * The match Enter or Tab would accept right now, or `undefined` when the
+ * query matches nothing.
+ *
+ * `offset` is taken modulo the match count here, not in
+ * {@link reduceReverseSearch}, so that cycling past the oldest match wraps
+ * back around to the newest rather than running off the end of a list this
+ * function is the only one that ever actually looks at the length of.
+ */
+export function reverseSearchSelection(
+  state: ReverseSearchState,
+  matches: readonly string[],
+): string | undefined {
+  return matches.length === 0
+    ? undefined
+    : matches[state.offset % matches.length];
+}
+
+export interface ReverseSearchRenderOptions {
+  readonly columns: number;
+  readonly styles: Styles;
+  /** Match rows shown under the indicator. Defaults to {@link REVERSE_SEARCH_MAX_ROWS}. */
+  readonly maxRows?: number;
+}
+
+/** Match rows shown before the list gives up and counts the rest. */
+export const REVERSE_SEARCH_MAX_ROWS = 4;
+
+const SEARCH_MARK = "❯ ";
+const SEARCH_INDENT = "  ";
+
+/**
+ * The reverse-i-search UI, as rows ready for {@link drawBelow} — the same
+ * shape {@link renderCommandMenu} hands back, because it is drawn through the
+ * exact same pipe: one indicator row, then as many matches as fit, with the
+ * one Enter or Tab would accept marked and the rest dim.
+ *
+ * The indicator never disappears, even when nothing matches — it switches to
+ * a dim "no match" reading instead of an empty list, so the query being fixed
+ * stays legible rather than vanishing along with the rows under it. And
+ * unlike {@link renderCommandMenu}'s window, which always starts at the
+ * newest candidate, this one starts at the *current selection*: the row right
+ * under the indicator is always "what Enter sends" — the one thing this
+ * feature exists to show — and the few rows under that are a preview of where
+ * the next Ctrl+R would take you, not a scrollback of everything above it.
+ *
+ * A history entry spanning multiple lines is flattened with
+ * {@link historyEntryFor} before it is measured or drawn, exactly the
+ * transformation an entry already goes through on its way *into* history —
+ * so a multiline command reads as one row instead of looking cut off after
+ * its first line.
+ */
+export function renderReverseSearch(
+  state: ReverseSearchState,
+  history: readonly string[],
+  options: ReverseSearchRenderOptions,
+): readonly string[] {
+  const matches = reverseSearchMatches(history, state.query);
+  const styles = options.styles;
+  const limit = Math.max(1, options.columns - 1);
+  const noMatch = matches.length === 0;
+
+  // Built and truncated as one plain string, then re-sliced for styling —
+  // the same order `renderCommandMenu` uses above, and for the same reason:
+  // truncating text that already carries escape codes counts bytes that were
+  // never going to occupy a cell.
+  const prefix = "(reverse-i-search) ";
+  const suffix = noMatch ? " — no match" : "";
+  const plainIndicator = `${prefix}${state.query}${suffix}`;
+  const chars = [...truncateTo(plainIndicator, limit)];
+  const prefixEnd = Math.min(prefix.length, chars.length);
+  const queryEnd = Math.min(prefixEnd + state.query.length, chars.length);
+  const head = chars.slice(0, prefixEnd).join("");
+  const body = chars.slice(prefixEnd, queryEnd).join("");
+  const rest = chars.slice(queryEnd).join("");
+  const indicator = noMatch
+    ? styles.menu(`${head}${body}${rest}`)
+    : `${styles.menu(head)}${styles.user(body)}${styles.menu(rest)}`;
+
+  if (noMatch) return [indicator];
+
+  const maxRows = Math.max(1, options.maxRows ?? REVERSE_SEARCH_MAX_ROWS);
+  const selected = state.offset % matches.length;
+  const visible = matches.slice(selected, selected + maxRows);
+  const hidden = matches.length - selected - visible.length;
+
+  const rows = visible.map((entry, index) => {
+    const marker = index === 0 ? SEARCH_MARK : SEARCH_INDENT;
+    const plain = truncateTo(`${marker}${historyEntryFor(entry)}`, limit);
+    return index === 0 ? styles.user(plain) : styles.menu(plain);
+  });
+  if (hidden > 0) {
+    rows.push(
+      styles.menu(truncateTo(`${SEARCH_INDENT}… and ${hidden} more`, limit)),
+    );
+  }
+  return [indicator, ...rows];
+}
+
 /**
  * Where `text` leaves the cursor on a terminal `columns` wide, by the same
  * rules `readline` applies — the fallback for a runtime whose `Interface` no
@@ -375,6 +546,15 @@ type ReadlineCompleter = (
 
 function isPromise(value: unknown): value is Promise<CompleterResult> {
   return typeof (value as { then?: unknown } | undefined)?.then === "function";
+}
+
+/**
+ * Whether a `keypress` event's `key` is Ctrl+`name` — guarding the
+ * `undefined` a special key without a `readline.Key` (rare, but the type
+ * allows it) would otherwise force at every call site.
+ */
+function isCtrlKey(key: readline.Key | undefined, name: string): boolean {
+  return key !== undefined && key.ctrl === true && key.name === name;
 }
 
 /**
@@ -549,6 +729,42 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       : {}),
   });
 
+  /**
+   * `readline`'s own keypress handling, captured the instant after it
+   * attaches and before this module's own listener joins the list — see the
+   * comment above `options.input.on("keypress", onKeypress)` further down.
+   *
+   * Everywhere else in this file, "after readline" is the only vantage point
+   * there is: this module's listener is registered second, so it always sees
+   * a buffer `readline` has already mutated, and the band and the `/` menu
+   * are built entirely out of reading that aftermath — a query character for
+   * reverse-i-search cannot be handled that way. There is nothing to "undo"
+   * a keystroke `readline` has already echoed and folded into `rl.line`,
+   * because `write` is not something one listener can take back from
+   * another, and `EventEmitter` has no "handled, stop here": every listener
+   * registered for an event runs, in order, regardless of what an earlier one
+   * decided. Being first in line buys nothing.
+   *
+   * What *does* work is removing `readline`'s listener from `input` for as
+   * long as search is open, and putting it back the moment search ends.
+   * While it is off, `readline` itself is untouched — its `history`, its
+   * `line`, its `cursor` all still exist exactly where they were — it is
+   * simply never handed a key, so none of them move. Every keystroke that
+   * would otherwise have gone to it instead reaches only
+   * {@link onSearchKeypress}, which is free to treat a plain character as
+   * "extend the query" rather than "insert here" precisely because nothing
+   * else in the process ever sees it as an insertion.
+   *
+   * The snapshot has to be taken *now* — before this module's own permanent
+   * listener is added a little further down — or that listener would end up
+   * captured inside the very array meant to be suspended and resumed around
+   * it. It is read once, not on every search: `readline` never re-registers
+   * this listener after construction, so the array can never go stale.
+   */
+  const readlineKeypressListeners = options.input
+    .listeners("keypress")
+    .slice() as unknown as ReadonlyArray<(...args: unknown[]) => void>;
+
   let closed = false;
 
   // readMessage state
@@ -634,6 +850,19 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     options.input.isTTY === true && options.output.isTTY === true;
   const menuEnabled = menuEntries !== undefined && onTerminal;
   const bandEnabled = decor !== undefined && onTerminal;
+  /**
+   * Whether Ctrl+R may open reverse-i-search — the same `onTerminal` rule as
+   * the menu and the band, and for the same reason: search is drawn through
+   * the identical `drawBelow` pipe and reaches real keystrokes off `input`
+   * directly, neither of which exists on a pipe.
+   */
+  const searchEnabled = onTerminal;
+  /**
+   * Reverse-i-search state, or `undefined` while the ordinary editor owns the
+   * keyboard. Its presence is what tells `onKeypress` to stand aside — see
+   * {@link onSearchKeypress}, which is who takes over instead.
+   */
+  let search: ReverseSearchState | undefined;
   /** Physical rows currently drawn below the input block. */
   let belowRows = 0;
   /** True while another consumer owns the terminal (see `withSuspended`). */
@@ -836,21 +1065,36 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   };
 
   /**
+   * The reverse-i-search rows for the query as it stands, or none at all —
+   * `menuLines`'s counterpart, drawn instead of it rather than beside it
+   * whenever {@link search} is open (see {@link renderBelow}).
+   */
+  const searchLines = (): readonly string[] => {
+    if (search === undefined) return [];
+    return renderReverseSearch(search, rlHistory(rl) ?? [], {
+      columns: columns(),
+      styles: menuStyles,
+    });
+  };
+
+  /**
    * Put the screen back in the state the buffer implies: the band's lower rule
-   * under the input, the `/` menu under that, and nothing under either.
+   * under the input, then either the `/` menu or the reverse-i-search rows
+   * under that — never both, since a query typed for one is never a command
+   * name for the other — and nothing under either.
    *
-   * The menu sits *outside* the band rather than between the input and the
-   * rule, which is a choice about what the rules mean. They bound the thing
-   * you are typing into; a list of what you might be typing is a suggestion
-   * about it, and putting it inside the frame would make the frame grow and
-   * shrink under your hands for reasons that have nothing to do with your
-   * message.
+   * The menu (and search) sit *outside* the band rather than between the
+   * input and the rule, which is a choice about what the rules mean. They
+   * bound the thing you are typing into; a list of what you might be typing,
+   * or of what you might be recalling, is a suggestion about it, and putting
+   * it inside the frame would make the frame grow and shrink under your hands
+   * for reasons that have nothing to do with your message.
    */
   const renderBelow = (): void => {
     if (suspended || submitting) return;
     const rows = [
       ...(bandOpen && decor !== undefined ? [decor.rule(columns())] : []),
-      ...menuLines(),
+      ...(search !== undefined ? searchLines() : menuLines()),
     ];
     if (rows.length === 0) {
       eraseBelow();
@@ -953,11 +1197,142 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     state.cursor = 0;
   };
 
-  const onKeypress = (): void => {
+  /** Detaches `readline`'s own key handling — see {@link readlineKeypressListeners}. */
+  const suspendReadlineKeypress = (): void => {
+    for (const listener of readlineKeypressListeners) {
+      options.input.removeListener("keypress", listener);
+    }
+  };
+
+  /** Reattaches it. Order among themselves never mattered; there is normally exactly one. */
+  const resumeReadlineKeypress = (): void => {
+    for (const listener of readlineKeypressListeners) {
+      options.input.on("keypress", listener);
+    }
+  };
+
+  /**
+   * Overwrites `readline`'s buffer directly — the same private-but-stable
+   * fields {@link abandonLine} falls back to when `clearLine` does not exist.
+   * Used only to install the entry reverse-i-search accepted, caret at its
+   * end: "accept, then keep editing" is the point, not dropping the user back
+   * wherever the query happened to leave the cursor.
+   */
+  const setEditorLine = (text: string): void => {
+    const state = rl as unknown as { line?: string; cursor?: number };
+    state.line = text;
+    state.cursor = text.length;
+  };
+
+  /**
+   * Opens reverse-i-search: freezes the buffer exactly as it stands — nothing
+   * about it changes until the search is accepted or cancelled, which is also
+   * why cancelling needs no separate "restore" step below — and hands every
+   * future keystroke to {@link onSearchKeypress} instead of `readline`.
+   */
+  const enterSearch = (): void => {
+    search = initialReverseSearch();
+    suspendReadlineKeypress();
+    options.input.on("keypress", onSearchKeypress);
+    renderBelow();
+  };
+
+  /**
+   * Closes reverse-i-search. `readline`'s own listener goes back on `input`
+   * first, so a key arriving the instant after acceptance is handled the
+   * ordinary way rather than falling into a gap between two disconnected
+   * halves of this manager.
+   *
+   * `entry` is the history line to install, caret at its end, or `undefined`
+   * to cancel — cancelling needs no restoring work at all, because the buffer
+   * was never touched while search was open (see {@link enterSearch}).
+   * `rl.prompt(true)` is what makes either outcome visible: the primary row
+   * was never redrawn during search (nothing wrote to it — that is the whole
+   * point of lifting `readline`'s listener off `input`), so the screen still
+   * shows whatever it showed before Ctrl+R, and `rl.prompt(true)` — the same
+   * call `withSuspended` reopens a prompt with, further down — is what
+   * reconciles it with whatever `readline`'s buffer holds now, preserving the
+   * caret this function (or the untouched buffer) just left it at.
+   */
+  const leaveSearch = (entry: string | undefined): void => {
+    if (search === undefined) return;
+    search = undefined;
+    options.input.removeListener("keypress", onSearchKeypress);
+    resumeReadlineKeypress();
+    if (entry !== undefined) setEditorLine(entry);
+    rl.prompt(true);
+    renderBelow();
+  };
+
+  /**
+   * Every keystroke while reverse-i-search is open, in place of `readline`'s
+   * own handling — see {@link readlineKeypressListeners} for why this is the
+   * *only* listener a key reaches while `search` is set.
+   */
+  const onSearchKeypress = (
+    str: string | undefined,
+    key: readline.Key | undefined,
+  ): void => {
+    if (search === undefined) return;
+    if (key?.name === "escape" || isCtrlKey(key, "c")) {
+      // Ctrl-C here is not the abort-the-line Ctrl-C: `readline` never sees
+      // this keystroke — its listener is off `input` for the duration of the
+      // search — so the `SIGINT` event that keystroke would otherwise raise
+      // never fires at all. There is nothing for the ordinary Ctrl-C handling
+      // further down to even see.
+      leaveSearch(undefined);
+      return;
+    }
+    if (isCtrlKey(key, "r")) {
+      search = reduceReverseSearch(search, { type: "cycle" });
+      renderBelow();
+      return;
+    }
+    if (
+      key?.name === "return" ||
+      key?.name === "enter" ||
+      key?.name === "tab"
+    ) {
+      const matches = reverseSearchMatches(rlHistory(rl) ?? [], search.query);
+      leaveSearch(reverseSearchSelection(search, matches));
+      return;
+    }
+    if (key?.name === "backspace") {
+      search = reduceReverseSearch(search, { type: "backspace" });
+      renderBelow();
+      return;
+    }
+    // Anything else with a printable representation and no modifier held is
+    // a character for the query — arrows and the like arrive with `str`
+    // `undefined` and are silently ignored, the same as `readline` ignores an
+    // unbound key.
+    if (str !== undefined && str.length > 0 && !key?.ctrl && !key?.meta) {
+      search = reduceReverseSearch(search, { type: "type", char: str });
+      renderBelow();
+    }
+  };
+
+  const onKeypress = (
+    _str: string | undefined,
+    key: readline.Key | undefined,
+  ): void => {
     // Mid-turn nothing under the input is ours to draw: the status band owns
     // that part of the screen, and the line being typed is one of its rows.
     if (capture !== undefined) {
       options.onPendingChange?.();
+      return;
+    }
+    // While search is open, every key is `onSearchKeypress`'s to interpret —
+    // this listener is never removed, so it still fires, but it has nothing
+    // left to do until search ends.
+    if (search !== undefined) return;
+    if (
+      searchEnabled &&
+      readPending !== undefined &&
+      questionPending === undefined &&
+      isCtrlKey(key, "r")
+    ) {
+      enterSearch();
       return;
     }
     renderBelow();
@@ -982,6 +1357,9 @@ export function createInputManager(options: InputManagerOptions): InputManager {
   // has applied the key. Registered unconditionally — the band and the menu
   // are terminal-only, but the mid-turn capture repaints on any stream, and
   // everything downstream of here is a no-op when neither is switched on.
+  // `onSearchKeypress` is the exception: it goes on `input` only for the
+  // duration of a search, and by the time it is on there, `readline`'s own
+  // listener has been taken back off — see {@link readlineKeypressListeners}.
   options.input.on("keypress", onKeypress);
   options.output.on("resize", onResize);
 
@@ -1206,6 +1584,15 @@ export function createInputManager(options: InputManagerOptions): InputManager {
 
   rl.on("close", () => {
     closed = true;
+    // A search left open when the interface closes is cleaned up quietly:
+    // `readline`'s listener is not needed back for anything further, but
+    // leaving `onSearchKeypress` attached to a stream nobody else is
+    // listening to any more would be a leak.
+    if (search !== undefined) {
+      search = undefined;
+      options.input.removeListener("keypress", onSearchKeypress);
+      resumeReadlineKeypress();
+    }
     eraseBelow();
     // Ctrl-D writes no newline, so the caret is still inside the block: this
     // is the one close that climbs from where it stands rather than from the
