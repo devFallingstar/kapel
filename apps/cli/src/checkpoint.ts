@@ -92,6 +92,28 @@ export type UndoOutcome =
   | { readonly ok: false; readonly reason: string };
 
 /**
+ * `git diff --shortstat`, reduced to the three numbers it reports — never its
+ * English, which `/undo` and the turn-end summary both re-render in kapel's
+ * own words instead of echoing.
+ */
+export interface ShortStat {
+  readonly filesChanged: number;
+  readonly insertions: number;
+  readonly deletions: number;
+}
+
+/** What `/diff` prints: the checkpoint it diffed against, and the diff itself. */
+export type DiffResult =
+  | {
+      readonly ok: true;
+      readonly label: string;
+      readonly ageMs: number;
+      /** git's own diff text, colored already if it was asked for. */
+      readonly diff: string;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/**
  * Per-prompt working-tree checkpoints, and the `/undo` that walks them back.
  *
  * Injectable on purpose: the interactive controller only ever sees this
@@ -111,6 +133,30 @@ export interface CheckpointStore {
   undo(): Promise<UndoOutcome>;
   /** Oldest first. Exposed for tests and for the retention cap's sake. */
   entries(): readonly CheckpointEntry[];
+  /**
+   * The working tree's change against `tree` — usually a checkpoint's own
+   * {@link CheckpointEntry.tree}, and for the turn-end summary specifically
+   * the one {@link capturedTreeFor} says this turn actually started from.
+   * Undefined whenever there is nothing to report: no repository, or git
+   * failed outright. A turn that changed nothing is reported too — as all
+   * zeros — because "print nothing" is the caller's call to make, not this
+   * one's; {@link formatChangeSummary} is where that decision actually lives.
+   */
+  changeStat(tree: string): Promise<ShortStat | undefined>;
+  /**
+   * The full `git diff` of the working tree against one checkpoint, counted
+   * back from the most recent — `stepsBack` 1 is the last one captured, the
+   * same number `/diff <n>` takes on the command line. `color: true` forces
+   * git's own ANSI colors on (the caller decides that from the same signal
+   * that styles everything else it prints); omitted or `false` asks for
+   * plain text. Every way there is nothing to diff — an empty stack, `n`
+   * past the end of it, no repository — comes back as `ok: false` with one
+   * printable reason, never a throw.
+   */
+  diff(
+    stepsBack: number,
+    options?: { readonly color?: boolean },
+  ): Promise<DiffResult>;
 }
 
 // --- Formatting -------------------------------------------------------------
@@ -159,6 +205,80 @@ export function undoLines(outcome: UndoOutcome): readonly string[] {
     `↩ restored ${outcome.restored} file${plural} to before ${quoted} (${age})`,
     "  every edit since then is gone, including ones made by shell commands or other programs — undo is one-way",
   ];
+}
+
+/**
+ * How a checkpoint is named when it is not being restored — the header
+ * `/diff` prints above the diff itself. Deliberately the same "quote the
+ * label, then the age" shape {@link undoLines} uses: the two commands are
+ * naming the same kind of thing, and reusing the phrasing is what keeps them
+ * reading as one feature instead of two.
+ */
+export function diffHeaderLine(label: string, ageMs: number): string {
+  const quoted = label === "" ? "the last prompt" : `"${label}"`;
+  return `diff since ${quoted} (${formatAge(ageMs)}):`;
+}
+
+/**
+ * Parses one line of `git diff --shortstat` — ` 4 files changed, 52
+ * insertions(+), 11 deletions(-)`, or any of its singular/partial variants —
+ * into numbers. Never throws: unrecognized or empty input (git prints nothing
+ * at all when there is no difference) comes back as all zeros, which is
+ * exactly the "nothing changed" state both callers already treat as
+ * "print nothing".
+ */
+export function parseShortStat(raw: string): ShortStat {
+  const zero: ShortStat = { filesChanged: 0, insertions: 0, deletions: 0 };
+  const trimmed = raw.trim();
+  if (trimmed === "") return zero;
+  const match =
+    /^(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?$/.exec(
+      trimmed,
+    );
+  if (match === null) return zero;
+  return {
+    filesChanged: Number(match[1]),
+    insertions: match[2] === undefined ? 0 : Number(match[2]),
+    deletions: match[3] === undefined ? 0 : Number(match[3]),
+  };
+}
+
+/**
+ * The turn-end summary line — `Δ 4 files +52 −11` — in kapel's own terse
+ * words rather than git's sentence. Undefined when nothing changed, which is
+ * what keeps a no-op turn silent instead of printing `Δ 0 files +0 −0`.
+ */
+export function formatChangeSummary(stat: ShortStat): string | undefined {
+  if (stat.filesChanged === 0) return undefined;
+  const files = `${stat.filesChanged} file${stat.filesChanged === 1 ? "" : "s"}`;
+  return `Δ ${files} +${stat.insertions} −${stat.deletions}`;
+}
+
+/**
+ * Which tree, if any, a `capture()` call actually snapshotted — judged by
+ * comparing the stack's top entry before and after the call rather than by
+ * trusting `capture()`'s own return value, which only ever carries a warning
+ * or nothing and cannot tell "captured silently" apart from "not a
+ * repository, also silent".
+ *
+ * Comparing lengths would look right for a while and then quietly break: once
+ * the stack is at its cap, a successful `capture()` pushes one checkpoint and
+ * drops the oldest, so the length before and after is the same push or no
+ * push. Comparing the newest entry's commit instead survives the cap — a
+ * fresh capture always mints a new dangling commit, so the top entry changes
+ * even when the stack's length does not.
+ */
+export function capturedTreeFor(
+  before: readonly CheckpointEntry[],
+  after: readonly CheckpointEntry[],
+): string | undefined {
+  const newTop = after[after.length - 1];
+  if (newTop === undefined) return undefined;
+  const previousTop = before[before.length - 1];
+  if (previousTop !== undefined && previousTop.commit === newTop.commit) {
+    return undefined;
+  }
+  return newTop.tree;
 }
 
 // --- git plumbing -----------------------------------------------------------
@@ -449,6 +569,46 @@ async function inProgressOperation(
   return undefined;
 }
 
+/**
+ * `git diff --shortstat <tree>`, against the live index and worktree
+ * directly — no temporary index, no `add -A`, unlike {@link snapshotTree}.
+ * That is what makes it cheap enough to run after every turn, and it is also
+ * this function's one blind spot: a one-argument `git diff` reports tracked
+ * changes only, so a file the turn created and never `git add`ed is invisible
+ * to it. `/undo` still restores such a file correctly — its restore path
+ * snapshots both sides with {@link snapshotTree} before diffing them — this
+ * is only the fast summary, not the source of truth.
+ */
+async function shortStatAgainst(
+  repo: RepoInfo,
+  tree: string,
+): Promise<ShortStat | undefined> {
+  const result = await git(["diff", "--shortstat", tree], repo.root);
+  if (result.exitCode !== 0) return undefined;
+  return parseShortStat(result.stdout);
+}
+
+/**
+ * `git diff <tree>`, colored or not, against the live index and worktree —
+ * the same one-argument form and the same blind spot as
+ * {@link shortStatAgainst}. `/diff` trades that gap for the alternative,
+ * which is asking the user to wait on a fresh `snapshotTree` just to look at
+ * what changed; git's native diff, with its own hunk headers and (optionally)
+ * its own colors, is what a person actually wants to read here anyway.
+ */
+async function diffAgainst(
+  repo: RepoInfo,
+  tree: string,
+  color: boolean,
+): Promise<string | undefined> {
+  const result = await git(
+    ["diff", color ? "--color=always" : "--color=never", tree],
+    repo.root,
+  );
+  if (result.exitCode !== 0) return undefined;
+  return result.stdout;
+}
+
 // --- The store ---------------------------------------------------------------
 
 export interface CheckpointStoreOptions {
@@ -459,8 +619,9 @@ export interface CheckpointStoreOptions {
   readonly limit?: number;
 }
 
-function notARepositoryReason(workspacePath: string): string {
-  return `/undo needs a git repository — ${workspacePath} is not inside one, so nothing was checkpointed. Run \`git init\` to get undo.`;
+/** `feature` names the command in the error — `/undo`, `/diff` — so the fix stays specific. */
+function notARepositoryReason(workspacePath: string, feature: string): string {
+  return `${feature} needs a git repository — ${workspacePath} is not inside one, so nothing was checkpointed. Run \`git init\` to get ${feature}.`;
 }
 
 /**
@@ -510,7 +671,10 @@ export function createCheckpointStore(
   const undo = async (): Promise<UndoOutcome> => {
     const info = await resolveRepo();
     if (info === undefined) {
-      return { ok: false, reason: notARepositoryReason(options.workspacePath) };
+      return {
+        ok: false,
+        reason: notARepositoryReason(options.workspacePath, "/undo"),
+      };
     }
     const entry = stack[stack.length - 1];
     if (entry === undefined) {
@@ -567,9 +731,76 @@ export function createCheckpointStore(
     }
   };
 
+  const changeStat = async (tree: string): Promise<ShortStat | undefined> => {
+    const info = await resolveRepo();
+    if (info === undefined) return undefined;
+    return await shortStatAgainst(info, tree);
+  };
+
+  /**
+   * Resolves `/diff <n>`'s counting — `1` is the most recently captured
+   * checkpoint, matching how the command is documented — to a stack index,
+   * and reports the friendly, non-error outcomes that stand in for every way
+   * there can be nothing to show: no repository, an empty stack, or an `n`
+   * past the end of it.
+   */
+  const diff = async (
+    stepsBack: number,
+    diffOptions?: { readonly color?: boolean },
+  ): Promise<DiffResult> => {
+    const info = await resolveRepo();
+    if (info === undefined) {
+      return {
+        ok: false,
+        reason: notARepositoryReason(options.workspacePath, "/diff"),
+      };
+    }
+    if (!Number.isInteger(stepsBack) || stepsBack < 1) {
+      return {
+        ok: false,
+        reason: `/diff wants a checkpoint count of 1 or more.`,
+      };
+    }
+    const entry = stack[stack.length - stepsBack];
+    if (entry === undefined) {
+      if (stack.length === 0) {
+        return {
+          ok: false,
+          reason:
+            "nothing to diff — no checkpoint has been taken in this session yet.",
+        };
+      }
+      const plural = stack.length === 1 ? "" : "s";
+      const verb = stack.length === 1 ? "has" : "have";
+      return {
+        ok: false,
+        reason: `only ${stack.length} checkpoint${plural} ${verb} been taken this session — /diff ${stepsBack} is out of range.`,
+      };
+    }
+    const text = await diffAgainst(
+      info,
+      entry.tree,
+      diffOptions?.color === true,
+    );
+    if (text === undefined) {
+      return {
+        ok: false,
+        reason: "/diff could not read the working tree.",
+      };
+    }
+    return {
+      ok: true,
+      label: entry.label,
+      ageMs: Math.max(0, now() - entry.createdAt),
+      diff: text,
+    };
+  };
+
   return {
     capture,
     undo,
     entries: () => stack.slice(),
+    changeStat,
+    diff,
   };
 }
