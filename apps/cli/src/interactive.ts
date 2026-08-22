@@ -145,6 +145,22 @@ import type { AltScreen } from "./screen.js";
 import { enterAltScreen } from "./screen.js";
 import { runSelectPrompt } from "./select-prompt.js";
 import { isoTime } from "./sessions.js";
+import type {
+  ParsedBangLine,
+  PendingShellQueue,
+  ShellCaptureResult,
+} from "./shell-mode.js";
+import {
+  attachShellContext,
+  createPendingShellQueue,
+  exitCodeNotice,
+  parseBangLine,
+  pendingAttachedNotice,
+  runShellCaptured,
+  runShellInteractive,
+  shellUsageNotice,
+  splitOutputLines,
+} from "./shell-mode.js";
 import type { StatusLine } from "./status-line.js";
 import { PLAIN_STYLES, type Styles, stylesFor } from "./styles.js";
 
@@ -755,6 +771,29 @@ export interface InteractiveControllerDeps {
    */
   readonly checkpoints?: CheckpointStore;
   /**
+   * Backs `!`/`!!` shell mode (see `shell-mode.ts`). Absent means there is
+   * no shell to run commands in and the two say so, the same shape of
+   * absence as {@link configure}/{@link editPolicy}.
+   *
+   * `runInteractive` is itself optional within a present `shell`: it is
+   * where the terminal-handover contract lives, and only the real REPL
+   * shell (`runInteractive` the function, confusingly named the same as
+   * this field — see its wiring below) has a terminal to hand over and the
+   * `withSuspendedFullScreen` seam to hand it over safely. Absent — a piped
+   * session, or a test — `!` runs exactly like `!!` minus the attach (see
+   * `handleShell`), which is what a caller with nothing to inherit stdio
+   * from gets by simply not wiring it.
+   */
+  readonly shell?: {
+    readonly runInteractive?: (
+      command: string,
+    ) => Promise<{ readonly code: number | null }>;
+    readonly runCaptured: (
+      command: string,
+      signal?: AbortSignal,
+    ) => Promise<ShellCaptureResult>;
+  };
+  /**
    * Decides whether an `@mention` names a real workspace file, for the
    * send-time annotation. Defaults to a containment-checked `stat` under
    * {@link workspacePath}; tests override it to keep the decision in memory.
@@ -1155,6 +1194,17 @@ export async function createInteractiveController(
   let persisted = deps.start.persisted;
   let titleDirty = false;
 
+  /**
+   * `!!` output waiting to ride along with the next plain message — see
+   * `shell-mode.ts`. Lives for the whole controller, not per-conversation:
+   * `/model`, `/resume` and `/fork` rebuild the session underneath this
+   * controller without starting a new one, and a capture typed a moment ago
+   * should still ride along after any of them. Only `/new` — which is
+   * "start over", not "switch to something else" — throws it away (see
+   * `slashNew`).
+   */
+  const pendingShell: PendingShellQueue = createPendingShellQueue();
+
   /** The factory arguments for the conversation as it stands right now. */
   const factoryArgs = (
     messages: readonly ModelMessage[],
@@ -1408,6 +1458,20 @@ export async function createInteractiveController(
     // message still goes, with that mention as an ordinary path.
     for (const notice of prepared.notices) emitNotice(notice);
 
+    // Whatever `!!` captured since the last message rides along here, folded
+    // into the instruction text (see `attachShellContext` for why that,
+    // rather than a structured side-channel, is the mechanism). `takeAll`
+    // both reads and clears the queue in one step, so a capture is attached
+    // to exactly one message, never replayed onto the one after it. This is
+    // the one call in the whole controller that drains the queue — every
+    // built-in slash command dispatches through `handleSlash`, never through
+    // here, so "the next message, not a slash command" falls out of the
+    // control flow rather than needing a check of its own.
+    const instruction = attachShellContext(
+      prepared.instruction,
+      pendingShell.takeAll(),
+    );
+
     const before = deps.usage.totals();
     const turnContext: AgentLoopRunContext = {
       runId: sessionId,
@@ -1417,7 +1481,7 @@ export async function createInteractiveController(
     let result: ChatTurnLike | undefined;
     try {
       result = await chat.send(
-        prepared.instruction,
+        instruction,
         turnContext,
         prepared.images,
         prepared.imagePaths,
@@ -1509,6 +1573,9 @@ export async function createInteractiveController(
       emit(`  ${command.usage.padEnd(width)}  ${command.help}`);
     }
     emitNotice("anything else is sent to the agent.");
+    emitNotice(
+      "!<command> runs a shell command; !!<command> captures its output for your next message.",
+    );
 
     if (customCommands.length > 0) {
       emit("");
@@ -1533,6 +1600,10 @@ export async function createInteractiveController(
     title = "";
     persisted = false;
     titleDirty = false;
+    // A `!!` capture aimed at the conversation being abandoned has nothing
+    // left to attach to — the same reasoning that resets everything else
+    // above, applied to the shell queue.
+    pendingShell.clear();
     // No `sessionRef`: a new conversation must not continue the last one on
     // the delegating backend's side either.
     await build([]);
@@ -2225,6 +2296,60 @@ export async function createInteractiveController(
     }
   };
 
+  /**
+   * `!`/`!!` — the shell escape hatch. `parsed` is already known to be one of
+   * the two by the time this is called (see `handleLine`); everything here
+   * is deciding what kind of run it gets, not whether it is shell syntax at
+   * all — that question belongs entirely to `parseBangLine`.
+   *
+   * A bare `!`/`!!` (nothing after the prefix) is a usage reminder, not an
+   * error: mistyping the prefix alone should read like asking "how does this
+   * work", not like a failed command. `deps.shell` missing entirely (no
+   * terminal, no captured spawn wired at all — see `InteractiveControllerDeps.shell`)
+   * says so the same way `/plan`/`/policy` do when their dependency is
+   * absent.
+   *
+   * `!` prefers `runInteractive` (the terminal handed over, exactly the
+   * `codex login` precedent) and falls back to the same captured run `!!`
+   * always uses when there is no terminal to hand over — see the module
+   * comment in `shell-mode.ts`. Only `!!` ever pushes onto `pendingShell`:
+   * a `!` that fell back to a capture still ran non-interactively, but the
+   * user asked for a quick look, not for context to carry forward, and
+   * treating the fallback as if it were `!!` would attach output nobody
+   * asked to attach.
+   */
+  const handleShell = async (
+    parsed: ParsedBangLine,
+    signal?: AbortSignal,
+  ): Promise<DispatchResult> => {
+    if (parsed.command === "") {
+      emitNotice(shellUsageNotice(parsed.kind));
+      return drain();
+    }
+    if (deps.shell === undefined) {
+      emitWarn("shell commands are not available here.");
+      return drain();
+    }
+
+    if (parsed.kind === "!" && deps.shell.runInteractive !== undefined) {
+      const { code } = await deps.shell.runInteractive(parsed.command);
+      const notice = exitCodeNotice(code);
+      if (notice !== undefined) emit(styles.tool(notice));
+      return drain();
+    }
+
+    const result = await deps.shell.runCaptured(parsed.command, signal);
+    for (const line of splitOutputLines(result.output)) emit(line);
+    const notice = exitCodeNotice(result.code);
+    if (notice !== undefined) emit(styles.tool(notice));
+
+    if (parsed.kind === "!!") {
+      pendingShell.push({ command: parsed.command, output: result.output });
+      emitNotice(pendingAttachedNotice(parsed.command));
+    }
+    return drain();
+  };
+
   const handleSlash = async (
     line: string,
     signal?: AbortSignal,
@@ -2321,6 +2446,8 @@ export async function createInteractiveController(
       const trimmed = line.trim();
       if (trimmed === "") return { output: [] };
       if (trimmed.startsWith("/")) return await handleSlash(trimmed, signal);
+      const bang = parseBangLine(trimmed);
+      if (bang !== undefined) return await handleShell(bang, signal);
       return await handleMessage(trimmed, signal);
     },
     // Read through `chat` at call time, not captured: `/new`, `/model` and
@@ -2438,6 +2565,14 @@ export type MidTurnRouting = "steered" | "queued";
  * order they were typed once the turn is over. Only prose is offered to the
  * model, because only prose is something the model can act on.
  *
+ * A `!`/`!!` shell line belongs on the same side as a slash command, for the
+ * same reason plus one more: it is not prose the model could act on either,
+ * and — for `!` specifically — running it *now*, mid-turn, would mean
+ * spawning an interactive child (or even just a capture) while the turn
+ * still owns the working tree and the terminal it would need to hand over.
+ * Queueing means it always runs between turns, once whatever the model is
+ * doing has actually stopped.
+ *
  * Pure: `steer` is asked, and its answer (no session, a delegated backend, a
  * slash command already running) decides the rest.
  */
@@ -2445,7 +2580,7 @@ export function routeMidTurnLine(
   text: string,
   steer: (text: string) => boolean,
 ): MidTurnRouting {
-  if (text.startsWith("/")) return "queued";
+  if (text.startsWith("/") || text.startsWith("!")) return "queued";
   return steer(text) ? "steered" : "queued";
 }
 
@@ -3309,6 +3444,28 @@ export async function runInteractive(
       // One store for the whole REPL: the checkpoints outlive `/new`,
       // `/resume` and `/model`, because the working tree does too.
       checkpoints: createCheckpointStore({ workspacePath }),
+      // `!`/`!!` — see `shell-mode.ts`. `runInteractive` only exists where
+      // there is a terminal to hand over (`manager`, the same condition
+      // `/login`'s spawns above are gated on), and — exactly like those —
+      // goes through `withSuspendedFullScreen` so the REPL's own
+      // `InputManager` lets go of raw mode for the run and takes the
+      // alternate screen back afterwards. `runCaptured` needs no terminal at
+      // all, so it is wired unconditionally.
+      shell: {
+        ...(manager === undefined
+          ? {}
+          : {
+              runInteractive: (command: string) =>
+                withSuspendedFullScreen(() =>
+                  runShellInteractive(command, { cwd: workspacePath }),
+                ),
+            }),
+        runCaptured: (command: string, signal?: AbortSignal) =>
+          runShellCaptured(command, {
+            cwd: workspacePath,
+            ...(signal === undefined ? {} : { signal }),
+          }),
+      },
       onCustomCommandsChanged: (commands) => {
         customCommandNames.current = commands.map((command) => command.name);
         commandMenu.current = replCommandMenuEntries(commands);

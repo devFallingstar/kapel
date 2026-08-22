@@ -2622,6 +2622,17 @@ describe("routeMidTurnLine", () => {
     expect(asked).toBe(false);
   });
 
+  it("never steers a `!`/`!!` shell line either", () => {
+    let asked = false;
+    const steer = () => {
+      asked = true;
+      return true;
+    };
+    expect(routeMidTurnLine("!ls", steer)).toBe("queued");
+    expect(routeMidTurnLine("!!npm test", steer)).toBe("queued");
+    expect(asked).toBe(false);
+  });
+
   it("queues prose the conversation will not take", () => {
     expect(routeMidTurnLine("and the docs too", () => false)).toBe("queued");
   });
@@ -2790,6 +2801,28 @@ describe("replLoop — lines typed while a turn runs", () => {
     expect(harness.notes).toEqual(["→ queued — runs after this turn"]);
   });
 
+  it("queues a `!` shell line typed mid-turn instead of steering it, even when the conversation would take it", async () => {
+    const steered: string[] = [];
+    const harness = replHarness({
+      reads: ["fix the tests"],
+      handle: (line, turn) => {
+        if (line === "fix the tests") turn.type("!!npm test");
+      },
+      // A conversation willing to steer anything still must not get this —
+      // `!`/`!!` queue on syntax alone, the same as a slash command.
+      steer: (text) => {
+        steered.push(text);
+        return true;
+      },
+    });
+
+    await harness.run();
+
+    expect(steered).toEqual([]);
+    expect(harness.dispatched).toEqual(["fix the tests", "!!npm test"]);
+    expect(harness.notes).toEqual(["→ queued — runs after this turn"]);
+  });
+
   it("queues a line the conversation cannot steer", async () => {
     const harness = replHarness({
       reads: ["run the build"],
@@ -2922,6 +2955,192 @@ describe("replLoop — lines typed while a turn runs", () => {
     });
 
     expect(dispatched).toEqual(["one", "two"]);
+  });
+});
+
+// --- `!`/`!!` shell mode ------------------------------------------------------
+
+/** A stubbed `deps.shell`, recording every call it saw. */
+function fakeShell(
+  options: {
+    readonly interactive?: boolean;
+    readonly interactiveCode?: number | null;
+    readonly capturedOutput?: string;
+    readonly capturedCode?: number;
+  } = {},
+): {
+  readonly shell: InteractiveControllerDeps["shell"];
+  readonly interactiveCalls: string[];
+  readonly capturedCalls: { command: string; signal?: AbortSignal }[];
+} {
+  const interactiveCalls: string[] = [];
+  const capturedCalls: { command: string; signal?: AbortSignal }[] = [];
+  return {
+    shell: {
+      ...(options.interactive === false
+        ? {}
+        : {
+            runInteractive: async (command: string) => {
+              interactiveCalls.push(command);
+              return { code: options.interactiveCode ?? 0 };
+            },
+          }),
+      runCaptured: async (command: string, signal?: AbortSignal) => {
+        capturedCalls.push(
+          signal === undefined ? { command } : { command, signal },
+        );
+        return {
+          output: options.capturedOutput ?? "captured output\n",
+          code: options.capturedCode ?? 0,
+          truncated: false,
+        };
+      },
+    },
+    interactiveCalls,
+    capturedCalls,
+  };
+}
+
+describe("interactive controller — shell mode", () => {
+  it("says so, and does nothing, for a bare ! or !!", async () => {
+    const { shell } = fakeShell();
+    const h = await harness({ shell });
+    const bang = await h.controller.handleLine("!");
+    const doubleBang = await h.controller.handleLine("!!");
+
+    expect(bang.output).toEqual([
+      "usage: !<command>  — runs a command in your shell",
+    ]);
+    expect(doubleBang.output).toEqual([
+      "usage: !!<command>  — runs a command and attaches its output to your next message",
+    ]);
+    expect(h.session().sends).toEqual([]);
+  });
+
+  it("reports that shell commands are unavailable when deps.shell is absent", async () => {
+    const h = await harness();
+    const result = await h.controller.handleLine("!ls");
+    expect(result.output).toEqual(["shell commands are not available here."]);
+  });
+
+  it("runs `!` interactively when a terminal is available, printing nothing on a clean exit", async () => {
+    const { shell, interactiveCalls, capturedCalls } = fakeShell();
+    const h = await harness({ shell });
+    const result = await h.controller.handleLine("!vim notes.md");
+
+    expect(interactiveCalls).toEqual(["vim notes.md"]);
+    expect(capturedCalls).toEqual([]);
+    expect(result.output).toEqual([]);
+  });
+
+  it("prints a dim exit line for `!` only when the interactive exit code is nonzero", async () => {
+    const { shell } = fakeShell({ interactiveCode: 2 });
+    const h = await harness({ shell });
+    const result = await h.controller.handleLine("!false");
+    expect(result.output).toEqual(["exit 2"]);
+  });
+
+  it("falls back to a captured run for `!` with no terminal, and does not attach it", async () => {
+    const { shell, interactiveCalls, capturedCalls } = fakeShell({
+      interactive: false,
+      capturedOutput: "no tty here\n",
+    });
+    const h = await harness({ shell });
+    const result = await h.controller.handleLine("!ls");
+
+    expect(interactiveCalls).toEqual([]);
+    expect(capturedCalls.map((c) => c.command)).toEqual(["ls"]);
+    expect(result.output).toEqual(["no tty here"]);
+
+    // Not attached: a plain `!` capture is a quick look, not a request to
+    // carry the output forward.
+    await h.controller.handleLine("what did that say?");
+    expect(h.session().sends[0]?.instruction).toBe("what did that say?");
+  });
+
+  it("captures `!!`, prints the output, and attaches it to the very next message", async () => {
+    const { shell, capturedCalls } = fakeShell({
+      capturedOutput: "1 failing\n",
+    });
+    const h = await harness({ shell });
+
+    const result = await h.controller.handleLine("!!npm test");
+    expect(capturedCalls.map((c) => c.command)).toEqual(["npm test"]);
+    expect(result.output).toEqual([
+      "1 failing",
+      "→ output of !!npm test will ride along with your next message",
+    ]);
+
+    await h.controller.handleLine("fix it");
+    expect(h.session().sends[0]?.instruction).toBe(
+      'fix it\n\n<additional-context>\n<shell-output index="1" command="!!npm test">\n1 failing\n\n</shell-output>\n</additional-context>',
+    );
+
+    // Consumed: a second plain message carries nothing forward.
+    await h.controller.handleLine("anything else?");
+    expect(h.session().sends[1]?.instruction).toBe("anything else?");
+  });
+
+  it("prints a dim exit line for `!!` too when the command failed", async () => {
+    const { shell } = fakeShell({ capturedOutput: "", capturedCode: 1 });
+    const h = await harness({ shell });
+    const result = await h.controller.handleLine("!!false");
+    expect(result.output).toEqual([
+      "exit 1",
+      "→ output of !!false will ride along with your next message",
+    ]);
+  });
+
+  it("accumulates several !! captures FIFO onto the same next message", async () => {
+    const outputs = new Map([
+      ["one", "one\n"],
+      ["two", "two\n"],
+    ]);
+    const shell: InteractiveControllerDeps["shell"] = {
+      runCaptured: async (command) => ({
+        output: outputs.get(command) ?? "",
+        code: 0,
+        truncated: false,
+      }),
+    };
+    const h = await harness({ shell });
+
+    await h.controller.handleLine("!!one");
+    await h.controller.handleLine("!!two");
+
+    await h.controller.handleLine("go");
+    expect(h.session().sends[0]?.instruction).toBe(
+      'go\n\n<additional-context>\n<shell-output index="1" command="!!one">\none\n\n</shell-output>\n<shell-output index="2" command="!!two">\ntwo\n\n</shell-output>\n</additional-context>',
+    );
+  });
+
+  it("does not consume the pending attachment for a slash command", async () => {
+    const { shell } = fakeShell({ capturedOutput: "1 failing\n" });
+    const h = await harness({ shell });
+    await h.controller.handleLine("!!npm test");
+
+    await h.controller.handleLine("/usage");
+
+    await h.controller.handleLine("fix it");
+    expect(h.session().sends[0]?.instruction).toContain("<shell-output");
+  });
+
+  it("clears the pending attachment on /new", async () => {
+    const { shell } = fakeShell({ capturedOutput: "1 failing\n" });
+    const h = await harness({ shell });
+    await h.controller.handleLine("!!npm test");
+    await h.controller.handleLine("/new");
+
+    await h.controller.handleLine("fix it");
+    expect(h.session().sends[0]?.instruction).toBe("fix it");
+  });
+
+  it("forwards the turn's abort signal to a captured run", async () => {
+    const { shell, capturedCalls } = fakeShell();
+    const h = await harness({ shell });
+    const controller = new AbortController();
+    await h.controller.handleLine("!!sleep 1", controller.signal);
+    expect(capturedCalls[0]?.signal).toBe(controller.signal);
   });
 });
 
