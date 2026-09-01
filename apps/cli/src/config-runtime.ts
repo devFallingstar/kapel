@@ -351,13 +351,27 @@ const noSuspend: Suspend = (fn) => fn();
 export function ttyWizardPrompt(
   io?: SelectPromptIo,
   suspend?: Suspend,
+  promptOptions?: {
+    /** See `SelectPromptOptions.summarize` — `false` leaves no summary line. */
+    readonly summarize?: boolean;
+  },
 ): WizardPrompt {
   const target: SelectPromptIo = io ?? {
     input: process.stdin,
     output: process.stdout,
   };
   const run = suspend ?? noSuspend;
-  return { select: (options) => run(() => runSelectPrompt(target, options)) };
+  return {
+    select: (options) =>
+      run(() =>
+        runSelectPrompt(target, {
+          ...options,
+          ...(promptOptions?.summarize === undefined
+            ? {}
+            : { summarize: promptOptions.summarize }),
+        }),
+      ),
+  };
 }
 
 /**

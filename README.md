@@ -114,16 +114,11 @@ $ kapel
 ▌ \ + Enter for multiline input, ↑/↓ to recall, tab-complete /commands and @files
 
 > calc.test.js is failing — find out why and fix it
-→ read_file {"path":"calc.test.js"}
-  ✓
-→ grep {"pattern":"function add"}
-  ✓
   calc.js
   - return a - b;
   + return a + b;
   a = always allow edit_file this session
 allow edit_file? [y/n/a, or say what to do instead] y
-  ✓
 `add` subtracted instead of adding. Fixed and `node calc.test.js` now prints PASS.
 tokens +4210 in, +318 out  (~$0.0138)
 > now add a `sub` function next to it, with a test
@@ -144,17 +139,17 @@ The last block is the honest part. Neither `claude` nor `codex` reports remainin
 
 The dashboard is a terminal's opening only: piping or redirecting `kapel` keeps the plain three-line banner, with no box drawing and no control characters. (`/stats` typed into a piped session still draws the box — you asked for it.)
 
-**A clean screen, and your terminal back afterwards.** On a terminal, `kapel` opens on a screen of its own — it switches to the alternate screen buffer, the same one `vim` and `less` use, so the session starts blank instead of under whatever your shell had printed, and the dashboard above is the top of it. Leaving puts the terminal back exactly as it was, with your previous history intact: `/exit`, Ctrl-D, Ctrl-C twice, a crash, or a `kill` all restore it before anything else is printed. The honest caveat is the other half of that bargain — while the session is running, lines that scroll off the top are gone, because most terminals keep no scrollback for the alternate buffer — so `kapel --no-altscreen` (the flag works either side of `chat`) opts out and behaves exactly as v0.10.1 did, with the whole transcript left in your terminal's own scrollback. Piped and redirected runs never switch buffers at all, and neither does `TERM=dumb`.
+**Your scrollback, and the mouse wheel that reaches it.** On a terminal, `kapel` runs on the normal screen: the transcript accumulates in your terminal's own scrollback, the mouse wheel scrolls it exactly as it scrolls everything else, and ↑/↓ at the prompt are the only keys that recall earlier messages. (`kapel --altscreen` — the flag works either side of `chat` — opts into the alternate screen buffer instead, the same one `vim` and `less` use: the session starts on a blank screen and leaving restores your terminal exactly as it was, but most terminals keep no scrollback for that buffer, so lines that scroll off the top are gone while you are inside. kapel switches the terminal's *alternate scroll* translation off for the stay, so a wheel turn is never rewritten into arrow keys that would walk the prompt's history.) Piped and redirected runs never switch buffers at all, and neither does `TERM=dumb`.
 
 Read-only tools (`read_file`, `glob`, `grep`, `git_diff`) run without asking; anything that writes or shells out asks first, and Ctrl-C at a question answers "no". The question is what will happen, not a truncated blob of JSON: `bash` shows the command it will run, `edit_file` a `-`/`+` diff of the replacement, `write_file` the head of the new file. Answers are `y` (allow this once), `n`/Enter/Ctrl-C (deny), or `a` — allow it and stop asking for the rest of the session: for `bash` that remembers the *command prefix* (answering `a` to `npm test --run foo` stops asking for `npm test …`, while `npm publish` still asks; a command with a shell operator such as `&&` or `|` is never remembered), and for every other tool it remembers the tool name. Nothing is written to disk — a new `kapel` starts asking again — and an explicit deny rule is never overridden by it. (Under `--backend codex` or `--backend claude-code` the external CLI runs the tools and enforces its own approvals, so kapel does not prompt at all — the banner says so.) Ctrl-C during a turn cancels that turn without ending the conversation; at the prompt it abandons the line you were typing — the band closes over it and reopens empty, and it is gone from the buffer, so the next thing you type is the whole of the next message — and twice in a row exits (so does `/exit` and Ctrl-D).
 
-The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes. While it is thinking, or a tool is running, the band at the foot of the screen shows a spinner in place of your cursor, with how long the current wait has been and the conversation's token count so far. It is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
+The agent's reply appears as it is generated, a token at a time, rather than landing whole when the turn finishes — and its markdown is rendered, not shown: `**bold**` arrives bold, `# headings` arrive bold with the marker gone, `` `code` `` spans arrive in the accent colour, and code fences keep their content verbatim under dimmed fence lines. (Off a terminal, or under `NO_COLOR`, the markers stay put — plain text keeps saying what it meant.) Tool calls are not transcript lines at all: while one runs its name sits in the status band (`⠋ bash 2s`), a call that succeeds leaves nothing behind, and only a denial or an error prints a row. While the model is thinking, or a tool is running, the band at the foot of the screen shows that spinner in place of your cursor, with how long the current wait has been and the conversation's token count so far. It is a terminal courtesy and nothing else: piping or redirecting `kapel` gets plain text with no spinner and no control characters in it.
 
 The prompt is a real input editor, not a one-shot readline: end a line with `\` (or paste a multi-line block) to keep composing before you send it — a blank line or a line with no trailing `\` ends it. ↑/↓ recall earlier messages, persisted across sessions in `~/.kapel/history` (last 1000, machine-wide). Tab completes what is under the cursor: a `/` command name, the argument of a command that has a fixed vocabulary (`/model ` offers the built-in aliases), or an `@` file mention.
 
 **The input band.** What you type sits in a band at the foot of the screen, bounded above and below by a thin soft-white rule, with the transcript flowing between the dashboard and it. There is no `kapel>` inside it: the rules say where the input is, more plainly than a word can, and the message you send is repeated into the transcript on a grey bar (`> your message`) rather than left as whatever the terminal happened to echo. So the line you are composing is never mixed up with the conversation it is about to join, and the conversation keeps a legible record of your half of it.
 
-The band is *painted*, not printed. Every line of output goes through one gate — erase the band, write the line, paint the band again underneath — which is exactly the discipline the spinner has always used, three rows tall instead of one. Nothing addresses a row on the screen, so the whole thing works the same on the alternate screen and under `--no-altscreen`, and once the transcript is longer than the terminal the band is simply the bottom of it. While a turn is running the same band holds the spinner instead of your cursor. A pipe or a redirect gets none of it: no rules, no bar, and `kapel>` still in front of every prompt, byte for byte as before.
+The band is *painted*, not printed. Every line of output goes through one gate — erase the band, write the line, paint the band again underneath — which is exactly the discipline the spinner has always used, three rows tall instead of one. Nothing addresses a row on the screen, so the whole thing works the same on the normal screen and under `--altscreen`, and once the transcript is longer than the terminal the band is simply the bottom of it. While a turn is running the same band holds the spinner instead of your cursor. A pipe or a redirect gets none of it: no rules, no bar, and `kapel>` still in front of every prompt, byte for byte as before.
 
 The lower rule is the hard part, and it is worth saying why. `readline` and the terminal appear to disagree about which row the caret is on whenever the typed text ends exactly at the right-hand edge — an ordinary message crosses that boundary every terminal-width characters — and drawing under the caret at that one column used to land the whole block, and the line being typed with it, a row out of place. They do not actually disagree: the terminal is holding a *deferred* wrap, and Node resolves it by writing one extra space. The catch is that Node skips that on the faster code path it takes while completion is disabled, which is precisely what a paste does — so the band writes the space itself, on the same reasoning, before it moves. Every row it counts comes from `readline`'s own display model rather than from arithmetic of our own, so the editor and the frame around it can never be counting by two different rules.
 
@@ -187,7 +182,7 @@ Commands available at the prompt:
 | `/name` / `/name <name>` | show, or set, this conversation's name — persists immediately |
 | `/fork` / `/fork <name>` | branch this conversation (everything said so far) into a new session and switch to it |
 | `/model` / `/model <alias>` | show, or switch, the model used for the turns that follow |
-| `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread |
+| `/config` | re-run setup and apply it to this conversation — switches backend and/or model without losing the thread; the wizard cleans up after itself, so once it finishes only the one-line outcome remains and the prompt is back |
 | `/login` | check every configured backend's login status, and help fix whichever isn't logged in |
 | `/usage` | tokens and cost so far, in this process |
 | `/stats` | redraw the startup dashboard with fresh numbers and re-probed logins |
@@ -241,7 +236,7 @@ kapel chat --session 0f3c9a2b   # a specific one (id, unique prefix, or /name)
 kapel chat --no-save            # …or don't record this one at all
 ```
 
-`kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`, `--no-altscreen`) work the same either way.
+`kapel chat` is the explicit spelling of bare `kapel`: use it when you want those flags. The globals (`--cwd`, `-m/--model`, `--backend`, `--timeout`, `--no-setup`, `--altscreen`) work the same either way.
 
 Images attach through `@` mentions on every backend: `@screenshot.png` in a
 message attaches the image to that turn — up to 4 images of 5 MiB each
@@ -276,7 +271,7 @@ Global flags, on every command:
 - `--backend <native|codex|claude-code>` — override the execution backend; see [First-run setup](#first-run-setup) for what happens when nothing overrides it
 - `--timeout <seconds>` — model call timeout
 - `--no-setup` — never set anything up automatically: no first-run wizard, and no automatic project setup either; use environment variables and defaults instead
-- `--no-altscreen` — keep the REPL on the terminal's normal screen instead of a clean one, so the transcript stays in your scrollback (see [The REPL](#the-repl))
+- `--altscreen` — run the REPL on the alternate screen buffer instead of the default normal screen: a clean screen that restores your terminal on exit, at the price of no scrollback while inside (see [The REPL](#the-repl); `--no-altscreen` still parses as the explicit spelling of the default)
 
 `--json` is not global. It lives on the commands that actually emit machine-readable output — `runs`, `sessions`, `sessions fork`, `explain`, and each `policy` subcommand except `policy edit`, which is an interactive editor with nothing to serialize — and nowhere else.
 

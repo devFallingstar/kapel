@@ -142,10 +142,10 @@ describe("TextRenderer / claude-code.* events", () => {
     expect(stream.lines).toEqual(["Fixed the test."]);
   });
 
-  it("names each tool as it starts", () => {
+  it("prints no transcript line for a tool call — the status line names it", () => {
     const { renderer: r, stream } = renderer();
     r.emit(claudeEvent("claude-code.tool_use", { name: "Edit", id: "t1" }));
-    expect(stream.lines).toEqual(["→ claude: Edit"]);
+    expect(stream.lines).toEqual([]);
   });
 
   it("stays quiet for the events it does not model", () => {
@@ -218,39 +218,19 @@ describe("TextRenderer / codex.* events", () => {
     expect(stream.lines).toEqual(["part one part two"]);
   });
 
-  it("prints a command_execution item with the → codex: prefix", () => {
+  it("stays quiet for a command_execution item — tool calls are not transcript lines", () => {
     const { renderer: r, stream } = renderer();
     r.emit(
       codexEvent("codex.item.completed", {
         item: { type: "command_execution", command: "npm test" },
       }),
     );
-    expect(stream.lines).toEqual(["→ codex: npm test"]);
-  });
-
-  it("truncates a long command_execution to ~120 chars", () => {
-    const { renderer: r, stream } = renderer();
-    const longCommand = "echo ".repeat(40).trim();
-    r.emit(
-      codexEvent("codex.item.completed", {
-        item: { type: "command_execution", command: longCommand },
-      }),
-    );
-    expect(stream.lines).toHaveLength(1);
-    const line = stream.lines[0] as string;
-    expect(line.startsWith("→ codex: ")).toBe(true);
-    expect(line.length).toBeLessThanOrEqual("→ codex: ".length + 120);
-    expect(line).toContain("…");
-  });
-
-  it("joins an argv array for command_execution", () => {
-    const { renderer: r, stream } = renderer();
     r.emit(
       codexEvent("codex.item.completed", {
         item: { type: "command_execution", argv: ["ls", "-la", "/tmp"] },
       }),
     );
-    expect(stream.lines).toEqual(["→ codex: ls -la /tmp"]);
+    expect(stream.lines).toEqual([]);
   });
 
   it("prints a file_change item with the ✎ prefix", () => {
@@ -864,7 +844,7 @@ describe("TextRenderer / streamed model text", () => {
     expect(stream.lines).toEqual(["streamed", "not streamed"]);
   });
 
-  it("terminates the streamed line before a tool line is printed", () => {
+  it("prints no tool lines around a streamed answer \u2014 only a failure lands", () => {
     const { renderer: r, stream } = renderer();
     r.emit(delta("Let me look."));
     r.emit(
@@ -874,12 +854,15 @@ describe("TextRenderer / streamed model text", () => {
       }),
     );
     r.emit(loopEvent("tool.execution.completed", { tool: "bash", ok: true }));
+    r.emit(
+      loopEvent("tool.execution.started", {
+        tool: "bash",
+        input: { command: "ls" },
+      }),
+    );
+    r.emit(loopEvent("tool.execution.completed", { tool: "bash", ok: false }));
 
-    expect(stream.lines).toEqual([
-      "Let me look.",
-      '\u2192 bash {"command":"ls"}',
-      "  \u2713",
-    ]);
+    expect(stream.lines).toEqual(["Let me look.", "  \u2717 (tool error)"]);
   });
 
   it("ignores a delta belonging to a task, and still prints that turn whole", () => {
@@ -941,10 +924,19 @@ describe("TextRenderer / status line", () => {
     r.emit(
       loopEvent("tool.execution.started", { tool: "bash", input: { a: 1 } }),
     );
+    r.emit(
+      loopEvent("tool.execution.completed", {
+        tool: "bash",
+        ok: false,
+        denied: true,
+      }),
+    );
 
     const text = stream.chunks.join("");
-    // The erase sequence is the last thing written before the tool line.
-    expect(text).toContain(`${ERASE_SEQ}${DIM}\u2192${RESET} bash`);
+    // The erase sequence is the last thing written before the failure line \u2014
+    // the one tool event that still prints (see the roles test below).
+    expect(text).toContain(`${ERASE_SEQ}  `);
+    expect(text).toContain("\u2717");
   });
 
   it("stops the status line while text is streaming", () => {
@@ -977,10 +969,10 @@ const RED = "\u001b[31m";
 const BOLD = "\u001b[1m";
 
 describe("TextRenderer / roles on a terminal", () => {
-  it("marks a finished tool call green and a failed one red", () => {
+  it("keeps a finished tool call silent and marks a failed one red", () => {
     const { renderer: r, stream } = ttyRenderer();
     r.emit(loopEvent("tool.execution.completed", { ok: true }));
-    expect(stream.chunks.join("")).toContain(`${GREEN}\u2713${RESET}`);
+    expect(stream.lines).toEqual([]);
 
     const failed = ttyRenderer();
     failed.renderer.emit(
@@ -988,7 +980,7 @@ describe("TextRenderer / roles on a terminal", () => {
     );
     const text = failed.stream.chunks.join("");
     expect(text).toContain(`${RED}\u2717${RESET}`);
-    expect(text).toContain(`${DIM}(denied)${RESET}`);
+    expect(text).toContain(`${DIM}(tool denied)${RESET}`);
   });
 
   it("leaves assistant text undecorated — it is the content, not the frame", () => {

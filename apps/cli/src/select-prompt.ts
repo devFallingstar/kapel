@@ -291,6 +291,14 @@ export interface SelectPromptOptions {
   readonly required?: boolean;
   readonly initial?: string | readonly string[];
   readonly footer?: string;
+  /**
+   * Whether the answered prompt leaves its one-line summary behind (see
+   * {@link summarizeSelection}). `false` erases the question entirely once it
+   * is answered — for flows that clean their whole output up afterwards, like
+   * the REPL's `/config`, where every line left on screen is one it would
+   * have to count and erase again. Defaults to `true`.
+   */
+  readonly summarize?: boolean;
 }
 
 /**
@@ -366,9 +374,11 @@ export function runSelectPrompt(
       // back exactly as it was found, or every later readline breaks.
       io.input.setRawMode?.(false);
       erase();
-      io.output.write(
-        `${summarizeSelection(options.choices, values, { title: options.title, color })}\n`,
-      );
+      if (options.summarize !== false) {
+        io.output.write(
+          `${summarizeSelection(options.choices, values, { title: options.title, color })}\n`,
+        );
+      }
       resolve(values);
     };
 

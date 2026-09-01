@@ -47,7 +47,7 @@ import {
   isDelegatedBackend,
 } from "./backend.js";
 import type { BandDecor } from "./band.js";
-import { createBandDecor } from "./band.js";
+import { charWidth, createBandDecor, stripEscapes } from "./band.js";
 import type { CheckpointStore } from "./checkpoint.js";
 import {
   capturedTreeFor,
@@ -2515,12 +2515,15 @@ export interface InteractiveOptions {
    */
   readonly setup?: boolean;
   /**
-   * `--no-altscreen` (commander sets this `false` when the flag is passed):
-   * run the REPL on the terminal's normal screen, the way every version
-   * before this one did, instead of on the alternate buffer. The trade is the
-   * one documented in the README — a clean screen that leaves no trace, or a
-   * transcript your terminal's own scrollback keeps. Only ever consulted on a
-   * terminal: a piped or redirected run never switches buffers either way.
+   * `--altscreen` (`true`) / `--no-altscreen` (`false`): whether the REPL
+   * runs on the alternate screen buffer. The default is the normal screen —
+   * the transcript stays in the terminal's own scrollback, so the mouse
+   * wheel scrolls it (on the alternate buffer most terminals keep no
+   * scrollback at all, and many translate wheel turns into arrow keys, which
+   * walked the prompt's history instead of the screen). `--altscreen` opts
+   * back into the clean-screen trade the README documents. Only ever
+   * consulted on a terminal: a piped or redirected run never switches
+   * buffers either way.
    */
   readonly altScreen?: boolean;
 }
@@ -2757,6 +2760,83 @@ export function withDeadline<T>(
       },
     );
   });
+}
+
+/** What {@link createTransientBlock} hands back. */
+export interface TransientBlock {
+  /** Prints one line (may itself contain newlines) and remembers its rows. */
+  write(line: string): void;
+  /**
+   * Marks the block untrackable: something this counter never saw wrote to
+   * the terminal (a spawned full-screen login, say), so the climb-and-clear
+   * would erase rows that are not the block's. `erase` then leaves
+   * everything alone.
+   */
+  markDirty(): void;
+  /** Takes every written row back off the screen, when that is still safe. */
+  erase(): void;
+}
+
+/**
+ * A block of terminal output that can be taken back off the screen — how
+ * `/config` shows its wizard chatter (backend warnings, the saved-config
+ * summary) while it runs and leaves none of it behind once it is done.
+ *
+ * Rows are counted wrap-aware from each line's display cells, because the
+ * erase is a relative climb: a counted row that actually wrapped into two
+ * would leave half the block on screen. Erasing is skipped entirely when the
+ * block may be taller than the screen (the climb would stop at the top row
+ * and the clear would eat the transcript), when something untracked has
+ * written (see {@link TransientBlock.markDirty}), and off a terminal, where
+ * cursor escapes must never go.
+ */
+export function createTransientBlock(
+  output: NodeJS.WritableStream & {
+    isTTY?: boolean;
+    columns?: number;
+    rows?: number;
+  },
+): TransientBlock {
+  let rows = 0;
+  let dirty = false;
+
+  const columns = (): number => {
+    const value = output.columns;
+    return typeof value === "number" && value > 0 ? value : 80;
+  };
+
+  const rowsOf = (line: string): number => {
+    const width = columns();
+    let total = 0;
+    for (const part of line.split("\n")) {
+      let cells = 0;
+      for (const char of stripEscapes(part)) {
+        cells += charWidth(char.codePointAt(0) ?? 0);
+      }
+      total += Math.max(1, Math.ceil(cells / width));
+    }
+    return total;
+  };
+
+  return {
+    write(line: string): void {
+      rows += rowsOf(line);
+      output.write(`${line}\n`);
+    },
+    markDirty(): void {
+      dirty = true;
+    },
+    erase(): void {
+      const count = rows;
+      rows = 0;
+      if (count === 0 || dirty || output.isTTY !== true) return;
+      const height = output.rows;
+      if (typeof height === "number" && height > 0 && count + 1 >= height) {
+        return;
+      }
+      output.write(`[${count}A\r[0J`);
+    },
+  };
 }
 
 /** Reads a value from a store that may not be there, or may refuse. */
@@ -3068,13 +3148,15 @@ export async function runInteractive(
     // is the `finally` this `try` already has, plus the process-level
     // handlers `enterAltScreen` registers for every way out that never
     // reaches it.
+    // Opt-in since the wheel-scroll rework: the normal screen keeps the
+    // transcript in the terminal's own scrollback, where the mouse wheel can
+    // reach it; `--altscreen` still buys the clean screen for those who want
+    // it (see `InteractiveOptions.altScreen`).
     altScreen = enterAltScreen({
       stdout: process.stdout,
       stdin: process.stdin,
       env: process.env,
-      ...(options.altScreen === undefined
-        ? {}
-        : { enabled: options.altScreen }),
+      enabled: options.altScreen === true,
     });
 
     const promptState = createPromptState();
@@ -3599,29 +3681,52 @@ export async function runInteractive(
             // directory asked for does not lose to a wizard run somewhere
             // else in the same session.
             configure: async () => {
+              // Everything the wizard prints is transient: the questions
+              // erase themselves as they are answered (`summarize: false`),
+              // the warnings and the saved-config summary are counted here,
+              // and the whole block is taken back off the screen the moment
+              // the wizard resolves — what remains is the `/config` echo bar
+              // and the one-line outcome notice.
+              const transient = createTransientBlock(process.stdout);
+              const codexLogin = codexLoginRunner(
+                withSuspendedFullScreen,
+                process.env,
+              );
+              const claudeCodeLogin = claudeCodeLoginRunner(
+                withSuspendedFullScreen,
+                process.env,
+              );
               const saved = await runConfigWizard({
                 // `/config` runs while the REPL's own InputManager still owns
                 // stdin — suspend it around the picker (and around a spawned
                 // `codex login`/`claude auth login`) so the two don't fight
                 // over raw-mode keypresses.
-                prompt: ttyWizardPrompt(undefined, withSuspended),
+                prompt: ttyWizardPrompt(undefined, withSuspended, {
+                  summarize: false,
+                }),
                 write: (line) => {
-                  console.log(line);
+                  transient.write(line);
                 },
                 checkBackend: (target) => checkBackendAvailability(target),
-                runCodexLogin: codexLoginRunner(
-                  withSuspendedFullScreen,
-                  process.env,
-                ),
-                runClaudeCodeLogin: claudeCodeLoginRunner(
-                  withSuspendedFullScreen,
-                  process.env,
-                ),
+                // A spawned login is a full-screen program writing rows this
+                // counter never sees — after one, the erase stands down.
+                runCodexLogin: () => {
+                  transient.markDirty();
+                  return codexLogin();
+                },
+                runClaudeCodeLogin: () => {
+                  transient.markDirty();
+                  return claudeCodeLogin();
+                },
                 ...(options.config === undefined
                   ? {}
                   : { current: options.config }),
               });
-              if (saved === undefined) return undefined;
+              transient.erase();
+              if (saved === undefined) {
+                console.log(styles.notice("config setup cancelled."));
+                return undefined;
+              }
               return (
                 mergeKapelConfigs(saved, options.projectConfig)?.config ?? saved
               );

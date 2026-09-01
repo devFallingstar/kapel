@@ -319,22 +319,23 @@ kapel>
   평문 배너(`kapel v0.16.0  claude-sonnet-5  session 0f3c9a2b`)만 나오고 제어
   문자는 하나도 섞이지 않습니다. 확인:
   `printf '/exit\n' | kapel chat --no-save | cat -A` 에 `^[` 가 없어야 합니다.
-- **깨끗한 화면에서 시작합니다** — 터미널에서 실행하면 `vim`/`less`처럼 대체
-  화면 버퍼로 전환하므로 셸에 있던 이전 출력은 보이지 않고, 위 대시보드가 그
-  빈 화면의 맨 위가 됩니다. **끝내는 방법과 무관하게**(`/exit`, Ctrl-D,
-  Ctrl-C 두 번, 다른 터미널에서 `kill <pid>`) 원래 터미널이 이전 히스토리까지
-  그대로 돌아와야 합니다 — 대체 화면에 남은 채로 셸로 빠져나오면 버그입니다.
-  대신 세션 도중 위로 밀려 올라간 줄은 대부분의 터미널에서 스크롤백에 남지
-  않습니다. 전사 기록을 터미널 스크롤백에 남기고 싶으면 `--no-altscreen`으로
-  끄면 v0.10.1과 똑같이 동작합니다(`chat` 앞뒤 어디에 써도 됩니다). 확인:
+- **일반 화면이 기본입니다** — 전사 기록이 터미널 자체 스크롤백에 쌓이므로
+  마우스 휠로 그대로 스크롤할 수 있고, ↑/↓ 화살표만이 프롬프트의 이전 메시지를
+  불러옵니다. `--altscreen`을 주면 `vim`/`less`처럼 대체 화면 버퍼로 전환해
+  깨끗한 화면에서 시작하고(`chat` 앞뒤 어디에 써도 됩니다), **끝내는 방법과
+  무관하게**(`/exit`, Ctrl-D, Ctrl-C 두 번, 다른 터미널에서 `kill <pid>`) 원래
+  터미널이 이전 히스토리까지 그대로 돌아와야 합니다 — 대체 화면에 남은 채로
+  셸로 빠져나오면 버그입니다. 대체 화면에서는 휠이 화살표 키로 번역되지 않도록
+  alternate scroll(`?1007`)도 함께 꺼집니다. 확인:
 
   ```bash
-  script -qec "kapel chat --no-save --no-setup" /tmp/kapel-tty.log   # 안에서 /exit
+  script -qec "kapel chat --no-save --no-setup --altscreen" /tmp/kapel-tty.log   # 안에서 /exit
   grep -c $'\033\[?1049h' /tmp/kapel-tty.log   # 1 — 들어갈 때
   grep -c $'\033\[?1049l' /tmp/kapel-tty.log   # 1 — 나올 때 (순서대로 한 번씩)
+  grep -c $'\033\[?1007l' /tmp/kapel-tty.log   # 1 — 휠→화살표 번역 끔
 
-  script -qec "kapel chat --no-save --no-setup --no-altscreen" /tmp/kapel-plain.log
-  grep -c $'\033\[?1049' /tmp/kapel-plain.log  # 0 — 하나도 없어야 합니다
+  script -qec "kapel chat --no-save --no-setup" /tmp/kapel-plain.log
+  grep -c $'\033\[?1049' /tmp/kapel-plain.log  # 0 — 기본값(일반 화면)에는 하나도 없어야 합니다
   ```
 
   파이프·리다이렉트 실행과 `TERM=dumb`에서는 어느 쪽이든 이 시퀀스가 전혀
@@ -385,7 +386,7 @@ kapel> /re        ← /resume, /resume-run 두 줄만 남습니다
 kapel> /re⏎       ← 목록이 깨끗이 지워지고 위쪽 기록에 잔상이 남지 않습니다
 ```
 
-**기대 동작**: 대체 화면(`--no-altscreen` 유무 모두)에서 목록이 그려졌다 지워지는
+**기대 동작**: 어느 화면(`--altscreen` 유무 모두)에서든 목록이 그려졌다 지워지는
 동안 프롬프트 위의 기록은 그대로입니다. 파이프·리다이렉트 실행에서는 메뉴가 아예
 그려지지 않습니다 — 제어 문자가 하나도 나오지 않아야 합니다:
 

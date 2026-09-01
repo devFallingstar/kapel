@@ -35,15 +35,24 @@ export type ScreenStream = NodeJS.WritableStream & { readonly isTTY?: boolean };
 export type ScreenInput = { readonly isTTY?: boolean };
 
 /**
- * Switch to the alternate buffer, home the cursor, clear it.
+ * Switch to the alternate buffer, home the cursor, clear it — and turn
+ * *alternate scroll* (`?1007`) off for the stay.
  *
  * The clear is not redundant: terminals differ on whether `?1049h` blanks the
  * buffer it switches to, and "a clean screen" is the whole feature.
+ *
+ * The `?1007` pair exists because with alternate scroll on (many emulators'
+ * default), a mouse wheel turned over the alternate buffer is translated
+ * into arrow-key presses — which walked the prompt's input history instead
+ * of scrolling anything. History recall belongs to the arrow keys alone, so
+ * the mode is saved (`XTSAVE`, `?1007s`), switched off, and restored on
+ * leave (`XTRESTORE`, `?1007r`); a terminal that knows neither sequence
+ * ignores both.
  */
-export const ENTER_ALT_SCREEN = "[?1049h[H[2J";
+export const ENTER_ALT_SCREEN = "[?1049h[H[2J[?1007s[?1007l";
 
-/** Switch back to the normal buffer, restoring the scrollback under it. */
-export const LEAVE_ALT_SCREEN = "[?1049l";
+/** Restore alternate scroll, then the normal buffer and its scrollback. */
+export const LEAVE_ALT_SCREEN = "[?1007r[?1049l";
 
 /** Signals that would otherwise end the process without running `exit` handlers. */
 const FATAL_SIGNALS = {

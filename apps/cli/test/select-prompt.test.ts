@@ -535,6 +535,23 @@ describe("runSelectPrompt", () => {
     expect(output.text.trimEnd().endsWith("Pick › Gamma")).toBe(true);
   });
 
+  it("leaves nothing behind with summarize: false", async () => {
+    const input = new FakeTtyInput();
+    const { io, output } = makeIo(input);
+    const pending = runSelectPrompt(io, {
+      title: "Pick",
+      choices: CHOICES,
+      initial: "c",
+      summarize: false,
+    });
+    input.write("\r");
+    expect(await pending).toEqual(["c"]);
+    // The question drew and then erased itself: the last write is the erase,
+    // not a summary line.
+    expect(output.text).not.toContain("›");
+    expect(output.text.endsWith("\r[0J")).toBe(true);
+  });
+
   // Regression coverage for the arrow-key bug (absorbed from the throwaway
   // `zzrepro-arrowbug.test.ts` repro, then deleted): a down arrow as the very
   // first keypress must move the selection, whether it arrives in one write

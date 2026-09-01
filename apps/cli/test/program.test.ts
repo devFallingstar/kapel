@@ -80,21 +80,25 @@ describe("the command surface", () => {
       "--timeout",
       "--backend",
       "--no-setup",
+      "--altscreen",
       "--no-altscreen",
     ]);
   });
 
-  it("carries the clean-screen opt-out as a negatable global", () => {
+  it("carries the clean-screen opt-in as a global boolean pair", () => {
     // Global rather than local to `chat`: bare `kapel` opens the same REPL,
     // and commander takes a global either side of a subcommand, so both
-    // `kapel --no-altscreen` and `kapel chat --no-altscreen` mean the same
-    // thing. Negatable, so the REPL sees `false` only when it was asked for
-    // and `undefined` never has to mean "off".
-    const option = createProgram().options.find(
-      (each) => each.long === "--no-altscreen",
-    );
-    expect(option?.attributeName()).toBe("altscreen");
-    expect(option?.negate).toBe(true);
+    // `kapel --altscreen` and `kapel chat --altscreen` mean the same thing.
+    // The pair leaves `undefined` when neither flag is passed, which is the
+    // REPL's default: the normal screen, whose scrollback the mouse wheel
+    // can reach. `--no-altscreen` survives as the explicit spelling of that
+    // default, so scripts written against the old flag keep parsing.
+    const options = createProgram().options;
+    const positive = options.find((each) => each.long === "--altscreen");
+    expect(positive?.attributeName()).toBe("altscreen");
+    const negative = options.find((each) => each.long === "--no-altscreen");
+    expect(negative?.attributeName()).toBe("altscreen");
+    expect(negative?.negate).toBe(true);
   });
 
   it("has no global flags that only served a one-shot run", () => {

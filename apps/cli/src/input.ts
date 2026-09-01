@@ -1204,11 +1204,20 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     }
   };
 
-  /** Reattaches it. Order among themselves never mattered; there is normally exactly one. */
+  /**
+   * Reattaches it, and restores the one ordering this module depends on:
+   * readline's listener first, this module's own `onKeypress` second — the
+   * band and the `/` menu are drawn from the buffer readline has *already*
+   * updated for the key, so a listener that ran first would paint one
+   * keystroke behind. Re-appending `onKeypress` after readline's is what
+   * keeps that true across a suspension or a reverse-i-search.
+   */
   const resumeReadlineKeypress = (): void => {
     for (const listener of readlineKeypressListeners) {
       options.input.on("keypress", listener);
     }
+    options.input.removeListener("keypress", onKeypress);
+    options.input.on("keypress", onKeypress);
   };
 
   /**
@@ -1316,6 +1325,10 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     _str: string | undefined,
     key: readline.Key | undefined,
   ): void => {
+    // While another consumer owns the terminal (see `withSuspended`) these
+    // keystrokes are theirs: readline's own listener is off the stream, and
+    // reacting here would paint over whatever they are drawing.
+    if (suspended) return;
     // Mid-turn nothing under the input is ours to draw: the status band owns
     // that part of the screen, and the line being typed is one of its rows.
     if (capture !== undefined) {
@@ -1714,12 +1727,26 @@ export function createInputManager(options: InputManagerOptions): InputManager {
     async withSuspended<T>(fn: () => Promise<T>): Promise<T> {
       const input = options.input as unknown as RawModeCapable;
       const wasRaw = input.isRaw === true;
+      // A reverse-i-search left open would keep its own keypress listener on
+      // the stream while somebody else owns it: close it first, restoring the
+      // ordinary listener arrangement the suspension below starts from.
+      leaveSearch(undefined);
       // The terminal is about to belong to someone else (a select prompt, a
       // browser login): take the whole band off the screen first, and stay
       // quiet even though our keypress listener still hears their keystrokes.
       eraseBelow();
       closeBand(false);
       suspended = true;
+      // `rl.pause()` alone is not enough to make readline deaf: pausing only
+      // stops the *stream*, and the new owner (a select prompt) resumes it —
+      // after which every one of their keystrokes still reached readline's own
+      // keypress listener. An arrow then walked this editor's history and an
+      // Enter delivered the recalled line to `deliverCaptured`, which is how
+      // answering the `/config` wizard used to queue a ghost `/config` that
+      // re-ran the wizard the moment it finished. Lifting readline's listener
+      // off the stream for the duration — the same detach reverse-i-search
+      // uses — is what actually hands the keyboard over.
+      suspendReadlineKeypress();
       rl.pause();
       input.setRawMode?.(false);
       try {
@@ -1727,6 +1754,7 @@ export function createInputManager(options: InputManagerOptions): InputManager {
       } finally {
         const isTty = (options.input as unknown as { isTTY?: boolean }).isTTY;
         input.setRawMode?.(wasRaw || isTty === true);
+        resumeReadlineKeypress();
         rl.resume();
         suspended = false;
         if (readPending !== undefined) {

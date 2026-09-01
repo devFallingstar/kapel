@@ -13,7 +13,11 @@ import type {
 import { MODEL_TEXT_DELTA_EVENT } from "@agent/coding-agent";
 import type { AgentEvent, EventSink } from "@agent/protocol";
 import type { BandDecor } from "./band.js";
-import { previewInput } from "./prompter.js";
+import {
+  createMarkdownStream,
+  type MarkdownStream,
+  renderMarkdown,
+} from "./markdown.js";
 import { StatusLine, type StatusLineStream } from "./status-line.js";
 import { type Styles, stylesFor } from "./styles.js";
 
@@ -159,20 +163,6 @@ function codexMessageText(item: Record<string, unknown>): string | undefined {
     }
     const joined = parts.join("");
     if (joined !== "") return joined;
-  }
-  return undefined;
-}
-
-function codexCommandText(item: Record<string, unknown>): string | undefined {
-  const direct = firstNonEmptyString(item.command, item.cmd);
-  if (direct !== undefined) return direct;
-
-  const argv = item.argv ?? item.command;
-  if (Array.isArray(argv)) {
-    const parts = argv.filter(
-      (part): part is string => typeof part === "string",
-    );
-    if (parts.length > 0) return parts.join(" ");
   }
   return undefined;
 }
@@ -339,6 +329,12 @@ export class TextRenderer implements Renderer {
   readonly #pending: (() => string | undefined) | undefined;
   /** Streamed text kept back while they type it — see {@link #hold}. */
   #held = "";
+  /**
+   * The markdown state carried across streamed deltas, so a `**` split over
+   * two chunks still renders as bold (see `markdown.ts`). Flushed — held
+   * tail out, styles closed — whenever the streamed line is terminated.
+   */
+  readonly #markdown: MarkdownStream;
 
   constructor(
     output: NodeJS.WritableStream = process.stdout,
@@ -346,6 +342,7 @@ export class TextRenderer implements Renderer {
   ) {
     this.#output = output;
     this.#styles = options.styles ?? stylesFor(output as { isTTY?: boolean });
+    this.#markdown = createMarkdownStream(this.#styles);
     this.#pending = options.pending;
     this.#status =
       options.status ??
@@ -468,7 +465,9 @@ export class TextRenderer implements Renderer {
     if (text === "") return;
     // Text on screen *is* the progress report; a spinner next to it is noise.
     this.#status.stop();
-    this.#output.write(text);
+    // Rendered, not raw: `**` and friends become the styling they meant —
+    // the stream carries the state, so a marker split across deltas holds.
+    this.#output.write(this.#markdown.push(text));
     this.#streaming = true;
     this.#streamed = true;
   }
@@ -480,7 +479,9 @@ export class TextRenderer implements Renderer {
     this.#release();
     if (!this.#streaming) return;
     this.#streaming = false;
-    this.#output.write("\n");
+    // The markdown state ends with the line: a held half-marker comes out
+    // literal, and no style survives into whatever is printed next.
+    this.#output.write(`${this.#markdown.flush()}\n`);
   }
 
   /** A turn started: from here on there is something to show progress for. */
@@ -577,27 +578,29 @@ export class TextRenderer implements Renderer {
           this.#endStream();
           this.#streamed = false;
         } else if (text !== "") {
-          this.#write(text);
+          this.#write(renderMarkdown(text, this.#styles));
         }
         this.#waiting(THINKING_LABEL);
         break;
       }
       case "tool.execution.started": {
+        // The call itself stays out of the transcript — the status line
+        // naming the tool is the trace; printed rows are for content and for
+        // outcomes worth keeping.
         const tool = typeof data.tool === "string" ? data.tool : "?";
-        this.#write(
-          `${this.#dim("→")} ${tool} ${this.#dim(previewInput(data.input))}`,
-        );
         this.#waiting(tool);
         break;
       }
       case "tool.execution.completed": {
+        // Success is silent like the call was; a denial or an error is an
+        // outcome the reader has to know about, so those still land.
         const ok = data.ok === true;
-        const denied = data.denied === true;
-        this.#write(
-          ok
-            ? `  ${this.#ok("✓")}`
-            : `  ${this.#bad("✗")} ${this.#dim(`(${denied ? "denied" : "error"})`)}`,
-        );
+        if (!ok) {
+          const denied = data.denied === true;
+          this.#write(
+            `  ${this.#bad("✗")} ${this.#dim(`(${denied ? "tool denied" : "tool error"})`)}`,
+          );
+        }
         this.#waiting(THINKING_LABEL);
         break;
       }
@@ -821,18 +824,16 @@ export class TextRenderer implements Renderer {
     switch (itemType) {
       case "agent_message": {
         const text = codexMessageText(item);
-        if (text !== undefined && text.trim() !== "") this.#write(text);
-        break;
-      }
-      case "command_execution": {
-        const command = codexCommandText(item);
-        if (command !== undefined) {
-          this.#write(
-            `${this.#dim("→")} codex: ${this.#dim(truncate(command, 120))}`,
-          );
+        if (text !== undefined && text.trim() !== "") {
+          this.#write(renderMarkdown(text, this.#styles));
         }
         break;
       }
+      case "command_execution":
+        // A tool call, same as the native loop's and Claude Code's: not a
+        // transcript line. (Codex's stream carries no completion signal per
+        // command, so there is no status label to move either.)
+        break;
       case "file_change": {
         const summary = codexFileChangeText(item);
         if (summary !== undefined) {
@@ -867,11 +868,12 @@ export class TextRenderer implements Renderer {
 
     switch (kind) {
       case "tool_use": {
+        // No transcript line (`→ claude: Bash` was noise next to the answer);
+        // the status line carries the tool's name while it runs.
         const name =
           typeof data.name === "string" && data.name !== ""
             ? data.name
             : "tool";
-        this.#write(`${this.#dim("→")} claude: ${name}`);
         this.#waiting(name);
         break;
       }
@@ -888,7 +890,8 @@ export class TextRenderer implements Renderer {
         this.#endStream();
         const buffered = this.#claudeText.trim();
         this.#claudeText = "";
-        if (buffered !== "") this.#write(buffered);
+        if (buffered !== "")
+          this.#write(renderMarkdown(buffered, this.#styles));
         this.#waiting(THINKING_LABEL);
         break;
       }

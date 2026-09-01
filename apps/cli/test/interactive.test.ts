@@ -38,6 +38,7 @@ import {
   createInteractiveController,
   createLineQueue,
   createReplCompleter,
+  createTransientBlock,
   droppedQueueNotice,
   inputManagerLineSource,
   instructionsBannerLine,
@@ -1106,6 +1107,65 @@ describe("withDeadline", () => {
     await expect(
       withDeadline(Promise.reject(new Error("nope")), 50, "late"),
     ).resolves.toBe("late");
+  });
+});
+
+describe("createTransientBlock", () => {
+  class TtyOut {
+    isTTY = true;
+    columns = 20;
+    rows = 40;
+    chunks: string[] = [];
+    write(chunk: string): boolean {
+      this.chunks.push(chunk);
+      return true;
+    }
+    get text(): string {
+      return this.chunks.join("");
+    }
+  }
+
+  it("erases exactly the rows it wrote, wrap-aware", () => {
+    const out = new TtyOut();
+    const block = createTransientBlock(out as unknown as NodeJS.WriteStream);
+    block.write("short"); // 1 row
+    block.write("x".repeat(45)); // 3 rows at 20 columns
+    block.erase();
+    expect(out.text.endsWith("[4A\r[0J")).toBe(true);
+  });
+
+  it("leaves the screen alone after markDirty", () => {
+    const out = new TtyOut();
+    const block = createTransientBlock(out as unknown as NodeJS.WriteStream);
+    block.write("line");
+    block.markDirty();
+    block.erase();
+    expect(out.text).toBe("line\n");
+  });
+
+  it("never writes escapes off a terminal, and skips a block taller than the screen", () => {
+    const plain = new TtyOut();
+    plain.isTTY = false;
+    const offTty = createTransientBlock(plain as unknown as NodeJS.WriteStream);
+    offTty.write("line");
+    offTty.erase();
+    expect(plain.text).toBe("line\n");
+
+    const short = new TtyOut();
+    short.rows = 3;
+    const tall = createTransientBlock(short as unknown as NodeJS.WriteStream);
+    tall.write("a");
+    tall.write("b");
+    tall.write("c");
+    tall.erase();
+    expect(short.text).toBe("a\nb\nc\n");
+  });
+
+  it("erases nothing when nothing was written", () => {
+    const out = new TtyOut();
+    const block = createTransientBlock(out as unknown as NodeJS.WriteStream);
+    block.erase();
+    expect(out.text).toBe("");
   });
 });
 

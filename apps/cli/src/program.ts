@@ -55,7 +55,10 @@ interface GlobalOpts {
   readonly backend?: string;
   /** `--no-setup`: commander sets this false when the flag is passed. */
   readonly setup?: boolean;
-  /** `--no-altscreen`: likewise false when the flag is passed. */
+  /**
+   * `--altscreen` sets this true, `--no-altscreen` false; the REPL's default
+   * (the normal screen) applies when neither flag was passed.
+   */
   readonly altscreen?: boolean;
 }
 
@@ -194,8 +197,12 @@ export function createProgram(): Command {
       "skip the first-run setup wizard and use environment variables and defaults",
     )
     .option(
+      "--altscreen",
+      "run the REPL on the alternate screen (a clean screen that restores your terminal on exit; no scrollback while inside)",
+    )
+    .option(
       "--no-altscreen",
-      "keep the REPL on the terminal's normal screen instead of a clean one, so the transcript stays in your scrollback",
+      "keep the REPL on the terminal's normal screen — the default — so the transcript stays in your scrollback and the mouse wheel scrolls it",
     );
 
   program

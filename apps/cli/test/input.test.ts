@@ -504,6 +504,45 @@ describe("InputManager.withSuspended", () => {
     await expect(pending).resolves.toBe("real");
     manager.close();
   });
+
+  it("hands the keyboard over whole: keys typed while suspended never reach the editor", async () => {
+    const { input, output } = makeIo();
+    const manager = createInputManager({
+      input,
+      output,
+      history: ["/config"],
+      pasteWindowMs: 5,
+    });
+    // The exact arrangement `/config` runs under: a mid-turn capture is open
+    // (the dispatch loop's), and the wizard's select prompt suspends the
+    // manager around each question.
+    const captured: string[] = [];
+    const endCapture = manager.captureWhileBusy((line) => captured.push(line));
+
+    await manager.withSuspended(async () => {
+      // What answering a select prompt looks like on the wire: the prompt
+      // resumes the stream for itself, the user arrows through the choices
+      // and confirms with Enter.
+      input.resume();
+      input.write(`${ESC}[A`);
+      input.write("\r");
+      await tick(10);
+    });
+    await tick(10);
+
+    // Before the suspension detached readline's keypress handling, that ↑
+    // recalled "/config" from history and the Enter delivered it as a
+    // captured line — which the REPL queued and re-ran the wizard with.
+    expect(captured).toEqual([]);
+    endCapture();
+
+    // The editor's buffer took nothing either: the next read starts empty.
+    const pending = manager.readMessage("> ");
+    input.write("hello\n");
+    await tick(20);
+    await expect(pending).resolves.toBe("hello");
+    manager.close();
+  });
 });
 
 // --- the live slash-command menu ----------------------------------------------
