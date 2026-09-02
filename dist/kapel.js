@@ -38,7 +38,7 @@ function finishTuiState(state, outcome) {
 }
 function reduceTuiEvent(state, event2) {
   const base = adoptEnvelope(state, event2);
-  const data = isRecord12(event2.data) ? event2.data : {};
+  const data = isRecord11(event2.data) ? event2.data : {};
   const tasks = reduceTasks(base.tasks, event2, data);
   const line = formatEventLine(event2);
   const log = line === void 0 ? base.log : appendLog(base.log, line);
@@ -47,7 +47,7 @@ function reduceTuiEvent(state, event2) {
   return { ...base, tasks, log };
 }
 function formatEventLine(event2) {
-  const data = isRecord12(event2.data) ? event2.data : {};
+  const data = isRecord11(event2.data) ? event2.data : {};
   if (event2.type.startsWith("codex."))
     return formatCodexLine(data);
   const taskId = taskIdOf2(event2, data);
@@ -58,7 +58,7 @@ function formatEventLine(event2) {
     }
     case "tool.execution.started": {
       const tool = str2(data.tool) ?? "?";
-      const preview = previewInput2(data.input);
+      const preview = previewInput(data.input);
       return truncate4(`\u2192 ${tool}${preview === "" ? "" : ` ${preview}`}`, MAX_LINE);
     }
     case "tool.execution.completed": {
@@ -71,7 +71,7 @@ function formatEventLine(event2) {
       return `\u25B6 ${taskId} \u2192 ${agent} (attempt ${num2(data.attempt) ?? 1})`;
     }
     case "task.completed": {
-      const result = isRecord12(data.result) ? data.result : {};
+      const result = isRecord11(data.result) ? data.result : {};
       const glyph2 = result.status === "success" ? "\u2714" : "\u2716";
       const suffix = data.final === false ? " (retrying)" : "";
       return `${glyph2} ${taskId} \u2014 ${firstLine3(result.summary)}${suffix}`;
@@ -148,7 +148,7 @@ function reduceTasks(tasks, event2, data) {
         break;
       }
       case "task.completed": {
-        const result = isRecord12(data.result) ? data.result : {};
+        const result = isRecord11(data.result) ? data.result : {};
         const summary = str2(result.summary);
         if (summary !== void 0)
           draft.summary = firstLine3(summary);
@@ -240,7 +240,7 @@ function appendLog(log, line) {
   const next = [...log, line];
   return next.length <= MAX_LOG_LINES ? next : next.slice(next.length - MAX_LOG_LINES);
 }
-function isRecord12(value) {
+function isRecord11(value) {
   return typeof value === "object" && value !== null;
 }
 function str2(value) {
@@ -267,7 +267,7 @@ function firstLine3(text2) {
   const line = text2.split("\n").map((part) => part.trim()).find((part) => part !== "");
   return line === void 0 ? "(no summary)" : truncate4(line, MAX_SUMMARY);
 }
-function previewInput2(input) {
+function previewInput(input) {
   if (input === void 0 || input === null)
     return "";
   if (typeof input === "string")
@@ -288,7 +288,7 @@ function formatCodexLine(data) {
       return text2 === void 0 ? void 0 : truncate4(collapse(text2), MAX_LINE);
     }
     case "command_execution": {
-      const command = codexCommandText2(item);
+      const command = codexCommandText(item);
       return command === void 0 ? void 0 : `\u2192 codex: ${truncate4(command, MAX_SUMMARY)}`;
     }
     case "file_change": {
@@ -300,9 +300,9 @@ function formatCodexLine(data) {
   }
 }
 function codexItem(data) {
-  if (isRecord12(data.item))
+  if (isRecord11(data.item))
     return data.item;
-  if (isRecord12(data.msg) && isRecord12(data.msg.item))
+  if (isRecord11(data.msg) && isRecord11(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -315,10 +315,10 @@ function codexMessageText2(item) {
     return str2(content);
   if (!Array.isArray(content))
     return void 0;
-  const joined = content.map((part) => typeof part === "string" ? part : isRecord12(part) ? str2(part.text) ?? "" : "").join("");
+  const joined = content.map((part) => typeof part === "string" ? part : isRecord11(part) ? str2(part.text) ?? "" : "").join("");
   return str2(joined);
 }
-function codexCommandText2(item) {
+function codexCommandText(item) {
   const direct = str2(item.command) ?? str2(item.cmd);
   if (direct !== void 0)
     return direct;
@@ -336,7 +336,7 @@ function codexFileText(item) {
   for (const change of changes) {
     if (typeof change === "string")
       paths.push(change);
-    else if (isRecord12(change)) {
+    else if (isRecord11(change)) {
       const path18 = str2(change.path) ?? str2(change.file);
       if (path18 !== void 0)
         paths.push(path18);
@@ -9902,8 +9902,10 @@ function runSelectPrompt(io, options) {
       io.input.removeListener("keypress", onKeypress);
       io.input.setRawMode?.(false);
       erase();
-      io.output.write(`${summarizeSelection(options.choices, values, { title: options.title, color })}
+      if (options.summarize !== false) {
+        io.output.write(`${summarizeSelection(options.choices, values, { title: options.title, color })}
 `);
+      }
       resolve5(values);
     };
     readline.emitKeypressEvents(io.input);
@@ -10056,13 +10058,18 @@ var FIRST_RUN_INTRO = [
   ""
 ];
 var noSuspend = (fn) => fn();
-function ttyWizardPrompt(io, suspend) {
+function ttyWizardPrompt(io, suspend, promptOptions) {
   const target = io ?? {
     input: process.stdin,
     output: process.stdout
   };
   const run = suspend ?? noSuspend;
-  return { select: (options) => run(() => runSelectPrompt(target, options)) };
+  return {
+    select: (options) => run(() => runSelectPrompt(target, {
+      ...options,
+      ...promptOptions?.summarize === void 0 ? {} : { summarize: promptOptions.summarize }
+    }))
+  };
 }
 async function checkBackendAvailability(backend, env = process.env) {
   if (backend === "claude-code") {
@@ -13402,6 +13409,8 @@ ${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
     for (const listener of readlineKeypressListeners) {
       options.input.on("keypress", listener);
     }
+    options.input.removeListener("keypress", onKeypress);
+    options.input.on("keypress", onKeypress);
   };
   const setEditorLine = (text2) => {
     const state = rl;
@@ -13453,6 +13462,8 @@ ${CSI2}0J${rows.join("\r\n")}${backToCursor(down, cols)}`);
     }
   };
   const onKeypress = (_str, key) => {
+    if (suspended)
+      return;
     if (capture !== void 0) {
       options.onPendingChange?.();
       return;
@@ -13688,9 +13699,11 @@ ${action.text}`;
     async withSuspended(fn) {
       const input = options.input;
       const wasRaw = input.isRaw === true;
+      leaveSearch(void 0);
       eraseBelow();
       closeBand(false);
       suspended = true;
+      suspendReadlineKeypress();
       rl.pause();
       input.setRawMode?.(false);
       try {
@@ -13698,6 +13711,7 @@ ${action.text}`;
       } finally {
         const isTty = options.input.isTTY;
         input.setRawMode?.(wasRaw || isTty === true);
+        resumeReadlineKeypress();
         rl.resume();
         suspended = false;
         if (readPending !== void 0) {
@@ -14289,291 +14303,153 @@ import { execFile as execFile10 } from "node:child_process";
 import { resolve as resolve4 } from "node:path";
 import { promisify as promisify7 } from "node:util";
 
-// apps/cli/dist/prompter.js
-import * as readline3 from "node:readline";
-
-// apps/cli/dist/preview.js
-var PREVIEW_MAX = 120;
-var PREVIEW_MAX_LINES = 40;
-var DIFF_CONTEXT = 3;
-var LCS_MAX_LINES = 300;
-var WRITE_PREVIEW_LINES = 20;
-var RED = ROLE_SGR.error;
-var GREEN = ROLE_SGR.ok;
-var DIM = ROLE_SGR.tool;
-function isRecord9(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function stringField(input, key) {
-  if (!isRecord9(input))
-    return void 0;
-  const value = input[key];
-  return typeof value === "string" ? value : void 0;
-}
-function previewInput(input) {
-  let text2;
-  try {
-    text2 = JSON.stringify(input) ?? String(input);
-  } catch {
-    text2 = String(input);
-  }
-  if (text2.length <= PREVIEW_MAX)
-    return text2;
-  return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
-}
-function lcsDiff(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const width = m + 1;
-  const dp = new Array((n + 1) * width).fill(0);
-  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
-    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
-      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
-    }
-  }
-  const out = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) {
-      out.push({ marker: " ", text: a[i] ?? "" });
-      i += 1;
-      j += 1;
-    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
-      out.push({ marker: "-", text: a[i] ?? "" });
-      i += 1;
-    } else {
-      out.push({ marker: "+", text: b[j] ?? "" });
-      j += 1;
-    }
-  }
-  for (; i < n; i += 1)
-    out.push({ marker: "-", text: a[i] ?? "" });
-  for (; j < m; j += 1)
-    out.push({ marker: "+", text: b[j] ?? "" });
-  return out;
-}
-function diffLines(oldText, newText) {
-  const a = oldText.split("\n");
-  const b = newText.split("\n");
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head])
-    head += 1;
-  let tail3 = 0;
-  while (tail3 < a.length - head && tail3 < b.length - head && a[a.length - 1 - tail3] === b[b.length - 1 - tail3]) {
-    tail3 += 1;
-  }
-  const midA = a.slice(head, a.length - tail3);
-  const midB = b.slice(head, b.length - tail3);
-  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
-    ...midA.map((text2) => ({ marker: "-", text: text2 })),
-    ...midB.map((text2) => ({ marker: "+", text: text2 }))
-  ] : lcsDiff(midA, midB);
-  return [
-    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
-    ...middle,
-    ...a.slice(a.length - tail3).map((text2) => ({ marker: " ", text: text2 }))
-  ];
-}
-function paint(line, color) {
-  const text2 = `  ${line.marker} ${line.text}`;
-  if (line.marker === "-")
-    return ansi(RED, text2, color);
-  if (line.marker === "+")
-    return ansi(GREEN, text2, color);
-  return text2;
-}
-function moreTail(count, color) {
-  return ansi(DIM, `  \u2026 (+${count} more)`, color);
-}
-function capLines(lines, color) {
-  if (lines.length <= PREVIEW_MAX_LINES)
-    return [...lines];
-  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
-  return [...kept, moreTail(lines.length - kept.length, color)];
-}
-function renderDiff(lines, options = {}) {
-  const color = options.color === true;
-  const keep = lines.map((line) => line.marker !== " ");
-  lines.forEach((line, index2) => {
-    if (line.marker === " ")
-      return;
-    const from = Math.max(0, index2 - DIFF_CONTEXT);
-    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
-    for (let near = from; near <= to; near += 1)
-      keep[near] = true;
-  });
-  const out = [];
-  let elided = false;
-  lines.forEach((line, index2) => {
-    if (keep[index2] === true) {
-      out.push(paint(line, color));
-      elided = false;
-      return;
-    }
-    if (!elided) {
-      out.push(ansi(DIM, "  \u22EE", color));
-      elided = true;
-    }
-  });
-  return capLines(out, color);
-}
-function previewBash(input, options = {}) {
-  const command = stringField(input, "command");
-  if (command === void 0)
-    return void 0;
-  const lines = command.split("\n").map((line) => `  ${line}`);
-  return capLines(lines, options.color === true).join("\n");
-}
-function previewEdit(input, options = {}) {
-  const path18 = stringField(input, "path");
-  const oldText = stringField(input, "oldText");
-  const newText = stringField(input, "newText");
-  if (path18 === void 0 || oldText === void 0 || newText === void 0) {
-    return void 0;
-  }
-  const replaceAll = isRecord9(input) && input.replaceAll === true ? " (all occurrences)" : "";
-  const header = ansi(DIM, `  ${path18}${replaceAll}`, options.color === true);
-  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
-}
-function previewWrite(input, options = {}) {
-  const path18 = stringField(input, "path");
-  const content = stringField(input, "content");
-  if (path18 === void 0 || content === void 0)
-    return void 0;
-  const color = options.color === true;
-  const lines = content.split("\n");
-  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
-  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
-  if (lines.length > shown.length) {
-    body.push(moreTail(lines.length - shown.length, color));
-  }
-  const header = ansi(DIM, `  ${path18} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
-  return [header, ...body].join("\n");
-}
-function formatToolPreview(tool, input, options = {}) {
-  switch (tool) {
-    case "bash":
-      return previewBash(input, options);
-    case "edit_file":
-      return previewEdit(input, options);
-    case "write_file":
-      return previewWrite(input, options);
-    default:
-      return void 0;
-  }
-}
-
-// apps/cli/dist/prompter.js
-var ERASE_LINE = "\x1B[2K\r";
-function createPromptState() {
-  return { active: false };
-}
-function parsePermissionAnswer(answer) {
-  if (typeof answer !== "string")
-    return "deny";
-  const normalized = answer.trim().toLowerCase();
-  if (normalized === "y" || normalized === "yes")
-    return "once";
-  if (normalized === "a" || normalized === "always")
-    return "always";
-  if (normalized === "" || normalized === "n" || normalized === "no") {
-    return "deny";
-  }
-  return "feedback";
-}
-function permissionFeedback(answer) {
-  if (parsePermissionAnswer(answer) !== "feedback")
-    return void 0;
-  return typeof answer === "string" ? answer.trim() : void 0;
-}
-function createPrompter(options) {
-  if (options.yes) {
-    return { ask: async () => true };
-  }
-  if (!options.interactive) {
-    return void 0;
-  }
-  const input = options.input ?? process.stdin;
-  const output = options.output ?? process.stdout;
-  const state = options.state;
-  const ask3 = options.ask;
-  const allowlist = options.allowlist;
-  const notify = options.notify;
-  const color = options.color ?? output.isTTY === true;
-  return {
-    ask: async (request) => {
-      state.active = true;
-      notify?.waitingForApproval();
-      try {
-        const prompt = formatPermissionPrompt(request, { color });
-        const lines = previewBlockLines(request, prompt, {
-          color,
-          offerAlways: allowlist !== void 0
-        });
-        if (color)
-          output.write(ERASE_LINE);
-        if (lines.length > 0)
-          output.write(`${lines.join("\n")}
-`);
-        const query = createStyles(color).heading(prompt.query);
-        const raw = ask3 === void 0 ? await askOnce(query, input, output) : await ask3(query);
-        const answer = parsePermissionAnswer(raw);
-        if (answer === "feedback") {
-          const feedback = permissionFeedback(raw);
-          return feedback === void 0 ? false : { allowed: false, feedback };
-        }
-        if (answer === "deny")
-          return false;
-        if (answer === "always" && allowlist !== void 0) {
-          const rule = allowlist.remember(request);
-          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
-`);
-        }
-        return true;
-      } finally {
-        state.active = false;
-      }
-    }
-  };
-}
-function dim(text2, enabled) {
-  return createStyles(enabled).tool(text2);
-}
-function previewBlockLines(request, prompt, options) {
-  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
-  if (!options.offerAlways)
-    return lines;
-  const rule = sessionRuleFor(request);
-  if (rule === void 0)
-    return lines;
-  return [
-    ...lines,
-    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
-  ];
-}
-var PERMISSION_ANSWER_HINT = "[y/n/a, or say what to do instead]";
-function formatPermissionPrompt(request, options = {}) {
-  const block = formatToolPreview(request.tool, request.input, {
-    ...options.color === void 0 ? {} : { color: options.color }
-  });
-  const query = block === void 0 ? `allow ${request.tool}? ${previewInput(request.input)} ${PERMISSION_ANSWER_HINT} ` : `allow ${request.tool}? ${PERMISSION_ANSWER_HINT} `;
-  return { block, query };
-}
-function askOnce(query, input, output) {
-  const rl = readline3.createInterface({ input, output, terminal: true });
-  return new Promise((resolve5) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled)
-        return;
-      settled = true;
-      rl.close();
-      resolve5(value);
+// apps/cli/dist/markdown.js
+var RESET = "\x1B[0m";
+var MAX_HEADING = 6;
+function createMarkdownStream(styles) {
+  if (!styles.enabled) {
+    return {
+      push: (text2) => text2,
+      flush: () => ""
     };
-    rl.on("SIGINT", () => finish(void 0));
-    rl.question(query, (answer) => finish(answer));
-  });
+  }
+  const boldOn = "\x1B[1m";
+  const codeOn = `\x1B[${styles.sgr.accent}m`;
+  const dimOn = "\x1B[2m";
+  let pending = "";
+  let atLineStart = true;
+  let bold = false;
+  let code = false;
+  let heading = false;
+  let fence = false;
+  let fenceLine = false;
+  const activeOn = () => {
+    const parts = [];
+    if (heading || bold)
+      parts.push(boldOn);
+    if (code)
+      parts.push(codeOn);
+    if (fenceLine)
+      parts.push(dimOn);
+    return parts.join("");
+  };
+  const anyActive = () => heading || bold || code || fenceLine;
+  const restyle = () => `${RESET}${activeOn()}`;
+  const endLine = () => {
+    const out = anyActive() ? RESET : "";
+    bold = false;
+    code = false;
+    heading = false;
+    if (fenceLine) {
+      fenceLine = false;
+      fence = !fence;
+    }
+    atLineStart = true;
+    return out;
+  };
+  const push = (text2) => {
+    const buf = pending + text2;
+    pending = "";
+    let out = "";
+    let i = 0;
+    while (i < buf.length) {
+      const char = buf[i];
+      if (char === "\n") {
+        out += `${endLine()}
+`;
+        i += 1;
+        continue;
+      }
+      if (fenceLine) {
+        out += char;
+        i += 1;
+        continue;
+      }
+      if (atLineStart && !code) {
+        if (char === "`" || char === "#" && !fence) {
+          let run = i;
+          while (run < buf.length && buf[run] === char)
+            run += 1;
+          const length = run - i;
+          if (run === buf.length && length <= MAX_HEADING) {
+            pending = buf.slice(i);
+            return out;
+          }
+          if (char === "`" && length >= 3) {
+            fenceLine = true;
+            out += `${dimOn}${buf.slice(i, run)}`;
+            atLineStart = false;
+            i = run;
+            continue;
+          }
+          if (char === "#" && length <= MAX_HEADING && buf[run] === " " && !fence) {
+            heading = true;
+            out += restyle();
+            atLineStart = false;
+            i = run + 1;
+            continue;
+          }
+          atLineStart = false;
+          if (char === "#") {
+            out += buf.slice(i, run);
+            i = run;
+            continue;
+          }
+        }
+        atLineStart = false;
+        continue;
+      }
+      if (fence) {
+        out += char;
+        i += 1;
+        continue;
+      }
+      if (char === "`") {
+        code = !code;
+        out += restyle();
+        i += 1;
+        continue;
+      }
+      if ((char === "*" || char === "_") && !code) {
+        if (i + 1 === buf.length) {
+          pending = char;
+          return out;
+        }
+        if (buf[i + 1] === char) {
+          bold = !bold;
+          out += restyle();
+          i += 2;
+          continue;
+        }
+        out += char;
+        i += 1;
+        continue;
+      }
+      out += char;
+      i += 1;
+    }
+    return out;
+  };
+  const flush = () => {
+    let out = pending;
+    pending = "";
+    if (anyActive())
+      out += RESET;
+    bold = false;
+    code = false;
+    heading = false;
+    fenceLine = false;
+    fence = false;
+    atLineStart = true;
+    return out;
+  };
+  return { push, flush };
+}
+function renderMarkdown(text2, styles) {
+  if (!styles.enabled)
+    return text2;
+  const stream = createMarkdownStream(styles);
+  return stream.push(text2) + stream.flush();
 }
 
 // apps/cli/dist/status-line.js
@@ -14825,7 +14701,7 @@ function usageBreakdownLine(entry, options = {}) {
 function usageRollupLines(breakdown, options = {}) {
   return [...breakdown.values()].sort((a, b) => b.costUsd - a.costUsd || b.usage.inputTokens + b.usage.outputTokens - (a.usage.inputTokens + a.usage.outputTokens) || a.key.localeCompare(b.key)).map((entry) => usageBreakdownLine(entry, options));
 }
-function isRecord10(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null;
 }
 function isDelegatedResult(result) {
@@ -14841,9 +14717,9 @@ function firstNonEmptyString(...values) {
   return void 0;
 }
 function codexItemFrom(data) {
-  if (isRecord10(data.item))
+  if (isRecord9(data.item))
     return data.item;
-  if (isRecord10(data.msg) && isRecord10(data.msg.item))
+  if (isRecord9(data.msg) && isRecord9(data.msg.item))
     return data.msg.item;
   return void 0;
 }
@@ -14859,25 +14735,13 @@ function codexMessageText(item) {
     for (const part of content) {
       if (typeof part === "string")
         parts.push(part);
-      else if (isRecord10(part) && typeof part.text === "string") {
+      else if (isRecord9(part) && typeof part.text === "string") {
         parts.push(part.text);
       }
     }
     const joined = parts.join("");
     if (joined !== "")
       return joined;
-  }
-  return void 0;
-}
-function codexCommandText(item) {
-  const direct = firstNonEmptyString(item.command, item.cmd);
-  if (direct !== void 0)
-    return direct;
-  const argv = item.argv ?? item.command;
-  if (Array.isArray(argv)) {
-    const parts = argv.filter((part) => typeof part === "string");
-    if (parts.length > 0)
-      return parts.join(" ");
   }
   return void 0;
 }
@@ -14891,7 +14755,7 @@ function codexFileChangeText(item) {
     for (const change of changes) {
       if (typeof change === "string")
         paths.push(change);
-      else if (isRecord10(change)) {
+      else if (isRecord9(change)) {
         const p = firstNonEmptyString(change.path, change.file);
         if (p !== void 0)
           paths.push(p);
@@ -14912,7 +14776,7 @@ function stringOrUndefined(value) {
   return typeof value === "string" && value !== "" ? value : void 0;
 }
 function routingLabel(routing) {
-  if (!isRecord10(routing))
+  if (!isRecord9(routing))
     return void 0;
   const rule = stringOrUndefined(routing.rule);
   switch (routing.reason) {
@@ -14961,9 +14825,16 @@ var TextRenderer = class {
   #pending;
   /** Streamed text kept back while they type it — see {@link #hold}. */
   #held = "";
+  /**
+   * The markdown state carried across streamed deltas, so a `**` split over
+   * two chunks still renders as bold (see `markdown.ts`). Flushed — held
+   * tail out, styles closed — whenever the streamed line is terminated.
+   */
+  #markdown;
   constructor(output = process.stdout, options = {}) {
     this.#output = output;
     this.#styles = options.styles ?? stylesFor(output);
+    this.#markdown = createMarkdownStream(this.#styles);
     this.#pending = options.pending;
     this.#status = options.status ?? new StatusLine({
       output,
@@ -15076,7 +14947,7 @@ var TextRenderer = class {
     if (text2 === "")
       return;
     this.#status.stop();
-    this.#output.write(text2);
+    this.#output.write(this.#markdown.push(text2));
     this.#streaming = true;
     this.#streamed = true;
   }
@@ -15086,7 +14957,8 @@ var TextRenderer = class {
     if (!this.#streaming)
       return;
     this.#streaming = false;
-    this.#output.write("\n");
+    this.#output.write(`${this.#markdown.flush()}
+`);
   }
   /** A turn started: from here on there is something to show progress for. */
   #beginTurn() {
@@ -15131,7 +15003,7 @@ var TextRenderer = class {
     return this.#styles.error(text2);
   }
   emit(event2) {
-    const data = isRecord10(event2.data) ? event2.data : {};
+    const data = isRecord9(event2.data) ? event2.data : {};
     const single = event2.taskId === void 0;
     if (event2.type.startsWith(CODEX_PREFIX)) {
       this.#emitCodex(data);
@@ -15167,21 +15039,22 @@ var TextRenderer = class {
           this.#endStream();
           this.#streamed = false;
         } else if (text2 !== "") {
-          this.#write(text2);
+          this.#write(renderMarkdown(text2, this.#styles));
         }
         this.#waiting(THINKING_LABEL);
         break;
       }
       case "tool.execution.started": {
         const tool = typeof data.tool === "string" ? data.tool : "?";
-        this.#write(`${this.#dim("\u2192")} ${tool} ${this.#dim(previewInput(data.input))}`);
         this.#waiting(tool);
         break;
       }
       case "tool.execution.completed": {
         const ok = data.ok === true;
-        const denied = data.denied === true;
-        this.#write(ok ? `  ${this.#ok("\u2713")}` : `  ${this.#bad("\u2717")} ${this.#dim(`(${denied ? "denied" : "error"})`)}`);
+        if (!ok) {
+          const denied = data.denied === true;
+          this.#write(`  ${this.#bad("\u2717")} ${this.#dim(`(${denied ? "tool denied" : "tool error"})`)}`);
+        }
         this.#waiting(THINKING_LABEL);
         break;
       }
@@ -15230,7 +15103,7 @@ var TextRenderer = class {
         break;
       }
       case "task.completed": {
-        const result = isRecord10(data.result) ? data.result : {};
+        const result = isRecord9(data.result) ? data.result : {};
         const ok = result.status === "success";
         const retrying = data.final === false;
         const suffix = retrying ? this.#dim(" (retrying)") : "";
@@ -15350,17 +15223,13 @@ var TextRenderer = class {
     switch (itemType) {
       case "agent_message": {
         const text2 = codexMessageText(item);
-        if (text2 !== void 0 && text2.trim() !== "")
-          this.#write(text2);
-        break;
-      }
-      case "command_execution": {
-        const command = codexCommandText(item);
-        if (command !== void 0) {
-          this.#write(`${this.#dim("\u2192")} codex: ${this.#dim(truncate3(command, 120))}`);
+        if (text2 !== void 0 && text2.trim() !== "") {
+          this.#write(renderMarkdown(text2, this.#styles));
         }
         break;
       }
+      case "command_execution":
+        break;
       case "file_change": {
         const summary = codexFileChangeText(item);
         if (summary !== void 0) {
@@ -15386,16 +15255,15 @@ var TextRenderer = class {
    * native renderer does for unknown types.
    */
   #emitClaudeCode(kind, data, single) {
-    const event2 = isRecord10(data.event) ? data.event : data;
+    const event2 = isRecord9(data.event) ? data.event : data;
     switch (kind) {
       case "tool_use": {
         const name = typeof data.name === "string" && data.name !== "" ? data.name : "tool";
-        this.#write(`${this.#dim("\u2192")} claude: ${name}`);
         this.#waiting(name);
         break;
       }
       case "content_block_delta": {
-        const delta = isRecord10(event2.delta) ? event2.delta : void 0;
+        const delta = isRecord9(event2.delta) ? event2.delta : void 0;
         if (delta?.type !== "text_delta")
           break;
         if (typeof delta.text !== "string")
@@ -15412,7 +15280,7 @@ var TextRenderer = class {
         const buffered = this.#claudeText.trim();
         this.#claudeText = "";
         if (buffered !== "")
-          this.#write(buffered);
+          this.#write(renderMarkdown(buffered, this.#styles));
         this.#waiting(THINKING_LABEL);
         break;
       }
@@ -15494,7 +15362,7 @@ var RANK = {
   pending: 5,
   succeeded: 6
 };
-function isRecord11(value) {
+function isRecord10(value) {
   return typeof value === "object" && value !== null;
 }
 function stringOrUndefined2(value) {
@@ -15509,7 +15377,7 @@ function seedWorkerSummaries(taskIds) {
   return summaries;
 }
 function applyWorkerEvent(summaries, event2) {
-  const data = isRecord11(event2.data) ? event2.data : {};
+  const data = isRecord10(event2.data) ? event2.data : {};
   const taskId = event2.taskId ?? stringOrUndefined2(data.taskId);
   if (taskId === void 0)
     return summaries;
@@ -15539,7 +15407,7 @@ function nextSummary(previous, type, data, timestamp) {
     case "task.held":
       return { ...previous, state: "held" };
     case "task.completed": {
-      const result = isRecord11(data.result) ? data.result : {};
+      const result = isRecord10(data.result) ? data.result : {};
       if (data.final === false) {
         return {
           id: previous.id,
@@ -17295,6 +17163,293 @@ async function runPolicyEdit(options, deps = {}) {
   return 0;
 }
 
+// apps/cli/dist/prompter.js
+import * as readline3 from "node:readline";
+
+// apps/cli/dist/preview.js
+var PREVIEW_MAX = 120;
+var PREVIEW_MAX_LINES = 40;
+var DIFF_CONTEXT = 3;
+var LCS_MAX_LINES = 300;
+var WRITE_PREVIEW_LINES = 20;
+var RED = ROLE_SGR.error;
+var GREEN = ROLE_SGR.ok;
+var DIM = ROLE_SGR.tool;
+function isRecord12(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringField(input, key) {
+  if (!isRecord12(input))
+    return void 0;
+  const value = input[key];
+  return typeof value === "string" ? value : void 0;
+}
+function previewInput2(input) {
+  let text2;
+  try {
+    text2 = JSON.stringify(input) ?? String(input);
+  } catch {
+    text2 = String(input);
+  }
+  if (text2.length <= PREVIEW_MAX)
+    return text2;
+  return `${text2.slice(0, PREVIEW_MAX - 3)}...`;
+}
+function lcsDiff(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const width = m + 1;
+  const dp = new Array((n + 1) * width).fill(0);
+  for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+    for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+      dp[i2 * width + j2] = a[i2] === b[j2] ? (dp[(i2 + 1) * width + j2 + 1] ?? 0) + 1 : Math.max(dp[(i2 + 1) * width + j2] ?? 0, dp[i2 * width + j2 + 1] ?? 0);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ marker: " ", text: a[i] ?? "" });
+      i += 1;
+      j += 1;
+    } else if ((dp[(i + 1) * width + j] ?? 0) >= (dp[i * width + j + 1] ?? 0)) {
+      out.push({ marker: "-", text: a[i] ?? "" });
+      i += 1;
+    } else {
+      out.push({ marker: "+", text: b[j] ?? "" });
+      j += 1;
+    }
+  }
+  for (; i < n; i += 1)
+    out.push({ marker: "-", text: a[i] ?? "" });
+  for (; j < m; j += 1)
+    out.push({ marker: "+", text: b[j] ?? "" });
+  return out;
+}
+function diffLines(oldText, newText) {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head])
+    head += 1;
+  let tail3 = 0;
+  while (tail3 < a.length - head && tail3 < b.length - head && a[a.length - 1 - tail3] === b[b.length - 1 - tail3]) {
+    tail3 += 1;
+  }
+  const midA = a.slice(head, a.length - tail3);
+  const midB = b.slice(head, b.length - tail3);
+  const middle = midA.length > LCS_MAX_LINES || midB.length > LCS_MAX_LINES ? [
+    ...midA.map((text2) => ({ marker: "-", text: text2 })),
+    ...midB.map((text2) => ({ marker: "+", text: text2 }))
+  ] : lcsDiff(midA, midB);
+  return [
+    ...a.slice(0, head).map((text2) => ({ marker: " ", text: text2 })),
+    ...middle,
+    ...a.slice(a.length - tail3).map((text2) => ({ marker: " ", text: text2 }))
+  ];
+}
+function paint(line, color) {
+  const text2 = `  ${line.marker} ${line.text}`;
+  if (line.marker === "-")
+    return ansi(RED, text2, color);
+  if (line.marker === "+")
+    return ansi(GREEN, text2, color);
+  return text2;
+}
+function moreTail(count, color) {
+  return ansi(DIM, `  \u2026 (+${count} more)`, color);
+}
+function capLines(lines, color) {
+  if (lines.length <= PREVIEW_MAX_LINES)
+    return [...lines];
+  const kept = lines.slice(0, PREVIEW_MAX_LINES - 1);
+  return [...kept, moreTail(lines.length - kept.length, color)];
+}
+function renderDiff(lines, options = {}) {
+  const color = options.color === true;
+  const keep = lines.map((line) => line.marker !== " ");
+  lines.forEach((line, index2) => {
+    if (line.marker === " ")
+      return;
+    const from = Math.max(0, index2 - DIFF_CONTEXT);
+    const to = Math.min(lines.length - 1, index2 + DIFF_CONTEXT);
+    for (let near = from; near <= to; near += 1)
+      keep[near] = true;
+  });
+  const out = [];
+  let elided = false;
+  lines.forEach((line, index2) => {
+    if (keep[index2] === true) {
+      out.push(paint(line, color));
+      elided = false;
+      return;
+    }
+    if (!elided) {
+      out.push(ansi(DIM, "  \u22EE", color));
+      elided = true;
+    }
+  });
+  return capLines(out, color);
+}
+function previewBash(input, options = {}) {
+  const command = stringField(input, "command");
+  if (command === void 0)
+    return void 0;
+  const lines = command.split("\n").map((line) => `  ${line}`);
+  return capLines(lines, options.color === true).join("\n");
+}
+function previewEdit(input, options = {}) {
+  const path18 = stringField(input, "path");
+  const oldText = stringField(input, "oldText");
+  const newText = stringField(input, "newText");
+  if (path18 === void 0 || oldText === void 0 || newText === void 0) {
+    return void 0;
+  }
+  const replaceAll = isRecord12(input) && input.replaceAll === true ? " (all occurrences)" : "";
+  const header = ansi(DIM, `  ${path18}${replaceAll}`, options.color === true);
+  return [header, ...renderDiff(diffLines(oldText, newText), options)].join("\n");
+}
+function previewWrite(input, options = {}) {
+  const path18 = stringField(input, "path");
+  const content = stringField(input, "content");
+  if (path18 === void 0 || content === void 0)
+    return void 0;
+  const color = options.color === true;
+  const lines = content.split("\n");
+  const shown = lines.slice(0, WRITE_PREVIEW_LINES);
+  const body = shown.map((text2) => paint({ marker: "+", text: text2 }, color));
+  if (lines.length > shown.length) {
+    body.push(moreTail(lines.length - shown.length, color));
+  }
+  const header = ansi(DIM, `  ${path18} (${lines.length} line${lines.length === 1 ? "" : "s"})`, color);
+  return [header, ...body].join("\n");
+}
+function formatToolPreview(tool, input, options = {}) {
+  switch (tool) {
+    case "bash":
+      return previewBash(input, options);
+    case "edit_file":
+      return previewEdit(input, options);
+    case "write_file":
+      return previewWrite(input, options);
+    default:
+      return void 0;
+  }
+}
+
+// apps/cli/dist/prompter.js
+var ERASE_LINE = "\x1B[2K\r";
+function createPromptState() {
+  return { active: false };
+}
+function parsePermissionAnswer(answer) {
+  if (typeof answer !== "string")
+    return "deny";
+  const normalized = answer.trim().toLowerCase();
+  if (normalized === "y" || normalized === "yes")
+    return "once";
+  if (normalized === "a" || normalized === "always")
+    return "always";
+  if (normalized === "" || normalized === "n" || normalized === "no") {
+    return "deny";
+  }
+  return "feedback";
+}
+function permissionFeedback(answer) {
+  if (parsePermissionAnswer(answer) !== "feedback")
+    return void 0;
+  return typeof answer === "string" ? answer.trim() : void 0;
+}
+function createPrompter(options) {
+  if (options.yes) {
+    return { ask: async () => true };
+  }
+  if (!options.interactive) {
+    return void 0;
+  }
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const state = options.state;
+  const ask3 = options.ask;
+  const allowlist = options.allowlist;
+  const notify = options.notify;
+  const color = options.color ?? output.isTTY === true;
+  return {
+    ask: async (request) => {
+      state.active = true;
+      notify?.waitingForApproval();
+      try {
+        const prompt = formatPermissionPrompt(request, { color });
+        const lines = previewBlockLines(request, prompt, {
+          color,
+          offerAlways: allowlist !== void 0
+        });
+        if (color)
+          output.write(ERASE_LINE);
+        if (lines.length > 0)
+          output.write(`${lines.join("\n")}
+`);
+        const query = createStyles(color).heading(prompt.query);
+        const raw = ask3 === void 0 ? await askOnce(query, input, output) : await ask3(query);
+        const answer = parsePermissionAnswer(raw);
+        if (answer === "feedback") {
+          const feedback = permissionFeedback(raw);
+          return feedback === void 0 ? false : { allowed: false, feedback };
+        }
+        if (answer === "deny")
+          return false;
+        if (answer === "always" && allowlist !== void 0) {
+          const rule = allowlist.remember(request);
+          output.write(`${dim(rule === void 0 ? "  (allowed once \u2014 a compound command cannot be remembered)" : `  (remembered for this session: ${describeSessionRule(rule)})`, color)}
+`);
+        }
+        return true;
+      } finally {
+        state.active = false;
+      }
+    }
+  };
+}
+function dim(text2, enabled) {
+  return createStyles(enabled).tool(text2);
+}
+function previewBlockLines(request, prompt, options) {
+  const lines = prompt.block === void 0 ? [] : prompt.block.split("\n");
+  if (!options.offerAlways)
+    return lines;
+  const rule = sessionRuleFor(request);
+  if (rule === void 0)
+    return lines;
+  return [
+    ...lines,
+    dim(`  a = always allow ${describeSessionRule(rule)} this session`, options.color)
+  ];
+}
+var PERMISSION_ANSWER_HINT = "[y/n/a, or say what to do instead]";
+function formatPermissionPrompt(request, options = {}) {
+  const block = formatToolPreview(request.tool, request.input, {
+    ...options.color === void 0 ? {} : { color: options.color }
+  });
+  const query = block === void 0 ? `allow ${request.tool}? ${previewInput2(request.input)} ${PERMISSION_ANSWER_HINT} ` : `allow ${request.tool}? ${PERMISSION_ANSWER_HINT} `;
+  return { block, query };
+}
+function askOnce(query, input, output) {
+  const rl = readline3.createInterface({ input, output, terminal: true });
+  return new Promise((resolve5) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled)
+        return;
+      settled = true;
+      rl.close();
+      resolve5(value);
+    };
+    rl.on("SIGINT", () => finish(void 0));
+    rl.question(query, (answer) => finish(answer));
+  });
+}
+
 // apps/cli/dist/resume-cmd.js
 import { readFile as readFile18 } from "node:fs/promises";
 import path15 from "node:path";
@@ -17504,8 +17659,8 @@ async function runRunsCommand(options, deps = {}) {
 }
 
 // apps/cli/dist/screen.js
-var ENTER_ALT_SCREEN = "\x1B[?1049h\x1B[H\x1B[2J";
-var LEAVE_ALT_SCREEN = "\x1B[?1049l";
+var ENTER_ALT_SCREEN = "\x1B[?1049h\x1B[H\x1B[2J\x1B[?1007s\x1B[?1007l";
+var LEAVE_ALT_SCREEN = "\x1B[?1007r\x1B[?1049l";
 var FATAL_SIGNALS = {
   SIGHUP: 1,
   SIGQUIT: 3,
@@ -17743,7 +17898,7 @@ ${blocks.join("\n")}
 }
 
 // apps/cli/dist/interactive.js
-var CLI_VERSION = "0.16.0";
+var CLI_VERSION = "0.17.0";
 var STARTUP_PROBE_BUDGET_MS = 1e3;
 var SHORT_ID2 = 8;
 var SESSIONS_LIMIT = 20;
@@ -18929,6 +19084,47 @@ function withDeadline(promise, ms, fallback) {
     });
   });
 }
+function createTransientBlock(output) {
+  let rows = 0;
+  let dirty = false;
+  const columns = () => {
+    const value = output.columns;
+    return typeof value === "number" && value > 0 ? value : 80;
+  };
+  const rowsOf = (line) => {
+    const width = columns();
+    let total = 0;
+    for (const part of line.split("\n")) {
+      let cells = 0;
+      for (const char of stripEscapes(part)) {
+        cells += charWidth(char.codePointAt(0) ?? 0);
+      }
+      total += Math.max(1, Math.ceil(cells / width));
+    }
+    return total;
+  };
+  return {
+    write(line) {
+      rows += rowsOf(line);
+      output.write(`${line}
+`);
+    },
+    markDirty() {
+      dirty = true;
+    },
+    erase() {
+      const count = rows;
+      rows = 0;
+      if (count === 0 || dirty || output.isTTY !== true)
+        return;
+      const height = output.rows;
+      if (typeof height === "number" && height > 0 && count + 1 >= height) {
+        return;
+      }
+      output.write(`\x1B[${count}A\r\x1B[0J`);
+    }
+  };
+}
 async function bestEffortValue(read) {
   try {
     return await read();
@@ -19073,7 +19269,7 @@ async function runInteractive(options) {
       stdout: process.stdout,
       stdin: process.stdin,
       env: process.env,
-      ...options.altScreen === void 0 ? {} : { enabled: options.altScreen }
+      enabled: options.altScreen === true
     });
     const promptState = createPromptState();
     const sessionAllowlist = new SessionAllowlist();
@@ -19352,22 +19548,38 @@ async function runInteractive(options) {
         // directory asked for does not lose to a wizard run somewhere
         // else in the same session.
         configure: async () => {
+          const transient = createTransientBlock(process.stdout);
+          const codexLogin = codexLoginRunner(withSuspendedFullScreen, process.env);
+          const claudeCodeLogin = claudeCodeLoginRunner(withSuspendedFullScreen, process.env);
           const saved = await runConfigWizard({
             // `/config` runs while the REPL's own InputManager still owns
             // stdin — suspend it around the picker (and around a spawned
             // `codex login`/`claude auth login`) so the two don't fight
             // over raw-mode keypresses.
-            prompt: ttyWizardPrompt(void 0, withSuspended),
+            prompt: ttyWizardPrompt(void 0, withSuspended, {
+              summarize: false
+            }),
             write: (line) => {
-              console.log(line);
+              transient.write(line);
             },
             checkBackend: (target) => checkBackendAvailability(target),
-            runCodexLogin: codexLoginRunner(withSuspendedFullScreen, process.env),
-            runClaudeCodeLogin: claudeCodeLoginRunner(withSuspendedFullScreen, process.env),
+            // A spawned login is a full-screen program writing rows this
+            // counter never sees — after one, the erase stands down.
+            runCodexLogin: () => {
+              transient.markDirty();
+              return codexLogin();
+            },
+            runClaudeCodeLogin: () => {
+              transient.markDirty();
+              return claudeCodeLogin();
+            },
             ...options.config === void 0 ? {} : { current: options.config }
           });
-          if (saved === void 0)
+          transient.erase();
+          if (saved === void 0) {
+            console.log(styles.notice("config setup cancelled."));
             return void 0;
+          }
           return mergeKapelConfigs(saved, options.projectConfig)?.config ?? saved;
         }
       } : {}
@@ -19604,7 +19816,7 @@ async function chatAndExit(raw, chat = {}) {
 }
 function createProgram() {
   const program = new Command();
-  program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent. Run `kapel` with no command to open the REPL, where the agent plans, routes and edits; the commands below set it up and inspect what it did.").version(CLI_VERSION).usage("[options] [command]").helpCommand(true).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "override the planner/orchestrator model (see `kapel models`)").option("--timeout <seconds>", "model call timeout, in seconds").option("--backend <name>", `override the execution backend: ${BACKEND_NAMES.join(" | ")} (default: AGENT_BACKEND, your \`kapel config\`, or auto-detected)`).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults").option("--no-altscreen", "keep the REPL on the terminal's normal screen instead of a clean one, so the transcript stays in your scrollback");
+  program.name("kapel").description("Kapel \u2014 a multi-model orchestration coding agent. Run `kapel` with no command to open the REPL, where the agent plans, routes and edits; the commands below set it up and inspect what it did.").version(CLI_VERSION).usage("[options] [command]").helpCommand(true).option("--cwd <dir>", "workspace root to operate in", process.cwd()).option("-m, --model <alias>", "override the planner/orchestrator model (see `kapel models`)").option("--timeout <seconds>", "model call timeout, in seconds").option("--backend <name>", `override the execution backend: ${BACKEND_NAMES.join(" | ")} (default: AGENT_BACKEND, your \`kapel config\`, or auto-detected)`).option("--no-setup", "skip the first-run setup wizard and use environment variables and defaults").option("--altscreen", "run the REPL on the alternate screen (a clean screen that restores your terminal on exit; no scrollback while inside)").option("--no-altscreen", "keep the REPL on the terminal's normal screen \u2014 the default \u2014 so the transcript stays in your scrollback and the mouse wheel scrolls it");
   program.argument("[args...]").action(async (args, opts) => {
     if (args.length > 0) {
       program.error(`error: unknown command '${args[0]}'`, {
